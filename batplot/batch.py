@@ -344,6 +344,11 @@ def batch_process(directory: str, args):
                 # Transparent background for SVG exports
                 _, _ext = os.path.splitext(target)
                 if _ext.lower() == '.svg':
+                    # Fix for Affinity Designer/Photo compatibility issues
+                    # Use 'none' to embed fonts as text (not paths) - prevents phantom labels
+                    # Set hashsalt to empty to avoid duplicate text elements
+                    plt.rcParams['svg.fonttype'] = 'none'
+                    plt.rcParams['svg.hashsalt'] = None
                     try:
                         _fig_fc = fig_b.get_facecolor()
                     except Exception:

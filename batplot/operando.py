@@ -211,33 +211,98 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     if has_ec:
         try:
             ec_path = mpt_files[0]
-            # Read time series from .mpt (now returns labels too)
-            result = read_mpt_file(str(ec_path), mode='time')
             
-            # Check if we got labels (5 elements) or old format (3 elements)
-            if len(result) == 5:
-                x_data, y_data, current_mA, x_label, y_label = result
-                # For EC-Lab files: x_label='Time (h)', y_label='Voltage (V)'
-                # EC-Lab returns time in seconds, needs conversion to hours
-                # operando plots with voltage on X-axis and time on Y-axis
-                if x_label == 'Time (h)' and y_label == 'Voltage (V)':
-                    # EC-Lab file: convert time to hours and swap axes
-                    time_h = np.asarray(x_data, float) / 3600.0
-                    voltage_v = np.asarray(y_data, float)
-                    x_data = voltage_v
-                    y_data = time_h
-                    x_label = 'Voltage (V)'
-                    y_label = 'Time (h)'
-                else:
-                    # Simple file: use raw data as-is, keep original labels
-                    x_data = np.asarray(x_data, float)
-                    y_data = np.asarray(y_data, float)
+            # Check if user specified custom columns via --readcolmpt
+            readcol_mpt = None
+            if hasattr(args, 'readcol_by_ext') and '.mpt' in args.readcol_by_ext:
+                readcol_mpt = args.readcol_by_ext['.mpt']
+            
+            if readcol_mpt:
+                # User explicitly specified columns - respect their choice
+                data = robust_loadtxt_skipheader(str(ec_path))
+                if data.ndim == 1:
+                    data = data.reshape(1, -1)
+                if data.shape[1] < 2:
+                    raise ValueError(f"MPT file {ec_path.name} has insufficient columns")
+                
+                # Apply column selection (1-indexed -> 0-indexed)
+                x_col, y_col = readcol_mpt
+                x_col_idx = x_col - 1
+                y_col_idx = y_col - 1
+                if x_col_idx < 0 or x_col_idx >= data.shape[1]:
+                    raise ValueError(f"X column {x_col} out of range in {ec_path.name} (has {data.shape[1]} columns)")
+                if y_col_idx < 0 or y_col_idx >= data.shape[1]:
+                    raise ValueError(f"Y column {y_col} out of range in {ec_path.name} (has {data.shape[1]} columns)")
+                
+                x_data = data[:, x_col_idx]
+                y_data = data[:, y_col_idx]
+                current_mA = None
+                # User-specified: plot exactly as specified (X on x-axis, Y on y-axis)
+                x_label = f'Column {x_col}'
+                y_label = f'Column {y_col}'
             else:
-                # Old format compatibility (shouldn't happen anymore)
-                x_data, y_data, current_mA = result
-                x_data = np.asarray(y_data, float)
-                y_data = np.asarray(x_data, float) / 3600.0
-                x_label, y_label = 'Voltage (V)', 'Time (h)'
+                # Auto-detect format: Read time series from .mpt
+                result = read_mpt_file(str(ec_path), mode='time')
+                
+                # Check if we got labels (5 elements) or old format (3 elements)
+                if len(result) == 5:
+                    x_data, y_data, current_mA, x_label, y_label = result
+                    # For EC-Lab files: x_label='Time (h)', y_label='Voltage (V)'
+                    # For simple files: x_label could be 'Time(h)', 'time', etc.
+                    # EC-Lab returns time in seconds, needs conversion to hours
+                    # operando plots with voltage on X-axis and time on Y-axis
+                    
+                    # Check if labels indicate time/voltage data (flexible matching)
+                    x_lower = x_label.lower().replace(' ', '').replace('_', '')
+                    y_lower = y_label.lower().replace(' ', '').replace('_', '')
+                    has_time_in_x = 'time' in x_lower
+                    has_voltage_in_x = 'voltage' in x_lower or 'ewe' in x_lower
+                    has_time_in_y = 'time' in y_lower
+                    has_voltage_in_y = 'voltage' in y_lower or 'ewe' in y_lower
+                    
+                    is_time_voltage = (has_time_in_x or has_time_in_y) and (has_voltage_in_x or has_voltage_in_y)
+                    
+                    if x_label == 'Time (h)' and y_label == 'Voltage (V)':
+                        # EC-Lab file: convert time to hours and swap axes
+                        time_h = np.asarray(x_data, float) / 3600.0
+                        voltage_v = np.asarray(y_data, float)
+                        x_data = voltage_v
+                        y_data = time_h
+                        x_label = 'Voltage (V)'
+                        y_label = 'Time (h)'
+                    elif is_time_voltage:
+                        # Simple file with time/voltage columns
+                        # Determine which column is which, then arrange: voltage on X, time on Y
+                        if has_time_in_x and has_voltage_in_y:
+                            # Columns are: Time, Voltage -> swap to Voltage, Time
+                            time_h = np.asarray(x_data, float)
+                            voltage_v = np.asarray(y_data, float)
+                            x_data = voltage_v
+                            y_data = time_h
+                            x_label = 'Voltage (V)'
+                            y_label = 'Time (h)'
+                        elif has_voltage_in_x and has_time_in_y:
+                            # Columns are: Voltage, Time -> already correct order
+                            voltage_v = np.asarray(x_data, float)
+                            time_h = np.asarray(y_data, float)
+                            x_data = voltage_v
+                            y_data = time_h
+                            x_label = 'Voltage (V)'
+                            y_label = 'Time (h)'
+                        else:
+                            # Ambiguous or both in same column - default behavior
+                            x_data = np.asarray(x_data, float)
+                            y_data = np.asarray(y_data, float)
+                    else:
+                        # Generic file: use raw data as-is, keep original labels
+                        x_data = np.asarray(x_data, float)
+                        y_data = np.asarray(y_data, float)
+                else:
+                    # Old format compatibility (shouldn't happen anymore)
+                    x_data, y_data, current_mA = result
+                    x_data = np.asarray(y_data, float)
+                    y_data = np.asarray(x_data, float) / 3600.0
+                    x_label, y_label = 'Voltage (V)', 'Time (h)'
             
             # Add the EC axes on the right
             ec_ax = fig.add_subplot(gs[0, 1])

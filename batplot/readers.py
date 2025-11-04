@@ -6,6 +6,53 @@ import numpy as np
 from typing import Tuple
 
 
+def read_excel_to_csv_like(fname: str, header_row: int = 2, data_start_row: int = 3) -> Tuple[list, list]:
+    """Read Excel file and convert to CSV-like structure for batplot.
+    
+    This is designed for Chinese cycler data Excel files where:
+    - Row 1: File/sample name
+    - Row 2: Column headers
+    - Row 3+: Data
+    
+    Args:
+        fname: Path to Excel file (.xlsx)
+        header_row: Row number containing headers (1-indexed, default=2)
+        data_start_row: First row containing data (1-indexed, default=3)
+    
+    Returns:
+        Tuple of (header_list, rows_list) compatible with CSV processing
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        raise ImportError("openpyxl is required to read Excel files. Install with: pip install openpyxl")
+    
+    wb = openpyxl.load_workbook(fname, read_only=True, data_only=True)
+    ws = wb.active
+    
+    # Read header row
+    header = []
+    for cell in ws[header_row]:
+        header.append(str(cell.value) if cell.value is not None else '')
+    
+    # Read data rows
+    rows = []
+    for row in ws.iter_rows(min_row=data_start_row, values_only=True):
+        # Convert row to list of strings (handle None, datetime, etc.)
+        row_data = []
+        for val in row:
+            if val is None:
+                row_data.append('')
+            elif isinstance(val, (int, float)):
+                row_data.append(str(val))
+            else:
+                row_data.append(str(val))
+        rows.append(row_data)
+    
+    wb.close()
+    return header, rows
+
+
 def read_csv_file(fname: str):
     for delim in [",", ";", "\t"]:
         try:
@@ -583,7 +630,7 @@ def read_biologic_txt_file(fname: str, mode: str = 'cv') -> Tuple[np.ndarray, np
 
 
 def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Read a cycler-exported CSV (e.g., Neware-like) and extract arrays for GC plotting.
+    """Read a cycler-exported CSV or Excel file (e.g., Neware-like) and extract arrays for GC plotting.
 
     The CSV is expected to have a two-line header where the second header line starts
     with an empty first cell. Columns of interest include:
@@ -594,8 +641,13 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
           * absolute: 'Capacity(mAh)' and optionally split 'Chg. Cap.(mAh)' / 'DChg. Cap.(mAh)'
           * specific: 'Spec. Cap.(mAh/g)', 'Chg. Spec. Cap.(mAh/g)', 'DChg. Spec. Cap.(mAh/g)'
 
+    Excel files (.xlsx) are supported and expected to have:
+      - Row 1: File/sample name (ignored)
+      - Row 2: Column headers (Chinese or English)
+      - Row 3+: Data
+
     Args:
-        fname: Path to the CSV file.
+        fname: Path to the CSV or Excel file.
         prefer_specific: If True, will use specific capacities (mAh g⁻¹) if available; otherwise
                          uses absolute capacities (mAh) when present.
 
@@ -612,26 +664,54 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         discharge_mask: boolean mask indicating discharging segments (inverse of charge_mask)
     """
     import csv
-
-    # Read first two rows to compose header
-    with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
-        r = csv.reader(f)
-        try:
-            r1 = next(r)
-            r2 = next(r)
-        except StopIteration:
-            raise ValueError(f"CSV '{fname}' is empty or missing header rows")
-        # If second line begins with an empty first cell, treat it as a continuation of header.
-        if len(r2) > 0 and (r2[0] == '' or str(r2[0]).strip() == ''):
-            header = [c.strip() for c in r1] + [c.strip() for c in r2[1:]]
-            rows = list(r)
-        else:
-            # Single-line header: r2 is the first data row; include it back in rows
-            header = [c.strip() for c in r1]
-            rows = [r2] + list(r)
+    import os
+    
+    # Check if file is Excel
+    _, ext = os.path.splitext(fname)
+    if ext.lower() in ['.xlsx', '.xls']:
+        # Read Excel file
+        header, rows = read_excel_to_csv_like(fname)
+    else:
+        # Read first two rows to compose header from CSV
+        with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
+            r = csv.reader(f)
+            try:
+                r1 = next(r)
+                r2 = next(r)
+            except StopIteration:
+                raise ValueError(f"CSV '{fname}' is empty or missing header rows")
+            # If second line begins with an empty first cell, treat it as a continuation of header.
+            if len(r2) > 0 and (r2[0] == '' or str(r2[0]).strip() == ''):
+                header = [c.strip() for c in r1] + [c.strip() for c in r2[1:]]
+                rows = list(r)
+            else:
+                # Single-line header: r2 is the first data row; include it back in rows
+                header = [c.strip() for c in r1]
+                rows = [r2] + list(r)
 
     # Build fast name->index map (case-insensitive match on exact header text)
     name_to_idx = {h: i for i, h in enumerate(header)}
+    
+    # Chinese to English column name mappings
+    chinese_mappings = {
+        '循环序号': 'Cycle Index',
+        '充电比容量/mAh/g': 'Chg. Spec. Cap.(mAh/g)',
+        '放电比容量/mAh/g': 'DChg. Spec. Cap.(mAh/g)',
+        '充电容量/mAh': 'Chg. Cap.(mAh)',
+        '放电容量/mAh': 'DChg. Cap.(mAh)',
+        '效率/%': 'Efficiency(%)',
+        '充电中压/V': 'Voltage(V)',
+        '放电中压/V': 'Voltage(V)',
+        '充电均压/V': 'Voltage(V)',
+        '放电均压/V': 'Voltage(V)',
+    }
+    
+    # Add Chinese mappings to name_to_idx
+    for i, h in enumerate(header):
+        if h in chinese_mappings:
+            eng_name = chinese_mappings[h]
+            if eng_name not in name_to_idx:
+                name_to_idx[eng_name] = i
 
     def _find(name: str):
         return name_to_idx.get(name, None)
@@ -641,9 +721,7 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     i_idx = _find('Current(mA)')
     cyc_idx = _find('Cycle Index')
     step_type_idx = _find('Step Type')  # Optional: explicitly indicates charge/discharge
-    if v_idx is None or i_idx is None:
-        raise ValueError("CSV missing required 'Voltage(V)' or 'Current(mA)' columns")
-
+    
     # Capacity columns (absolute preferred unless prefer_specific True)
     cap_abs_idx = _find('Capacity(mAh)')
     cap_abs_chg_idx = _find('Chg. Cap.(mAh)')
@@ -651,6 +729,13 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     cap_spec_idx = _find('Spec. Cap.(mAh/g)')
     cap_spec_chg_idx = _find('Chg. Spec. Cap.(mAh/g)')
     cap_spec_dch_idx = _find('DChg. Spec. Cap.(mAh/g)')
+    
+    # Check if this is a summary file (has capacity columns but no voltage/current)
+    has_capacity_cols = any([cap_abs_chg_idx, cap_abs_dch_idx, cap_spec_chg_idx, cap_spec_dch_idx])
+    is_summary_file = has_capacity_cols and (v_idx is None or i_idx is None)
+    
+    if not is_summary_file and (v_idx is None or i_idx is None):
+        raise ValueError("CSV missing required 'Voltage(V)' or 'Current(mA)' columns")
 
     use_specific = False
     # Decide which flavor to use
@@ -664,16 +749,72 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
 
     # Prepare arrays
     n = len(rows)
-    voltage = np.empty(n, dtype=float)
-    current = np.empty(n, dtype=float)
-    cycles = np.ones(n, dtype=int)
-    cap_x = np.full(n, np.nan, dtype=float)
-
+    
     def _to_float(val: str) -> float:
         try:
             return float(val.strip()) if isinstance(val, str) else float(val)
         except Exception:
             return np.nan
+    
+    # Special handling for summary files (charge/discharge capacities per cycle, no point-by-point data)
+    if is_summary_file:
+        # For summary files, create synthetic points: one charge point and one discharge point per cycle
+        voltage = []
+        current = []
+        cycles = []
+        cap_x = []
+        is_charge_list = []
+        
+        for k, row in enumerate(rows):
+            if len(row) < len(header):
+                row = row + [''] * (len(header) - len(row))
+            
+            # Get cycle number
+            cycle_num = 1
+            if cyc_idx is not None:
+                cval = _to_float(row[cyc_idx])
+                cycle_num = int(cval) if not np.isnan(cval) and cval > 0 else 1
+            
+            # Get charge and discharge capacities
+            if use_specific:
+                cap_chg = _to_float(row[cap_spec_chg_idx]) if cap_spec_chg_idx is not None else 0
+                cap_dch = _to_float(row[cap_spec_dch_idx]) if cap_spec_dch_idx is not None else 0
+            else:
+                cap_chg = _to_float(row[cap_abs_chg_idx]) if cap_abs_chg_idx is not None else 0
+                cap_dch = _to_float(row[cap_abs_dch_idx]) if cap_abs_dch_idx is not None else 0
+            
+            # Create charge point
+            if cap_chg > 0 and not np.isnan(cap_chg):
+                voltage.append(3.5)  # Synthetic voltage
+                current.append(0.1)  # Synthetic current
+                cycles.append(cycle_num)
+                cap_x.append(cap_chg)
+                is_charge_list.append(True)
+            
+            # Create discharge point
+            if cap_dch > 0 and not np.isnan(cap_dch):
+                voltage.append(2.5)  # Synthetic voltage
+                current.append(-0.1)  # Synthetic current
+                cycles.append(cycle_num)
+                cap_x.append(cap_dch)
+                is_charge_list.append(False)
+        
+        voltage = np.array(voltage, dtype=float)
+        current = np.array(current, dtype=float)
+        cycles = np.array(cycles, dtype=int)
+        cap_x = np.array(cap_x, dtype=float)
+        is_charge = np.array(is_charge_list, dtype=bool)
+        
+        charge_mask = is_charge
+        discharge_mask = ~is_charge
+        
+        return (cap_x, voltage, cycles, charge_mask, discharge_mask)
+    
+    # Normal processing for point-by-point data
+    voltage = np.empty(n, dtype=float)
+    current = np.empty(n, dtype=float)
+    cycles = np.ones(n, dtype=int)
+    cap_x = np.full(n, np.nan, dtype=float)
 
     for k, row in enumerate(rows):
         # Ensure row has enough columns
@@ -883,7 +1024,63 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
             cyc = (r // 2) + 1
             inferred_cycles[a:b] = cyc
         cycles = inferred_cycles
-    # else: keep the cycles array as-is (already populated from CSV 'Cycle Index' column)
+    else:
+        # Cycle Index column exists, but some cyclers (Neware) number charge and discharge
+        # as separate cycles. Detect and merge half-cycles into proper full cycles.
+        # A proper cycle should have both charge and discharge. If consecutive cycle numbers
+        # each contain only one type, merge them.
+        unique_cycles = np.unique(cycles)
+        if len(unique_cycles) > 1:
+            # Check each cycle to see if it's a half-cycle (only charge OR only discharge)
+            cycle_map = {}  # Maps old cycle number to new cycle number
+            new_cycle_num = 1
+            pending_half_cycle = None
+            
+            for cyc_num in unique_cycles:
+                mask = (cycles == cyc_num)
+                has_charge = np.any(charge_mask[mask])
+                has_discharge = np.any(discharge_mask[mask])
+                
+                if has_charge and has_discharge:
+                    # Full cycle - assign new cycle number
+                    cycle_map[cyc_num] = new_cycle_num
+                    new_cycle_num += 1
+                    pending_half_cycle = None
+                elif has_charge and not has_discharge:
+                    # Charge-only half-cycle
+                    if pending_half_cycle is None:
+                        # Start of a new full cycle
+                        pending_half_cycle = new_cycle_num
+                        cycle_map[cyc_num] = new_cycle_num
+                    else:
+                        # This shouldn't happen (two charge half-cycles in a row)
+                        cycle_map[cyc_num] = new_cycle_num
+                        new_cycle_num += 1
+                        pending_half_cycle = None
+                elif has_discharge and not has_charge:
+                    # Discharge-only half-cycle
+                    if pending_half_cycle is not None:
+                        # Complete the pending full cycle
+                        cycle_map[cyc_num] = pending_half_cycle
+                        new_cycle_num += 1
+                        pending_half_cycle = None
+                    else:
+                        # Discharge without preceding charge (unusual)
+                        cycle_map[cyc_num] = new_cycle_num
+                        new_cycle_num += 1
+                else:
+                    # Neither charge nor discharge (e.g., rest only) - keep with current cycle
+                    if pending_half_cycle is not None:
+                        cycle_map[cyc_num] = pending_half_cycle
+                    else:
+                        cycle_map[cyc_num] = new_cycle_num
+                        new_cycle_num += 1
+            
+            # Apply the mapping to renumber cycles
+            new_cycles = np.zeros_like(cycles)
+            for old_cyc, new_cyc in cycle_map.items():
+                new_cycles[cycles == old_cyc] = new_cyc
+            cycles = new_cycles
 
     return cap_x, voltage, cycles, charge_mask, discharge_mask
 

@@ -142,8 +142,51 @@ batplot file1.chik file2.chik --k2chik --stack --interactive
 
 ### Supported Inputs
 
-- Neware `.csv` (GC, dQdV, CPC)
+- Neware `.csv` (GC, dQdV, CPC - both raw data and summary format)
 - Biologic `.mpt` (GC, CV, CPC)
+- **Landt/Lanhe `.xlsx` (CPC)** - Chinese battery tester Excel files
+- **Summary CSV format (CPC)** - Cycle-level capacity data
+
+#### Summary Format Support for CPC Mode
+
+Batplot supports **cycle-level summary files** for CPC plotting in both **CSV** and **Excel (`.xlsx`)** formats. These files contain one row per cycle with charge/discharge capacity columns, rather than point-by-point data.
+
+**Supported formats:**
+- **CSV**: Standard comma-separated values
+- **Excel (`.xlsx`)**: Landt/Lanhe (蓝电/蓝河) battery tester files with Chinese headers
+
+**Expected structure for CSV:**
+- **Row 1**: Column headers (English)
+- **Row 2 onwards**: Cycle data (one row per cycle)
+
+**Expected structure for Excel:**
+- **Row 1**: File/sample name (e.g., "RATE-KB-2HAOJIPIAN_033_3") - automatically ignored
+- **Row 2**: Column headers (Chinese or English)
+- **Row 3 onwards**: Cycle data (one row per cycle)
+
+**Required columns for summary format:**
+- `Cycle Index` (or 循环序号) - Cycle number
+- `Chg. Spec. Cap.(mAh/g)` (or 充电比容量/mAh/g) - Charge specific capacity
+- `DChg. Spec. Cap.(mAh/g)` (or 放电比容量/mAh/g) - Discharge specific capacity
+- **Optional**: Efficiency column (`Chg.-DChg. Eff(%)` or 效率/%)
+
+**Note:** Voltage and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
+
+**Example usage:**
+```bash
+# Single Excel file (Landt/Lanhe)
+batplot --cpc battery_test.xlsx --interactive
+
+# Single CSV summary file
+batplot --cpc cycle_summary.csv --interactive
+
+# Multiple summary files with color control
+batplot --cpc sample1.xlsx sample2.csv sample3.xlsx --interactive
+
+# Mix summary files with raw data files
+batplot --cpc summary.csv summary.xlsx neware_raw.csv biologic.mpt --mass 5.4 --interactive
+# Note: --mass only needed for .mpt files
+```
 
 ### Plotting Modes
 

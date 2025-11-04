@@ -538,6 +538,11 @@ def batplot_main() -> int:
                 # Transparent background for SVG exports
                 _, _ext = _os.path.splitext(outname)
                 if _ext.lower() == '.svg':
+                    # Fix for Affinity Designer/Photo compatibility issues
+                    # Use 'none' to embed fonts as text (not paths) - prevents phantom labels
+                    # Set hashsalt to empty to avoid duplicate text elements
+                    _plt.rcParams['svg.fonttype'] = 'none'
+                    _plt.rcParams['svg.hashsalt'] = None
                     try:
                         _fig_fc = fig.get_facecolor()
                     except Exception:
@@ -625,22 +630,25 @@ def batplot_main() -> int:
         import numpy as _np
 
         if len(args.files) < 1:
-            print("CPC mode: provide at least one file (.csv or .mpt).")
+            print("CPC mode: provide at least one file (.csv, .xlsx, or .mpt).")
             exit(1)
         
         # Process multiple files
         file_data = []  # List of dicts with file info and data
-        # Use Viridis colormap for capacity (charge/discharge) - spreads from purple to yellow
-        # Use Plasma colormap for efficiency - spreads from purple to yellow-pink
+        # Use warm colors (reds/oranges) for capacity (charge/discharge)
+        # Use cool colors (blues/cyans) for efficiency for clear visual distinction
         import matplotlib.cm as cm
         import matplotlib.colors as mcolors
         n_files = len(args.files)
-        viridis = cm.get_cmap('viridis', n_files)
-        plasma = cm.get_cmap('plasma', n_files)
         
-        # Generate colors from colormaps
-        capacity_colors = [mcolors.rgb2hex(viridis(i)[:3]) for i in range(n_files)]
-        efficiency_colors = [mcolors.rgb2hex(plasma(i)[:3]) for i in range(n_files)]
+        # Warm colors for capacity: red to orange spectrum
+        warm_cmap = cm.get_cmap('YlOrRd', n_files + 2)  # +2 to skip very light yellows
+        # Cool colors for efficiency: blue to cyan spectrum  
+        cool_cmap = cm.get_cmap('cool', n_files)
+        
+        # Generate colors from colormaps, skip lightest colors for capacity
+        capacity_colors = [mcolors.rgb2hex(warm_cmap(i + 2)[:3]) for i in range(n_files)]
+        efficiency_colors = [mcolors.rgb2hex(cool_cmap(i)[:3]) for i in range(n_files)]
         
         for file_idx, ec_file in enumerate(args.files):
             if not _os.path.isfile(ec_file):
@@ -651,7 +659,7 @@ def batplot_main() -> int:
             file_basename = _os.path.basename(ec_file)
             
             try:
-                if ext == '.csv':
+                if ext in ['.csv', '.xlsx', '.xls']:
                     cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
                     cyc = _np.array(cycles, dtype=int)
                     unique_cycles = _np.unique(cyc)
@@ -683,7 +691,7 @@ def batplot_main() -> int:
                         continue
                     cyc_nums, cap_charge, cap_discharge, eff = read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg)
                 else:
-                    print(f"Skipped {file_basename}: unsupported format (must be .csv or .mpt)")
+                    print(f"Skipped {file_basename}: unsupported format (must be .csv, .xlsx, or .mpt)")
                     continue
                 
                 # Assign colors: distinct hue for each file
@@ -740,10 +748,14 @@ def batplot_main() -> int:
                 label_eff = f'{label} (Eff)'
             
             # Use slightly different shades for charge/discharge from same file
-            from matplotlib.colors import to_rgb
+            from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
             rgb = to_rgb(color)
-            # Discharge: darker shade of the warm color
-            discharge_color = tuple(max(0, c * 0.7) for c in rgb)
+            # Discharge: shift hue slightly and reduce brightness for clear distinction
+            hsv = rgb_to_hsv(rgb)
+            h, s, v = hsv
+            h_new = (h - 0.05) % 1.0  # Shift hue slightly (more red/brown)
+            v_new = max(0.3, v * 0.75)  # Darker but not too dark
+            discharge_color = hsv_to_rgb([h_new, s, v_new])
             
             sc_charge = ax.scatter(cyc_nums, cap_charge, color=color, label=label_chg, 
                                   s=32, zorder=3, alpha=0.8, marker='o')

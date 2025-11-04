@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.4.2"
+version = "1.4.9"
 description = "Interactive plotting for XRD, PDF, and XAS data (.xye, .xy, .qye, .dat, .csv, .gr, .nor, .chik, .chir)"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
@@ -14,7 +14,8 @@ requires-python = ">=3.7"
 dependencies = [
     "numpy",
     "matplotlib",
-    "rich>=10.0.0"
+    "rich>=10.0.0",
+    "openpyxl>=3.0.0"
 ]
 license = { file = "LICENSE" }
 classifiers = [

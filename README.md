@@ -22,7 +22,7 @@ pip install batplot
 
 ## Quick Start
 
-### XRD / PDF / XAS
+### XRD / PDF / XAS and much more
 
 ```bash
 # Single diffraction pattern in 2theta
@@ -96,7 +96,7 @@ batplot --operando --interactive
 
 | Type | Formats |
 |------|---------|
-| **Electrochemistry** | `.csv` (Neware), `.mpt` (Biologic) |
+| **Electrochemistry** | `.csv` (Neware raw data; summary format for CPC), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe summary for CPC) |
 | **XRD / PDF** | `.xye`, `.xy`, `.qye`, `.dat` |
 | **XAS** | `.nor`, `.chik`, `.chir` |
 | **Others** | `user defined` (plot first two columns as x and y) |
@@ -131,4 +131,4 @@ University of Oslo
 
 **GitHub**: https://github.com/tiandai-chem/batplot
 
-**Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback
+**Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback. If you are not from UiO, send an email to sympa@kjemi.uio.no with the exact subject line with your name: "subscribe batplot-lab@kjemi.uio.no your-name"

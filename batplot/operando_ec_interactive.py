@@ -924,7 +924,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         if ions_abs is not None:
                             setattr(ec_ax, '_ions_abs', np.asarray(ions_abs, float))
                         # Minimal re-install of ions formatter similar to ey handler
-                        from matplotlib.ticker import FuncFormatter
                         t = np.asarray(getattr(ec_ax, '_ec_time_h', []), float)
                         def _fmt_ions(y, pos):
                             try:
@@ -3137,7 +3136,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                             
                             # Compute and apply ions formatter
                             import numpy as np
-                            from matplotlib.ticker import FuncFormatter, MaxNLocator
                             
                             time_h = getattr(ec_ax, '_ec_time_h', None)
                             current_mA = getattr(ec_ax, '_ec_current_mA', None)

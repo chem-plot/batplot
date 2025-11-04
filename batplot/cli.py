@@ -17,6 +17,15 @@ def main(argv: Optional[list] = None) -> int:
 	Returns:
 		Exit code (0 for success, non-zero for error)
 	"""
+	# Check for updates (non-blocking, cached daily)
+	try:
+		from . import __version__
+		from .version_check import check_for_updates
+		check_for_updates(__version__)
+	except Exception:
+		# Silently ignore any errors in version checking
+		pass
+	
 	# Import here to avoid side effects at module import time
 	if argv is not None:
 		# Temporarily replace sys.argv for argument parsing
