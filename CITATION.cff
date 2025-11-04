@@ -1,0 +1,9 @@
+cff-version: 1.4.9
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: Dai
+  given-names: Tian
+orcid: https://orcid.org/0000-0002-0385-3274
+title:tiandai-chem/batplot: batplot
+version: v1.4.9
+date-released: 2025-11-04
