@@ -19,6 +19,7 @@ import json
 import os
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.ticker import FuncFormatter, MaxNLocator, AutoMinorLocator, NullFormatter
 import numpy as np
 
@@ -27,6 +28,78 @@ from .ui import position_top_xlabel as _ui_position_top_xlabel
 from .ui import position_right_ylabel as _ui_position_right_ylabel
 from .ui import position_bottom_xlabel as _ui_position_bottom_xlabel
 from .ui import position_left_ylabel as _ui_position_left_ylabel
+
+# Import color utilities for palette preview and user colors
+from .color_utils import (
+    palette_preview,
+    get_user_color_list,
+    color_block,
+    resolve_color_token,
+    manage_user_colors,
+)
+
+
+def _axis_tick_width(axis_obj, which: str = 'major'):
+    """Return tick line width from axis tick params or rc defaults."""
+    try:
+        tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+        width = tick_kw.get('width')
+        if width is None:
+            axis_name = getattr(axis_obj, 'axis_name', 'x')
+            rc_key = f"{axis_name}tick.{which}.width"
+            width = plt.rcParams.get(rc_key)
+        if width is not None:
+            return float(width)
+    except Exception:
+        pass
+    return None
+
+
+_CUSTOM_CMAPS = {
+    'batlow': ['#02121d', '#053061', '#2b7a8b', '#7cbf7b', '#c7e6a2', '#f9f0c3'],
+    'batlowk': ['#150b2d', '#3d2e63', '#5f4f85', '#81718f', '#a6938e', '#cbb58f', '#efd78d'],
+    'batloww': ['#0a1427', '#17385d', '#295f8d', '#4f8fa3', '#7db7a1', '#b2d39a', '#e3e6a8']
+}
+
+
+def _ensure_operando_colormap(name: str) -> bool:
+    """Ensure the requested colormap is available (register cmcrameri palettes if needed)."""
+    if not name:
+        return False
+    base = name[:-2] if name.lower().endswith('_r') else name
+    if base in plt.colormaps():
+        return True
+    try:
+        import cmcrameri.cm as cmc
+        cmap_obj = None
+        if hasattr(cmc, base):
+            cmap_obj = getattr(cmc, base)
+        elif hasattr(cmc, base.lower()):
+            cmap_obj = getattr(cmc, base.lower())
+        if cmap_obj is not None:
+            try:
+                plt.register_cmap(name=base, cmap=cmap_obj)
+            except ValueError:
+                pass
+            return True
+    except Exception:
+        pass
+    custom = _CUSTOM_CMAPS.get(base.lower())
+    if custom:
+        try:
+            cmap_obj = LinearSegmentedColormap.from_list(base.lower(), custom, N=256)
+            try:
+                plt.register_cmap(name=base, cmap=cmap_obj)
+            except ValueError:
+                pass
+            return True
+        except Exception:
+            return False
+    try:
+        plt.get_cmap(base)
+        return True
+    except Exception:
+        return False
 
 
 def _colorize_menu(text):
@@ -148,6 +221,127 @@ def _get_geometry_snapshot(ax, ec_ax) -> Dict:
     return snapshot
 
 
+def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='normal'):
+    """Draw a custom colorbar in the given axes using a plot frame.
+    
+    This replaces matplotlib's Colorbar with a custom implementation that:
+    - Uses a fixed width (doesn't change with height)
+    - Responds to font size and font family changes
+    - Can be toggled between normal tick labels and High/Low labels
+    
+    Args:
+        cbar_ax: Axes object where colorbar will be drawn
+        im: AxesImage object (the contour/heatmap) to get colormap and limits from
+        label: Label text for the colorbar
+        label_mode: 'normal' for tick labels, 'highlow' for High/Low labels
+    """
+    # Clear the axes
+    cbar_ax.clear()
+    
+    # Get colormap and limits from the image
+    cmap = im.get_cmap()
+    clim = im.get_clim()
+    vmin, vmax = clim
+    
+    # Get font properties
+    fontsize = plt.rcParams.get('font.size', 16)
+    fontfamily = plt.rcParams.get('font.family', ['sans-serif'])
+    if isinstance(fontfamily, list):
+        fontfamily = fontfamily[0] if fontfamily else 'sans-serif'
+    
+    # Create gradient array for colorbar
+    n_steps = 256
+    if vmax < vmin:
+        vmin, vmax = vmax, vmin
+    gradient = np.linspace(vmin, vmax, n_steps).reshape(n_steps, 1)
+    fig = cbar_ax.figure
+    for attr in ('_cbar_high_text', '_cbar_low_text'):
+        if hasattr(fig, attr):
+            try:
+                getattr(fig, attr).remove()
+            except Exception:
+                pass
+            try:
+                delattr(fig, attr)
+            except Exception:
+                pass
+    
+    # Draw the colorbar as an image
+    cbar_ax.imshow(gradient, aspect='auto', cmap=cmap, extent=[0, 1, vmin, vmax], 
+                   interpolation='nearest', origin='lower')
+    
+    # Set up axes properties
+    cbar_ax.set_xlim(0, 1)
+    cbar_ax.set_ylim(vmin, vmax)
+    cbar_ax.set_xticks([])
+    cbar_ax.yaxis.set_ticks_position('left')
+    cbar_ax.yaxis.set_label_position('left')
+    
+    # Configure ticks and labels based on mode
+    if label_mode == 'highlow':
+        # High/Low mode: no tick labels, add text labels
+        cbar_ax.set_yticks([])
+        cbar_ax.set_yticklabels([])
+        
+        # Add High and Low text labels
+        # Store references for later removal
+        # Position labels with small vertical padding (original horizontal position)
+        # Use small offset in transAxes coordinates (0.02 = 2% of axes height)
+        v_offset = 0.02
+        high_text = cbar_ax.text(0.5, 1.0 + v_offset, 'High', ha='center', va='bottom', 
+                                 transform=cbar_ax.transAxes, fontsize=fontsize,
+                                 fontfamily=fontfamily)
+        low_text = cbar_ax.text(0.5, 0.0 - v_offset, 'Low', ha='center', va='top',
+                               transform=cbar_ax.transAxes, fontsize=fontsize,
+                               fontfamily=fontfamily)
+        # Store references on the figure for later access
+        fig._cbar_high_text = high_text
+        fig._cbar_low_text = low_text
+    else:
+        # Normal mode: show tick labels
+        # Use MaxNLocator to get reasonable number of ticks
+        cbar_ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+        cbar_ax.tick_params(axis='y', labelsize=fontsize, left=True, labelleft=True)
+        # Apply font family to tick labels
+        for tick_label in cbar_ax.get_yticklabels():
+            tick_label.set_fontfamily(fontfamily)
+    
+    # Set label (ensure it's a string, not a Text object)
+    label_text = str(label) if label is not None else 'Intensity'
+    cbar_ax.set_ylabel(label_text, fontsize=fontsize, fontfamily=fontfamily, rotation=90, 
+                      va='center', ha='center', labelpad=10)
+    
+    # Store reference to image for updates
+    cbar_ax._colorbar_im = im
+    # Store label as string to avoid Text object issues
+    cbar_ax._colorbar_label = label_text
+    cbar_ax._colorbar_label_mode = label_mode
+
+
+def _update_custom_colorbar(cbar_ax, im=None, label=None, label_mode=None):
+    """Update the custom colorbar when colormap or limits change.
+    
+    Args:
+        cbar_ax: Axes object containing the colorbar
+        im: Optional AxesImage object (if None, uses stored reference)
+        label: Optional label text (if None, uses stored label)
+        label_mode: Optional label mode (if None, uses stored mode)
+    """
+    if im is None:
+        im = getattr(cbar_ax, '_colorbar_im', None)
+        if im is None:
+            return
+    
+    if label is None:
+        label = getattr(cbar_ax, '_colorbar_label', 'Intensity')
+    
+    if label_mode is None:
+        label_mode = getattr(cbar_ax, '_colorbar_label_mode', 'normal')
+    
+    # Redraw the colorbar
+    _draw_custom_colorbar(cbar_ax, im, label, label_mode)
+
+
 def _ensure_fixed_params(fig, ax, cbar_ax, ec_ax):
     """Initialize and return fixed geometry parameters in inches.
     
@@ -178,7 +372,7 @@ def _ensure_fixed_params(fig, ax, cbar_ax, ec_ax):
                               (ax_x0 - (cb_x0 + cb_width_frac)) * fig_width_in)
     axes_width_in = getattr(ax, '_fixed_ax_w_in', ax_width_frac * fig_width_in)
     axes_height_in = getattr(ax, '_fixed_ax_h_in', ax_height_frac * fig_height_in)
-    
+
     if ec_ax is not None:
         ec_x0, ec_y0, ec_width_frac, ec_height_frac = ec_ax.get_position().bounds
         ec_gap_in = getattr(ec_ax, '_fixed_ec_gap_in', 
@@ -252,17 +446,24 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
     if ec_ax is not None:
         ec_x0 = operando_x0 + ax_width_frac + ec_gap_frac
         ec_ax.set_position([ec_x0, vertical_center, ec_width_frac, ax_height_frac])
-        setattr(ec_ax, '_fixed_ec_gap_in', ec_gap_in)
-        setattr(ec_ax, '_fixed_ec_w_in', ec_width_in)
 
     # Store fixed inch measurements for future use
     setattr(cbar_ax, '_fixed_cb_w_in', colorbar_width_in)
     setattr(cbar_ax, '_fixed_cb_gap_in', colorbar_gap_in)
-    setattr(ec_ax, '_fixed_ec_gap_in', ec_gap_in)
-    setattr(ec_ax, '_fixed_ec_w_in', ec_width_in)
+    if ec_ax is not None:
+        setattr(ec_ax, '_fixed_ec_gap_in', ec_gap_in)
+        setattr(ec_ax, '_fixed_ec_w_in', ec_width_in)
     setattr(ax, '_fixed_ax_w_in', ax_width_in)
     setattr(ax, '_fixed_ax_h_in', ax_height_in)
 
+    # Redraw the colorbar to ensure it's properly displayed
+    try:
+        # Check if custom colorbar is initialized
+        if hasattr(cbar_ax, '_colorbar_im'):
+            _update_custom_colorbar(cbar_ax)
+    except Exception:
+        pass
+    
     # Redraw the canvas
     try:
         fig.canvas.draw()
@@ -270,7 +471,7 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
         fig.canvas.draw_idle()
 
 
-def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
+def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
     """Launch the interactive menu for operando contour plots.
     
     This is the main entry point for the interactive mode. It sets up the initial
@@ -296,7 +497,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
         im: AxesImage object (the contour/heatmap)
         cbar: Colorbar object
         ec_ax: Optional axes for EC curves (None in operando-only mode)
+        file_paths: Optional list of source data file paths; used to suggest
+            reasonable default save locations when exporting figures/session files
     """
+    # Normalize file path list for downstream helpers
+    file_paths = list(file_paths) if file_paths else []
 
     def _renormalize_to_visible():
         """Adjust color scale to match the intensity range of the currently visible region.
@@ -375,7 +580,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     # Update colorbar if available
                     try:
                         if cbar is not None:
-                            cbar.update_normal(im)
+                            _update_custom_colorbar(cbar.ax, im)
                     except Exception:
                         pass
         except Exception:
@@ -404,6 +609,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
             ]
             col3 = [
                 "et: time range",
+                "ex: x range",
                 "ey: y axis type",
                 "er: rename"
             ]
@@ -501,6 +707,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
         ]
         col3 = [
             "et: time range",
+            "ex: x range",
             "ey: y axis type",
             "er: rename",
             
@@ -606,38 +813,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     if right_artist is not None:
                         right_artist.set_size(size)
                 except Exception: pass
-        # colorbar
+        # colorbar - redraw with new font settings
         if cbar is not None:
-            if family:
-                for t in cbar.ax.get_yticklabels():
-                    try: t.set_family(family)
-                    except Exception: pass
-                try: 
-                    # Update the ylabel object directly for consistent sizing
-                    cbar.ax.yaxis.label.set_family(family)
-                except Exception: pass
-                # Update High/Low labels if they exist
-                if hasattr(fig, '_cbar_high_text'):
-                    try: fig._cbar_high_text.set_family(family)
-                    except Exception: pass
-                if hasattr(fig, '_cbar_low_text'):
-                    try: fig._cbar_low_text.set_family(family)
-                    except Exception: pass
-            if size is not None:
-                for t in cbar.ax.get_yticklabels():
-                    try: t.set_size(size)
-                    except Exception: pass
-                try: 
-                    # Update the ylabel object directly to match axis label sizes exactly
-                    cbar.ax.yaxis.label.set_size(size)
-                except Exception: pass
-                # Update High/Low labels if they exist
-                if hasattr(fig, '_cbar_high_text'):
-                    try: fig._cbar_high_text.set_size(size)
-                    except Exception: pass
-                if hasattr(fig, '_cbar_low_text'):
-                    try: fig._cbar_low_text.set_size(size)
-                    except Exception: pass
+            # Redraw the colorbar to apply font changes
+            try:
+                _update_custom_colorbar(cbar.ax, im)
+            except Exception:
+                pass
         
         # Update title distances after font size changes (unified UI positioning functions)
         for a in axes:
@@ -666,6 +848,25 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
 
     # Initialize fixed params
     cb_w_in, cb_gap_in, ec_gap_in, ec_w_in, ax_w_in, ax_h_in = _ensure_fixed_params(fig, ax, cbar.ax, ec_ax)
+    
+    # Adjust colorbar gap once per session (move colorbar to desired position)
+    if not getattr(cbar.ax, '_cb_gap_adjusted', False):
+        try:
+            # Increase gap by 25% to move colorbar further left (away from operando plot)
+            # Adjust the multiplier (currently 1.25) to change spacing:
+            # - < 1.0 = closer to operando (e.g., 0.5 = 50% of original)
+            # - > 1.0 = further from operando (e.g., 1.25 = 125% of original)
+            cb_gap_in = cb_gap_in * 0.75
+            setattr(cbar.ax, '_fixed_cb_gap_in', cb_gap_in)
+            setattr(cbar.ax, '_cb_gap_adjusted', True)
+            _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)
+        except Exception:
+            pass
+    
+    # Initialize custom colorbar (replaces matplotlib's colorbar)
+    cbar_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
+    cbar_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+    _draw_custom_colorbar(cbar.ax, im, cbar_label, cbar_label_mode)
     # Decrease distance between operando and EC plots once per session
     if not getattr(ec_ax, '_ec_gap_adjusted', False):
         try:
@@ -1326,10 +1527,21 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
         if cmd == 'e':
             try:
                 import os
-                from .utils import list_files_in_subdirectory, get_organized_path, _confirm_overwrite as _co
+                from .utils import (
+                    list_files_in_subdirectory,
+                    get_organized_path,
+                    _confirm_overwrite as _co,
+                    choose_save_path,
+                )
+
+                # Choose base path (terminal cwd vs file directories)
+                base_path = choose_save_path(file_paths, purpose="figure export")
+                if not base_path:
+                    print_menu(); continue
+
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
-                file_list = list_files_in_subdirectory(fig_extensions, 'figure')
+                file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
                 files = [f[0] for f in file_list]
                 if files:
                     print("Existing figure files in Figures/:")
@@ -1361,7 +1573,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     if os.path.isabs(fname):
                         target = fname
                     else:
-                        target = get_organized_path(fname, 'figure')
+                        target = get_organized_path(fname, 'figure', base_path=base_path)
                 
                 if not already_confirmed and os.path.exists(target):
                     target = _co(target)
@@ -1417,7 +1629,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
             try:
                 if ec_ax is not None:
                     # Dual-panel mode: toggle both colorbar and EC, or change colorbar labels
-                    print("Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar labels, q=cancel")
+                    print("Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, q=cancel")
                     choice = input("v> ").strip().lower()
                     if choice == '1':
                         # Toggle colorbar
@@ -1440,50 +1652,33 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     elif choice == '4':
                         # Toggle colorbar label mode: normal ticks vs High/Low
                         current_mode = getattr(fig, '_colorbar_label_mode', 'normal')
-                        if current_mode == 'normal':
-                            # Switch to High/Low mode
-                            # Hide tick labels
-                            cbar.ax.yaxis.set_ticklabels([])
-                            # Add High and Low text labels
-                            # Remove existing High/Low labels if any
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                            # Get current font settings
-                            font_size = plt.rcParams.get('font.size', 10)
-                            font_family = plt.rcParams.get('font.family', ['sans-serif'])
-                            # Add new labels outside the colorbar (above and below)
-                            fig._cbar_high_text = cbar.ax.text(0.5, 1.02, 'High', ha='center', va='bottom',
-                                                                transform=cbar.ax.transAxes,
-                                                                fontsize=font_size, fontfamily=font_family)
-                            fig._cbar_low_text = cbar.ax.text(0.5, -0.02, 'Low', ha='center', va='top',
-                                                               transform=cbar.ax.transAxes,
-                                                               fontsize=font_size, fontfamily=font_family)
-                            fig._colorbar_label_mode = 'highlow'
-                            print("Colorbar labels: High/Low mode")
+                        new_mode = 'highlow' if current_mode == 'normal' else 'normal'
+                        fig._colorbar_label_mode = new_mode
+                        # Redraw colorbar with new label mode
+                        try:
+                            _update_custom_colorbar(cbar.ax, im, label_mode=new_mode)
+                        except Exception:
+                            pass
+                        print(f"Colorbar labels: {'High/Low mode' if new_mode == 'highlow' else 'Normal mode'}")
+                    elif choice == '5':
+                        # Change colorbar label text
+                        current_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
+                        print(f"Current colorbar label: {current_label}")
+                        new_label = input("New colorbar label (blank to keep): ").strip()
+                        if new_label:
+                            cbar.ax._colorbar_label = new_label
+                            try:
+                                _update_custom_colorbar(cbar.ax, im, label=new_label)
+                            except Exception:
+                                pass
+                            print(f"Colorbar label set to: {new_label}")
                         else:
-                            # Switch back to normal tick labels
-                            cbar.ax.yaxis.set_ticklabels([])  # Reset to auto
-                            cbar.ax.yaxis.set_major_formatter(plt.ScalarFormatter())
-                            # Remove High/Low labels
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                                delattr(fig, '_cbar_high_text')
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                                delattr(fig, '_cbar_low_text')
-                            fig._colorbar_label_mode = 'normal'
-                            print("Colorbar labels: Normal mode")
+                            print("Label unchanged")
                     elif choice != 'q':
                         print("Invalid choice")
                 else:
                     # Operando-only mode: toggle colorbar or change label mode
-                    print("Toggle: 1=colorbar visibility, 2=colorbar labels, q=cancel")
+                    print("Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, q=cancel")
                     choice = input("v> ").strip().lower()
                     if choice == '1':
                         cb_vis = cbar.ax.get_visible()
@@ -1492,42 +1687,28 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     elif choice == '2':
                         # Toggle colorbar label mode
                         current_mode = getattr(fig, '_colorbar_label_mode', 'normal')
-                        if current_mode == 'normal':
-                            # Switch to High/Low mode
-                            cbar.ax.yaxis.set_ticklabels([])
-                            # Remove existing High/Low labels if any
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                            # Get current font settings
-                            font_size = plt.rcParams.get('font.size', 10)
-                            font_family = plt.rcParams.get('font.family', ['sans-serif'])
-                            # Add new labels outside the colorbar (above and below)
-                            fig._cbar_high_text = cbar.ax.text(0.5, 1.02, 'High', ha='center', va='bottom',
-                                                                transform=cbar.ax.transAxes,
-                                                                fontsize=font_size, fontfamily=font_family)
-                            fig._cbar_low_text = cbar.ax.text(0.5, -0.02, 'Low', ha='center', va='top',
-                                                               transform=cbar.ax.transAxes,
-                                                               fontsize=font_size, fontfamily=font_family)
-                            fig._colorbar_label_mode = 'highlow'
-                            print("Colorbar labels: High/Low mode")
+                        new_mode = 'highlow' if current_mode == 'normal' else 'normal'
+                        fig._colorbar_label_mode = new_mode
+                        # Redraw colorbar with new label mode
+                        try:
+                            _update_custom_colorbar(cbar.ax, im, label_mode=new_mode)
+                        except Exception:
+                            pass
+                        print(f"Colorbar labels: {'High/Low mode' if new_mode == 'highlow' else 'Normal mode'}")
+                    elif choice == '3':
+                        # Change colorbar label text
+                        current_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
+                        print(f"Current colorbar label: {current_label}")
+                        new_label = input("New colorbar label (blank to keep): ").strip()
+                        if new_label:
+                            cbar.ax._colorbar_label = new_label
+                            try:
+                                _update_custom_colorbar(cbar.ax, im, label=new_label)
+                            except Exception:
+                                pass
+                            print(f"Colorbar label set to: {new_label}")
                         else:
-                            # Switch back to normal
-                            cbar.ax.yaxis.set_ticklabels([])
-                            cbar.ax.yaxis.set_major_formatter(plt.ScalarFormatter())
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                                delattr(fig, '_cbar_high_text')
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                                delattr(fig, '_cbar_low_text')
-                            fig._colorbar_label_mode = 'normal'
-                            print("Colorbar labels: Normal mode")
+                            print("Label unchanged")
                     elif choice != 'q':
                         print("Invalid choice")
                 fig.canvas.draw_idle()
@@ -1540,7 +1721,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
             try:
                 from .session import dump_operando_session
                 import os
-                folder = os.getcwd()
+                from .utils import choose_save_path
+
+                folder = choose_save_path(file_paths, purpose="operando session save")
+                if not folder:
+                    print_menu(); continue
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -2272,7 +2457,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                             im.set_clim(auto_lo, auto_hi)
                             try:
                                 if cbar is not None:
-                                    cbar.update_normal(im)
+                                    _update_custom_colorbar(cbar.ax, im)
                             except Exception:
                                 pass
                             fig.canvas.draw_idle()
@@ -2284,7 +2469,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         im.set_clim(lo, hi)
                         try:
                             if cbar is not None:
-                                cbar.update_normal(im)
+                                _update_custom_colorbar(cbar.ax, im)
                         except Exception:
                             pass
                         fig.canvas.draw_idle()
@@ -2330,34 +2515,44 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
             print_menu()
         elif cmd == 'oc':
             # Change operando colormap (perceptually uniform suggestions)
-            available = list(plt.colormaps())
-            base = ['viridis', 'plasma', 'inferno', 'magma', 'cividis']
-            extras = []
-            for name in ('turbo', 'batlow', 'batlowK'):
-                if name in available:
-                    extras.append(name)
+            def _refresh_available():
+                return set(name.lower() for name in plt.colormaps())
+            available = _refresh_available()
+            optional = []
+            for extra in ('turbo', 'batlow', 'batlowK', 'batlowW'):
+                if extra == 'turbo':
+                    if extra in plt.colormaps():
+                        optional.append(extra)
+                else:
+                    _ensure_operando_colormap(extra)
+                    available = _refresh_available()
+                    optional.append(extra)
             print("Recommended colormaps for scientific publications:")
-            print("  1. viridis    - Perceptually uniform (blue→yellow), colorblind-friendly")
-            print("  2. plasma     - Perceptually uniform (purple→yellow), high contrast")
-            print("  3. inferno    - Perceptually uniform (black→yellow), good for dark backgrounds")
-            print("  4. cividis    - Perceptually uniform, optimized for color vision deficiency")
-            print("  5. magma      - Perceptually uniform (black→white), excellent for grayscale")
-            print("\nOther available: " + ", ".join(base + extras))
+            rec_palettes = [
+                ("viridis", "Perceptually uniform (blue→yellow), colorblind-friendly"),
+                ("plasma", "Perceptually uniform (purple→yellow), high contrast"),
+                ("inferno", "Perceptually uniform (black→yellow), good for dark backgrounds"),
+                ("cividis", "Perceptually uniform, optimized for color vision deficiency"),
+                ("magma", "Perceptually uniform (black→white), excellent for grayscale"),
+            ]
+            if _ensure_operando_colormap('batlow'):
+                rec_palettes.append(("batlow", "Colorblind-friendly sequential (cmcrameri)"))
+            for idx, (name, desc) in enumerate(rec_palettes, 1):
+                bar = palette_preview(name)
+                print(f"  {idx}. {name} - {desc}")
+                if bar:
+                    print(f"      {bar}")
+            if optional:
+                print("\nOther available: " + ", ".join(optional))
             print(_colorize_inline_commands("Append _r to reverse (e.g., viridis_r or 1_r). Blank to cancel."))
-            choice = input("Palette name or number (1-5): ").strip()
+            choice = input(f"Palette name or number (1-{len(rec_palettes)}): ").strip()
             if not choice:
                 print_menu(); continue
             try:
                 _snapshot("operando-colormap")
                 
                 # Map numeric selections to palette names
-                palette_map = {
-                    '1': 'viridis',
-                    '2': 'plasma',
-                    '3': 'inferno',
-                    '4': 'cividis',
-                    '5': 'magma'
-                }
+                palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
                 
                 # Check for reversed palette (number_r or name_r)
                 if choice.endswith('_r'):
@@ -2367,14 +2562,34 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     # else keep original choice (e.g., "viridis_r")
                 elif choice in palette_map:
                     choice = palette_map[choice]
-                
-                if choice not in available:
-                    raise ValueError(f"Unknown colormap '{choice}'")
-                im.set_cmap(choice)
+
+                reversed_choice = choice.lower().endswith('_r')
+                base_choice = choice[:-2] if reversed_choice else choice
+                palette_obj = None
+                if _ensure_operando_colormap(base_choice):
+                    available = _refresh_available()
+                if base_choice.lower() not in available:
+                    custom = _CUSTOM_CMAPS.get(base_choice.lower())
+                    if custom:
+                        palette_obj = LinearSegmentedColormap.from_list(base_choice.lower(), custom, N=256)
+                    else:
+                        raise ValueError(f"Unknown colormap '{choice}'")
+                if palette_obj is None:
+                    try:
+                        palette_obj = plt.get_cmap(base_choice)
+                        if reversed_choice:
+                            palette_obj = palette_obj.reversed()
+                        im.set_cmap(palette_obj)
+                    except Exception:
+                        raise ValueError(f"Unknown colormap '{choice}'")
+                else:
+                    if reversed_choice:
+                        palette_obj = palette_obj.reversed()
+                    im.set_cmap(palette_obj)
                 try:
-                    # Sync colorbar if linked to same mappable
+                    # Update custom colorbar with new colormap
                     if cbar is not None:
-                        cbar.update_normal(im)
+                        _update_custom_colorbar(cbar.ax, im)
                 except Exception:
                     pass
                 try:
@@ -2400,22 +2615,19 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
             #   r:  reverse Y-axis orientation
             try:
                 # Export functionality only available in dual-pane mode
+                choice = None
                 if ec_ax is not None:
                     print("Print & Export: ps=style only (.bps), psg=style+geometry (.bpsg), q=cancel")
                     choice = input("p> ").strip().lower()
                     if not choice or choice == 'q':
-                        print_menu()
-                        continue
-                    
-                    if choice not in ('ps', 'psg'):
+                        choice = 'q'
+                    elif choice not in ('ps', 'psg'):
                         print(f"Unknown option: {choice}")
                         print_menu()
                         continue
                 else:
-                    # Operando-only mode: no export, just return to menu
+                    # Operando-only mode: no export, just inform the user
                     print("\nNote: Style export (.bps/.bpsg) is only available in dual-pane mode (with EC file).")
-                    print_menu()
-                    continue
                 
                 # Gather style
                 fig_w, fig_h = _get_fig_size(fig)
@@ -2423,29 +2635,33 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                 fam = plt.rcParams.get('font.sans-serif', [''])[0]
                 fsize = plt.rcParams.get('font.size', None)
                 cmap_name = getattr(im.get_cmap(), 'name', None)
+                cb_vis = bool(cbar.ax.get_visible())
+                ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
+                cb_label_text = str(getattr(cbar.ax, '_colorbar_label', cbar.ax.get_ylabel() or 'Intensity'))
+                cb_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
                 
                 # Print header based on mode
                 if ec_ax is not None:
                     print("\n--- Operando+EC Style ---")
                     print("Commands (Styles): oc(colormap), ow(op width), ew(ec width), h(height), el(EC curve), v(toggle colorbar/ec), t(toggle axes), l(line widths), f(fonts), g(canvas), r(reverse)")
                     print("Commands (Operando): ox(X range), oy(Y range), oz(intensity range), or(rename)")
-                    print("Commands (EC): et(time range), ey(Y-axis type), er(rename)")
+                    print("Commands (EC): et(time range), ex(EC X range), ey(Y-axis type), er(rename)")
                     print(f"Canvas size (g): {fig_w:.3f} x {fig_h:.3f}")
-                    print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\", EC width (ew)={ec_w_in:.3f}\"")
+                    print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\", colorbar width={cb_w_in:.3f}\", EC width (ew)={ec_w_in:.3f}\"")
                 else:
                     print("\n--- Operando-Only Style ---")
                     print("Commands (Styles): oc(colormap), ow(op width), v(toggle colorbar), t(toggle axes), l(line widths), h(height), f(fonts), g(canvas), r(reverse)")
                     print("Commands (Operando): ox(X range), oy(Y range), oz(intensity range), or(rename)")
                     print(f"Canvas size (g): {fig_w:.3f} x {fig_h:.3f}")
-                    print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\"")
+                    print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\", colorbar width={cb_w_in:.3f}\"")
                 
                 # Visibility state
-                cb_vis = bool(cbar.ax.get_visible())
-                ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
                 if ec_ax is not None:
                     print(f"Visibility (v): colorbar={'shown' if cb_vis else 'hidden'}, EC panel={'shown' if ec_vis else 'hidden'}")
                 else:
                     print(f"Visibility (v): colorbar={'shown' if cb_vis else 'hidden'}")
+                mode_label = "High/Low" if cb_label_mode == 'highlow' else 'Normal'
+                print(f"Colorbar label: \"{cb_label_text}\" (mode: {mode_label})")
                 
                 # Check if Y-axes are reversed (ylim[0] > ylim[1])
                 op_ylim = ax.get_ylim()
@@ -2547,18 +2763,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                 # Line widths (l command: frame and tick widths)
                 print("\nLine widths (l command):")
                 op_frame_lw = ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else 1.0
-                try:
-                    op_tick_lw = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 1.0
-                except:
-                    op_tick_lw = 1.0
+                op_tick_lw = _axis_tick_width(ax.xaxis, 'major') or 1.0
                 print(f"  Operando: frame={op_frame_lw:.2f}, ticks={op_tick_lw:.2f}")
                 
                 if ec_ax is not None:
                     ec_frame_lw = ec_ax.spines.get('bottom').get_linewidth() if ec_ax.spines.get('bottom') else 1.0
-                    try:
-                        ec_tick_lw = ec_ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ec_ax.xaxis.get_major_ticks() else 1.0
-                    except:
-                        ec_tick_lw = 1.0
+                    ec_tick_lw = _axis_tick_width(ec_ax.xaxis, 'major') or 1.0
                     print(f"  EC: frame={ec_frame_lw:.2f}, ticks={ec_tick_lw:.2f}")
                 
                 # EC curve properties (el command, only if EC panel exists)
@@ -2578,42 +2788,45 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         print("  (no EC line found)")
                 
                 print("-------------------------\n")
-                # List style files (.bps, .bpsg, .bpcfg) for convenience
-                try:
-                    _bpcfg_files = sorted([f for f in os.listdir(os.getcwd()) if f.lower().endswith(('.bps', '.bpsg', '.bpcfg'))])
-                except Exception:
-                    _bpcfg_files = []
-                if _bpcfg_files:
-                    print("Existing style files (.bps/.bpsg):")
-                    for _i, _f in enumerate(_bpcfg_files, 1):
-                        print(f"  {_i}: {_f}")
-                sub = input("Style: (e=export, q=return): ").strip().lower()
-                if sub == 'e':
-                    choice = input("Enter new filename or number to overwrite (q=cancel): ").strip()
-                    if not choice or choice.lower() == 'q':
-                        print_menu(); continue
-                    target = None
-                    if choice.isdigit() and _bpcfg_files:
-                        _idx = int(choice)
-                        if 1 <= _idx <= len(_bpcfg_files):
-                            name = _bpcfg_files[_idx-1]
-                            yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
-                            if yn == 'y':
-                                target = os.path.join(os.getcwd(), name)
+                if ec_ax is None:
+                    print("Style export (.bps/.bpsg/.bpcfg) unavailable without an EC panel.")
+                else:
+                    # List style files (.bps, .bpsg, .bpcfg) for convenience
+                    try:
+                        _bpcfg_files = sorted([f for f in os.listdir(os.getcwd()) if f.lower().endswith(('.bps', '.bpsg', '.bpcfg'))])
+                    except Exception:
+                        _bpcfg_files = []
+                    if _bpcfg_files:
+                        print("Existing style files (.bps/.bpsg):")
+                        for _i, _f in enumerate(_bpcfg_files, 1):
+                            print(f"  {_i}: {_f}")
+                    sub = input("Style: (e=export, q=return): ").strip().lower()
+                    if sub == 'e':
+                        choice = input("Enter new filename or number to overwrite (q=cancel): ").strip()
+                        if not choice or choice.lower() == 'q':
+                            print_menu(); continue
+                        target = None
+                        if choice.isdigit() and _bpcfg_files:
+                            _idx = int(choice)
+                            if 1 <= _idx <= len(_bpcfg_files):
+                                name = _bpcfg_files[_idx-1]
+                                yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                                if yn == 'y':
+                                    target = os.path.join(os.getcwd(), name)
+                            else:
+                                print("Invalid number."); print_menu(); continue
                         else:
-                            print("Invalid number."); print_menu(); continue
-                    else:
-                        name = choice
-                        root, ext = os.path.splitext(name)
-                        if ext == '':
-                            name = name + '.bpcfg'
-                        target = name if os.path.isabs(name) else os.path.join(os.getcwd(), name)
-                        if os.path.exists(target):
-                            yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
-                            if yn != 'y':
-                                target = None
-                    # Build WASD states for both panes
-                    op_wasd_state = {
+                            name = choice
+                            root, ext = os.path.splitext(name)
+                            if ext == '':
+                                name = name + '.bpcfg'
+                            target = name if os.path.isabs(name) else os.path.join(os.getcwd(), name)
+                            if os.path.exists(target):
+                                yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                                if yn != 'y':
+                                    target = None
+                        # Build WASD states for both panes
+                        op_wasd_state = {
                         'left':   op_wasd['left'],
                         'top':    op_wasd['top'],
                         'bottom': op_wasd['bottom'],
@@ -2639,25 +2852,25 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     for name in ('bottom', 'top', 'left', 'right'):
                         sp = ax.spines.get(name)
                         if sp:
-                            op_spines[name] = {'linewidth': float(sp.get_linewidth()), 'visible': bool(sp.get_visible())}
+                            op_spines[name] = {
+                                'linewidth': float(sp.get_linewidth()),
+                                'visible': bool(sp.get_visible()),
+                                'color': sp.get_edgecolor()
+                            }
                     ec_spines = {}
                     for name in ('bottom', 'top', 'left', 'right'):
                         sp = ec_ax.spines.get(name)
                         if sp:
-                            ec_spines[name] = {'linewidth': float(sp.get_linewidth()), 'visible': bool(sp.get_visible())}
+                            ec_spines[name] = {
+                                'linewidth': float(sp.get_linewidth()),
+                                'visible': bool(sp.get_visible()),
+                                'color': sp.get_edgecolor()
+                            }
                     
                     # Tick widths
                     def _get_tick_width(axis_obj, which_axis='x', which_tick='major'):
-                        try:
-                            ticks = axis_obj.xaxis.get_major_ticks() if which_axis == 'x' and which_tick == 'major' else \
-                                    axis_obj.xaxis.get_minor_ticks() if which_axis == 'x' and which_tick == 'minor' else \
-                                    axis_obj.yaxis.get_major_ticks() if which_axis == 'y' and which_tick == 'major' else \
-                                    axis_obj.yaxis.get_minor_ticks()
-                            if ticks:
-                                return float(ticks[0].tick1line.get_markersize())
-                        except:
-                            pass
-                        return None
+                        axis = axis_obj.xaxis if which_axis == 'x' else axis_obj.yaxis
+                        return _axis_tick_width(axis, 'major' if which_tick == 'major' else 'minor')
                     
                     op_ticks = {
                         'x_major': _get_tick_width(ax, 'x', 'major'),
@@ -2705,11 +2918,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                     
                     # Build config based on choice
                     # Get visibility states
-                    cb_visible = bool(cbar.ax.get_visible())
-                    ec_visible = bool(ec_ax.get_visible()) if ec_ax is not None else None
-                    
-                    # Get colorbar label mode
-                    cb_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+                    cb_visible = cb_vis
+                    ec_visible = ec_vis
                     
                     # Capture labelpad values (for title positioning)
                     op_labelpads = {
@@ -2730,6 +2940,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                             'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads},
                             'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads},
                             'font': {'family': fam, 'size': fsize},
+                            'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
                         }
                         default_ext = '.bps'
                     else:  # psg
@@ -2742,6 +2953,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                             'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads},
                             'font': {'family': fam, 'size': fsize},
                             'axes_geometry': _get_geometry_snapshot(ax, ec_ax),
+                            'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
                         }
                         default_ext = '.bpsg'
                         # Print geometry info
@@ -2970,8 +3182,29 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         try:
                             for name, props in op_spines.items():
                                 sp = ax.spines.get(name)
-                                if sp and 'linewidth' in props:
-                                    sp.set_linewidth(float(props['linewidth']))
+                                if not sp:
+                                    continue
+                                if 'linewidth' in props and props['linewidth'] is not None:
+                                    try:
+                                        sp.set_linewidth(float(props['linewidth']))
+                                    except Exception:
+                                        pass
+                                if 'visible' in props and props['visible'] is not None:
+                                    try:
+                                        sp.set_visible(bool(props['visible']))
+                                    except Exception:
+                                        pass
+                                if 'color' in props and props['color'] is not None:
+                                    try:
+                                        sp.set_edgecolor(props['color'])
+                                        if name in ('top', 'bottom'):
+                                            ax.tick_params(axis='x', which='both', colors=props['color'])
+                                            ax.xaxis.label.set_color(props['color'])
+                                        else:
+                                            ax.tick_params(axis='y', which='both', colors=props['color'])
+                                            ax.yaxis.label.set_color(props['color'])
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
                     
@@ -3044,8 +3277,29 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         try:
                             for name, props in ec_spines.items():
                                 sp = ec_ax.spines.get(name)
-                                if sp and 'linewidth' in props:
-                                    sp.set_linewidth(float(props['linewidth']))
+                                if not sp:
+                                    continue
+                                if 'linewidth' in props and props['linewidth'] is not None:
+                                    try:
+                                        sp.set_linewidth(float(props['linewidth']))
+                                    except Exception:
+                                        pass
+                                if 'visible' in props and props['visible'] is not None:
+                                    try:
+                                        sp.set_visible(bool(props['visible']))
+                                    except Exception:
+                                        pass
+                                if 'color' in props and props['color'] is not None:
+                                    try:
+                                        sp.set_edgecolor(props['color'])
+                                        if name in ('top', 'bottom'):
+                                            ec_ax.tick_params(axis='x', which='both', colors=props['color'])
+                                            ec_ax.xaxis.label.set_color(props['color'])
+                                        else:
+                                            ec_ax.tick_params(axis='y', which='both', colors=props['color'])
+                                            ec_ax.yaxis.label.set_color(props['color'])
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
                     
@@ -3222,47 +3476,30 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                 if version >= 2:
                     try:
                         fig_cfg = cfg.get('figure', {})
-                        cb_visible = fig_cfg.get('cb_visible')
+                        colorbar_cfg = cfg.get('colorbar', {})
+                        cb_visible = colorbar_cfg.get('visible')
+                        if cb_visible is None:
+                            cb_visible = fig_cfg.get('cb_visible')
                         if cb_visible is not None:
                             cbar.ax.set_visible(bool(cb_visible))
                         
-                        # Restore colorbar label mode
-                        cb_label_mode = fig_cfg.get('cb_label_mode', 'normal')
-                        if cb_label_mode == 'highlow':
-                            # Switch to High/Low mode
-                            cbar.ax.yaxis.set_ticklabels([])
-                            # Remove existing High/Low labels if any
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                            # Get current font settings
-                            font_size = plt.rcParams.get('font.size', 10)
-                            font_family = plt.rcParams.get('font.family', ['sans-serif'])
-                            # Add new labels outside the colorbar (above and below)
-                            fig._cbar_high_text = cbar.ax.text(0.5, 1.02, 'High', ha='center', va='bottom',
-                                                                transform=cbar.ax.transAxes,
-                                                                fontsize=font_size, fontfamily=font_family)
-                            fig._cbar_low_text = cbar.ax.text(0.5, -0.02, 'Low', ha='center', va='top',
-                                                               transform=cbar.ax.transAxes,
-                                                               fontsize=font_size, fontfamily=font_family)
-                            fig._colorbar_label_mode = 'highlow'
-                        else:
-                            # Ensure normal mode
-                            fig._colorbar_label_mode = 'normal'
-                            # Remove High/Low labels if they exist
-                            if hasattr(fig, '_cbar_high_text'):
-                                try: fig._cbar_high_text.remove()
-                                except: pass
-                                try: delattr(fig, '_cbar_high_text')
-                                except: pass
-                            if hasattr(fig, '_cbar_low_text'):
-                                try: fig._cbar_low_text.remove()
-                                except: pass
-                                try: delattr(fig, '_cbar_low_text')
-                                except: pass
+                        # Restore colorbar label text and mode
+                        cb_label_mode = colorbar_cfg.get('mode', fig_cfg.get('cb_label_mode', 'normal'))
+                        if cb_label_mode not in ('normal', 'highlow'):
+                            cb_label_mode = 'normal'
+                        fig._colorbar_label_mode = cb_label_mode
+                        cb_label_text = colorbar_cfg.get('label')
+                        if cb_label_text is not None:
+                            cbar.ax._colorbar_label = cb_label_text
+                        try:
+                            _update_custom_colorbar(
+                                cbar.ax,
+                                im,
+                                label=cb_label_text if cb_label_text is not None else None,
+                                label_mode=cb_label_mode,
+                            )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     try:
@@ -3462,13 +3699,28 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         break
                     if sub == 'c':
                         cur = ln.get_color()
-                        val = input(f"Color (name or hex, current={cur}, blank=cancel): ").strip()
+                        print(f"EC line color: {color_block(cur)} {cur}")
+                        user_colors = get_user_color_list(fig)
+                        if user_colors:
+                            print("\nSaved colors (refer as number or u#):")
+                            for idx, color in enumerate(user_colors, 1):
+                                print(f"  {idx}: {color_block(color)} {color}")
+                        else:
+                            print("\nNo saved colors. Type 'u' to manage saved colors.")
+                        print("  (Enter color name/hex, saved color number, or 'u' to manage)")
+                        val = input(f"Color (current={cur}, blank=cancel): ").strip()
                         if not val:
+                            continue
+                        if val.lower() == 'u':
+                            manage_user_colors(fig)
                             continue
                         _snapshot("ec-line-color")
                         try:
-                            ln.set_color(val)
+                            # Resolve color token (handles u#, numbers, names, hex)
+                            resolved = resolve_color_token(val, fig)
+                            ln.set_color(resolved)
                             fig.canvas.draw_idle()
+                            print(f"EC line color set to: {resolved}")
                         except Exception as e:
                             print(f"Invalid color: {e}")
                     elif sub == 'l':
@@ -3593,7 +3845,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         material = params.get('material', 'cathode')
                         need_input = (mass_mg is None or cap_per_ion is None or start_ions is None)
                         if need_input:
-                            prompt = "Enter mass(mg), capacity-per-ion(mAh g⁻¹), start-ions (e.g. 4.5 26.8 0), q=cancel: "
+                            prompt = "Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=cancel: "
                         else:
                             prompt = f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=cancel): "
                         s = input(prompt).strip()
@@ -3874,6 +4126,35 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax):
                         fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Error in ey submenu: {e}")
+            print_menu()
+        elif cmd == 'ex':
+            if ec_ax is None:
+                print("EC panel not available (no .mpt file in folder).")
+                print_menu()
+                continue
+            while True:
+                cur = ec_ax.get_xlim()
+                print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
+                line = input("New EC X range (min max, q=back): ").strip()
+                if not line or line.lower() == 'q':
+                    break
+                _snapshot("ec-x-range")
+                try:
+                    lo, hi = map(float, line.split())
+                    if lo == hi:
+                        raise ValueError("limits must differ")
+                    ec_ax.set_xlim(lo, hi)
+                    try:
+                        ec_ax._prev_ec_xlim = (lo, hi)
+                        ec_ax._ions_xlim_expanded = False
+                    except Exception:
+                        pass
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
+                except Exception as e:
+                    print(f"Invalid range: {e}")
             print_menu()
         elif cmd == 'g':
             # Preserve legacy size submenu

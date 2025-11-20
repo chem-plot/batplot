@@ -12,6 +12,7 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import colors as mcolors
 from .ui import (
     resize_plot_frame, resize_canvas,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -22,7 +23,15 @@ from .ui import (
 )
 from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter
 from .plotting import update_labels as _update_labels
-from .utils import _confirm_overwrite
+from .utils import _confirm_overwrite, choose_save_path
+from .color_utils import (
+    color_block,
+    color_bar,
+    palette_preview,
+    manage_user_colors,
+    get_user_color_list,
+    resolve_color_token,
+)
 
 
 def _colorize_menu(text):
@@ -71,6 +80,128 @@ def _colorize_inline_commands(text):
     return text
 
 
+def _apply_stored_axis_colors(ax):
+    try:
+        color = getattr(ax, '_stored_xlabel_color', None)
+        if color:
+            ax.xaxis.label.set_color(color)
+    except Exception:
+        pass
+    try:
+        color = getattr(ax, '_stored_ylabel_color', None)
+        if color:
+            ax.yaxis.label.set_color(color)
+    except Exception:
+        pass
+    try:
+        top_artist = getattr(ax, '_top_xlabel_artist', None)
+        color = getattr(ax, '_stored_top_xlabel_color', None)
+        if top_artist is not None and color:
+            top_artist.set_color(color)
+    except Exception:
+        pass
+    try:
+        right_artist = getattr(ax, '_right_ylabel_artist', None)
+        color = getattr(ax, '_stored_right_ylabel_color', None)
+        if right_artist is not None and color:
+            right_artist.set_color(color)
+    except Exception:
+        pass
+
+
+def _apply_spine_color(ax, fig, tick_state, spine_name: str, color) -> None:
+    if color is None:
+        return
+    sp = ax.spines.get(spine_name)
+    if sp is not None:
+        try:
+            sp.set_edgecolor(color)
+        except Exception:
+            pass
+    try:
+        if spine_name in ('top', 'bottom'):
+            ax.tick_params(axis='x', which='both', colors=color)
+            ax.xaxis.label.set_color(color)
+            ax._stored_xlabel_color = color
+            if spine_name == 'top':
+                ax._stored_top_xlabel_color = color
+                artist = getattr(ax, '_top_xlabel_artist', None)
+                if artist is not None:
+                    artist.set_color(color)
+                _ui_position_top_xlabel(ax, fig, tick_state)
+            else:
+                _ui_position_bottom_xlabel(ax, fig, tick_state)
+        else:
+            ax.tick_params(axis='y', which='both', colors=color)
+            ax.yaxis.label.set_color(color)
+            ax._stored_ylabel_color = color
+            if spine_name == 'right':
+                ax._stored_right_ylabel_color = color
+                artist = getattr(ax, '_right_ylabel_artist', None)
+                if artist is not None:
+                    artist.set_color(color)
+                _ui_position_right_ylabel(ax, fig, tick_state)
+            else:
+                _ui_position_left_ylabel(ax, fig, tick_state)
+    except Exception:
+        pass
+    _apply_stored_axis_colors(ax)
+
+
+def _diffcap_clean_series(x: np.ndarray, y: np.ndarray, min_step: float = 1e-3) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Remove points where ΔVoltage < min_step (default 1 mV) while preserving order."""
+    if x.size <= 1:
+        return x, y, 0
+    keep_indices = [0]
+    last_x = x[0]
+    removed = 0
+    for idx in range(1, x.size):
+        if abs(x[idx] - last_x) >= min_step:
+            keep_indices.append(idx)
+            last_x = x[idx]
+        else:
+            removed += 1
+    if removed == 0:
+        return x, y, 0
+    keep = np.array(keep_indices, dtype=int)
+    return x[keep], y[keep], removed
+
+
+def _savgol_kernel(window: int, poly: int) -> np.ndarray:
+    """Return Savitzky–Golay smoothing kernel of given window/poly."""
+    half = window // 2
+    x = np.arange(-half, half + 1, dtype=float)
+    A = np.vander(x, poly + 1, increasing=True)
+    ATA = A.T @ A
+    ATA_inv = np.linalg.pinv(ATA)
+    target = np.zeros(poly + 1, dtype=float)
+    target[0] = 1.0  # evaluate polynomial at x=0
+    coeffs = target @ ATA_inv @ A.T
+    return coeffs
+
+
+def _savgol_smooth(y: np.ndarray, window: int = 9, poly: int = 3) -> np.ndarray:
+    """Apply Savitzky–Golay smoothing (defaults from DiffCapAnalyzer) to data."""
+    n = y.size
+    if n < 3:
+        return y
+    if window > n:
+        window = n if n % 2 == 1 else n - 1
+    if window < 3:
+        return y
+    if window % 2 == 0:
+        window -= 1
+    if window < 3:
+        return y
+    if poly >= window:
+        poly = window - 1
+    coeffs = _savgol_kernel(window, poly)
+    half = window // 2
+    padded = np.pad(y, (half, half), mode='edge')
+    smoothed = np.convolve(padded, coeffs[::-1], mode='valid')
+    return smoothed
+
+
 def _print_menu(n_cycles: int, is_dqdv: bool = False):
     # Three-column menu similar to operando: Styles | Geometries | Options
     # Use dynamic column widths for clean alignment.
@@ -83,6 +214,8 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False):
         "g: size",
         "ro: rotation",
     ]
+    if is_dqdv:
+        col1.insert(2, "sm: smooth")
     col2 = [
         "c: cycles/colors",
         "r: rename axes",
@@ -138,31 +271,98 @@ def _iter_cycle_lines(cycle_lines: Dict[int, Dict[str, Optional[object]]]):
                     yield (cyc, role, ln)
 
 
-def _rebuild_legend(ax):
-    """Rebuild legend using only visible lines, anchoring to absolute inches from canvas center if available."""
+def _visible_legend_entries(ax):
+    """Return handles/labels for visible, user-facing lines only."""
     handles = []
     labels = []
     for ln in ax.lines:
         if ln.get_visible():
             lab = ln.get_label() or ""
-            # Skip private labels like _nolegend_
             if lab.startswith("_"):
                 continue
             handles.append(ln)
             labels.append(lab)
+    return handles, labels
+
+
+def _get_legend_user_pref(fig):
+    try:
+        return bool(getattr(fig, '_ec_legend_user_visible'))
+    except Exception:
+        return True
+
+
+def _set_legend_user_pref(fig, visible: bool):
+    try:
+        fig._ec_legend_user_visible = bool(visible)
+    except Exception:
+        pass
+
+
+def _store_legend_title(fig, ax, fallback: str = "Cycle"):
+    """Persist the current legend title on the figure for later rebuilds."""
+    try:
+        leg = ax.get_legend()
+        text = ""
+        if leg is not None:
+            title_artist = leg.get_title()
+            if title_artist is not None:
+                text = title_artist.get_text() or ""
+        if text:
+            fig._ec_legend_title = text
+        elif not getattr(fig, '_ec_legend_title', None):
+            fig._ec_legend_title = fallback
+    except Exception:
+        if not getattr(fig, '_ec_legend_title', None):
+            fig._ec_legend_title = fallback
+
+
+def _get_legend_title(fig, default: str = "Cycle") -> str:
+    try:
+        title = getattr(fig, '_ec_legend_title')
+        if isinstance(title, str) and title:
+            return title
+    except Exception:
+        pass
+    return default
+
+
+def _rebuild_legend(ax):
+    """Rebuild legend using only visible lines, anchoring to absolute inches from canvas center if available."""
+    fig = ax.figure
+    if not _get_legend_user_pref(fig):
+        leg = ax.get_legend()
+        if leg is not None:
+            try:
+                leg.remove()
+            except Exception:
+                pass
+        return
+
+    handles, labels = _visible_legend_entries(ax)
     if handles:
-        fig = ax.figure
-        xy_in = getattr(fig, '_ec_legend_xy_in', None)
+        xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', None))
+        legend_title = _get_legend_title(fig)
         if xy_in is not None:
             try:
                 fw, fh = fig.get_size_inches()
                 fx = 0.5 + float(xy_in[0]) / float(fw)
                 fy = 0.5 + float(xy_in[1]) / float(fh)
-                ax.legend(handles, labels, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                _legend_no_frame(
+                    ax,
+                    handles,
+                    labels,
+                    loc='center',
+                    bbox_to_anchor=(fx, fy),
+                    bbox_transform=fig.transFigure,
+                    borderaxespad=1.0,
+                    title=legend_title,
+                )
             except Exception:
-                ax.legend(handles, labels, loc='best', borderaxespad=1.0)
+                _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title)
         else:
-            ax.legend(handles, labels, loc='best', borderaxespad=1.0)
+            _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title)
+        _store_legend_title(fig, ax, legend_title)
     else:
         leg = ax.get_legend()
         if leg is not None:
@@ -215,7 +415,19 @@ def _set_visible_cycles(cycle_lines: Dict[int, Dict[str, Optional[object]]], sho
             pass
 
 
-def _parse_cycle_tokens(tokens: List[str]) -> Tuple[str, List[int], dict, Optional[str], bool]:
+def _resolve_palette_alias(token: str, palette_map: dict) -> str:
+    """Resolve numeric aliases (e.g., '2' or '2_r') to palette names."""
+    suffix = ''
+    base = token
+    if token.lower().endswith('_r'):
+        suffix = '_r'
+        base = token[:-2]
+    if base in palette_map:
+        return palette_map[base] + suffix
+    return token
+
+
+def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], dict, Optional[str], bool]:
     """Classify and parse tokens for the cycle command.
 
     Returns a tuple: (mode, cycles, mapping, palette)
@@ -228,27 +440,22 @@ def _parse_cycle_tokens(tokens: List[str]) -> Tuple[str, List[int], dict, Option
     if not tokens:
         return ("numbers", [], {}, None, False)
 
+    palette_map = {
+        '1': 'tab10',
+        '2': 'Set2',
+        '3': 'Dark2',
+        '4': 'viridis',
+        '5': 'plasma'
+    }
+
     # Support 'all' and 'all <palette>'
     if len(tokens) == 1 and tokens[0].lower() == 'all':
         return ("numbers", [], {}, None, True)
     if len(tokens) == 2 and tokens[0].lower() == 'all':
-        # Map numeric selections to palette names
-        palette_map = {
-            '1': 'tab10',
-            '2': 'Set2',
-            '3': 'Dark2',
-            '4': 'viridis',
-            '5': 'plasma'
-        }
-        
-        # Check if second token is a number from 1-5
-        if tokens[1] in palette_map:
-            return ("palette", [], {}, palette_map[tokens[1]], True)
-        
-        # Treat as palette mode across all
+        alias = _resolve_palette_alias(tokens[1], palette_map)
         try:
-            plt.get_cmap(tokens[1])
-            return ("palette", [], {}, tokens[1], True)
+            plt.get_cmap(alias)
+            return ("palette", [], {}, alias, True)
         except Exception:
             # Unknown palette -> still select all, no recolor
             return ("numbers", [], {}, None, True)
@@ -265,23 +472,14 @@ def _parse_cycle_tokens(tokens: List[str]) -> Tuple[str, List[int], dict, Option
                 cyc = int(idx_s)
             except ValueError:
                 continue
-            mapping[cyc] = col
+            mapping[cyc] = resolve_color_token(col, fig)
             if cyc not in cycles:
                 cycles.append(cyc)
         return ("map", cycles, mapping, None, False)
 
     # If last token is a valid colormap or number (1-5) -> palette mode
     last = tokens[-1]
-    
-    # Map numeric selections to palette names
-    palette_map = {
-        '1': 'tab10',
-        '2': 'Set2',
-        '3': 'Dark2',
-        '4': 'viridis',
-        '5': 'plasma'
-    }
-    
+
     # Check if last token is a number from 1-5
     if last in palette_map:
         palette = palette_map[last]
@@ -293,10 +491,24 @@ def _parse_cycle_tokens(tokens: List[str]) -> Tuple[str, List[int], dict, Option
             except ValueError:
                 pass
         return ("palette", cycles, {}, palette, False)
-    
+    alias = _resolve_palette_alias(last, palette_map)
+    if alias != last:
+        try:
+            plt.get_cmap(alias)
+            palette = alias
+            num_tokens = tokens[:-1]
+            cycles = []
+            for t in num_tokens:
+                try:
+                    cycles.append(int(t))
+                except ValueError:
+                    pass
+            return ("palette", cycles, {}, palette, False)
+        except Exception:
+            pass
+
     # Check if last token is a valid colormap name
     try:
-        # This will raise for unknown maps
         plt.get_cmap(last)
         palette = last
         num_tokens = tokens[:-1]
@@ -439,7 +651,7 @@ def _apply_font_size(ax, size: float):
         pass
 
 
-def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optional[object]]]):
+def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optional[object]]], file_path=None):
     # --- Tick/label state and helpers (similar to normal XY menu) ---
     tick_state = getattr(ax, '_saved_tick_state', {
         'bx': True,
@@ -452,8 +664,25 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         'mry': False,
     })
 
-    base_xlabel = ax.get_xlabel() or ''
     base_ylabel = ax.get_ylabel() or ''
+    if not hasattr(ax, '_stored_xlabel'):
+        ax._stored_xlabel = ax.get_xlabel() or ''
+    if not hasattr(ax, '_stored_ylabel'):
+        ax._stored_ylabel = base_ylabel
+    if not hasattr(ax, '_stored_xlabel_color'):
+        try:
+            ax._stored_xlabel_color = ax.xaxis.label.get_color()
+        except Exception:
+            ax._stored_xlabel_color = None
+    if not hasattr(ax, '_stored_ylabel_color'):
+        try:
+            ax._stored_ylabel_color = ax.yaxis.label.get_color()
+        except Exception:
+            ax._stored_ylabel_color = None
+    if not hasattr(ax, '_stored_top_xlabel_color'):
+        ax._stored_top_xlabel_color = ax.xaxis.label.get_color()
+    if not hasattr(ax, '_stored_right_ylabel_color'):
+        ax._stored_right_ylabel_color = ax.yaxis.label.get_color()
     
     # Detect dQdV mode: check stored flag first, then fall back to y-label detection
     # This handles cases where the user renamed the y-axis and saved/reloaded the session
@@ -463,6 +692,39 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         is_dqdv = 'dQ' in base_ylabel
         # Store the mode on the axes for persistence
         ax._is_dqdv_mode = is_dqdv
+
+    source_paths = []
+    _source_seen = set()
+
+    def _add_source_path(path_val):
+        if not path_val:
+            return
+        try:
+            abs_path = os.path.abspath(path_val)
+        except Exception:
+            return
+        if not os.path.exists(abs_path):
+            return
+        if abs_path in _source_seen:
+            return
+        _source_seen.add(abs_path)
+        source_paths.append(abs_path)
+
+    if file_path:
+        _add_source_path(file_path)
+    fig_source_attr = getattr(fig, '_bp_source_paths', None)
+    if fig_source_attr:
+        for _p in fig_source_attr:
+            _add_source_path(_p)
+    if not source_paths and hasattr(ax, 'figure'):
+        attr = getattr(ax.figure, '_bp_source_paths', None)
+        if attr:
+            for _p in attr:
+                _add_source_path(_p)
+    try:
+        fig._bp_source_paths = list(source_paths)
+    except Exception:
+        pass
 
     def _set_spine_visible(which: str, visible: bool):
         sp = ax.spines.get(which)
@@ -497,201 +759,134 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         except Exception:
             pass
 
-    def _position_top_xlabel():
-        """Update top xlabel duplicate with dynamic spacing to match bottom xlabel."""
-        try:
-            on = bool(getattr(ax, '_top_xlabel_on', False))
-            if not on:
-                txt = getattr(ax, '_top_xlabel_artist', None)
-                if txt is not None:
-                    txt.set_visible(False)
-                return
-            
-            # Try multiple sources for label text
-            label_text = ax.get_xlabel() or ''
-            if not label_text:
-                label_text = base_xlabel or ''
-            if not label_text:
-                prev = getattr(ax, '_top_xlabel_artist', None)
-                if prev is not None and hasattr(prev, 'get_text'):
-                    label_text = prev.get_text() or ''
-            
-            # Get renderer
+    def _title_offset_menu():
+        """Allow nudging duplicate top/right titles by single-pixel increments."""
+        def _dpi():
             try:
-                renderer = fig.canvas.get_renderer()
+                return float(fig.dpi)
             except Exception:
-                renderer = None
-            if renderer is None:
-                try:
-                    fig.canvas.draw()
-                    renderer = fig.canvas.get_renderer()
-                except Exception:
-                    renderer = None
-            
-            # Measure tick label height - prefer bottom for symmetry, fallback to top
-            dpi = float(fig.dpi) if hasattr(fig, 'dpi') else 100.0
-            max_h_px = 0.0
-            
-            # First try bottom tick labels (for symmetry)
-            bottom_labels_on = bool(tick_state.get('b_labels', tick_state.get('bx', False)))
-            if bottom_labels_on and renderer is not None:
-                try:
-                    for t in ax.xaxis.get_major_ticks():
-                        lab = getattr(t, 'label1', None)
-                        if lab is not None and lab.get_visible():
-                            bb = lab.get_window_extent(renderer=renderer)
-                            if bb is not None:
-                                max_h_px = max(max_h_px, float(bb.height))
-                except Exception:
-                    pass
-            
-            # If no bottom labels, try top labels
-            if max_h_px == 0.0:
-                top_labels_on = bool(tick_state.get('t_labels', tick_state.get('tx', False)))
-                if top_labels_on and renderer is not None:
-                    try:
-                        for t in ax.xaxis.get_major_ticks():
-                            lab = getattr(t, 'label2', None)
-                            if lab is not None and lab.get_visible():
-                                bb = lab.get_window_extent(renderer=renderer)
-                                if bb is not None:
-                                    max_h_px = max(max_h_px, float(bb.height))
-                    except Exception:
-                        pass
-            
-            # Convert to points and add gap (match matplotlib's labelpad = 14pt)
-            if max_h_px > 0:
-                tick_height_pts = max_h_px * 72.0 / dpi
-                dy_pts = tick_height_pts + 14.0  # 14pt gap to match bottom labelpad
-            else:
-                dy_pts = 6.0  # Minimal spacing when no tick labels (match small labelpad)
-            
-            # Create offset transform
-            import matplotlib as mpl
-            base_trans = ax.transAxes
-            off_trans = mtransforms.offset_copy(base_trans, fig=fig, x=0.0, y=dy_pts, units='points')
-            
-            # Get current font settings
-            cur_size = mpl.rcParams.get('font.size', 10)
-            cur_family = mpl.rcParams.get('font.sans-serif', ['DejaVu Sans'])
-            if cur_family:
-                cur_family = cur_family[0]
-            else:
-                cur_family = 'DejaVu Sans'
-            
-            txt = getattr(ax, '_top_xlabel_artist', None)
-            if txt is None:
-                # Create with current font settings
-                txt = ax.text(0.5, 1.0, label_text, ha='center', va='bottom',
-                             transform=off_trans, clip_on=False, fontsize=cur_size, family=cur_family)
-                ax._top_xlabel_artist = txt
-            else:
-                txt.set_text(label_text)
-                txt.set_transform(off_trans)
-                txt.set_visible(True)
-                # Always sync font with current settings
-                txt.set_size(cur_size)
-                txt.set_family(cur_family)
-        except Exception:
-            pass
+                return 72.0
 
-    def _position_right_ylabel():
-        """Update right ylabel duplicate with dynamic spacing to match left ylabel."""
-        try:
-            on = bool(getattr(ax, '_right_ylabel_on', False))
-            if not on:
-                txt = getattr(ax, '_right_ylabel_artist', None)
-                if txt is not None:
-                    txt.set_visible(False)
-                return
-            
-            # Try multiple sources for label text
-            label_text = ax.get_ylabel() or ''
-            if not label_text:
-                label_text = base_ylabel or ''
-            if not label_text:
-                prev = getattr(ax, '_right_ylabel_artist', None)
-                if prev is not None and hasattr(prev, 'get_text'):
-                    label_text = prev.get_text() or ''
-            
-            # Get renderer
+        def _px_value(attr):
             try:
-                renderer = fig.canvas.get_renderer()
+                pts = float(getattr(ax, attr, 0.0) or 0.0)
             except Exception:
-                renderer = None
-            if renderer is None:
+                pts = 0.0
+            return pts * _dpi() / 72.0
+
+        def _set_attr(attr, pts):
+            try:
+                setattr(ax, attr, float(pts))
+            except Exception:
+                pass
+
+        def _nudge(attr, delta_px):
+            try:
+                current_pts = float(getattr(ax, attr, 0.0) or 0.0)
+            except Exception:
+                current_pts = 0.0
+            delta_pts = float(delta_px) * 72.0 / _dpi()
+            _set_attr(attr, current_pts + delta_pts)
+
+        snapshot_taken = False
+
+        def _ensure_snapshot():
+            nonlocal snapshot_taken
+            if not snapshot_taken:
+                push_state("title-offset")
+                snapshot_taken = True
+
+        def _top_menu():
+            if not getattr(ax, '_top_xlabel_on', False):
+                print("Top duplicate title is currently hidden (enable with w5).")
+                return
+            while True:
+                current_px = _px_value('_top_xlabel_manual_offset_pts')
+                print(f"Top title offset: {current_px:+.2f} px (positive = up)")
+                sub = input("top (w=up, s=down, 0=reset, q=back): ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_top_xlabel_manual_offset_pts', 0.0)
+                elif sub == 'w':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_pts', +1.0)
+                elif sub == 's':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_pts', -1.0)
+                else:
+                    print("Unknown choice (use w/s/0/q).")
+                    continue
+                _ui_position_top_xlabel(ax, fig, tick_state)
                 try:
-                    fig.canvas.draw()
-                    renderer = fig.canvas.get_renderer()
-                except Exception:
-                    renderer = None
-            
-            # Measure tick label width - prefer left for symmetry, fallback to right
-            dpi = float(fig.dpi) if hasattr(fig, 'dpi') else 100.0
-            max_w_px = 0.0
-            
-            # First try left tick labels (for symmetry)
-            left_labels_on = bool(tick_state.get('l_labels', tick_state.get('ly', False)))
-            if left_labels_on and renderer is not None:
-                try:
-                    for t in ax.yaxis.get_major_ticks():
-                        lab = getattr(t, 'label1', None)
-                        if lab is not None and lab.get_visible():
-                            bb = lab.get_window_extent(renderer=renderer)
-                            if bb is not None:
-                                max_w_px = max(max_w_px, float(bb.width))
+                    fig.canvas.draw_idle()
                 except Exception:
                     pass
-            
-            # If no left labels, try right labels
-            if max_w_px == 0.0:
-                right_labels_on = bool(tick_state.get('r_labels', tick_state.get('ry', False)))
-                if right_labels_on and renderer is not None:
-                    try:
-                        for t in ax.yaxis.get_major_ticks():
-                            lab = getattr(t, 'label2', None)
-                            if lab is not None and lab.get_visible():
-                                bb = lab.get_window_extent(renderer=renderer)
-                                if bb is not None:
-                                    max_w_px = max(max_w_px, float(bb.width))
-                    except Exception:
-                        pass
-            
-            # Convert to points and add gap (match matplotlib's labelpad = 8pt)
-            if max_w_px > 0:
-                tick_width_pts = max_w_px * 72.0 / dpi
-                dx_pts = tick_width_pts + 8.0  # 8pt gap to match left labelpad
-            else:
-                dx_pts = 6.0  # Minimal spacing when no tick labels (match small labelpad)
-            
-            # Create offset transform
-            import matplotlib as mpl
-            base_trans = ax.transAxes
-            off_trans = mtransforms.offset_copy(base_trans, fig=fig, x=dx_pts, y=0.0, units='points')
-            
-            # Get current font settings
-            cur_size = mpl.rcParams.get('font.size', 10)
-            cur_family = mpl.rcParams.get('font.sans-serif', ['DejaVu Sans'])
-            if cur_family:
-                cur_family = cur_family[0]
-            else:
-                cur_family = 'DejaVu Sans'
-            
-            txt = getattr(ax, '_right_ylabel_artist', None)
-            if txt is None:
-                # Create with current font settings
-                txt = ax.text(1.0, 0.5, label_text, rotation=90, ha='left', va='center',
-                             transform=off_trans, clip_on=False, fontsize=cur_size, family=cur_family)
-                ax._right_ylabel_artist = txt
-            else:
-                txt.set_text(label_text)
-                txt.set_transform(off_trans)
-                txt.set_visible(True)
-                # Always sync font with current settings
-                txt.set_size(cur_size)
-                txt.set_family(cur_family)
-        except Exception:
-            pass
+
+        def _right_menu():
+            if not getattr(ax, '_right_ylabel_on', False):
+                print("Right duplicate title is currently hidden (enable with d5).")
+                return
+            while True:
+                current_px = _px_value('_right_ylabel_manual_offset_pts')
+                print(f"Right title offset: {current_px:+.2f} px (positive = right)")
+                sub = input("right (d=right, a=left, 0=reset, q=back): ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_right_ylabel_manual_offset_pts', 0.0)
+                elif sub == 'd':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_pts', +1.0)
+                elif sub == 'a':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_pts', -1.0)
+                else:
+                    print("Unknown choice (use d/a/0/q).")
+                    continue
+                _ui_position_right_ylabel(ax, fig, tick_state)
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        while True:
+            print("Duplicate title offsets:")
+            print("  w : adjust top title (w=up, s=down)")
+            print("  d : adjust right title (d=right, a=left)")
+            print("  r : reset both offsets")
+            print("  q : return")
+            choice = input("p> ").strip().lower()
+            if not choice:
+                continue
+            if choice == 'q':
+                break
+            if choice == 'w':
+                _top_menu()
+                continue
+            if choice == 'd':
+                _right_menu()
+                continue
+            if choice == 'r':
+                _ensure_snapshot()
+                _set_attr('_top_xlabel_manual_offset_pts', 0.0)
+                _set_attr('_right_ylabel_manual_offset_pts', 0.0)
+                _ui_position_top_xlabel(ax, fig, tick_state)
+                _ui_position_right_ylabel(ax, fig, tick_state)
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+                print("Reset manual offsets for duplicate titles.")
+                continue
+            print("Unknown option. Use w/d/r/q.")
+
     def _apply_nice_ticks():
             try:
                 # Only enforce MaxNLocator for linear scales; let Matplotlib defaults handle log/symlog
@@ -706,17 +901,40 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
     _update_tick_visibility()
     _ui_position_top_xlabel(ax, fig, tick_state)
     _ui_position_right_ylabel(ax, fig, tick_state)
+    _store_legend_title(fig, ax)
     all_cycles = sorted(cycle_lines.keys())
+
+    # Initialize legend visibility preference
+    if not hasattr(fig, '_ec_legend_user_visible'):
+        try:
+            leg0 = ax.get_legend()
+            visible = True
+            if leg0 is not None:
+                visible = bool(leg0.get_visible())
+            _set_legend_user_pref(fig, visible)
+        except Exception:
+            _set_legend_user_pref(fig, True)
+    else:
+        if not _get_legend_user_pref(fig):
+            leg0 = ax.get_legend()
+            if leg0 is not None:
+                try:
+                    leg0.set_visible(False)
+                except Exception:
+                    pass
     # ---------------- Undo stack ----------------
     state_history: List[dict] = []
 
-    def _tick_width(axis, which: str):
+    def _tick_width(axis_obj, which: str):
         try:
-            ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-            for t in ticks:
-                ln = t.tick1line
-                if ln.get_visible():
-                    return ln.get_linewidth()
+            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+            width = tick_kw.get('width')
+            if width is None:
+                axis_name = getattr(axis_obj, 'axis_name', 'x')
+                rc_key = f"{axis_name}tick.{which}.width"
+                width = plt.rcParams.get(rc_key)
+            if width is not None:
+                return float(width)
         except Exception:
             return None
         return None
@@ -741,7 +959,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 },
                 'spines': {name: {
                     'lw': (ax.spines.get(name).get_linewidth() if ax.spines.get(name) else None),
-                    'visible': (ax.spines.get(name).get_visible() if ax.spines.get(name) else None)
+                    'visible': (ax.spines.get(name).get_visible() if ax.spines.get(name) else None),
+                    'color': (ax.spines.get(name).get_edgecolor() if ax.spines.get(name) else None)
                 } for name in ('bottom','top','left','right')},
                 'tick_widths': {
                     'x_major': _tick_width(ax.xaxis, 'major'),
@@ -755,8 +974,27 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     'top_x': bool(getattr(ax, '_top_xlabel_on', False)),
                     'right_y': bool(getattr(ax, '_right_ylabel_on', False))
                 },
+                'title_offsets': {
+                    'top': float(getattr(ax, '_top_xlabel_manual_offset_pts', 0.0) or 0.0),
+                    'right': float(getattr(ax, '_right_ylabel_manual_offset_pts', 0.0) or 0.0),
+                },
+                'legend': {
+                    'visible': False,
+                    'position_inches': None,
+                },
                 'lines': []
             }
+            try:
+                leg_obj = ax.get_legend()
+                snap['legend']['visible'] = bool(leg_obj.get_visible()) if leg_obj is not None else False
+            except Exception:
+                pass
+            try:
+                legend_xy = getattr(fig, '_ec_legend_xy_in', None)
+                if legend_xy is not None:
+                    snap['legend']['position_inches'] = (float(legend_xy[0]), float(legend_xy[1]))
+            except Exception:
+                snap['legend']['position_inches'] = None
             for i, ln in enumerate(ax.lines):
                 try:
                     snap['lines'].append({
@@ -827,6 +1065,17 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if spec.get('visible') is not None:
                     try: sp.set_visible(bool(spec['visible']))
                     except Exception: pass
+                if spec.get('color') is not None:
+                    try:
+                        sp.set_edgecolor(spec['color'])
+                        if name in ('top', 'bottom'):
+                            ax.tick_params(axis='x', which='both', colors=spec['color'])
+                            ax.xaxis.label.set_color(spec['color'])
+                        else:
+                            ax.tick_params(axis='y', which='both', colors=spec['color'])
+                            ax.yaxis.label.set_color(spec['color'])
+                    except Exception:
+                        pass
             # Tick widths
             tw = snap.get('tick_widths', {})
             try:
@@ -861,9 +1110,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 pass
             # Title duplicates
             try:
+                offsets = snap.get('title_offsets', {})
+                try:
+                    ax._top_xlabel_manual_offset_pts = float(offsets.get('top', 0.0) or 0.0)
+                except Exception:
+                    ax._top_xlabel_manual_offset_pts = 0.0
+                try:
+                    ax._right_ylabel_manual_offset_pts = float(offsets.get('right', 0.0) or 0.0)
+                except Exception:
+                    ax._right_ylabel_manual_offset_pts = 0.0
                 ax._top_xlabel_on = bool(snap.get('titles',{}).get('top_x', False))
                 ax._right_ylabel_on = bool(snap.get('titles',{}).get('right_y', False))
-                _position_top_xlabel(); _position_right_ylabel()
+                _ui_position_top_xlabel(ax, fig, tick_state)
+                _ui_position_right_ylabel(ax, fig, tick_state)
             except Exception:
                 pass
             # Restore labelpads (for title positioning)
@@ -898,7 +1157,23 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             ln.set_visible(bool(item['visible']))
             except Exception:
                 pass
+            legend_snap = snap.get('legend', {})
+            if legend_snap:
+                try:
+                    xy = legend_snap.get('position_inches')
+                    fig._ec_legend_xy_in = _sanitize_legend_offset(fig, xy) if xy is not None else None
+                except Exception:
+                    pass
             _rebuild_legend(ax)
+            if legend_snap:
+                try:
+                    if legend_snap.get('visible'):
+                        _apply_legend_position(fig, ax)
+                    leg_obj = ax.get_legend()
+                    if leg_obj is not None:
+                        leg_obj.set_visible(bool(legend_snap.get('visible', False)))
+                except Exception:
+                    pass
             try:
                 fig.canvas.draw()
             except Exception:
@@ -929,12 +1204,17 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             # Export current figure to a file; default extension .svg if missing
             try:
                 from .utils import list_files_in_subdirectory, get_organized_path
+                base_path = choose_save_path(source_paths, purpose="figure export")
+                if not base_path:
+                    _print_menu(len(all_cycles), is_dqdv)
+                    continue
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
-                file_list = list_files_in_subdirectory(fig_extensions, 'figure')
+                file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
                 files = [f[0] for f in file_list]
                 if files:
-                    print("Existing figure files in Figures/:")
+                    figures_dir = os.path.join(base_path, 'Figures')
+                    print(f"Existing figure files in {figures_dir}:")
                     for i, f in enumerate(files, 1):
                         print(f"  {i}: {f}")
                 
@@ -967,7 +1247,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     if os.path.isabs(fname):
                         target = fname
                     else:
-                        target = get_organized_path(fname, 'figure')
+                        target = get_organized_path(fname, 'figure', base_path=base_path)
                 
                 try:
                     if not already_confirmed and os.path.exists(target):
@@ -1029,16 +1309,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if not hasattr(fig, '_ec_legpos_cid') or getattr(fig, '_ec_legpos_cid') is None:
                     def _on_resize_ec(event):
                         try:
-                            xy_in = getattr(fig, '_ec_legend_xy_in', None)
                             leg = ax.get_legend()
-                            if xy_in is None or leg is None or not leg.get_visible():
+                            if leg is None or not leg.get_visible():
                                 return
-                            fw, fh = fig.get_size_inches()
-                            fx = 0.5 + float(xy_in[0]) / float(fw)
-                            fy = 0.5 + float(xy_in[1]) / float(fh)
-                            handles, labels = ax.get_legend_handles_labels()
-                            if handles:
-                                ax.legend(handles, labels, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                            if _apply_legend_position(fig, ax):
                                 fig.canvas.draw_idle()
                         except Exception:
                             pass
@@ -1059,7 +1333,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 cy = 0.5 * (bb.y0 + bb.y1)
                                 fx, fy = fig.transFigure.inverted().transform((cx, cy))
                                 fw, fh = fig.get_size_inches()
-                                fig._ec_legend_xy_in = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                                offset = _sanitize_legend_offset(fig, ((fx - 0.5) * fw, (fy - 0.5) * fh))
+                                if offset is not None:
+                                    fig._ec_legend_xy_in = offset
                             except Exception:
                                 pass
                 except Exception:
@@ -1067,7 +1343,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 # Current status
                 leg = ax.get_legend()
                 vis = bool(leg.get_visible()) if leg is not None else False
-                xy_in = getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))
+                xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
                     sub = input(_colorize_prompt("Legend: (t=toggle, m=set position, q=back): ")).strip().lower()
@@ -1080,23 +1356,16 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             leg = ax.get_legend()
                             if leg is not None and leg.get_visible():
                                 leg.set_visible(False)
+                                _set_legend_user_pref(fig, False)
+                                _rebuild_legend(ax)
                             else:
-                                # Rebuild legend; if a custom position exists, honor it
-                                handles, labels = ax.get_legend_handles_labels()
-                                if handles:
-                                    xy_in = getattr(fig, '_ec_legend_xy_in', None)
-                                    if xy_in is not None:
-                                        fw, fh = fig.get_size_inches()
-                                        fx = 0.5 + float(xy_in[0]) / float(fw)
-                                        fy = 0.5 + float(xy_in[1]) / float(fh)
-                                        ax.legend(handles, labels, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
-                                    else:
-                                        ax.legend(handles, labels, loc='best', borderaxespad=1.0)
+                                _set_legend_user_pref(fig, True)
+                                _rebuild_legend(ax)
                             fig.canvas.draw_idle()
                         except Exception:
                             pass
                     elif sub == 'm':
-                        xy_in = getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))
+                        xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                         print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                         vals = input("Enter legend position x y (inches from center; e.g., 0.0 0.0): ").strip()
                         parts = vals.replace(',', ' ').split()
@@ -1107,16 +1376,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         except Exception:
                             print("Invalid numbers."); continue
                         try:
-                            fig._ec_legend_xy_in = (x_in, y_in)
+                            fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, y_in))
                             # If legend visible, reposition now
                             leg = ax.get_legend()
                             if leg is not None and leg.get_visible():
-                                fw, fh = fig.get_size_inches()
-                                fx = 0.5 + float(x_in) / float(fw)
-                                fy = 0.5 + float(y_in) / float(fh)
-                                handles, labels = ax.get_legend_handles_labels()
-                                if handles:
-                                    ax.legend(handles, labels, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                                if not _apply_legend_position(fig, ax):
+                                    handles, labels = _visible_legend_entries(ax)
+                                    if handles:
+                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
                             fig.canvas.draw_idle()
                         except Exception:
                             pass
@@ -1140,7 +1407,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     cfg = _get_style_snapshot(fig, ax, cycle_lines, tick_state)
                     cfg['kind'] = 'ec_style'
                     _print_style_snapshot(cfg)
-                    _export_style_dialog(cfg, default_ext='.bps')
+                    save_base = choose_save_path(source_paths, purpose="style export")
+                    if not save_base:
+                        _print_menu(len(all_cycles), is_dqdv)
+                        continue
+                    _export_style_dialog(cfg, default_ext='.bps', base_path=save_base)
                 elif choice == 'psg':
                     # Style + Geometry
                     cfg = _get_style_snapshot(fig, ax, cycle_lines, tick_state)
@@ -1153,7 +1424,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     print(f"Y-axis label: {geom['ylabel']}")
                     print(f"X limits: {geom['xlim'][0]:.4g} to {geom['xlim'][1]:.4g}")
                     print(f"Y limits: {geom['ylim'][0]:.4g} to {geom['ylim'][1]:.4g}")
-                    _export_style_dialog(cfg, default_ext='.bpsg')
+                    save_base = choose_save_path(source_paths, purpose="style export")
+                    if not save_base:
+                        _print_menu(len(all_cycles), is_dqdv)
+                        continue
+                    _export_style_dialog(cfg, default_ext='.bpsg', base_path=save_base)
                 else:
                     print(f"Unknown option: {choice}")
             except Exception as e:
@@ -1312,6 +1587,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         if name in ax.spines:
                             if props.get('linewidth') is not None:
                                 ax.spines[name].set_linewidth(props['linewidth'])
+                            if props.get('color') is not None:
+                                _apply_spine_color(ax, fig, tick_state, name, props['color'])
                     
                     tick_widths = cfg.get('ticks', {}).get('widths', {})
                     if tick_widths.get('x_major') is not None: ax.tick_params(axis='x', which='major', width=tick_widths['x_major'])
@@ -1365,9 +1642,40 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             except Exception:
                                 pass
                 except Exception: pass
+
+                # Legend visibility/position
+                legend_cfg = cfg.get('legend', {}) or {}
+                legend_visible = None
+                try:
+                    if legend_cfg:
+                        legend_visible = bool(legend_cfg.get('visible', True))
+                        xy = legend_cfg.get('position_inches')
+                        if xy is not None:
+                            fig._ec_legend_xy_in = _sanitize_legend_offset(fig, xy)
+                        else:
+                            fig._ec_legend_xy_in = None
+                        if 'title' in legend_cfg and legend_cfg['title']:
+                            fig._ec_legend_title = legend_cfg['title']
+                        fig._ec_legend_user_visible = bool(legend_visible)
+                except Exception:
+                    legend_visible = None
+                
+                cycle_styles_cfg = cfg.get('cycle_styles')
+                if cycle_styles_cfg:
+                    _apply_cycle_styles(cycle_lines, cycle_styles_cfg)
                 
                 # Final redraw
                 _rebuild_legend(ax)
+                if legend_cfg:
+                    try:
+                        if legend_visible:
+                            _apply_legend_position(fig, ax)
+                        leg = ax.get_legend()
+                        if leg is not None:
+                            leg.set_visible(bool(legend_visible))
+                        _set_legend_user_pref(fig, bool(legend_visible))
+                    except Exception:
+                        pass
                 
                 # Apply geometry if present
                 if has_geometry:
@@ -1395,13 +1703,16 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         elif key == 'l':
             # Line widths submenu: curves vs frame/ticks
             try:
-                def _tick_width(axis, which: str):
+                def _tick_width(axis_obj, which: str):
                     try:
-                        ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-                        for t in ticks:
-                            ln = t.tick1line
-                            if ln.get_visible():
-                                return ln.get_linewidth()
+                        tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+                        width = tick_kw.get('width')
+                        if width is None:
+                            axis_name = getattr(axis_obj, 'axis_name', 'x')
+                            rc_key = f"{axis_name}tick.{which}.width"
+                            width = plt.rcParams.get(rc_key)
+                        if width is not None:
+                            return float(width)
                     except Exception:
                         return None
                     return None
@@ -1624,18 +1935,37 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 print(_colorize_inline_commands("  w : top spine    | a : left spine"))
                 print(_colorize_inline_commands("  s : bottom spine | d : right spine"))
                 print(_colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
+                user_colors = get_user_color_list(fig)
+                if user_colors:
+                    print("\nSaved colors (enter number or u# to reuse):")
+                    for idx, color in enumerate(user_colors, 1):
+                        print(f"  {idx}: {color_block(color)} {color}")
+                    print("Type 'u' to edit saved colors.")
                 line = input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
+                if line.lower() == 'u':
+                    manage_user_colors(fig)
+                    _print_menu(len(all_cycles), is_dqdv)
+                    continue
                 if line and line.lower() != 'q':
                     push_state("color-spine")
-                    # Map wasd to spine names
                     key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
                     tokens = line.split()
-                    for token in tokens:
-                        if ':' not in token:
-                            print(f"Skip malformed token: {token}")
-                            continue
-                        key_part, color = token.split(':', 1)
-                        key_part = key_part.lower()
+                    pairs = []
+                    i = 0
+                    while i < len(tokens):
+                        tok = tokens[i]
+                        if ':' in tok:
+                            key_part, color = tok.split(':', 1)
+                        else:
+                            if i + 1 >= len(tokens):
+                                print(f"Skip incomplete entry: {tok}")
+                                break
+                            key_part = tok
+                            color = tokens[i + 1]
+                            i += 1
+                        pairs.append((key_part.lower(), color))
+                        i += 1
+                    for key_part, color in pairs:
                         if key_part not in key_to_spine:
                             print(f"Unknown key: {key_part} (use w/a/s/d)")
                             continue
@@ -1644,16 +1974,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             print(f"Spine '{spine_name}' not found.")
                             continue
                         try:
-                            # Set spine color
-                            ax.spines[spine_name].set_edgecolor(color)
-                            # Set tick colors and axis label color for this axis
-                            if spine_name in ('top', 'bottom'):
-                                ax.tick_params(axis='x', which='both', colors=color)
-                                ax.xaxis.label.set_color(color)
-                            else:  # left or right
-                                ax.tick_params(axis='y', which='both', colors=color)
-                                ax.yaxis.label.set_color(color)
-                            print(f"Set {spine_name} spine to {color}")
+                            resolved = resolve_color_token(color, fig)
+                            _apply_spine_color(ax, fig, tick_state, spine_name, resolved)
+                            print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
                         except Exception as e:
                             print(f"Error setting {spine_name} color: {e}")
                     fig.canvas.draw()
@@ -1680,7 +2003,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         txt = input("New X-axis label (blank=cancel): ")
                         if txt:
                             push_state("rename-x")
-                            base_xlabel = txt
                             try:
                                 # Freeze layout and preserve existing pad for one-shot restore
                                 try: fig.set_layout_engine('none')
@@ -1694,6 +2016,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 except Exception:
                                     pass
                                 ax.set_xlabel(txt)
+                                ax._stored_xlabel = txt
+                                ax._stored_xlabel_color = ax.xaxis.label.get_color()
                                 _ui_position_top_xlabel(ax, fig, tick_state)
                                 _ui_position_bottom_xlabel(ax, fig, tick_state)
                             except Exception:
@@ -1715,6 +2039,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 except Exception:
                                     pass
                                 ax.set_ylabel(txt)
+                                ax._stored_ylabel = txt
+                                ax._stored_ylabel_color = ax.yaxis.label.get_color()
                                 _ui_position_right_ylabel(ax, fig, tick_state)
                                 _ui_position_left_ylabel(ax, fig, tick_state)
                             except Exception:
@@ -1734,8 +2060,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if not isinstance(wasd, dict):
                     wasd = {
                         'top':    {'spine': _get_spine_visible('top'),    'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))), 'minor': bool(tick_state['mtx']), 'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))), 'title': bool(getattr(ax, '_top_xlabel_on', False))},
-                        'bottom': {'spine': _get_spine_visible('bottom'), 'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', False))), 'minor': bool(tick_state['mbx']), 'labels': bool(tick_state.get('b_labels', tick_state.get('bx', False))), 'title': bool(ax.get_xlabel())},
-                        'left':   {'spine': _get_spine_visible('left'),   'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', False))), 'minor': bool(tick_state['mly']), 'labels': bool(tick_state.get('l_labels', tick_state.get('ly', False))), 'title': bool(ax.get_ylabel())},
+                        'bottom': {'spine': _get_spine_visible('bottom'), 'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', False))), 'minor': bool(tick_state['mbx']), 'labels': bool(tick_state.get('b_labels', tick_state.get('bx', False))), 'title': bool(ax.xaxis.label.get_visible())},
+                        'left':   {'spine': _get_spine_visible('left'),   'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', False))), 'minor': bool(tick_state['mly']), 'labels': bool(tick_state.get('l_labels', tick_state.get('ly', False))), 'title': bool(ax.yaxis.label.get_visible())},
                         'right':  {'spine': _get_spine_visible('right'),  'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', False))), 'minor': bool(tick_state['mry']), 'labels': bool(tick_state.get('r_labels', tick_state.get('ry', False))), 'title': bool(getattr(ax, '_right_ylabel_on', False))},
                     }
                     setattr(fig, '_ec_wasd_state', wasd)
@@ -1764,20 +2090,26 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     if bool(wasd['bottom']['title']):
                         if hasattr(ax,'_stored_xlabel') and isinstance(ax._stored_xlabel,str) and ax._stored_xlabel:
                             ax.set_xlabel(ax._stored_xlabel)
+                            ax.xaxis.label.set_visible(True)
+                            _apply_stored_axis_colors(ax)
                     else:
                         if not hasattr(ax,'_stored_xlabel'):
                             try: ax._stored_xlabel = ax.get_xlabel()
                             except Exception: ax._stored_xlabel = ''
                         ax.set_xlabel("")
+                        ax.xaxis.label.set_visible(False)
                     ax._top_xlabel_on = bool(wasd['top']['title'])
                     if bool(wasd['left']['title']):
                         if hasattr(ax,'_stored_ylabel') and isinstance(ax._stored_ylabel,str) and ax._stored_ylabel:
                             ax.set_ylabel(ax._stored_ylabel)
+                            ax.yaxis.label.set_visible(True)
+                            _apply_stored_axis_colors(ax)
                     else:
                         if not hasattr(ax,'_stored_ylabel'):
                             try: ax._stored_ylabel = ax.get_ylabel()
                             except Exception: ax._stored_ylabel = ''
                         ax.set_ylabel("")
+                        ax.yaxis.label.set_visible(False)
                     ax._right_ylabel_on = bool(wasd['right']['title'])
                     
                     # Only reposition sides that were actually changed
@@ -1785,11 +2117,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     if 'bottom' in changed_sides:
                         _ui_position_bottom_xlabel(ax, fig, tick_state)
                     if 'top' in changed_sides:
-                        _position_top_xlabel()
+                        _ui_position_top_xlabel(ax, fig, tick_state)
+                        _apply_stored_axis_colors(ax)
                     if 'left' in changed_sides:
                         _ui_position_left_ylabel(ax, fig, tick_state)
                     if 'right' in changed_sides:
-                        _position_right_ylabel()
+                        _ui_position_right_ylabel(ax, fig, tick_state)
+                        _apply_stored_axis_colors(ax)
                 def _sync_tick_state():
                     # Write new separate keys
                     tick_state['t_ticks'] = bool(wasd['top']['ticks'])
@@ -1814,6 +2148,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     print("WASD toggles: direction (w/a/s/d) x action (1..5)")
                     print("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title")
                     print("Type 'i' to invert tick direction, 'l' to change tick length, 'list' for state, 'q' to return.")
+                    print("  p = adjust duplicate top/right title offsets (w/d)")
                     cmd = input("t> ").strip().lower()
                     if not cmd:
                         continue
@@ -1831,6 +2166,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             fig.canvas.draw()
                         except Exception:
                             fig.canvas.draw_idle()
+                        continue
+                    if cmd == 'p':
+                        _title_offset_menu()
                         continue
                     if cmd == 'l':
                         # Change tick length (major and minor automatically set to 70%)
@@ -1904,7 +2242,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         elif key == 's':
             try:
                 from .session import dump_ec_session
-                folder = os.getcwd()
+                folder = choose_save_path(source_paths, purpose="EC session save")
+                if not folder:
+                    _print_menu(len(all_cycles), is_dqdv); continue
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -1946,21 +2286,38 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             print(f"Total cycles: {len(all_cycles)}")
             print("Enter one of:")
             print(_colorize_inline_commands("  - numbers: e.g. 1 5 10"))
-            print(_colorize_inline_commands("  - mappings: e.g. 1:red 5:#00B006 10:blue"))
+            print(_colorize_inline_commands("  - mappings: e.g. 1 red 5 u3  OR  1:red 5:#00B006"))
             print(_colorize_inline_commands("  - numbers + palette: e.g. 1 5 10 viridis  OR  1 5 10 3"))
             print(_colorize_inline_commands("  - all (optionally with palette): e.g. all  OR  all viridis  OR  all 3"))
             print("\nRecommended palettes for scientific publications:")
-            print("  1. tab10      - Distinct, colorblind-friendly (default matplotlib)")
-            print("  2. Set2       - Soft, pastel colors for presentations")
-            print("  3. Dark2      - Bold, saturated colors for print")
-            print("  4. viridis    - Perceptually uniform (blue→yellow)")
-            print("  5. plasma     - Perceptually uniform (purple→yellow)")
+            rec_palettes = [
+                ("tab10", "Distinct, colorblind-friendly (default matplotlib)"),
+                ("Set2", "Soft, pastel colors for presentations"),
+                ("Dark2", "Bold, saturated colors for print"),
+                ("viridis", "Perceptually uniform (blue→yellow)"),
+                ("plasma", "Perceptually uniform (purple→yellow)"),
+            ]
+            for idx, (name, desc) in enumerate(rec_palettes, 1):
+                bar = palette_preview(name)
+                print(f"  {idx}. {name} - {desc}")
+                if bar:
+                    print(f"      {bar}")
             print("  (Enter palette name OR number)")
+            user_colors = get_user_color_list(fig)
+            if user_colors:
+                print("\nSaved colors (use number or u# in mappings):")
+                for idx, color in enumerate(user_colors, 1):
+                    print(f"  {idx}: {color_block(color)} {color}")
+                print("Type 'u' to edit saved colors before assigning.")
             line = input("Selection: ").strip()
             if not line:
                 continue
+            if line.lower() == 'u':
+                manage_user_colors(fig)
+                _print_menu(len(all_cycles), is_dqdv)
+                continue
             tokens = line.replace(',', ' ').split()
-            mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens)
+            mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
             push_state("cycles/colors")
 
             # Filter to existing cycles and report ignored
@@ -1989,6 +2346,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 # Keep only existing cycles in mapping
                 mapping2 = {c: mapping[c] for c in existing if c in mapping}
                 _apply_colors(cycle_lines, mapping2)
+                if mapping2:
+                    print("Applied manual colors:")
+                    for cyc, col in mapping2.items():
+                        print(f"  Cycle {cyc}: {color_block(col)} {col}")
             elif mode == 'palette' and existing:
                 try:
                     cmap = plt.get_cmap(palette) if palette else None
@@ -2005,6 +2366,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     else:
                         cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
                     _apply_colors(cycle_lines, {c: col for c, col in zip(existing, cols)})
+                    try:
+                        preview = color_bar([mcolors.to_hex(col) for col in cols])
+                    except Exception:
+                        preview = ""
+                    if preview:
+                        print(f"Palette '{palette}' applied: {preview}")
             elif mode == 'numbers' and existing:
                 # Do not change colors in numbers-only mode; only visibility changes.
                 pass
@@ -2040,7 +2407,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if sub == 'q':
                     break
                 if sub == 'n':
-                    print("Input the theoretical capacity per 1 active ion (mAh g⁻¹), e.g., 125")
+                    print("Input the theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
                     val = input("C_theoretical_per_ion: ").strip()
                     try:
                         c_th = float(val)
@@ -2061,7 +2428,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             ln.set_xdata(x_orig / c_th)
                         except Exception:
                             continue
-                    ax.set_xlabel(f"Number of ions (C / {c_th:g} mAh g⁻¹)")
+                    ax.set_xlabel(f"Number of ions (C / {c_th:g} mAh g$^{-1}$)")
                     _apply_nice_ticks()
                     try:
                         ax.relim(); ax.autoscale_view()
@@ -2083,7 +2450,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 any_restored = True
                         except Exception:
                             continue
-                    ax.set_xlabel("Specific Capacity (mAh g⁻¹)")
+                    ax.set_xlabel("Specific Capacity (mAh g$^{-1}$)")
                     if any_restored:
                         _apply_nice_ticks()
                         try:
@@ -2297,6 +2664,224 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         fig.canvas.draw_idle()
             _print_menu(len(all_cycles), is_dqdv)
             continue
+        elif key == 'sm':
+            # dQ/dV smoothing utilities (only available in dQdV mode)
+            if not is_dqdv:
+                print("Smoothing is only available in dQ/dV mode.")
+                _print_menu(len(all_cycles), is_dqdv)
+                continue
+            while True:
+                print("\n\033[1mdQ/dV Data Filtering (Neware method)\033[0m")
+                print("Commands:")
+                print("  a: apply voltage step filter (removes small ΔV points)")
+                print("  d: DiffCap smooth (≥1 mV ΔV + Savitzky–Golay, order 3, window 9)")
+                print("  o: remove outliers (removes abrupt dQ/dV spikes)")
+                print("  r: reset to original data")
+                print("  q: back to main menu")
+                sub = input("sm> ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == 'r':
+                    push_state("smooth-reset")
+                    restored_count = 0
+                    try:
+                        for cyc, parts in cycle_lines.items():
+                            for role in ("charge", "discharge"):
+                                ln = parts.get(role) if isinstance(parts, dict) else parts
+                                if ln is None:
+                                    continue
+                                if hasattr(ln, '_original_xdata'):
+                                    ln.set_xdata(ln._original_xdata)
+                                    ln.set_ydata(ln._original_ydata)
+                                    restored_count += 1
+                        if restored_count:
+                            print(f"Reset {restored_count} curve(s) to original data.")
+                            fig.canvas.draw_idle()
+                        else:
+                            print("No filtered data to reset.")
+                    except Exception as e:
+                        print(f"Error resetting filter: {e}")
+                    continue
+                if sub == 'a':
+                    try:
+                        threshold_input = input("Enter minimum voltage step in mV (default 0.5 mV): ").strip()
+                        threshold_mv = 0.5 if not threshold_input else float(threshold_input)
+                        threshold_v = threshold_mv / 1000.0
+                        if threshold_v <= 0:
+                            print("Threshold must be positive.")
+                            continue
+                        push_state("smooth-apply")
+                        filtered = 0
+                        total_before = 0
+                        total_after = 0
+                        for cyc, parts in cycle_lines.items():
+                            for role in ("charge", "discharge"):
+                                ln = parts.get(role) if isinstance(parts, dict) else parts
+                                if ln is None or not ln.get_visible():
+                                    continue
+                                xdata = np.asarray(ln.get_xdata(), float)
+                                ydata = np.asarray(ln.get_ydata(), float)
+                                if xdata.size < 3:
+                                    continue
+                                if not hasattr(ln, '_original_xdata'):
+                                    ln._original_xdata = np.array(xdata, copy=True)
+                                    ln._original_ydata = np.array(ydata, copy=True)
+                                dv = np.abs(np.diff(xdata))
+                                mask = np.ones_like(xdata, dtype=bool)
+                                mask[1:] &= dv >= threshold_v
+                                mask[:-1] &= dv >= threshold_v
+                                filtered_x = xdata[mask]
+                                filtered_y = ydata[mask]
+                                before = len(xdata)
+                                after = len(filtered_x)
+                                if after < before:
+                                    ln.set_xdata(filtered_x)
+                                    ln.set_ydata(filtered_y)
+                                    filtered += 1
+                                    total_before += before
+                                    total_after += after
+                        if filtered:
+                            removed = total_before - total_after
+                            pct = 100 * removed / total_before if total_before else 0
+                            print(f"Filtered {filtered} curve(s); removed {removed} of {total_before} points ({pct:.1f}%).")
+                            print("Tip: Increase threshold to aggressively filter points (always applied to raw data).")
+                            fig.canvas.draw_idle()
+                        else:
+                            print("No curves affected by current threshold.")
+                    except ValueError:
+                        print("Invalid number.")
+                    continue
+                if sub == 'd':
+                    try:
+                        print("DiffCap smoothing per Thompson et al. (2020): clean ΔV < threshold and apply Savitzky–Golay (order 3).")
+                        delta_input = input("Minimum ΔV between points (mV, default 1.0): ").strip()
+                        min_step = 0.001 if not delta_input else max(float(delta_input), 0.0) / 1000.0
+                        if min_step <= 0:
+                            print("ΔV threshold must be positive.")
+                            continue
+                        window_input = input("Savitzky–Golay window (odd, default 9): ").strip()
+                        poly_input = input("Polynomial order (default 3): ").strip()
+                        window = 9 if not window_input else int(window_input)
+                        poly = 3 if not poly_input else int(poly_input)
+                    except ValueError:
+                        print("Invalid number.")
+                        continue
+                    if window < 3:
+                        window = 3
+                    if window % 2 == 0:
+                        window += 1
+                    if poly < 1:
+                        poly = 1
+                    push_state("smooth-diffcap")
+                    cleaned_curves = 0
+                    total_removed = 0
+                    for cyc, parts in cycle_lines.items():
+                        iter_parts = [(None, parts)] if not isinstance(parts, dict) else parts.items()
+                        for role, ln in iter_parts:
+                            if ln is None or not ln.get_visible():
+                                continue
+                            xdata = np.asarray(ln.get_xdata(), float)
+                            ydata = np.asarray(ln.get_ydata(), float)
+                            if xdata.size < 3:
+                                continue
+                            if not hasattr(ln, '_original_xdata'):
+                                ln._original_xdata = np.array(xdata, copy=True)
+                                ln._original_ydata = np.array(ydata, copy=True)
+                            x_clean, y_clean, removed = _diffcap_clean_series(xdata, ydata, min_step)
+                            if x_clean.size < poly + 2:
+                                continue
+                            y_smooth = _savgol_smooth(y_clean, window, poly)
+                            ln.set_xdata(x_clean)
+                            ln.set_ydata(y_smooth)
+                            cleaned_curves += 1
+                            total_removed += removed
+                    if cleaned_curves:
+                        print(f"DiffCap smoothing applied to {cleaned_curves} curve(s); removed {total_removed} noisy points.")
+                        fig.canvas.draw_idle()
+                    else:
+                        print("No curves were smoothed (not enough data after cleaning).")
+                    continue
+                if sub == 'o':
+                    print("Outlier removal methods:")
+                    print("  1: Z-score (enter standard deviation threshold, default 5.0)")
+                    print("  2: MAD (median absolute deviation, default factor 6.0)")
+                    method = input("Method (1/2, blank=cancel): ").strip()
+                    if not method:
+                        continue
+                    if method not in ('1', '2'):
+                        print("Unknown method.")
+                        continue
+                    try:
+                        thresh_input = input("Enter threshold (blank=default): ").strip()
+                        if method == '1':
+                            z_threshold = 5.0 if not thresh_input else float(thresh_input)
+                            if z_threshold <= 0:
+                                print("Threshold must be positive.")
+                                continue
+                        else:
+                            mad_threshold = 6.0 if not thresh_input else float(thresh_input)
+                            if mad_threshold <= 0:
+                                print("Threshold must be positive.")
+                                continue
+                        push_state("smooth-outlier")
+                        filtered = 0
+                        total_before = 0
+                        total_after = 0
+                        for cyc, parts in cycle_lines.items():
+                            for role in ("charge", "discharge"):
+                                ln = parts.get(role) if isinstance(parts, dict) else parts
+                                if ln is None or not ln.get_visible():
+                                    continue
+                                xdata = np.asarray(ln.get_xdata(), float)
+                                ydata = np.asarray(ln.get_ydata(), float)
+                                if xdata.size < 5:
+                                    continue
+                                if not hasattr(ln, '_original_xdata'):
+                                    ln._original_xdata = np.array(xdata, copy=True)
+                                    ln._original_ydata = np.array(ydata, copy=True)
+                                if method == '1':
+                                    mean_y = np.nanmean(ydata)
+                                    std_y = np.nanstd(ydata)
+                                    if not np.isfinite(std_y) or std_y == 0:
+                                        continue
+                                    zscores = np.abs((ydata - mean_y) / std_y)
+                                    mask = zscores <= z_threshold
+                                else:
+                                    median_y = np.nanmedian(ydata)
+                                    mad = np.nanmedian(np.abs(ydata - median_y))
+                                    if not np.isfinite(mad) or mad == 0:
+                                        continue
+                                    deviations = np.abs(ydata - median_y) / mad
+                                    mask = deviations <= mad_threshold
+                                filtered_x = xdata[mask]
+                                filtered_y = ydata[mask]
+                                before = len(xdata)
+                                after = len(filtered_x)
+                                if after < before:
+                                    ln.set_xdata(filtered_x)
+                                    ln.set_ydata(filtered_y)
+                                    filtered += 1
+                                    total_before += before
+                                    total_after += after
+                        if filtered:
+                            removed = total_before - total_after
+                            pct = 100 * removed / total_before if total_before else 0
+                            method_name = "Z-score" if method == '1' else "MAD"
+                            thresh_val = z_threshold if method == '1' else mad_threshold
+                            print(f"Removed outliers from {filtered} curve(s) using {method_name} (threshold={thresh_val}).")
+                            print(f"Removed {removed} of {total_before} points ({pct:.1f}%).")
+                            print("Tip: Adjust threshold to control sensitivity (always applied to raw data).")
+                            fig.canvas.draw_idle()
+                        else:
+                            print("No outliers found with current threshold.")
+                    except ValueError:
+                        print("Invalid number.")
+                    continue
+                print("Unknown command. Use a/o/r/q.")
+            _print_menu(len(all_cycles), is_dqdv)
+            continue
         else:
             print("Unknown command.")
             _print_menu(len(all_cycles), is_dqdv)
@@ -2335,12 +2920,16 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict) -> Dict:
             }
 
     # Tick widths
-    def _tick_width(axis, which: str):
+    def _tick_width(axis_obj, which: str):
         try:
-            ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-            for t in ticks:
-                if t.tick1line.get_visible():
-                    return t.tick1line.get_linewidth()
+            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+            width = tick_kw.get('width')
+            if width is None:
+                axis_name = getattr(axis_obj, 'axis_name', 'x')
+                rc_key = f"{axis_name}tick.{which}.width"
+                width = plt.rcParams.get(rc_key)
+            if width is not None:
+                return float(width)
         except Exception:
             return None
         return None
@@ -2395,6 +2984,46 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict) -> Dict:
     except Exception:
         pass
 
+    def _line_color_hex(ln):
+        try:
+            return mcolors.to_hex(ln.get_color())
+        except Exception:
+            col = ln.get_color()
+            if isinstance(col, str):
+                return col
+            try:
+                return mcolors.to_hex(mcolors.to_rgba(col))
+            except Exception:
+                return None
+
+    cycle_styles = {}
+    for cyc, parts in cycle_lines.items():
+        entry = {}
+        if isinstance(parts, dict):
+            for role in ("charge", "discharge"):
+                ln = parts.get(role)
+                if ln is None:
+                    continue
+                style = {}
+                color_hex = _line_color_hex(ln)
+                if color_hex:
+                    style['color'] = color_hex
+                style['visible'] = bool(ln.get_visible())
+                if style:
+                    entry[role] = style
+        else:
+            ln = parts
+            if ln is not None:
+                style = {}
+                color_hex = _line_color_hex(ln)
+                if color_hex:
+                    style['color'] = color_hex
+                style['visible'] = bool(ln.get_visible())
+                if style:
+                    entry['line'] = style
+        if entry:
+            cycle_styles[str(cyc)] = entry
+
     # Build WASD state (20 parameters) from current axes state
     def _get_spine_visible(which: str) -> bool:
         sp = ax.spines.get(which)
@@ -2434,6 +3063,17 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict) -> Dict:
         },
     }
 
+    # Legend visibility/location
+    legend_visible = False
+    legend_xy_in = None
+    try:
+        leg = ax.get_legend()
+        if leg is not None:
+            legend_visible = bool(leg.get_visible())
+            legend_xy_in = getattr(fig, '_ec_legend_xy_in', None)
+    except Exception:
+        pass
+
     return {
         'kind': 'ec_style',
         'version': 2,
@@ -2442,13 +3082,69 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict) -> Dict:
             'frame_size': [frame_w_in, frame_h_in],
         },
         'font': {'family': font_fam0, 'size': font_size},
+        'legend': {
+            'visible': legend_visible,
+            'position_inches': legend_xy_in,
+            'title': _get_legend_title(fig),
+        },
         'spines': spines,
         'ticks': {'widths': tick_widths, 'direction': tick_direction},
         'wasd_state': wasd_state,
         'curve_linewidth': curve_linewidth,
         'curve_markers': curve_marker_props,
         'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),
+        'cycle_styles': cycle_styles,
     }
+
+
+def _apply_cycle_styles(cycle_lines: Dict[int, Dict[str, Optional[object]]], style_cfg: Optional[Dict]) -> None:
+    if not isinstance(style_cfg, dict):
+        return
+    for cyc_key, entry in style_cfg.items():
+        try:
+            cyc = int(cyc_key)
+        except Exception:
+            cyc = cyc_key
+        if cyc not in cycle_lines:
+            continue
+        target = cycle_lines[cyc]
+        if isinstance(target, dict):
+            for role in ("charge", "discharge"):
+                ln = target.get(role)
+                style = entry.get(role) if isinstance(entry, dict) else None
+                if ln is None or not isinstance(style, dict):
+                    continue
+                if 'color' in style:
+                    try:
+                        ln.set_color(style['color'])
+                    except Exception:
+                        pass
+                if 'visible' in style:
+                    try:
+                        ln.set_visible(bool(style['visible']))
+                    except Exception:
+                        pass
+        else:
+            ln = target
+            style = None
+            if isinstance(entry, dict):
+                style = entry.get('line', entry)
+            elif isinstance(entry, (list, tuple)):
+                continue
+            else:
+                style = entry
+            if ln is None or not isinstance(style, dict):
+                continue
+            if 'color' in style:
+                try:
+                    ln.set_color(style['color'])
+                except Exception:
+                    pass
+            if 'visible' in style:
+                try:
+                    ln.set_visible(bool(style['visible']))
+                except Exception:
+                    pass
 
 
 def _print_style_snapshot(cfg: Dict):
@@ -2465,6 +3161,24 @@ def _print_style_snapshot(cfg: Dict):
     font = cfg.get('font', {})
     print(f"Effective font size (labels/ticks): {font.get('size', '?')}")
     print(f"Font family chain (rcParams['font.sans-serif']): ['{font.get('family', '?')}']")
+
+    # Legend state
+    leg_cfg = cfg.get('legend', {})
+    if leg_cfg:
+        leg_vis = bool(leg_cfg.get('visible', False))
+        leg_pos = leg_cfg.get('position_inches')
+        if isinstance(leg_pos, (list, tuple)) and len(leg_pos) == 2:
+            try:
+                lx = float(leg_pos[0])
+                ly = float(leg_pos[1])
+                print(f"Legend: {'ON' if leg_vis else 'off'} at x={lx:.3f} in, y={ly:.3f} in (relative to canvas center)")
+            except Exception:
+                print(f"Legend: {'ON' if leg_vis else 'off'}; position stored but unreadable")
+        else:
+            print(f"Legend: {'ON' if leg_vis else 'off'}; position=auto")
+        legend_title = leg_cfg.get('title')
+        if legend_title:
+            print(f"Legend title: {legend_title}")
 
     # Rotation angle
     rotation_angle = cfg.get('rotation_angle', 0)
@@ -2507,7 +3221,8 @@ def _print_style_snapshot(cfg: Dict):
             props = spines.get(name, {})
             lw = props.get('linewidth', '?')
             vis = props.get('visible', False)
-            print(f"  {name:<6} lw={lw} visible={vis}")
+            col = props.get('color')
+            print(f"  {name:<6} lw={lw} visible={vis} color={col}")
 
     # Curve linewidth
     curve_linewidth = cfg.get('curve_linewidth')
@@ -2522,10 +3237,31 @@ def _print_style_snapshot(cfg: Dict):
         ms = curve_markers.get('markersize', 0)
         print(f"Curve style: linestyle={ls} marker={mk} markersize={ms}")
 
+    cycle_styles = cfg.get('cycle_styles', {})
+    if cycle_styles:
+        print("Cycle colors:")
+        def _cycle_sort_key(key):
+            try:
+                return int(key)
+            except Exception:
+                return key
+        for cyc_key in sorted(cycle_styles.keys(), key=_cycle_sort_key):
+            entry = cycle_styles[cyc_key] or {}
+            segments = []
+            for role_label, role_key in (('charge', 'charge'), ('discharge', 'discharge'), ('line', 'line')):
+                style = entry.get(role_key)
+                if not isinstance(style, dict):
+                    continue
+                color = style.get('color', 'unknown')
+                vis = 'ON' if style.get('visible', True) else 'off'
+                segments.append(f"{role_label}={color} ({vis})")
+            if segments:
+                print(f"  Cycle {cyc_key}: {', '.join(segments)}")
+
     print("--- End diagnostics ---\n")
 
 
-def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg'):
+def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Optional[str] = None):
     """Handles the dialog for exporting a style configuration to a file.
     
     Args:
@@ -2535,10 +3271,12 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg'):
     try:
         from .utils import list_files_in_subdirectory, get_organized_path
         # List files with matching extension in Styles/ subdirectory
-        file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style')
+        file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
         bpcfg_files = [f[0] for f in file_list]
         if bpcfg_files:
-            print(f"Existing {default_ext} files in Styles/:")
+            styles_root = base_path if base_path else os.getcwd()
+            styles_dir = os.path.join(styles_root, 'Styles')
+            print(f"Existing {default_ext} files in {styles_dir}:")
             for i, f in enumerate(bpcfg_files, 1):
                 print(f"  {i}: {f}")
         
@@ -2562,7 +3300,7 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg'):
             if os.path.isabs(filename_with_ext):
                 target_path = filename_with_ext
             else:
-                target_path = get_organized_path(filename_with_ext, 'style')
+                target_path = get_organized_path(filename_with_ext, 'style', base_path=base_path)
             
             if not _confirm_overwrite(target_path):
                 return
@@ -2573,3 +3311,59 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg'):
 
     except Exception as e:
         print(f"Export failed: {e}")
+def _legend_no_frame(ax, *args, title: Optional[str] = None, **kwargs):
+    leg = ax.legend(*args, **kwargs)
+    if leg is not None:
+        try:
+            leg.set_frame_on(False)
+        except Exception:
+            pass
+        if title:
+            try:
+                leg.set_title(title)
+            except Exception:
+                pass
+    return leg
+
+
+def _apply_legend_position(fig, ax):
+    xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', None))
+    if xy_in is None:
+        return False
+    handles, labels = _visible_legend_entries(ax)
+    if not handles:
+        return False
+    fw, fh = fig.get_size_inches()
+    if fw <= 0 or fh <= 0:
+        return False
+    fx = 0.5 + float(xy_in[0]) / float(fw)
+    fy = 0.5 + float(xy_in[1]) / float(fh)
+    _legend_no_frame(
+        ax,
+        handles,
+        labels,
+        loc='center',
+        bbox_to_anchor=(fx, fy),
+        bbox_transform=fig.transFigure,
+        borderaxespad=1.0,
+        title=_get_legend_title(fig),
+    )
+    return True
+
+
+def _sanitize_legend_offset(fig, xy):
+    if xy is None or not isinstance(xy, (tuple, list)) or len(xy) != 2:
+        return None
+    try:
+        x_val = float(xy[0])
+        y_val = float(xy[1])
+    except Exception:
+        return None
+    fw, fh = fig.get_size_inches()
+    if fw <= 0 or fh <= 0:
+        return None
+    max_x = fw * 0.45
+    max_y = fh * 0.45
+    if abs(x_val) > max_x or abs(y_val) > max_y:
+        return None
+    return (x_val, y_val)

@@ -16,9 +16,10 @@ from typing import List, Optional, Tuple, Dict, Any
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator, NullFormatter
+from matplotlib import colors as mcolors
 
 from .plotting import update_labels
-from .utils import _confirm_overwrite, normalize_label_text
+from .utils import _confirm_overwrite, normalize_label_text, choose_save_path, list_files_in_subdirectory, get_organized_path
 from .session import dump_session as _bp_dump_session
 from .ui import (
     apply_font_changes as _ui_apply_font_changes,
@@ -36,6 +37,15 @@ from .style import (
     print_style_info as _bp_print_style_info,
     export_style_config as _bp_export_style_config,
     apply_style_config as _bp_apply_style_config,
+)
+from .color_utils import (
+    color_block,
+    color_bar,
+    palette_preview,
+    manage_user_colors,
+    get_user_color_list,
+    resolve_color_token,
+    ensure_colormap,
 )
 
 
@@ -90,6 +100,30 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     
     # Provide a consistent interface for accessing CIF state
     _bp = type('CIFState', (), cif_globals)() if cif_globals else None
+
+    try:
+        raw_source_paths = list(getattr(args, 'files', []) or [])
+    except Exception:
+        raw_source_paths = []
+    source_file_paths = []
+    seen_source_paths = set()
+    for _p in raw_source_paths:
+        if not _p:
+            continue
+        try:
+            abs_p = os.path.abspath(_p)
+        except Exception:
+            continue
+        if not os.path.isfile(abs_p):
+            continue
+        if abs_p in seen_source_paths:
+            continue
+        seen_source_paths.add(abs_p)
+        source_file_paths.append(abs_p)
+    try:
+        fig._bp_source_paths = list(source_file_paths)
+    except Exception:
+        pass
 
     # Initialize rotation state (0, 90, 180, or 270 degrees)
     if not hasattr(ax, '_rotation_angle'):
@@ -238,6 +272,134 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     
     def position_left_ylabel():
         return _ui_position_left_ylabel(ax, fig, tick_state)
+    
+    def _title_offset_menu():
+        """Interactive nudging for duplicate top/right titles."""
+        def _dpi():
+            try:
+                return float(fig.dpi)
+            except Exception:
+                return 72.0
+
+        def _px_value(attr):
+            try:
+                pts = float(getattr(ax, attr, 0.0) or 0.0)
+            except Exception:
+                pts = 0.0
+            return pts * _dpi() / 72.0
+
+        def _set_attr(attr, pts):
+            try:
+                setattr(ax, attr, float(pts))
+            except Exception:
+                pass
+
+        def _nudge(attr, delta_px):
+            try:
+                current_pts = float(getattr(ax, attr, 0.0) or 0.0)
+            except Exception:
+                current_pts = 0.0
+            delta_pts = float(delta_px) * 72.0 / _dpi()
+            _set_attr(attr, current_pts + delta_pts)
+
+        snapshot_taken = False
+
+        def _ensure_snapshot():
+            nonlocal snapshot_taken
+            if not snapshot_taken:
+                push_state("title-offset")
+                snapshot_taken = True
+
+        def _top_menu():
+            if not getattr(ax, '_top_xlabel_on', False):
+                print("Top duplicate title is currently hidden (toggle with w5).")
+                return
+            while True:
+                current_px = _px_value('_top_xlabel_manual_offset_pts')
+                print(f"Top title offset: {current_px:+.2f} px (positive = up)")
+                sub = input("top (w=up, s=down, 0=reset, q=back): ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_top_xlabel_manual_offset_pts', 0.0)
+                elif sub == 'w':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_pts', +1.0)
+                elif sub == 's':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_pts', -1.0)
+                else:
+                    print("Unknown choice (use w/s/0/q).")
+                    continue
+                position_top_xlabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        def _right_menu():
+            if not getattr(ax, '_right_ylabel_on', False):
+                print("Right duplicate title is currently hidden (toggle with d5).")
+                return
+            while True:
+                current_px = _px_value('_right_ylabel_manual_offset_pts')
+                print(f"Right title offset: {current_px:+.2f} px (positive = right)")
+                sub = input("right (d=right, a=left, 0=reset, q=back): ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_right_ylabel_manual_offset_pts', 0.0)
+                elif sub == 'd':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_pts', +1.0)
+                elif sub == 'a':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_pts', -1.0)
+                else:
+                    print("Unknown choice (use d/a/0/q).")
+                    continue
+                position_right_ylabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        while True:
+            print("Adjust duplicate title positions (1 px per step).")
+            print("  w : top title (up/down)")
+            print("  d : right title (left/right)")
+            print("  r : reset both offsets")
+            print("  q : back to toggle menu")
+            choice = input("p> ").strip().lower()
+            if not choice:
+                continue
+            if choice == 'q':
+                break
+            if choice == 'w':
+                _top_menu()
+                continue
+            if choice == 'd':
+                _right_menu()
+                continue
+            if choice == 'r':
+                _ensure_snapshot()
+                _set_attr('_top_xlabel_manual_offset_pts', 0.0)
+                _set_attr('_right_ylabel_manual_offset_pts', 0.0)
+                position_top_xlabel()
+                position_right_ylabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+                print("Reset manual offsets for duplicate titles.")
+                continue
+            print("Unknown option. Use w/d/r/q.")
     
     def play_jump_game():
         """
@@ -500,7 +662,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                            labelleft=False, labelright=False)
 
     # NOTE: We keep margins stable (no auto-adjust on every toggle)
-    ensure_text_visibility()
+    if getattr(fig, '_skip_initial_text_visibility', False):
+        try:
+            delattr(fig, '_skip_initial_text_visibility')
+        except Exception:
+            pass
+    else:
+        ensure_text_visibility()
     fig.canvas.draw_idle()
 
     # NEW helper (was referenced in 'h' menu but not defined previously)
@@ -555,9 +723,22 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         )
 
     # NEW: export current style to .bpcfg
-    def export_style_config(filename):
+    def export_style_config(filename, base_path=None):
         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
-        return _bp_export_style_config(filename, fig, ax, y_data_list, labels, delta, args, tick_state, offsets_list, cts, label_text_objects)
+        return _bp_export_style_config(
+            filename,
+            fig,
+            ax,
+            y_data_list,
+            labels,
+            delta,
+            args,
+            tick_state,
+            offsets_list,
+            cts,
+            label_text_objects,
+            base_path=base_path,
+        )
 
     # NEW: apply imported style config (restricted application)
     def apply_style_config(filename):
@@ -704,13 +885,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         """Snapshot current editable state (before a modifying action)."""
         try:
             # Helper to capture a representative tick line width
-            def _tick_width(axis, which):
+            def _tick_width(axis_obj, which):
                 try:
-                    ticks = axis.get_major_ticks() if which=='major' else axis.get_minor_ticks()
-                    for t in ticks:
-                        ln = t.tick1line
-                        if ln.get_visible():
-                            return ln.get_linewidth()
+                    tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+                    width = tick_kw.get('width')
+                    if width is None:
+                        axis_name = getattr(axis_obj, 'axis_name', 'x')
+                        rc_key = f"{axis_name}tick.{which}.width"
+                        width = plt.rcParams.get(rc_key)
+                    if width is not None:
+                        return float(width)
                 except Exception:
                     return None
                 return None
@@ -730,6 +914,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 "axis_labels": {"xlabel": ax.get_xlabel(), "ylabel": ax.get_ylabel()},
                 "axis_titles": {"top_x": bool(getattr(ax, '_top_xlabel_on', False)),
                                  "right_y": bool(getattr(ax, '_right_ylabel_on', False))},
+                "title_offsets": {
+                    "top": float(getattr(ax, '_top_xlabel_manual_offset_pts', 0.0) or 0.0),
+                    "right": float(getattr(ax, '_right_ylabel_manual_offset_pts', 0.0) or 0.0),
+                },
                 "spines": {name: {"lw": sp.get_linewidth(), "color": sp.get_edgecolor(), "visible": sp.get_visible()} for name, sp in ax.spines.items()},
                 "tick_widths": {
                     "x_major": _tick_width(ax.xaxis, 'major'),
@@ -843,6 +1031,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 ax.xaxis.label.set_text(axis_labels["xlabel"])
             if axis_labels.get("ylabel") is not None:
                 ax.yaxis.label.set_text(axis_labels["ylabel"])
+            # Manual offsets for duplicate titles
+            title_offsets = snap.get("title_offsets", {})
+            try:
+                ax._top_xlabel_manual_offset_pts = float(title_offsets.get('top', 0.0) or 0.0)
+            except Exception:
+                ax._top_xlabel_manual_offset_pts = 0.0
+            try:
+                ax._right_ylabel_manual_offset_pts = float(title_offsets.get('right', 0.0) or 0.0)
+            except Exception:
+                ax._right_ylabel_manual_offset_pts = 0.0
 
             # Axis title duplicates (top X / right Y)
             at = snap.get("axis_titles", {})
@@ -871,12 +1069,19 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             # Spines (linewidth, color, visibility)
             for name, spec in snap.get("spines", {}).items():
                 sp_obj = ax.spines.get(name)
-                if sp_obj is None: continue
+                if sp_obj is None:
+                    continue
                 try:
                     if "lw" in spec:
                         sp_obj.set_linewidth(spec["lw"])
                     if "color" in spec and spec["color"] is not None:
-                        sp_obj.set_edgecolor(spec["color"]) 
+                        sp_obj.set_edgecolor(spec["color"])
+                        if name in ('top', 'bottom'):
+                            ax.tick_params(axis='x', which='both', colors=spec['color'])
+                            ax.xaxis.label.set_color(spec['color'])
+                        else:
+                            ax.tick_params(axis='y', which='both', colors=spec['color'])
+                            ax.yaxis.label.set_color(spec['color'])
                     if "visible" in spec:
                         try:
                             sp_obj.set_visible(bool(spec["visible"]))
@@ -951,6 +1156,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             orig_y[:]      = [np.array(a, copy=True) for a in snap["orig_y"]]
             offsets_list[:] = list(snap["offsets"]) 
             delta = snap.get("delta", delta)
+            
+            # Update line data with restored values
+            for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
+                try:
+                    ax.lines[i].set_data(x_data_list[i], y_data_list[i])
+                except Exception:
+                    pass
 
             # Restore rotation angle
             if 'rotation_angle' in snap:
@@ -1122,7 +1334,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 's':
             # Save current interactive session with numbered overwrite picker
             try:
-                folder = os.getcwd()
+                folder = choose_save_path(source_file_paths, purpose="project save")
+                if not folder:
+                    print("Save canceled.")
+                    continue
                 files = []
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
@@ -1201,13 +1416,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     pass
                 while True:
                     print("\033[1mColor menu:\033[0m")
-                    print(f"  {colorize_menu('m : manual color mapping  (e.g., 1:red 2:#00B006)')}")
+                    print(f"  {colorize_menu('m : set curve colors (e.g., 1 red 2:u3 or 1:red 2:#00B006)')}")
                     print(f"  {colorize_menu('p : apply colormap palette to a range (e.g., 1-3 viridis)')}")
-                    print(f"  {colorize_menu('s : spine colors (e.g., w:red a:#4561F7 for top & left)')}")
+                    print(f"  {colorize_menu('s : spine/tick colors (e.g., w red a u3 or w:red a:#4561F7)')}")
                     if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
                         print(f"  {colorize_menu('t : change CIF tick set color (e.g., 1:red 2:#888888)')}")
+                    print(f"  {colorize_menu('u : manage saved colors (use in m/p via number or u#)')}")
                     print(f"  {colorize_menu('q : return to main menu')}")
-                    sub = input(colorize_prompt("Choose (m/p/s/t/q): ")).strip().lower()
+                    sub = input(colorize_prompt("Choose (m/p/s/t/u/q): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == '':
@@ -1215,48 +1431,96 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if sub == 'm':
                         print("Current curves (q to cancel):")
                         for idx, label in enumerate(labels):
-                            print(f"{idx+1}: {label}")
-                        color_input = input("Enter colors (e.g., 1:red 2:#00B006) or q: ").strip()
+                            try:
+                                current_color = ax.lines[idx].get_color()
+                            except Exception:
+                                current_color = None
+                            print(f"{idx+1}: {color_block(current_color)} {label} ({current_color})")
+                        user_colors = get_user_color_list(fig)
+                        if user_colors:
+                            print("\nSaved colors (refer as number or u#):")
+                            for idx, color in enumerate(user_colors, 1):
+                                print(f"  {idx}: {color_block(color)} {color}")
+                        color_input = input("Enter curve+color pairs (e.g., 1 red 2:u3) or q: ").strip()
                         if not color_input or color_input.lower() == 'q':
                             print("Canceled.")
                         else:
                             push_state("color-manual")
                             entries = color_input.split()
-                            for entry in entries:
-                                if ":" not in entry:
-                                    print(f"Skip malformed token: {entry}")
-                                    continue
-                                idx_str, color = entry.split(":", 1)
-                                try:
-                                    i = int(idx_str) - 1
-                                    if 0 <= i < len(ax.lines):
-                                        ax.lines[i].set_color(color)
+                            def _apply_manual_entries(tokens):
+                                idx_color_pairs = []
+                                i = 0
+                                while i < len(tokens):
+                                    tok = tokens[i]
+                                    if ':' in tok:
+                                        idx_str, color = tok.split(':', 1)
                                     else:
+                                        if i + 1 >= len(tokens):
+                                            print(f"Skip incomplete entry: {tok}")
+                                            break
+                                        idx_str = tok
+                                        color = tokens[i + 1]
+                                        i += 1
+                                    idx_color_pairs.append((idx_str, color))
+                                    i += 1
+                                for idx_str, color in idx_color_pairs:
+                                    try:
+                                        line_idx = int(idx_str) - 1
+                                    except ValueError:
+                                        print(f"Bad index: {idx_str}")
+                                        continue
+                                    if not (0 <= line_idx < len(ax.lines)):
                                         print(f"Index out of range: {idx_str}")
-                                except ValueError:
-                                    print(f"Bad index: {idx_str}")
+                                        continue
+                                    resolved = resolve_color_token(color, fig)
+                                    ax.lines[line_idx].set_color(resolved)
+                            _apply_manual_entries(entries)
                             # Update label colors to match new curve colors
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            # Manual edits override any palette history
+                            try:
+                                fig._curve_palette_history = []
+                            except Exception:
+                                pass
                         fig.canvas.draw()
+                    elif sub == 'u':
+                        manage_user_colors(fig)
+                        continue
                     elif sub == 's':
-                        # Spine colors (w=top, a=left, s=bottom, d=right)
-                        print("Set spine colors (with matching tick and label colors):")
-                        print(colorize_inline_commands("  w : top spine    | a : left spine"))
-                        print(colorize_inline_commands("  s : bottom spine | d : right spine"))
-                        print(colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
-                        line = input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
+                        print("Set spine/tick colors (w=top, a=left, s=bottom, d=right).")
+                        print(colorize_inline_commands("Example: w red a u3  OR  w:red a:#4561F7"))
+                        user_colors = get_user_color_list(fig)
+                        if user_colors:
+                            print("\nSaved colors (enter number or u# in place of a color):")
+                            for idx, color in enumerate(user_colors, 1):
+                                print(f"  {idx}: {color_block(color)} {color}")
+                            print("Type 'u' to edit saved colors.")
+                        line = input("Enter mappings (e.g., w red a u3) or q: ").strip()
+                        if line.lower() == 'u':
+                            manage_user_colors(fig)
+                            continue
                         if not line or line.lower() == 'q':
                             print("Canceled.")
                         else:
                             push_state("color-spine")
-                            # Map wasd to spine names
                             key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
                             tokens = line.split()
-                            for token in tokens:
-                                if ':' not in token:
-                                    print(f"Skip malformed token: {token}")
-                                    continue
-                                key_part, color = token.split(':', 1)
+                            pairs = []
+                            i = 0
+                            while i < len(tokens):
+                                tok = tokens[i]
+                                if ':' in tok:
+                                    key_part, color = tok.split(':', 1)
+                                else:
+                                    if i + 1 >= len(tokens):
+                                        print(f"Skip incomplete entry: {tok}")
+                                        break
+                                    key_part = tok
+                                    color = tokens[i + 1]
+                                    i += 1
+                                pairs.append((key_part.lower(), color))
+                                i += 1
+                            for key_part, color in pairs:
                                 key_part = key_part.lower()
                                 if key_part not in key_to_spine:
                                     print(f"Unknown key: {key_part} (use w/a/s/d)")
@@ -1266,19 +1530,22 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     print(f"Spine '{spine_name}' not found.")
                                     continue
                                 try:
-                                    # Set spine color
-                                    ax.spines[spine_name].set_edgecolor(color)
-                                    # Set tick colors and axis label color for this axis
+                                    resolved = resolve_color_token(color, fig)
+                                    ax.spines[spine_name].set_edgecolor(resolved)
                                     if spine_name in ('top', 'bottom'):
-                                        ax.tick_params(axis='x', which='both', colors=color)
-                                        ax.xaxis.label.set_color(color)
-                                    else:  # left or right
-                                        ax.tick_params(axis='y', which='both', colors=color)
-                                        ax.yaxis.label.set_color(color)
-                                    print(f"Set {spine_name} spine to {color}")
+                                        ax.tick_params(axis='x', which='both', colors=resolved)
+                                        ax.xaxis.label.set_color(resolved)
+                                    else:
+                                        ax.tick_params(axis='y', which='both', colors=resolved)
+                                        ax.yaxis.label.set_color(resolved)
+                                    print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                                    if spine_name == 'top':
+                                        position_top_xlabel()
+                                    elif spine_name == 'right':
+                                        position_right_ylabel()
                                 except Exception as e:
                                     print(f"Error setting {spine_name} color: {e}")
-                            fig.canvas.draw()
+                        fig.canvas.draw()
                     elif sub == 't' and has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
                         cts = getattr(_bp, 'cif_tick_series', [])
                         print("Current CIF tick sets:")
@@ -1308,16 +1575,49 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 ax._cif_draw_func()
                         fig.canvas.draw()
                     elif sub == 'p':
-                        base_palettes = ['viridis', 'plasma', 'inferno', 'magma', 'batlow']
+                        history = getattr(fig, '_curve_palette_history', [])
+                        current_palette = history[-1]['palette'] if history else None
+                        if current_palette:
+                            print(f"Current palette: {current_palette}")
+                        else:
+                            print("Current palette: manual/custom")
+                        base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
                         extras = []
+                        def _palette_available(name: str) -> bool:
+                            if name in plt.colormaps():
+                                return True
+                            lower = name.lower()
+                            if lower.startswith('batlow'):
+                                return ensure_colormap(name)
+                            return False
                         if 'turbo' in plt.colormaps():
                             extras.append('turbo')
-                        if 'batlowK' in plt.colormaps():
-                            extras.append('batlowK')
-                        print("Common perceptually uniform palettes:")
-                        print("  " + ", ".join(base_palettes + extras[:2]))
+                        for extra in ('batlowK', 'batlowW'):
+                            if _palette_available(extra):
+                                extras.append(extra)
+                        palette_options = base_palettes + extras[:3]
+                        desc_map = {
+                            'viridis': 'Perceptually uniform (blue→yellow)',
+                            'cividis': 'Perceptually uniform (blue→olive)',
+                            'plasma': 'Perceptually uniform (purple→yellow)',
+                            'inferno': 'High-contrast (dark→bright)',
+                            'magma': 'Soft dark-to-light purple',
+                            'batlow': 'Colorblind-friendly sequential',
+                            'turbo': 'Vibrant rainbow (Google Turbo)',
+                            'batlowK': 'Dark-to-light variant of batlow',
+                            'batlowW': 'Warm variant of batlow',
+                        }
+                        palette_index = {str(i): name for i, name in enumerate(palette_options, 1)}
+                        print("Common perceptually uniform palettes (numbers optional):")
+                        for idx, name in enumerate(palette_options, 1):
+                            bar = palette_preview(name)
+                            desc = desc_map.get(name, '')
+                            extra = f" - {desc}" if desc else ''
+                            print(f"  {idx}. {name}{extra}")
+                            if bar:
+                                print(f"      {bar}")
                         print(colorize_inline_commands("Example: 1-4 viridis   or: all magma_r   or: 1-3,5 plasma, _r for reverse"))
-                        line = input("Enter range(s) and palette (e.g., '1-3 viridis') or q: ").strip()
+                        line = input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
                         if not line or line.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -1326,6 +1626,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print("Need range(s) and palette.")
                             else:
                                 palette_name = parts[-1]
+                                def _resolve_palette_token(token: str) -> str:
+                                    suffix = ''
+                                    base = token
+                                    if token.lower().endswith('_r'):
+                                        suffix = '_r'
+                                        base = token[:-2]
+                                    if base in palette_index:
+                                        return palette_index[base] + suffix
+                                    return token
+                                palette_name = _resolve_palette_token(palette_name)
                                 range_part = " ".join(parts[:-1]).replace(" ", "")
                                 def parse_ranges(spec, total):
                                     spec = spec.lower()
@@ -1362,6 +1672,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 if not indices:
                                     print("No valid indices parsed.")
                                 else:
+                                    ensure_colormap(palette_name)
                                     try:
                                         cmap = plt.get_cmap(palette_name)
                                     except ValueError:
@@ -1396,8 +1707,27 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         # Update label colors to match new curve colors
                                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                                         fig.canvas.draw()
+                                        try:
+                                            applied_preview = color_bar([mcolors.to_hex(c) for c in colors])
+                                        except Exception:
+                                            applied_preview = ""
                                         print(f"Applied '{palette_name}' to curves: " +
                                               ", ".join(str(i+1) for i in indices))
+                                        if applied_preview:
+                                            print(f"  {applied_preview}")
+                                        # Record palette usage for style export
+                                        try:
+                                            history = list(getattr(fig, '_curve_palette_history', []))
+                                        except Exception:
+                                            history = []
+                                        entry = {
+                                            'palette': palette_name,
+                                            'indices': [i + 1 for i in indices],
+                                            'low_clip': low_clip,
+                                            'high_clip': high_clip,
+                                        }
+                                        history.append(entry)
+                                        fig._curve_palette_history = history
                     else:
                         print("Unknown color submenu option.")
             except Exception as e:
@@ -1745,11 +2075,17 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     try:
                         push_state("reset-offsets")
                         for i in range(len(labels)):
+                            if i >= len(ax.lines):
+                                continue
+                            # Get current x-data from the line
+                            current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
                             # Reset to normalized data without any offset
                             y_norm = orig_y[i]
                             y_data_list[i] = y_norm.copy()
                             offsets_list[i] = 0.0
-                            ax.lines[i].set_data(x_data_list[i], y_norm)
+                            # Update x_data_list to match current line data
+                            x_data_list[i] = current_x.copy()
+                            ax.lines[i].set_data(current_x, y_norm)
                         
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -1774,13 +2110,19 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         
                         # Add total offset to all curves
                         for i in range(len(labels)):
+                            if i >= len(ax.lines):
+                                continue
+                            # Get current x-data from the line to ensure we're working with actual displayed data
+                            current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
                             y_norm = orig_y[i]
-                            current_individual = offsets_list[i]
+                            current_individual = offsets_list[i] if i < len(offsets_list) else 0.0
                             new_offset = current_individual + total_offset
                             offsets_list[i] = new_offset
                             y_with_offset = y_norm + new_offset
                             y_data_list[i] = y_with_offset
-                            ax.lines[i].set_data(x_data_list[i], y_with_offset)
+                            # Update x_data_list to match current line data
+                            x_data_list[i] = current_x.copy()
+                            ax.lines[i].set_data(current_x, y_with_offset)
                         
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -1809,20 +2151,32 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         if args.stack:
                             current_offset = 0.0
                             for i, y_norm in enumerate(orig_y):
+                                if i >= len(ax.lines):
+                                    continue
+                                # Get current x-data from the line
+                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
                                 y_with_offset = y_norm + current_offset
                                 y_data_list[i] = y_with_offset
                                 offsets_list.append(current_offset)
-                                ax.lines[i].set_data(x_data_list[i], y_with_offset)
+                                # Update x_data_list to match current line data
+                                x_data_list[i] = current_x.copy()
+                                ax.lines[i].set_data(current_x, y_with_offset)
                                 y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
                                 gap = y_range + (delta * (y_range if args.autoscale else 1.0))
                                 current_offset -= gap
                         else:
                             current_offset = 0.0
                             for i, y_norm in enumerate(orig_y):
+                                if i >= len(ax.lines):
+                                    continue
+                                # Get current x-data from the line
+                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
                                 y_with_offset = y_norm + current_offset
                                 y_data_list[i] = y_with_offset
                                 offsets_list.append(current_offset)
-                                ax.lines[i].set_data(x_data_list[i], y_with_offset)
+                                # Update x_data_list to match current line data
+                                x_data_list[i] = current_x.copy()
+                                ax.lines[i].set_data(current_x, y_with_offset)
                                 increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
                                 current_offset += increment
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -1843,7 +2197,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         
                         idx = curve_num - 1
-                        current_offset = offsets_list[idx]
+                        if idx >= len(ax.lines):
+                            print("Invalid curve number.")
+                            continue
+                        
+                        current_offset = offsets_list[idx] if idx < len(offsets_list) else 0.0
                         
                         individual_offset_input = input("Enter offset for curve {} (current: {:.4g}): ".format(
                             curve_num, current_offset)).strip()
@@ -1854,12 +2212,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         individual_offset = float(individual_offset_input)
                         push_state("curve-{}-offset".format(curve_num))
                         
+                        # Get current x-data from the line to ensure we're working with actual displayed data
+                        current_x = np.asarray(ax.lines[idx].get_xdata(), dtype=float)
                         # Apply individual offset to this curve
                         y_norm = orig_y[idx]
                         offsets_list[idx] = individual_offset
                         y_with_offset = y_norm + individual_offset
                         y_data_list[idx] = y_with_offset
-                        ax.lines[idx].set_data(x_data_list[idx], y_with_offset)
+                        # Update x_data_list to match current line data
+                        x_data_list[idx] = current_x.copy()
+                        ax.lines[idx].set_data(current_x, y_with_offset)
                         
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -1976,16 +2338,88 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print("Invalid choice")
         elif key == 'l':
             try:
+                def _select_lines(ax_obj, prompt_text):
+                    total = len(ax_obj.lines)
+                    if total == 0:
+                        print("No curves to modify.")
+                        return []
+                    print(f"Total curves available: {total}")
+                    raw = input(prompt_text + " ").strip().lower()
+                    if not raw or raw in ('all', '*'):
+                        return list(range(total))
+                    import re as _re
+                    tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
+                    selected = []
+                    for tok in tokens:
+                        try:
+                            idx = int(tok) - 1
+                            if 0 <= idx < total:
+                                if idx not in selected:
+                                    selected.append(idx)
+                            else:
+                                print(f"Index out of range: {tok}")
+                        except ValueError:
+                            print(f"Skipping invalid token: {tok}")
+                    return selected
+
+                def _prompt_float(prompt_text):
+                    raw = input(prompt_text).strip()
+                    if not raw:
+                        return None
+                    if raw.lower() == 'q':
+                        return None
+                    try:
+                        return float(raw)
+                    except ValueError:
+                        print("Invalid number, using default.")
+                        return None
+
+                def _prompt_dash_pattern(kind='dash'):
+                    if kind == 'dashdot':
+                        raw = input("Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=cancel): ").strip().lower()
+                        default = (6.0, 3.0, 1.0, 3.0)
+                    else:
+                        raw = input("Dash pattern 'length gap' (blank=6 3, q=cancel): ").strip().lower()
+                        default = (6.0, 3.0)
+                    if not raw:
+                        return default
+                    if raw == 'q':
+                        print("Canceled.")
+                        return None
+                    import re as _re
+                    tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
+                    try:
+                        if kind == 'dashdot':
+                            if len(tokens) == 2:
+                                dash = float(tokens[0]); gap = float(tokens[1])
+                                dot = min(dash * 0.2, 2.0)
+                                return (dash, gap, dot, gap)
+                            elif len(tokens) >= 4:
+                                return tuple(float(tokens[i]) for i in range(4))
+                        else:
+                            if len(tokens) == 1:
+                                val = float(tokens[0])
+                                return (val, val)
+                            elif len(tokens) >= 2:
+                                return (float(tokens[0]), float(tokens[1]))
+                    except ValueError:
+                        print("Invalid dash pattern.")
+                        return None
+                    print("Invalid dash pattern.")
+                    return None
+
                 while True:
                     print("\033[1mLine submenu:\033[0m")
                     print(f"  {colorize_menu('c  : change curve line widths')}")
                     print(f"  {colorize_menu('f  : change frame (axes spines) and tick widths')}")
                     print(f"  {colorize_menu('g  : toggle grid lines')}")
-                    print(f"  {colorize_menu('l  : show only lines (no markers) for all curves')}")
-                    print(f"  {colorize_menu('ld : show line and dots (markers) for all curves')}")
-                    print(f"  {colorize_menu('d  : show only dots (no connecting line) for all curves')}")
+                    print(f"  {colorize_menu('l  : show only lines (no markers) for selected curves')}")
+                    print(f"  {colorize_menu('ld : show line and dots for selected curves')}")
+                    print(f"  {colorize_menu('d  : show only dots for selected curves')}")
+                    print(f"  {colorize_menu('da : dashed line for selected curves')}")
+                    print(f"  {colorize_menu('dd : dashed line + dots for selected curves')}")
                     print(f"  {colorize_menu('q  : return')}")
-                    sub = input(colorize_prompt("Choose (c/f/g/l/ld/d/q): ")).strip().lower()
+                    sub = input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == '':
@@ -2067,28 +2501,24 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         fig.canvas.draw()
                         print(f"Grid {'enabled' if new_grid_state else 'disabled'}.")
                     elif sub == 'l':
-                        # Line-only mode: set linestyle to solid and remove markers
+                        targets = _select_lines(ax, "line-only targets (numbers or 'all'):")
+                        if not targets:
+                            continue
                         push_state("line-only")
-                        for ln in ax.lines:
-                            # Check if already in line-only mode (has line style and no marker)
-                            current_ls = ln.get_linestyle()
-                            current_marker = ln.get_marker()
-                            # If already line-only (has line, no marker), skip
-                            if current_ls not in ['None', '', ' ', 'none'] and current_marker in ['None', '', ' ', 'none', None]:
-                                continue
-                            # Otherwise, set to line-only
+                        for idx in targets:
+                            ln = ax.lines[idx]
                             ln.set_linestyle('-')
                             ln.set_marker('None')
                         fig.canvas.draw()
-                        print("Applied line-only style to all curves.")
+                        print(f"Applied line-only style to curves: {', '.join(str(i+1) for i in targets)}")
                     elif sub == 'ld':
+                        targets = _select_lines(ax, "line+dots targets (numbers or 'all'):")
+                        if not targets:
+                            continue
                         push_state("line+dots")
-                        try:
-                            msize_in = input("Marker size (blank=auto ~3*lw): ").strip()
-                            custom_msize = float(msize_in) if msize_in else None
-                        except ValueError:
-                            custom_msize = None
-                        for ln in ax.lines:
+                        custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
+                        for idx in targets:
+                            ln = ax.lines[idx]
                             lw = ln.get_linewidth() or 1.0
                             ln.set_linestyle('-')
                             ln.set_marker('o')
@@ -2101,15 +2531,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             except Exception:
                                 pass
                         fig.canvas.draw()
-                        print("Applied line+dots style to all curves.")
+                        print(f"Applied line+dots style to curves: {', '.join(str(i+1) for i in targets)}")
                     elif sub == 'd':
+                        targets = _select_lines(ax, "dots-only targets (numbers or 'all'):")
+                        if not targets:
+                            continue
                         push_state("dots-only")
-                        try:
-                            msize_in = input("Marker size (blank=auto ~3*lw): ").strip()
-                            custom_msize = float(msize_in) if msize_in else None
-                        except ValueError:
-                            custom_msize = None
-                        for ln in ax.lines:
+                        custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
+                        for idx in targets:
+                            ln = ax.lines[idx]
                             lw = ln.get_linewidth() or 1.0
                             ln.set_linestyle('None')
                             ln.set_marker('o')
@@ -2122,7 +2552,36 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             except Exception:
                                 pass
                         fig.canvas.draw()
-                        print("Applied dots-only style to all curves.")
+                        print(f"Applied dots-only style to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'da':
+                        targets = _select_lines(ax, "dashed-line targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        dash_vals = _prompt_dash_pattern()
+                        if dash_vals is None:
+                            continue
+                        dash_len, gap_len = dash_vals
+                        push_state("dashed-line")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            ln.set_marker('None')
+                            ln.set_linestyle((0, (dash_len, gap_len)))
+                        fig.canvas.draw()
+                        print(f"Applied dashed lines to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'dd':
+                        targets = _select_lines(ax, "dash-dot targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        dash_vals = _prompt_dash_pattern(kind='dashdot')
+                        if dash_vals is None:
+                            continue
+                        push_state("dash-dot")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            ln.set_marker('None')
+                            ln.set_linestyle((0, dash_vals))
+                        fig.canvas.draw()
+                        print(f"Applied dash-dot style to curves: {', '.join(str(i+1) for i in targets)}")
                     else:
                         print("Unknown submenu option.")
             except Exception as e:
@@ -2265,6 +2724,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print(colorize_inline_commands("  1..5 choose what: 1=spine line, 2=major ticks, 3=minor ticks, 4=labels, 5=axis title"))
                     print(colorize_inline_commands("  Combine letter+number to toggle, e.g. 's2 w5 a4' (case-insensitive)"))
                     print(colorize_inline_commands("  i = invert tick direction, l = change tick length, list = show state, q = return"))
+                    print(colorize_inline_commands("  p = adjust duplicate title offsets (w=top, d=right)"))
                     cmd = input("Enter code(s): ").strip().lower()
                     if not cmd:
                         continue
@@ -2282,6 +2742,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             fig.canvas.draw()
                         except Exception:
                             fig.canvas.draw_idle()
+                        continue
+                    if cmd == 'p':
+                        _title_offset_menu()
                         continue
                     if cmd == 'l':
                         # Change tick length (major and minor automatically set to 70%)
@@ -2573,8 +3036,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if sub == 'r' or sub == '':
                         continue
                     if sub == 'e':
+                        save_base = choose_save_path(source_file_paths, purpose="style export")
+                        if not save_base:
+                            print("Style export canceled.")
+                            continue
                         # Call export_style_config which handles the entire export dialog
-                        export_style_config(None)  # The filename parameter is ignored by the function
+                        export_style_config(None, base_path=save_base)  # filename parameter ignored
                         style_menu_active = False  # Exit style submenu and return to main menu
                         break
                     else:
@@ -2636,12 +3103,17 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 'e':
             try:
                 from .utils import list_files_in_subdirectory, get_organized_path
+                base_path = choose_save_path(source_file_paths, purpose="figure export")
+                if not base_path:
+                    print("Export canceled.")
+                    continue
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
-                file_list = list_files_in_subdirectory(fig_extensions, 'figure')
+                file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
                 files = [f[0] for f in file_list]
                 if files:
-                    print("Existing figure files in Figures/:")
+                    figures_dir = os.path.join(base_path, 'Figures')
+                    print(f"Existing figure files in {figures_dir}:")
                     for i, f in enumerate(files, 1):
                         print(f"  {i}: {f}")
                 
@@ -2672,7 +3144,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if os.path.isabs(filename):
                         export_target = filename
                     else:
-                        export_target = get_organized_path(filename, 'figure')
+                        export_target = get_organized_path(filename, 'figure', base_path=base_path)
                 
                 # Confirm overwrite if file exists (and not already confirmed by number selection)
                 if not already_confirmed:

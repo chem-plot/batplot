@@ -36,6 +36,10 @@ batplot allfiles
 batplot allfiles --stack --interactive
 batplot allfiles --xaxis 2theta --xrange 10 80
 
+# Only plot a specific extension (natural-sorted)
+batplot allxyfiles
+batplot "/path/to/data" allnorfiles --interactive
+
 # Batch mode: export all XY files to SVG
 batplot --all
 

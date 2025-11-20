@@ -51,7 +51,7 @@ Batplot supports three main figure types:
 
 **Single/Multiple Files**: Specify files individually for precise control.
 
-**All Files Together (`allfiles`)**: Plot all XY files in the current directory on the **same figure**. Perfect for comparing multiple patterns. Supports all options (--stack, --interactive, --xaxis, etc.).
+**All Files Together (`allfiles` / `all<ext>files`)**: Plot all supported files in the current directory on the **same figure**. Use `allfiles` for every extension, or `allxyfiles`, `allnorfiles`, etc. to restrict to a single file type. Files are loaded in natural (human) order so `scan2.xy` appears before `scan10.xy`. Supports all options (--stack, --interactive, --xaxis, etc.).
 
 **Batch Mode (`--all`)**: Export each file as a **separate SVG**. Perfect for preparing publication figures. Supports options like --xaxis, --xrange, --wl, --norm.
 
@@ -59,6 +59,7 @@ Batplot supports three main figure types:
 |---------|--------------|--------------|--------|
 | `batplot file1.xy file2.xy` | Plot specific files together | ✅ Yes | Single figure |
 | `batplot allfiles` | Plot all XY files together | ✅ Yes | Single figure |
+| `batplot allxyfiles` | Plot only `.xy` files together | ✅ Yes | Single figure |
 | `batplot --all` | Export each file separately | ❌ No | Multiple SVG files |
 
 ### Example Usage
@@ -93,6 +94,12 @@ batplot allfiles --xaxis 2theta --xrange 10 80 --interactive
 
 batplot allfiles --norm --interactive
 # Plot all files with normalized intensities
+
+batplot allxyfiles
+# Only plot .xy files (natural ordering: file2 before file10)
+
+batplot "/path/to/data" allnorfiles --interactive
+# Plot only .nor files from a folder with the interactive menu
 
 batplot --all
 # Batch mode: save all supported files in the current folder as SVG images

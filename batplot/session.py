@@ -9,10 +9,112 @@ from __future__ import annotations
 import pickle
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-import numpy as np
+import os
+
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .utils import _confirm_overwrite
+
+
+def _current_tick_width(axis_obj, which: str):
+    """Return the configured tick width for the given X/Y axis."""
+    try:
+        tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+        width = tick_kw.get('width')
+        if width is None:
+            axis_name = getattr(axis_obj, 'axis_name', 'x')
+            rc_key = f"{axis_name}tick.{which}.width"
+            width = plt.rcParams.get(rc_key)
+        if width is not None:
+            return float(width)
+    except Exception:
+        pass
+    return None
+
+
+def _axis_label_text(ax, attr_name: str, getter):
+    try:
+        stored = getattr(ax, attr_name)
+        if isinstance(stored, str) and stored:
+            return stored
+    except Exception:
+        pass
+    try:
+        return getter() or ''
+    except Exception:
+        return ''
+
+
+def _apply_axes_bbox(ax, bbox) -> bool:
+    """Apply stored axes bbox (left/right/bottom/top fractions)."""
+    if not isinstance(bbox, dict):
+        return False
+    required = ('left', 'right', 'bottom', 'top')
+    if not all(k in bbox for k in required):
+        return False
+    try:
+        left = float(bbox['left'])
+        right = float(bbox['right'])
+        bottom = float(bbox['bottom'])
+        top = float(bbox['top'])
+        width = right - left
+        height = top - bottom
+        if width <= 0 or height <= 0:
+            return False
+        ax.set_position([left, bottom, width, height])
+        return True
+    except Exception:
+        return False
+
+
+def _get_primary_axis_label(ax, axis: str) -> str:
+    """Get primary axis label text, falling back to stored value when hidden."""
+    if axis == 'x':
+        label = ax.xaxis.label
+        stored_attr = '_stored_xlabel'
+    else:
+        label = ax.yaxis.label
+        stored_attr = '_stored_ylabel'
+    text = ''
+    try:
+        text = label.get_text() or ''
+    except Exception:
+        text = ''
+    if not text and hasattr(ax, stored_attr):
+        try:
+            stored = getattr(ax, stored_attr)
+            if stored:
+                text = stored
+        except Exception:
+            text = ''
+    return text or ''
+
+
+def _get_duplicate_axis_label(ax, which: str, fallback: str = '') -> str:
+    """Get duplicate axis label (top/right) text."""
+    if which == 'top':
+        artist_attr = '_top_xlabel_artist'
+        override_attr = '_top_xlabel_text_override'
+    else:
+        artist_attr = '_right_ylabel_artist'
+        override_attr = '_right_ylabel_text_override'
+    if hasattr(ax, override_attr):
+        try:
+            override_val = getattr(ax, override_attr)
+            if override_val:
+                return override_val
+        except Exception:
+            pass
+    artist = getattr(ax, artist_attr, None)
+    if artist is not None and hasattr(artist, 'get_text'):
+        try:
+            txt = artist.get_text()
+            if txt:
+                return txt
+        except Exception:
+            pass
+    return fallback or ''
 
 
 # ------------------------- Generic XY session (existing) -------------------------
@@ -84,15 +186,7 @@ def dump_session(
 
     # Helper to capture a representative tick line width
     def _tick_width(axis, which: str):
-        try:
-            ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-            for t in ticks:
-                ln = t.tick1line
-                if ln.get_visible():
-                    return ln.get_linewidth()
-        except Exception:
-            return None
-        return None
+        return _current_tick_width(axis, which)
 
     tick_widths = {
         'x_major': _tick_width(ax.xaxis, 'major'),
@@ -137,10 +231,9 @@ def dump_session(
             prefix = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}[side]
             # Consistent tick/title state logic for all sides
             if side == 'left':
-                ylabel_text = axis.get_ylabel()
-                title_state = bool(ylabel_text)
+                title_state = bool(axis.yaxis.label.get_visible())
             elif side == 'bottom':
-                title_state = bool(axis.get_xlabel())
+                title_state = bool(axis.xaxis.label.get_visible())
             elif side == 'top':
                 title_state = bool(getattr(axis, '_top_xlabel_on', False))
             elif side == 'right':
@@ -224,8 +317,14 @@ def dump_session(
         sess['axis_titles'] = {
             'top_x': bool(getattr(ax, '_top_xlabel_on', False)),
             'right_y': bool(getattr(ax, '_right_ylabel_on', False)),
-            'has_bottom_x': bool(ax.get_xlabel()),
-            'has_left_y': bool(ax.get_ylabel()),
+            'has_bottom_x': bool(ax.xaxis.label.get_visible()),
+            'has_left_y': bool(ax.yaxis.label.get_visible()),
+        }
+        sess['axis_title_texts'] = {
+            'bottom_x': _get_primary_axis_label(ax, 'x'),
+            'left_y': _get_primary_axis_label(ax, 'y'),
+            'top_x': _get_duplicate_axis_label(ax, 'top', _get_primary_axis_label(ax, 'x')),
+            'right_y': _get_duplicate_axis_label(ax, 'right', _get_primary_axis_label(ax, 'y')),
         }
         # Save curve names visibility
         sess['curve_names_visible'] = bool(getattr(fig, '_curve_names_visible', True))
@@ -367,25 +466,17 @@ def dump_operando_session(
             for name in ('bottom', 'top', 'left', 'right'):
                 sp = axis.spines.get(name)
                 if sp:
-                    spines[name] = {'linewidth': float(sp.get_linewidth()), 'visible': bool(sp.get_visible())}
-            
-            def _tick_width(axis_obj, which_axis='x', which_tick='major'):
-                try:
-                    ticks = axis_obj.xaxis.get_major_ticks() if which_axis == 'x' and which_tick == 'major' else \
-                            axis_obj.xaxis.get_minor_ticks() if which_axis == 'x' and which_tick == 'minor' else \
-                            axis_obj.yaxis.get_major_ticks() if which_axis == 'y' and which_tick == 'major' else \
-                            axis_obj.yaxis.get_minor_ticks()
-                    if ticks:
-                        return float(ticks[0].tick1line.get_linewidth())
-                except:
-                    pass
-                return None
+                    spines[name] = {
+                        'linewidth': float(sp.get_linewidth()),
+                        'visible': bool(sp.get_visible()),
+                        'color': sp.get_edgecolor()
+                    }
             
             ticks = {
-                'x_major': _tick_width(axis, 'x', 'major'),
-                'x_minor': _tick_width(axis, 'x', 'minor'),
-                'y_major': _tick_width(axis, 'y', 'major'),
-                'y_minor': _tick_width(axis, 'y', 'minor'),
+                'x_major': _current_tick_width(axis.xaxis, 'major'),
+                'x_minor': _current_tick_width(axis.xaxis, 'minor'),
+                'y_major': _current_tick_width(axis.yaxis, 'major'),
+                'y_minor': _current_tick_width(axis.yaxis, 'minor'),
             }
             return spines, ticks
         
@@ -479,6 +570,7 @@ def dump_operando_session(
                 'label': cb_label,
                 'clim': cb_clim,
                 'visible': bool(cbar.ax.get_visible()),
+                'label_mode': getattr(fig, '_colorbar_label_mode', 'normal'),
             },
             'ec': ec_state,
             'font': {
@@ -662,8 +754,29 @@ def load_operando_session(filename: str):
             try:
                 for name, props in op_spines.items():
                     sp = ax.spines.get(name)
-                    if sp and 'linewidth' in props:
-                        sp.set_linewidth(float(props['linewidth']))
+                    if not sp:
+                        continue
+                    if 'linewidth' in props and props['linewidth'] is not None:
+                        try:
+                            sp.set_linewidth(float(props['linewidth']))
+                        except Exception:
+                            pass
+                    if 'visible' in props and props['visible'] is not None:
+                        try:
+                            sp.set_visible(bool(props['visible']))
+                        except Exception:
+                            pass
+                    if 'color' in props and props['color'] is not None:
+                        try:
+                            sp.set_edgecolor(props['color'])
+                            if name in ('top', 'bottom'):
+                                ax.tick_params(axis='x', which='both', colors=props['color'])
+                                ax.xaxis.label.set_color(props['color'])
+                            else:
+                                ax.tick_params(axis='y', which='both', colors=props['color'])
+                                ax.yaxis.label.set_color(props['color'])
+                        except Exception:
+                            pass
             except Exception:
                 pass
         
@@ -685,16 +798,23 @@ def load_operando_session(filename: str):
     cbar.ax.yaxis.set_label_position('left')
     try:
         cb_meta = sess.get('colorbar', {})
+        label_text = cb_meta.get('label')
+        label_mode = cb_meta.get('label_mode', 'normal')
         # Set label on the colorbar's axes for better compatibility
         try:
-            cbar.ax.set_ylabel(cb_meta.get('label') or '')
+            cbar.ax.set_ylabel(label_text or '')
         except Exception:
-            cbar.set_label(cb_meta.get('label') or '')
+            cbar.set_label(label_text or '')
         if cb_meta.get('clim'):
             try:
                 im.set_clim(*cb_meta['clim'])
             except Exception:
                 pass
+        # Persist custom colorbar attributes for interactive mode
+        setattr(cbar.ax, '_colorbar_label', label_text or (cbar.ax.get_ylabel() or 'Intensity'))
+        setattr(cbar.ax, '_colorbar_label_mode', label_mode)
+        setattr(cbar.ax, '_colorbar_im', im)
+        setattr(fig, '_colorbar_label_mode', label_mode)
     except Exception:
         pass
 
@@ -885,8 +1005,29 @@ def load_operando_session(filename: str):
                 try:
                     for name, props in ec_spines.items():
                         sp = ec_ax.spines.get(name)
-                        if sp and 'linewidth' in props:
-                            sp.set_linewidth(float(props['linewidth']))
+                        if not sp:
+                            continue
+                        if 'linewidth' in props and props['linewidth'] is not None:
+                            try:
+                                sp.set_linewidth(float(props['linewidth']))
+                            except Exception:
+                                pass
+                        if 'visible' in props and props['visible'] is not None:
+                            try:
+                                sp.set_visible(bool(props['visible']))
+                            except Exception:
+                                pass
+                        if 'color' in props and props['color'] is not None:
+                            try:
+                                sp.set_edgecolor(props['color'])
+                                if name in ('top', 'bottom'):
+                                    ec_ax.tick_params(axis='x', which='both', colors=props['color'])
+                                    ec_ax.xaxis.label.set_color(props['color'])
+                                else:
+                                    ec_ax.tick_params(axis='y', which='both', colors=props['color'])
+                                    ec_ax.yaxis.label.set_color(props['color'])
+                            except Exception:
+                                pass
                 except Exception:
                     pass
             
@@ -906,6 +1047,7 @@ def load_operando_session(filename: str):
     try:
         setattr(cbar_ax, '_fixed_cb_w_in', float(li['cb_w_in']))
         setattr(cbar_ax, '_fixed_cb_gap_in', float(li['cb_gap_in']))
+        setattr(cbar_ax, '_cb_gap_adjusted', True)
         setattr(ax, '_fixed_ax_w_in', float(li['ax_w_in']))
         setattr(ax, '_fixed_ax_h_in', float(li['ax_h_in']))
         if ec_ax is not None:
@@ -1016,14 +1158,18 @@ def dump_ec_session(
         except Exception:
             _ylp = 0.0
         axis = {
-            'xlabel': ax.get_xlabel(),
-            'ylabel': ax.get_ylabel(),
+            'xlabel': _axis_label_text(ax, '_stored_xlabel', ax.get_xlabel),
+            'ylabel': _axis_label_text(ax, '_stored_ylabel', ax.get_ylabel),
             'xlim': tuple(map(float, ax.get_xlim())),
             'ylim': tuple(map(float, ax.get_ylim())),
             'xscale': getattr(ax, 'get_xscale', lambda: 'linear')(),
             'yscale': getattr(ax, 'get_yscale', lambda: 'linear')(),
             'x_labelpad': _xlp,
             'y_labelpad': _ylp,
+            'xlabel_visible': bool(ax.xaxis.label.get_visible()),
+            'ylabel_visible': bool(ax.yaxis.label.get_visible()),
+            'xlabel_color': ax.xaxis.label.get_color(),
+            'ylabel_color': ax.yaxis.label.get_color(),
         }
         # Helper to capture WASD state
         def _capture_wasd_state(axis):
@@ -1037,7 +1183,12 @@ def dump_ec_session(
                     'ticks': bool(ts.get(f'{prefix}_ticks', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
                     'minor': bool(ts.get(f'm{prefix}x' if side in ('top','bottom') else f'm{prefix}y', False)),
                     'labels': bool(ts.get(f'{prefix}_labels', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                    'title': bool(getattr(axis, '_top_xlabel_on' if side=='top' else '_right_ylabel_on' if side=='right' else '', False)) if side in ('top','right') else bool(axis.get_xlabel() if side=='bottom' else axis.get_ylabel() if side=='left' else False),
+                    'title': (
+                        bool(getattr(axis, '_top_xlabel_on', False)) if side == 'top'
+                        else bool(getattr(axis, '_right_ylabel_on', False)) if side == 'right'
+                        else bool(axis.xaxis.label.get_visible()) if side == 'bottom'
+                        else bool(axis.yaxis.label.get_visible())
+                    ),
                 }
             return wasd
         
@@ -1051,15 +1202,7 @@ def dump_ec_session(
         }))
         # Representative tick widths
         def _tick_width(axis, which: str):
-            try:
-                ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-                for t in ticks:
-                    ln = t.tick1line
-                    if ln.get_visible():
-                        return ln.get_linewidth()
-            except Exception:
-                return None
-            return None
+            return _current_tick_width(axis, which)
         tick_widths = {
             'x_major': _tick_width(ax.xaxis, 'major'),
             'x_minor': _tick_width(ax.xaxis, 'minor'),
@@ -1073,6 +1216,7 @@ def dump_ec_session(
             name: {
                 'linewidth': (ax.spines.get(name).get_linewidth() if ax.spines.get(name) else None),
                 'visible': (ax.spines.get(name).get_visible() if ax.spines.get(name) else None),
+                'color': (ax.spines.get(name).get_edgecolor() if ax.spines.get(name) else None),
             } for name in ('bottom','top','left','right')
         }
         # Duplicate axis title flags
@@ -1139,6 +1283,17 @@ def dump_ec_session(
                 # Store under 'line' key to distinguish from GC mode's 'charge'/'discharge' keys
                 entry['line'] = {'x': x, 'y': y, 'style': st}
             lines_state[int(cyc)] = entry
+        legend_visible = False
+        legend_xy_in = None
+        try:
+            leg = ax.get_legend()
+            if leg is not None:
+                legend_visible = bool(leg.get_visible())
+            xy = getattr(fig, '_ec_legend_xy_in', None)
+            if isinstance(xy, (list, tuple)) and len(xy) == 2:
+                legend_xy_in = (float(xy[0]), float(xy[1]))
+        except Exception:
+            legend_xy_in = None
         sess = {
             'kind': 'ec_gc',
             'version': 2,
@@ -1150,6 +1305,11 @@ def dump_ec_session(
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
             },
+            'legend': {
+                'visible': legend_visible,
+                'position_inches': legend_xy_in,
+                'title': getattr(fig, '_ec_legend_title', None),
+            },
             'wasd_state': wasd_state,
             'tick_state': tick_state,
             'tick_widths': tick_widths,
@@ -1158,6 +1318,7 @@ def dump_ec_session(
             'titles': titles,
             'mode': getattr(ax, '_is_dqdv_mode', None),  # Store dQdV mode flag
             'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),  # Store rotation angle
+            'source_paths': list(getattr(fig, '_bp_source_paths', []) or []),
         }
         if skip_confirm:
             target = filename
@@ -1201,6 +1362,34 @@ def load_ec_session(filename: str):
         except Exception:
             pass
     ax = fig.add_subplot(111)
+    try:
+        fig._bp_source_paths = list(sess.get('source_paths', []) or [])
+    except Exception:
+        fig._bp_source_paths = []
+    try:
+        session_abs = os.path.abspath(filename)
+        sources = list(getattr(fig, '_bp_source_paths', []) or [])
+        if session_abs not in sources:
+            sources.append(session_abs)
+        fig._bp_source_paths = sources
+    except Exception:
+        pass
+
+    def _sanitize_legend_offset(xy):
+        if xy is None or not isinstance(xy, (list, tuple)) or len(xy) != 2:
+            return None
+        try:
+            x_val = float(xy[0])
+            y_val = float(xy[1])
+        except Exception:
+            return None
+        fw, fh = fig.get_size_inches()
+        if fw <= 0 or fh <= 0:
+            return None
+        max_offset = max(fw, fh) * 2.0
+        if abs(x_val) > max_offset or abs(y_val) > max_offset:
+            return None
+        return (x_val, y_val)
     # Fonts
     try:
         f = sess.get('font', {})
@@ -1305,6 +1494,10 @@ def load_ec_session(filename: str):
         axis = sess.get('axis', {})
         stored_xlabel = axis.get('xlabel') or ''
         stored_ylabel = axis.get('ylabel') or ''
+        xlabel_visible = axis.get('xlabel_visible', True)
+        ylabel_visible = axis.get('ylabel_visible', True)
+        xlabel_color = axis.get('xlabel_color')
+        ylabel_color = axis.get('ylabel_color')
         
         # Scales first
         try:
@@ -1322,6 +1515,38 @@ def load_ec_session(filename: str):
         stored_ylabel = ''
         x_labelpad = None
         y_labelpad = None
+        xlabel_visible = True
+        ylabel_visible = True
+        xlabel_color = None
+        ylabel_color = None
+    if stored_xlabel:
+        try:
+            ax._stored_xlabel = stored_xlabel
+        except Exception:
+            pass
+    if stored_ylabel:
+        try:
+            ax._stored_ylabel = stored_ylabel
+        except Exception:
+            pass
+    try:
+        if xlabel_color:
+            ax._stored_xlabel_color = xlabel_color
+        else:
+            ax._stored_xlabel_color = ax.xaxis.label.get_color()
+    except Exception:
+        pass
+    try:
+        if ylabel_color:
+            ax._stored_ylabel_color = ylabel_color
+        else:
+            ax._stored_ylabel_color = ax.yaxis.label.get_color()
+    except Exception:
+        pass
+    if not hasattr(ax, '_stored_top_xlabel_color'):
+        ax._stored_top_xlabel_color = ax.xaxis.label.get_color()
+    if not hasattr(ax, '_stored_right_ylabel_color'):
+        ax._stored_right_ylabel_color = ax.yaxis.label.get_color()
 
     # Spines
     try:
@@ -1331,16 +1556,40 @@ def load_ec_session(filename: str):
             if not sp:
                 continue
             if spec.get('linewidth') is not None:
-                try: sp.set_linewidth(float(spec['linewidth']))
-                except Exception: pass
+                try:
+                    sp.set_linewidth(float(spec['linewidth']))
+                except Exception:
+                    pass
             if spec.get('visible') is not None:
-                try: sp.set_visible(bool(spec['visible']))
-                except Exception: pass
+                try:
+                    sp.set_visible(bool(spec['visible']))
+                except Exception:
+                    pass
+            if spec.get('color') is not None:
+                try:
+                    sp.set_edgecolor(spec['color'])
+                    if name in ('top', 'bottom'):
+                        ax.tick_params(axis='x', which='both', colors=spec['color'])
+                        ax.xaxis.label.set_color(spec['color'])
+                        if name == 'top':
+                            ax._stored_top_xlabel_color = spec['color']
+                        else:
+                            ax._stored_xlabel_color = spec['color']
+                    else:
+                        ax.tick_params(axis='y', which='both', colors=spec['color'])
+                        ax.yaxis.label.set_color(spec['color'])
+                        if name == 'left':
+                            ax._stored_ylabel_color = spec['color']
+                        else:
+                            ax._stored_right_ylabel_color = spec['color']
+                except Exception:
+                    pass
     except Exception:
         pass
 
     # Apply WASD state if version 2+
     version = sess.get('version', 1)
+    wasd = None
     if version >= 2:
         wasd = sess.get('wasd_state')
         if wasd and isinstance(wasd, dict):
@@ -1463,6 +1712,34 @@ def load_ec_session(filename: str):
         except Exception:
             pass
 
+    # Restore axis labels/visibility after WASD application
+    def _title_pref(side_visible: bool, side_key: str):
+        if wasd and isinstance(wasd, dict):
+            entry = wasd.get(side_key, {})
+            if 'title' in entry:
+                return bool(entry.get('title'))
+        return bool(side_visible)
+    bottom_pref = _title_pref(xlabel_visible, 'bottom')
+    left_pref = _title_pref(ylabel_visible, 'left')
+    if bottom_pref and stored_xlabel:
+        ax.set_xlabel(stored_xlabel)
+        ax.xaxis.label.set_visible(True)
+        color = getattr(ax, '_stored_xlabel_color', None)
+        if color:
+            ax.xaxis.label.set_color(color)
+    else:
+        ax.set_xlabel('')
+        ax.xaxis.label.set_visible(False)
+    if left_pref and stored_ylabel:
+        ax.set_ylabel(stored_ylabel)
+        ax.yaxis.label.set_visible(True)
+        color = getattr(ax, '_stored_ylabel_color', None)
+        if color:
+            ax.yaxis.label.set_color(color)
+    else:
+        ax.set_ylabel('')
+        ax.yaxis.label.set_visible(False)
+
     # Duplicate titles
     try:
         titles = sess.get('titles', {})
@@ -1476,6 +1753,12 @@ def load_ec_session(filename: str):
                 else:
                     txt.set_text(lbl); txt.set_visible(True)
                 ax._top_xlabel_on = True
+                try:
+                    color = getattr(ax, '_stored_top_xlabel_color', None)
+                    if color and txt is not None:
+                        txt.set_color(color)
+                except Exception:
+                    pass
         else:
             if hasattr(ax, '_top_xlabel_artist') and ax._top_xlabel_artist is not None:
                 try: ax._top_xlabel_artist.set_visible(False)
@@ -1489,6 +1772,12 @@ def load_ec_session(filename: str):
                     except Exception: pass
                 ax._right_ylabel_artist = ax.text(1.02, 0.5, lbl, rotation=90, va='center', ha='left', transform=ax.transAxes)
                 ax._right_ylabel_on = True
+                try:
+                    color = getattr(ax, '_stored_right_ylabel_color', None)
+                    if color and ax._right_ylabel_artist is not None:
+                        ax._right_ylabel_artist.set_color(color)
+                except Exception:
+                    pass
         else:
             if hasattr(ax, '_right_ylabel_artist') and ax._right_ylabel_artist is not None:
                 try: ax._right_ylabel_artist.remove()
@@ -1503,6 +1792,67 @@ def load_ec_session(filename: str):
         mode = sess.get('mode')
         if mode is not None:
             ax._is_dqdv_mode = bool(mode)
+    except Exception:
+        pass
+
+    # Legend visibility/position
+    try:
+        legend_cfg = sess.get('legend', {}) or {}
+        legend_visible = bool(legend_cfg.get('visible', True))
+        legend_xy = _sanitize_legend_offset(legend_cfg.get('position_inches'))
+        legend_title = legend_cfg.get('title')
+        if legend_title:
+            fig._ec_legend_title = legend_title
+        else:
+            fig._ec_legend_title = legend_title or getattr(fig, '_ec_legend_title', None)
+        if not getattr(fig, '_ec_legend_title', None):
+            fig._ec_legend_title = "Cycle"
+        try:
+            fig._ec_legend_user_visible = legend_visible
+        except Exception:
+            pass
+        if legend_xy is not None:
+            fig._ec_legend_xy_in = legend_xy
+        handles = []
+        labels = []
+        for ln in ax.lines:
+            if ln.get_visible():
+                lbl = ln.get_label() or ''
+                if lbl.startswith('_'):
+                    continue
+                handles.append(ln)
+                labels.append(lbl)
+        if handles:
+            if legend_xy is not None:
+                fw, fh = fig.get_size_inches()
+                if fw > 0 and fh > 0:
+                    fx = 0.5 + legend_xy[0] / fw
+                    fy = 0.5 + legend_xy[1] / fh
+                    leg = ax.legend(handles, labels, loc='center',
+                                    bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure,
+                                    borderaxespad=1.0)
+                else:
+                    leg = ax.legend(handles, labels, loc='best', borderaxespad=1.0)
+            else:
+                leg = ax.legend(handles, labels, loc='best', borderaxespad=1.0)
+            if leg is not None:
+                try:
+                    leg.set_frame_on(False)
+                except Exception:
+                    pass
+                leg.set_visible(legend_visible)
+                try:
+                    title_text = getattr(fig, '_ec_legend_title', None) or "Cycle"
+                    leg.set_title(title_text)
+                except Exception:
+                    pass
+        else:
+            leg = ax.get_legend()
+            if leg is not None:
+                try:
+                    leg.remove()
+                except Exception:
+                    pass
     except Exception:
         pass
     
@@ -1608,15 +1958,7 @@ def dump_cpc_session(
         
         # Helper to capture tick widths
         def _tick_width(axis, which: str):
-            try:
-                ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-                for t in ticks:
-                    ln = t.tick1line
-                    if ln.get_visible():
-                        return ln.get_linewidth()
-            except Exception:
-                return None
-            return None
+            return _current_tick_width(axis, which)
         
         tick_widths = {
             'x_major': _tick_width(ax.xaxis, 'major'),
@@ -1885,6 +2227,8 @@ def load_cpc_session(filename: str):
         
         # Restore spines state (version 2+)
         try:
+            if not hasattr(fig, '_cpc_spine_colors') or not isinstance(fig._cpc_spine_colors, dict):
+                fig._cpc_spine_colors = {}
             fig_meta = sess.get('figure', {})
             spines_state = fig_meta.get('spines', {})
             for key, props in spines_state.items():
@@ -1896,6 +2240,13 @@ def load_cpc_session(filename: str):
                             sp.set_linewidth(props['linewidth'])
                         if 'color' in props:
                             sp.set_edgecolor(props['color'])
+                            if name in ('top','bottom'):
+                                ax.tick_params(axis='x', which='both', colors=props['color'])
+                                ax.xaxis.label.set_color(props['color'])
+                            else:
+                                ax.tick_params(axis='y', which='both', colors=props['color'])
+                                ax.yaxis.label.set_color(props['color'])
+                            fig._cpc_spine_colors[name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])
                 elif key.startswith('ax2_'):
@@ -1906,6 +2257,9 @@ def load_cpc_session(filename: str):
                             sp.set_linewidth(props['linewidth'])
                         if 'color' in props:
                             sp.set_edgecolor(props['color'])
+                            ax2.tick_params(axis='y', which='both', colors=props['color'])
+                            ax2.yaxis.label.set_color(props['color'])
+                            fig._cpc_spine_colors['right' if name == 'right' else name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])
         except Exception:

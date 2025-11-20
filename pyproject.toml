@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.4.9"
-description = "Interactive plotting for XRD, PDF, and XAS data (.xye, .xy, .qye, .dat, .csv, .gr, .nor, .chik, .chir)"
+version = "1.7.0"
+description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
 ]
@@ -17,7 +17,8 @@ dependencies = [
     "rich>=10.0.0",
     "openpyxl>=3.0.0"
 ]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
@@ -43,6 +44,3 @@ batplot = "batplot.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["batplot*"]
-
-[tool.setuptools]
-license-files = ["LICENSE"]

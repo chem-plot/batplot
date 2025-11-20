@@ -16,6 +16,7 @@ from .session import (
     load_ec_session,
     load_operando_session,
     load_cpc_session,
+    _apply_axes_bbox as _session_apply_axes_bbox,
 )
 from .operando import plot_operando_folder
 from .plotting import update_labels
@@ -79,6 +80,10 @@ except ImportError:
 keep_canvas_fixed = False
 
 
+ALLFILES_KNOWN_EXTENSIONS = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt', '.mpt'}
+ALLFILES_EXCLUDED_EXTENSIONS = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat'}
+
+
 def _natural_sort_key(filename: str) -> list:
     """Generate a natural sorting key for filenames with numbers.
     
@@ -93,6 +98,102 @@ def _natural_sort_key(filename: str) -> list:
         else:
             parts.append(text.lower())
     return parts
+
+
+def _prepare_allfiles_directory(target_dir: str, args, use_relative_paths: bool = False,
+                                allowed_exts: set[str] | None = None) -> None:
+    """Populate args.files with data files under target_dir (optionally filtered by extension)."""
+    all_xy_files = []
+    unknown_ext_files = [] if allowed_exts is None else None
+
+    try:
+        entries = sorted(os.listdir(target_dir), key=_natural_sort_key)
+    except Exception as exc:
+        print(f"Failed to list directory '{target_dir}': {exc}")
+        exit(1)
+
+    for f in entries:
+        full_path = os.path.join(target_dir, f)
+        if not os.path.isfile(full_path):
+            continue
+        ext = os.path.splitext(f)[1].lower()
+        if ext in ALLFILES_EXCLUDED_EXTENSIONS or not ext:
+            continue
+        if allowed_exts is not None:
+            if ext not in allowed_exts:
+                continue
+        else:
+            # Default mode: keep unknown types but track for warning
+            if ext not in ALLFILES_KNOWN_EXTENSIONS and unknown_ext_files is not None:
+                unknown_ext_files.append(f)
+        store_path = f if use_relative_paths else full_path
+        all_xy_files.append(store_path)
+
+    if not all_xy_files:
+        if allowed_exts:
+            ext_list = ", ".join(sorted(allowed_exts))
+            print(f"No {ext_list} files found in directory: {target_dir}")
+        else:
+            print(f"No data files found in directory: {target_dir}")
+        exit(1)
+
+    if allowed_exts is None and unknown_ext_files:
+        print(f"Warning: Found {len(unknown_ext_files)} file(s) with unknown extension(s):")
+        for uf in unknown_ext_files[:5]:
+            print(f"  - {uf}")
+        if len(unknown_ext_files) > 5:
+            print(f"  ... and {len(unknown_ext_files) - 5} more")
+        print("These will be read as 2-column (x, y) data.")
+        if not args.xaxis:
+            print("Tip: Use --xaxis to specify the x-axis type (e.g., --xaxis 2theta, --xaxis Q, --xaxis r)")
+
+    print(f"Found {len(all_xy_files)} files to plot together")
+    args.files = all_xy_files
+
+
+def _maybe_expand_allfiles_argument(args, ec_mode_active: bool = False) -> None:
+    """Handle 'allfiles' argument appearing anywhere by expanding directory contents."""
+    if ec_mode_active or not args.files:
+        return
+    token_info = []
+    non_token_entries = []
+    for original in args.files:
+        lower = original.lower()
+        if lower.startswith('all') and lower.endswith('files'):
+            middle = lower[3:-5]
+            token_info.append((original, middle))
+        else:
+            non_token_entries.append(original)
+    if not token_info:
+        return
+    if len(token_info) > 1:
+        print("Specify only one all*files token (e.g., allfiles or allxyfiles) at a time.")
+        exit(1)
+    _, middle = token_info[0]
+    if len(non_token_entries) > 1:
+        print("When using all*files tokens, provide zero or one directory argument.")
+        exit(1)
+    if middle:
+        ext = f".{middle}"
+        if ext not in ALLFILES_KNOWN_EXTENSIONS:
+            allowed = ", ".join(sorted(e.strip('.') for e in ALLFILES_KNOWN_EXTENSIONS))
+            print(f"Unknown all-files token 'all{middle}files'. Allowed extensions: {allowed}")
+            exit(1)
+        allowed_exts = {ext}
+    else:
+        allowed_exts = None
+    if len(non_token_entries) == 1:
+        dir_arg = non_token_entries[0]
+        if not os.path.isdir(dir_arg):
+            print(f"Directory not found: {dir_arg}")
+            exit(1)
+        target_dir = os.path.abspath(dir_arg)
+        use_relative = False
+    else:
+        target_dir = os.getcwd()
+        use_relative = True
+    _prepare_allfiles_directory(target_dir, args, use_relative_paths=use_relative,
+                                allowed_exts=allowed_exts)
 
 
 def batplot_main() -> int:
@@ -227,6 +328,11 @@ def batplot_main() -> int:
             ax.set_xlabel('Voltage (V)', labelpad=8.0)
             ax.set_ylabel('Current (mA)', labelpad=8.0)
             legend = ax.legend(title='Cycle')
+            if legend is not None:
+                try:
+                    legend.set_frame_on(False)
+                except Exception:
+                    pass
             legend.get_title().set_fontsize('medium')
             # Match GC/dQdV: consistent label/title displacement and canvas
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
@@ -238,7 +344,11 @@ def batplot_main() -> int:
                     pass
                 _plt.show(block=False)
                 try:
-                    electrochem_interactive_menu(fig, ax, cycle_lines)
+                    fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                except Exception:
+                    pass
+                try:
+                    electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                 except Exception as _ie:
                     print(f"Interactive menu failed: {_ie}")
                 _plt.show()
@@ -524,6 +634,11 @@ def batplot_main() -> int:
             ax.set_xlabel(x_label_gc, labelpad=8.0)
             ax.set_ylabel('Voltage (V)', labelpad=8.0)
             legend = ax.legend(title='Cycle')
+            if legend is not None:
+                try:
+                    legend.set_frame_on(False)
+                except Exception:
+                    pass
             legend.get_title().set_fontsize('medium')
             # No background grid by default for GC plots
         
@@ -600,7 +715,11 @@ def batplot_main() -> int:
                         pass
                     _plt.show(block=False)
                     try:
-                        electrochem_interactive_menu(fig, ax, cycle_lines)
+                        fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                    except Exception:
+                        pass
+                    try:
+                        electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
                     # Keep window open after menu
@@ -635,20 +754,21 @@ def batplot_main() -> int:
         
         # Process multiple files
         file_data = []  # List of dicts with file info and data
-        # Use warm colors (reds/oranges) for capacity (charge/discharge)
-        # Use cool colors (blues/cyans) for efficiency for clear visual distinction
+        # Use perceptually-uniform palettes for capacity (viridis) and efficiency (plasma)
         import matplotlib.cm as cm
         import matplotlib.colors as mcolors
         n_files = len(args.files)
         
-        # Warm colors for capacity: red to orange spectrum
-        warm_cmap = cm.get_cmap('YlOrRd', n_files + 2)  # +2 to skip very light yellows
-        # Cool colors for efficiency: blue to cyan spectrum  
-        cool_cmap = cm.get_cmap('cool', n_files)
-        
-        # Generate colors from colormaps, skip lightest colors for capacity
-        capacity_colors = [mcolors.rgb2hex(warm_cmap(i + 2)[:3]) for i in range(n_files)]
-        efficiency_colors = [mcolors.rgb2hex(cool_cmap(i)[:3]) for i in range(n_files)]
+        capacity_cmap = cm.get_cmap('viridis')
+        efficiency_cmap = cm.get_cmap('plasma')
+        if n_files <= 1:
+            cap_positions = [0.55]
+            eff_positions = [0.35]
+        else:
+            cap_positions = np.linspace(0.15, 0.85, n_files)
+            eff_positions = np.linspace(0.2, 0.9, n_files)
+        capacity_colors = [mcolors.rgb2hex(capacity_cmap(pos)[:3]) for pos in cap_positions]
+        efficiency_colors = [mcolors.rgb2hex(efficiency_cmap(pos)[:3]) for pos in eff_positions]
         
         for file_idx, ec_file in enumerate(args.files):
             if not _os.path.isfile(ec_file):
@@ -776,7 +896,12 @@ def batplot_main() -> int:
         try:
             h1, l1 = ax.get_legend_handles_labels()
             h2, l2 = ax2.get_legend_handles_labels()
-            ax.legend(h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
+            leg = ax.legend(h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
+            if leg is not None:
+                try:
+                    leg.set_frame_on(False)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -863,100 +988,82 @@ def batplot_main() -> int:
             # Create the plot
             fig, ax = _plt.subplots(figsize=(10, 6))
 
-            # Helpers to split into contiguous index blocks and join with NaNs for single Line2D per role
-            def _contiguous_blocks(mask):
+            def _mask_segments(mask: np.ndarray, role: str):
                 inds = np.where(mask)[0]
                 if inds.size == 0:
                     return []
-                blocks = []
+                segments = []
                 start = inds[0]
                 prev = inds[0]
-                for j in inds[1:]:
-                    if j == prev + 1:
-                        prev = j
+                for idx in inds[1:]:
+                    if idx == prev + 1:
+                        prev = idx
                     else:
-                        blocks.append((start, prev))
-                        start = j
-                        prev = j
-                blocks.append((start, prev))
-                return blocks
+                        segments.append((start, prev, role))
+                        start = idx
+                        prev = idx
+                segments.append((start, prev, role))
+                return segments
 
-            def _broken_arrays_from_indices(idx: np.ndarray, x: np.ndarray, y: np.ndarray):
-                if idx.size == 0:
-                    return np.array([]), np.array([])
-                parts_x = []
-                parts_y = []
-                start = 0
-                for k in range(1, idx.size):
-                    if idx[k] != idx[k-1] + 1:
-                        parts_x.append(x[idx[start:k]])
-                        parts_y.append(y[idx[start:k]])
-                        start = k
-                parts_x.append(x[idx[start:]])
-                parts_y.append(y[idx[start:]])
-                X = []
-                Y = []
-                for i, (px, py) in enumerate(zip(parts_x, parts_y)):
-                    if i > 0:
-                        X.append(np.array([np.nan]))
-                        Y.append(np.array([np.nan]))
-                    X.append(px)
-                    Y.append(py)
-                return np.concatenate(X) if X else np.array([]), np.concatenate(Y) if Y else np.array([])
+            segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
+            segments.sort(key=lambda item: item[0])
 
-            # Normalize cycle indices to start at 1
-            # Find the first cycle with at least 2 data points (needed for plotting)
-            cyc_int_raw = np.array(np.rint(cycles), dtype=int)
-            if cyc_int_raw.size:
-                unique_cycles_raw = np.unique(cyc_int_raw)
-                valid_min_c = None
-                for c in sorted(unique_cycles_raw):
-                    if np.sum(cyc_int_raw == c) >= 2:
-                        valid_min_c = int(c)
-                        break
-                
-                if valid_min_c is not None:
-                    shift = 1 - valid_min_c
-                else:
-                    min_c = int(np.min(cyc_int_raw))
-                    shift = 1 - min_c if min_c <= 0 else 0
-            else:
-                shift = 0
-            cyc_int = cyc_int_raw + shift
-            cycles_present = sorted(int(c) for c in np.unique(cyc_int)) if cyc_int.size else [1]
-
-            # Color palette
             base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-            # Build mapping cycle -> {'charge': line or None, 'discharge': line or None}
             cycle_lines = {}
-            for cyc in cycles_present:
-                # Charge
-                mask_c = (cyc_int == cyc) & charge_mask
-                idx_c = np.where(mask_c)[0]
-                if idx_c.size >= 2:
-                    x_b, y_b = _broken_arrays_from_indices(idx_c, voltage, dqdv)
-                    ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=str(cyc), alpha=0.8)
-                else:
-                    ln_c = None
-                # Discharge
-                mask_d = (cyc_int == cyc) & discharge_mask
-                idx_d = np.where(mask_d)[0]
-                if idx_d.size >= 2:
-                    xd_b, yd_b = _broken_arrays_from_indices(idx_d, voltage, dqdv)
-                    lbl = '_nolegend_' if ln_c is not None else str(cyc)
-                    ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=lbl, alpha=0.8)
-                else:
-                    ln_d = None
-                cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
+            ax._is_dqdv_mode = True
+            cycle_id = 1
+            cycle_lines[cycle_id] = {"charge": None, "discharge": None}
+
+            def _append_segment(line_obj, x_new, y_new):
+                try:
+                    x_old = np.asarray(line_obj.get_xdata(), float)
+                    y_old = np.asarray(line_obj.get_ydata(), float)
+                    x_cat = np.concatenate([x_old, np.array([np.nan]), x_new])
+                    y_cat = np.concatenate([y_old, np.array([np.nan]), y_new])
+                    line_obj.set_xdata(x_cat)
+                    line_obj.set_ydata(y_cat)
+                except Exception:
+                    pass
+
+            for start, end, role in segments:
+                if end - start + 1 < 2:
+                    continue
+                idx = np.arange(start, end + 1)
+                x_seg = voltage[idx]
+                y_seg = dqdv[idx]
+                current = cycle_lines.setdefault(cycle_id, {"charge": None, "discharge": None})
+                color = base_colors[(cycle_id - 1) % len(base_colors)]
+                first_segment = current['charge'] is None and current['discharge'] is None
+
+                if current[role] is not None:
+                    if current['charge'] is not None and current['discharge'] is not None:
+                        cycle_id += 1
+                        current = cycle_lines.setdefault(cycle_id, {"charge": None, "discharge": None})
+                    else:
+                        _append_segment(current[role], x_seg, y_seg)
+                        continue
+
+                label = str(cycle_id) if first_segment else '_nolegend_'
+                ln, = ax.plot(x_seg, y_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                current[role] = ln
+
+                if current['charge'] is not None and current['discharge'] is not None:
+                    cycle_id += 1
+
+            if cycle_lines.get(cycle_id) == {"charge": None, "discharge": None}:
+                cycle_lines.pop(cycle_id, None)
 
             # Labels with consistent labelpad (same as GC/CPC)
             ax.set_xlabel('Voltage (V)', labelpad=8.0)
             ax.set_ylabel(y_label, labelpad=8.0)
             legend = ax.legend(title='Cycle')
+            if legend is not None:
+                try:
+                    legend.set_frame_on(False)
+                except Exception:
+                    pass
             legend.get_title().set_fontsize('medium')
             # No background grid by default (same as GC)
         
@@ -1025,7 +1132,11 @@ def batplot_main() -> int:
                         pass
                     _plt.show(block=False)
                     try:
-                        electrochem_interactive_menu(fig, ax, cycle_lines)
+                        fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                    except Exception:
+                        pass
+                    try:
+                        electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
                     _plt.show()
@@ -1139,7 +1250,7 @@ def batplot_main() -> int:
                         # Call interactive menu regardless of EC presence
                         # When ec_ax is None, EC-related commands will be disabled
                         if operando_ec_interactive_menu is not None:
-                            operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax)
+                            operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=args.files)
                         else:
                             print("Interactive menu not available.")
                     except Exception as _ie:
@@ -1163,49 +1274,15 @@ def batplot_main() -> int:
             print(f"Operando plot failed: {_e}")
             exit(1)
 
+    _maybe_expand_allfiles_argument(args, ec_mode_active)
+
     if len(args.files) == 1:
         sole = args.files[0]
         if sole.lower() == 'all':
             batch_process(os.getcwd(), args)
             exit()
         elif sole.lower() == 'allfiles':
-            # Plot all XY files in current directory on the same figure (including arbitrary extensions)
-            known_ext = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt'}
-            excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat'}
-            all_xy_files = []
-            unknown_ext_files = []
-            
-            for f in sorted(os.listdir(os.getcwd()), key=_natural_sort_key):
-                if not os.path.isfile(os.path.join(os.getcwd(), f)):
-                    continue
-                ext = os.path.splitext(f)[1].lower()
-                # Skip excluded extensions
-                if ext in excluded_ext or not ext:
-                    continue
-                # Include known extensions
-                if ext in known_ext:
-                    all_xy_files.append(f)
-                else:
-                    # Include unknown extensions (will be treated as 2-column data)
-                    all_xy_files.append(f)
-                    unknown_ext_files.append(f)
-            
-            if not all_xy_files:
-                print("No data files found in current directory.")
-                exit(1)
-            
-            if unknown_ext_files:
-                print(f"Warning: Found {len(unknown_ext_files)} file(s) with unknown extension(s):")
-                for uf in unknown_ext_files[:5]:  # Show first 5
-                    print(f"  - {uf}")
-                if len(unknown_ext_files) > 5:
-                    print(f"  ... and {len(unknown_ext_files) - 5} more")
-                print("These will be read as 2-column (x, y) data.")
-                if not args.xaxis:
-                    print("Tip: Use --xaxis to specify the x-axis type (e.g., --xaxis 2theta, --xaxis Q, --xaxis r)")
-            
-            print(f"Found {len(all_xy_files)} files to plot together")
-            args.files = all_xy_files
+            _prepare_allfiles_directory(os.getcwd(), args, use_relative_paths=True)
             # Continue to normal plotting mode with all files
         elif os.path.isdir(sole):
             batch_process(os.path.abspath(sole), args)
@@ -1256,7 +1333,15 @@ def batplot_main() -> int:
                 except Exception:
                     pass
                 try:
-                    electrochem_interactive_menu(fig, ax, cycle_lines)
+                    source_list = list(getattr(fig, '_bp_source_paths', []) or [])
+                    sess_abs = os.path.abspath(sess_path)
+                    if sess_abs not in source_list:
+                        source_list.append(sess_abs)
+                    fig._bp_source_paths = source_list
+                except Exception:
+                    pass
+                try:
+                    electrochem_interactive_menu(fig, ax, cycle_lines, file_path=sess_path)
                 except Exception as _ie:
                     print(f"Interactive menu failed: {_ie}")
                 _plt.show()
@@ -1361,6 +1446,15 @@ def batplot_main() -> int:
             x_full_list.append(x_arr.copy())
             raw_y_full_list.append(base.copy())
         offsets_list[:] = offsets_saved if offsets_saved else [0.0]*n_curves
+        try:
+            axes_bbox = sess.get('figure', {}).get('axes_bbox')
+            if _session_apply_axes_bbox(ax, axes_bbox):
+                try:
+                    fig._skip_initial_text_visibility = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # Apply stored line styles (if any)
         try:
             stored_styles = sess.get('line_styles', [])
@@ -1437,6 +1531,10 @@ def batplot_main() -> int:
             spm = fig_cfg.get('subplot_margins')
             if spm and all(k in spm for k in ('left','right','bottom','top')):
                 fig.subplots_adjust(left=spm['left'], right=spm['right'], bottom=spm['bottom'], top=spm['top'])
+                try:
+                    fig._skip_initial_text_visibility = True
+                except Exception:
+                    pass
             
             # Restore exact frame size if stored (for precision)
             frame_size = fig_cfg.get('frame_size')
@@ -1460,6 +1558,10 @@ def batplot_main() -> int:
                     new_top = center_y + new_h_frac / 2.0
                     # Apply
                     fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
+                    try:
+                        fig._skip_initial_text_visibility = True
+                    except Exception:
+                        pass
         except Exception:
             pass
         # Font
@@ -1602,7 +1704,10 @@ def batplot_main() -> int:
         # Restore grid state
         try:
             grid_state = bool(sess.get('grid', False))
-            ax.grid(grid_state, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+            if grid_state:
+                ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+            else:
+                ax.grid(False)
         except Exception:
             pass
         # CIF tick series (optional)
@@ -1734,56 +1839,72 @@ def batplot_main() -> int:
 
         # Restore axis title duplicates/visibility exactly as saved
         titles = sess.get('axis_titles', {})
+        title_texts = sess.get('axis_title_texts', {})
+        bottom_text = title_texts.get('bottom_x') or title_texts.get('bottom')
+        left_text = title_texts.get('left_y') or title_texts.get('left')
+        top_text = title_texts.get('top_x') or title_texts.get('top')
+        right_text = title_texts.get('right_y') or title_texts.get('right')
         try:
+            if bottom_text is not None:
+                ax._stored_xlabel = bottom_text
+            if left_text is not None:
+                ax._stored_ylabel = left_text
+            if top_text:
+                ax._top_xlabel_text_override = top_text
+            elif hasattr(ax, '_top_xlabel_text_override'):
+                delattr(ax, '_top_xlabel_text_override')
+            if right_text:
+                ax._right_ylabel_text_override = right_text
+            elif hasattr(ax, '_right_ylabel_text_override'):
+                delattr(ax, '_right_ylabel_text_override')
             # Bottom X title
             if titles.get('has_bottom_x') is False:
-                ax.set_xlabel("")
+                ax.xaxis.label.set_visible(False)
+            else:
+                ax.xaxis.label.set_visible(True)
+                if bottom_text is not None:
+                    ax.set_xlabel(bottom_text)
+                elif hasattr(ax, '_stored_xlabel'):
+                    ax.set_xlabel(ax._stored_xlabel)
+            try:
+                _ui_position_bottom_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
             # Left Y title
             if titles.get('has_left_y') is False:
-                ax.set_ylabel("")
+                ax.yaxis.label.set_visible(False)
+            else:
+                ax.yaxis.label.set_visible(True)
+                if left_text is not None:
+                    ax.set_ylabel(left_text)
+                elif hasattr(ax, '_stored_ylabel'):
+                    ax.set_ylabel(ax._stored_ylabel)
+            try:
+                _ui_position_left_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
             # Top X duplicate
-            if titles.get('top_x'):
-                lbl_text = ax.get_xlabel()
-                if lbl_text:
-                    if not hasattr(ax,'_top_xlabel_artist') or ax._top_xlabel_artist is None:
-                        ax._top_xlabel_artist = ax.text(0.5, 1.02, lbl_text, ha='center', va='bottom', transform=ax.transAxes)
-                    else:
-                        ax._top_xlabel_artist.set_text(lbl_text)
-                        ax._top_xlabel_artist.set_visible(True)
-                    ax._top_xlabel_on = True
-                    # Position based on tick_state
-                    try:
-                        _ui_position_top_xlabel(ax, fig, tick_state)
-                    except Exception:
-                        pass
-            else:
-                if hasattr(ax,'_top_xlabel_artist') and ax._top_xlabel_artist is not None:
-                    try:
-                        ax._top_xlabel_artist.set_visible(False)
-                    except Exception:
-                        pass
-                ax._top_xlabel_on = False
+            ax._top_xlabel_on = bool(titles.get('top_x', False))
+            try:
+                _ui_position_top_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            if not ax._top_xlabel_on and hasattr(ax, '_top_xlabel_artist') and ax._top_xlabel_artist is not None:
+                try:
+                    ax._top_xlabel_artist.set_visible(False)
+                except Exception:
+                    pass
             # Right Y duplicate
-            if titles.get('right_y'):
-                base = ax.get_ylabel()
-                if base:
-                    if hasattr(ax,'_right_ylabel_artist') and ax._right_ylabel_artist is not None:
-                        try: ax._right_ylabel_artist.remove()
-                        except Exception: pass
-                    ax._right_ylabel_artist = ax.text(1.02, 0.5, base, rotation=90, va='center', ha='left', transform=ax.transAxes)
-                    ax._right_ylabel_on = True
-                    try:
-                        _ui_position_right_ylabel(ax, fig, tick_state)
-                    except Exception:
-                        pass
-            else:
-                if hasattr(ax,'_right_ylabel_artist') and ax._right_ylabel_artist is not None:
-                    try:
-                        ax._right_ylabel_artist.remove()
-                    except Exception:
-                        pass
-                    ax._right_ylabel_artist = None
-                ax._right_ylabel_on = False
+            ax._right_ylabel_on = bool(titles.get('right_y', False))
+            try:
+                _ui_position_right_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            if not ax._right_ylabel_on and hasattr(ax, '_right_ylabel_artist') and ax._right_ylabel_artist is not None:
+                try:
+                    ax._right_ylabel_artist.set_visible(False)
+                except Exception:
+                    pass
         except Exception:
             pass
         # Always open interactive menu for session files

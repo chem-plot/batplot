@@ -65,7 +65,7 @@ def verify_ec_gc(path_mpt: str = None, path_csv: str = None) -> None:
         cycle_lines = {1: {'charge': ln1, 'discharge': None}}
 
     # Styles and axis setup
-    ax.set_xlabel('Specific Capacity (mAh g⁻¹)', labelpad=8)
+    ax.set_xlabel('Specific Capacity (mAh g$^{-1}$)', labelpad=8)
     ax.set_ylabel('Voltage (V)', labelpad=12)
     ax.set_xlim(5, 95)
     ax.set_ylim(2.2, 4.1)

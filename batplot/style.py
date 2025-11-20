@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from typing import List, Dict, Any, Callable, Optional
 import json
+import importlib
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 from .utils import _confirm_overwrite
+from .color_utils import color_block
 from .ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -19,6 +22,120 @@ from .ui import (
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
 )
+
+
+def _color_to_hex(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        low = value.lower()
+        if low in ('none', 'auto'):
+            return value
+    try:
+        return mcolors.to_hex(value)
+    except Exception:
+        if isinstance(value, str):
+            return value
+        try:
+            return mcolors.to_hex(mcolors.to_rgba(value))
+        except Exception:
+            return str(value)
+
+
+def _get_primary_axis_text(ax, axis: str) -> str:
+    if axis == 'x':
+        label = ax.xaxis.label
+        stored_attr = '_stored_xlabel'
+    else:
+        label = ax.yaxis.label
+        stored_attr = '_stored_ylabel'
+    text = ''
+    try:
+        text = label.get_text()
+    except Exception:
+        text = ''
+    if not text and hasattr(ax, stored_attr):
+        try:
+            stored = getattr(ax, stored_attr)
+            if stored:
+                text = stored
+        except Exception:
+            text = ''
+    return text or ''
+
+
+def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
+    override_attr = '_top_xlabel_text_override' if 'top' in artist_attr else '_right_ylabel_text_override'
+    if hasattr(ax, override_attr):
+        try:
+            override_val = getattr(ax, override_attr)
+            if override_val:
+                return override_val
+        except Exception:
+            pass
+    art = getattr(ax, artist_attr, None)
+    if art is not None and hasattr(art, 'get_text'):
+        try:
+            txt = art.get_text()
+            if txt:
+                return txt
+        except Exception:
+            pass
+    return fallback or ''
+
+
+def _resolve_palette_cmap(palette_name: str):
+    if not palette_name:
+        return None
+    try:
+        return plt.get_cmap(palette_name)
+    except ValueError:
+        pass
+    name_lower = palette_name.lower()
+    if name_lower.startswith('batlow'):
+        try:
+            cmc = importlib.import_module('cmcrameri.cm')
+            if hasattr(cmc, name_lower):
+                return getattr(cmc, name_lower)
+            if hasattr(cmc, 'batlow'):
+                return getattr(cmc, 'batlow')
+        except Exception:
+            return None
+    return None
+
+
+def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
+    palette_name = record.get('palette')
+    indices = record.get('indices')
+    if not palette_name or not indices:
+        return False
+    cmap = _resolve_palette_cmap(palette_name)
+    if cmap is None:
+        print(f"Warning: Unknown palette '{palette_name}' in style file.")
+        return False
+    try:
+        zero_based = [int(i) - 1 for i in indices]
+    except Exception:
+        zero_based = []
+    zero_based = [i for i in zero_based if 0 <= i < len(ax.lines)]
+    if not zero_based:
+        return False
+    low_clip = float(record.get('low_clip', 0.08))
+    high_clip = float(record.get('high_clip', 0.85))
+    nsel = len(zero_based)
+    if nsel == 1:
+        colors = [cmap(0.55)]
+    elif nsel == 2:
+        colors = [cmap(low_clip), cmap(high_clip)]
+    else:
+        positions = np.linspace(low_clip, high_clip, nsel)
+        colors = [cmap(p) for p in positions]
+    for idx, color in zip(zero_based, colors):
+        try:
+            ax.lines[idx].set_color(color)
+        except Exception:
+            pass
+    return True
 
 
 def print_style_info(
@@ -71,13 +188,21 @@ def print_style_info(
     # Per-side matrix summary (spine, major, minor, labels, title)
     def _onoff(v):
         return 'ON ' if bool(v) else 'off'
+    def _label_visible(axis_obj, primary: bool) -> bool:
+        try:
+            if primary:
+                return bool(axis_obj.label.get_visible())
+            return bool(axis_obj)
+        except Exception:
+            return bool(axis_obj)
+
     sides = (
         ('bottom',
          ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else False,
          tick_state.get('b_ticks', tick_state.get('bx', True)),
          tick_state.get('mbx', False),
          tick_state.get('b_labels', tick_state.get('bx', True)),
-         bool(ax.get_xlabel())),
+         bool(ax.xaxis.label.get_visible())),
         ('top',
          ax.spines.get('top').get_visible() if ax.spines.get('top') else False,
          tick_state.get('t_ticks', tick_state.get('tx', False)),
@@ -89,7 +214,7 @@ def print_style_info(
          tick_state.get('l_ticks', tick_state.get('ly', True)),
          tick_state.get('mly', False),
          tick_state.get('l_labels', tick_state.get('ly', True)),
-         bool(ax.get_ylabel())),
+         bool(ax.yaxis.label.get_visible())),
         ('right',
          ax.spines.get('right').get_visible() if ax.spines.get('right') else False,
          tick_state.get('r_ticks', tick_state.get('ry', False)),
@@ -163,12 +288,23 @@ def print_style_info(
     # Curves
     print("Lines (style):")
     for i, ln in enumerate(ax.lines):
-        col = ln.get_color(); lw = ln.get_linewidth(); ls = ln.get_linestyle()
+        col_val = ln.get_color()
+        col_hex = _color_to_hex(col_val)
+        col_disp = f"{color_block(col_hex)} {col_hex}" if col_hex else str(col_val)
+        lw = ln.get_linewidth(); ls = ln.get_linestyle()
         mk = ln.get_marker(); ms = ln.get_markersize(); a = ln.get_alpha()
         base_label = labels[i] if i < len(labels) else ""
         offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
         offset_str = f" offset={offset_val:.4g}" if offset_val != 0.0 else ""
-        print(f"  {i+1:02d}: label='{base_label}' color={col} lw={lw} ls={ls} marker={mk} ms={ms} alpha={a}{offset_str}")
+        print(f"  {i+1:02d}: label='{base_label}' color={col_disp} lw={lw} ls={ls} marker={mk} ms={ms} alpha={a}{offset_str}")
+    palette_hist = getattr(fig, '_curve_palette_history', None)
+    if palette_hist:
+        print("Palette history:")
+        for entry in palette_hist:
+            palette_name = entry.get('palette', '')
+            idxs = entry.get('indices', [])
+            idx_str = ", ".join(str(i) for i in idxs)
+            print(f"  {palette_name or 'unknown'} -> [{idx_str}]")
     print("--- End diagnostics ---\n")
 
 
@@ -184,6 +320,7 @@ def export_style_config(
     offsets_list: List[float],
     cif_tick_series: Optional[List[tuple]] = None,
     label_text_objects: Optional[List] = None,
+    base_path: Optional[str] = None,
 ) -> None:
     """Export style configuration after displaying a summary and prompting the user.
     
@@ -228,14 +365,14 @@ def export_style_config(
                 'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))),
                 'minor': bool(tick_state.get('mbx', False)),
                 'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))),
-                'title': bool(ax.get_xlabel())
+                'title': bool(ax.xaxis.label.get_visible())
             },
             'left':   {
                 'spine': _get_spine_visible('left'),
                 'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))),
                 'minor': bool(tick_state.get('mly', False)),
                 'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))),
-                'title': bool(ax.get_ylabel())
+                'title': bool(ax.yaxis.label.get_visible())
             },
             'right':  {
                 'spine': _get_spine_visible('right'),
@@ -279,37 +416,46 @@ def export_style_config(
                 for name, spn in ax.spines.items()
             },
             "tick_colors": {
-                "x": ax.xaxis.get_tick_params()['color'] if ax.xaxis.get_tick_params() else 'black',
-                "y": ax.yaxis.get_tick_params()['color'] if ax.yaxis.get_tick_params() else 'black',
+                "x": _color_to_hex((ax.xaxis.get_tick_params() or {}).get('color', 'black')),
+                "y": _color_to_hex((ax.yaxis.get_tick_params() or {}).get('color', 'black')),
             },
             "axis_label_colors": {
-                "x": ax.xaxis.label.get_color(),
-                "y": ax.yaxis.label.get_color(),
+                "x": _color_to_hex(ax.xaxis.label.get_color()),
+                "y": _color_to_hex(ax.yaxis.label.get_color()),
             },
             "grid": ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False,
             "lines": [
                 {
                     "index": i,
                     # label text is not a style item (handled by 'r'), don't export it
-                    "color": ln.get_color(),
+                    "color": _color_to_hex(ln.get_color()),
                     "linewidth": ln.get_linewidth(),
                     "linestyle": ln.get_linestyle(),
                     "marker": ln.get_marker(),
                     "markersize": ln.get_markersize(),
-                    "markerfacecolor": ln.get_markerfacecolor(),
-                    "markeredgecolor": ln.get_markeredgecolor(),
+                    "markerfacecolor": _color_to_hex(ln.get_markerfacecolor()),
+                    "markeredgecolor": _color_to_hex(ln.get_markeredgecolor()),
                     "alpha": ln.get_alpha(),
                     "offset": offsets_list[i] if i < len(offsets_list) else 0.0,
                 }
                 for i, ln in enumerate(ax.lines)
             ],
             }
+        bottom_label_text = _get_primary_axis_text(ax, 'x')
+        left_label_text = _get_primary_axis_text(ax, 'y')
+        axis_title_texts = {
+            "top_x": _get_duplicate_axis_text(ax, '_top_xlabel_artist', bottom_label_text),
+            "bottom_x": bottom_label_text,
+            "left_y": left_label_text,
+            "right_y": _get_duplicate_axis_text(ax, '_right_ylabel_artist', left_label_text),
+        }
         cfg["axis_titles"] = {
             "top_x": bool(getattr(ax, "_top_xlabel_on", False)),
             "right_y": bool(getattr(ax, "_right_ylabel_on", False)),
-            "has_bottom_x": bool(ax.get_xlabel()),
-            "has_left_y": bool(ax.get_ylabel()),
+            "has_bottom_x": bool(ax.xaxis.label.get_visible()),
+            "has_left_y": bool(ax.yaxis.label.get_visible()),
         }
+        cfg["axis_title_texts"] = axis_title_texts
         # Save rotation angle
         cfg["rotation_angle"] = getattr(ax, '_rotation_angle', 0)
         
@@ -328,6 +474,22 @@ def export_style_config(
                 {"index": i, "color": color}
                 for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series)
             ]
+        palette_history = getattr(fig, '_curve_palette_history', None)
+        if palette_history:
+            serialized_palettes = []
+            for entry in palette_history:
+                palette_name = entry.get('palette')
+                indices = entry.get('indices', [])
+                if not palette_name or not indices:
+                    continue
+                serialized_palettes.append({
+                    'palette': palette_name,
+                    'indices': list(indices),
+                    'low_clip': float(entry.get('low_clip', 0.08)),
+                    'high_clip': float(entry.get('high_clip', 0.85)),
+                })
+            if serialized_palettes:
+                cfg['curve_palettes'] = serialized_palettes
         
         # Ask user for style-only or style+geometry
         print("\nExport options:")
@@ -363,11 +525,13 @@ def export_style_config(
         import os
         from .utils import list_files_in_subdirectory, get_organized_path
         
-        file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style')
+        file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
         style_files = [f[0] for f in file_list]
 
         if style_files:
-            print(f"\nExisting {default_ext} files in Styles/:")
+            styles_root = base_path if base_path else os.getcwd()
+            styles_dir = os.path.join(styles_root, 'Styles')
+            print(f"\nExisting {default_ext} files in {styles_dir}:")
             for i, f in enumerate(style_files, 1):
                 print(f"  {i}: {f}")
 
@@ -390,7 +554,7 @@ def export_style_config(
             if os.path.isabs(filename_with_ext):
                 target_path = filename_with_ext
             else:
-                target_path = get_organized_path(filename_with_ext, 'style')
+                target_path = get_organized_path(filename_with_ext, 'style', base_path=base_path)
 
         # Only prompt ONCE for overwrite if the file exists
         if os.path.exists(target_path):
@@ -424,6 +588,35 @@ def apply_style_config(
     adjust_margins_cb: Optional[Callable[[], None]] = None,
     keep_canvas_fixed: bool = False,
 ) -> None:
+    def _apply_spine_color(spine_name: str, color) -> None:
+        if color is None:
+            return
+        try:
+            if spine_name in ('top', 'bottom'):
+                ax.tick_params(axis='x', which='both', colors=color)
+                ax.xaxis.label.set_color(color)
+                ax._stored_xlabel_color = color
+                if spine_name == 'top':
+                    ax._stored_top_xlabel_color = color
+                    artist = getattr(ax, '_top_xlabel_artist', None)
+                    if artist is not None:
+                        artist.set_color(color)
+                else:
+                    ax._stored_xlabel = ax.get_xlabel()
+            else:
+                ax.tick_params(axis='y', which='both', colors=color)
+                ax.yaxis.label.set_color(color)
+                ax._stored_ylabel_color = color
+                if spine_name == 'right':
+                    ax._stored_right_ylabel_color = color
+                    artist = getattr(ax, '_right_ylabel_artist', None)
+                    if artist is not None:
+                        artist.set_color(color)
+                else:
+                    ax._stored_ylabel = ax.get_ylabel()
+        except Exception:
+            pass
+
     try:
         with open(filename, "r", encoding="utf-8") as f:
             cfg = json.load(f)
@@ -656,6 +849,7 @@ def apply_style_config(
                         ax.spines[name].set_edgecolor(sp_dict["color"])
                     except Exception:
                         pass
+                    _apply_spine_color(name, sp_dict.get("color"))
                 if "visible" in sp_dict:
                     ax.spines[name].set_visible(sp_dict["visible"])
 
@@ -687,7 +881,7 @@ def apply_style_config(
             if idx is None or not (0 <= idx < len(ax.lines)):
                 continue
             ln = ax.lines[idx]
-            if "color" in entry:
+            if "color" in entry and entry["color"] is not None:
                 ln.set_color(entry["color"])
             if "linewidth" in entry:
                 ln.set_linewidth(entry["linewidth"])
@@ -706,12 +900,12 @@ def apply_style_config(
                     ln.set_markersize(entry["markersize"])
                 except Exception:
                     pass
-            if "markerfacecolor" in entry:
+            if "markerfacecolor" in entry and entry["markerfacecolor"] is not None:
                 try:
                     ln.set_markerfacecolor(entry["markerfacecolor"])
                 except Exception:
                     pass
-            if "markeredgecolor" in entry:
+            if "markeredgecolor" in entry and entry["markeredgecolor"] is not None:
                 try:
                     ln.set_markeredgecolor(entry["markeredgecolor"])
                 except Exception:
@@ -735,6 +929,24 @@ def apply_style_config(
                             ln.set_data(x_data_list[idx], y_with_offset)
                 except Exception as e:
                     print(f"Warning: Could not restore offset for curve {idx+1}: {e}")
+        palette_cfg = cfg.get("curve_palettes", [])
+        if palette_cfg:
+            sanitized_history = []
+            for rec in palette_cfg:
+                if _apply_curve_palette(ax, rec):
+                    sanitized_history.append({
+                        'palette': rec.get('palette'),
+                        'indices': list(rec.get('indices', [])),
+                        'low_clip': float(rec.get('low_clip', 0.08)),
+                        'high_clip': float(rec.get('high_clip', 0.85)),
+                    })
+            if sanitized_history:
+                fig._curve_palette_history = sanitized_history
+            elif hasattr(fig, '_curve_palette_history'):
+                delattr(fig, '_curve_palette_history')
+        else:
+            if hasattr(fig, '_curve_palette_history'):
+                delattr(fig, '_curve_palette_history')
         # CIF tick sets (labels & colors)
         cif_cfg = cfg.get("cif_ticks", [])
         if cif_cfg and cif_tick_series is not None:
@@ -850,6 +1062,25 @@ def apply_style_config(
             except Exception:
                 pass
             at_cfg = cfg.get("axis_titles", {})
+            title_texts = cfg.get("axis_title_texts", {})
+            bottom_text = title_texts.get("bottom_x")
+            left_text = title_texts.get("left_y")
+            top_text = title_texts.get("top_x")
+            right_text = title_texts.get("right_y")
+            if bottom_text is not None:
+                ax._stored_xlabel = bottom_text
+            if left_text is not None:
+                ax._stored_ylabel = left_text
+            if top_text is not None:
+                if top_text:
+                    ax._top_xlabel_text_override = top_text
+                elif hasattr(ax, '_top_xlabel_text_override'):
+                    delattr(ax, '_top_xlabel_text_override')
+            if right_text is not None:
+                if right_text:
+                    ax._right_ylabel_text_override = right_text
+                elif hasattr(ax, '_right_ylabel_text_override'):
+                    delattr(ax, '_right_ylabel_text_override')
             # Top X duplicate via artist
             ax._top_xlabel_on = bool(at_cfg.get("top_x", False))
             try:
@@ -858,9 +1089,12 @@ def apply_style_config(
                 pass
             # Bottom X presence
             if not at_cfg.get("has_bottom_x", True):
-                ax.set_xlabel("")
-            elif at_cfg.get("has_bottom_x", True) and not ax.get_xlabel():
-                if hasattr(ax, "_stored_xlabel"):
+                ax.xaxis.label.set_visible(False)
+            else:
+                ax.xaxis.label.set_visible(True)
+                if bottom_text is not None:
+                    ax.set_xlabel(bottom_text)
+                elif not ax.get_xlabel() and hasattr(ax, "_stored_xlabel"):
                     ax.set_xlabel(ax._stored_xlabel)
             # Always re-position bottom xlabel to consume pending pad or set deterministic pad
             try:
@@ -875,9 +1109,12 @@ def apply_style_config(
                 pass
             # Left Y presence
             if not at_cfg.get("has_left_y", True):
-                ax.set_ylabel("")
-            elif at_cfg.get("has_left_y", True) and not ax.get_ylabel():
-                if hasattr(ax, "_stored_ylabel"):
+                ax.yaxis.label.set_visible(False)
+            else:
+                ax.yaxis.label.set_visible(True)
+                if left_text is not None:
+                    ax.set_ylabel(left_text)
+                elif not ax.get_ylabel() and hasattr(ax, "_stored_ylabel"):
                     ax.set_ylabel(ax._stored_ylabel)
             # Always re-position left ylabel to consume pending pad or set deterministic pad
             try:

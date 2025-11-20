@@ -20,8 +20,23 @@ from .ui import (
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
 )
-from .utils import _confirm_overwrite
+from .utils import (
+    _confirm_overwrite,
+    choose_save_path,
+    list_files_in_subdirectory,
+    get_organized_path,
+)
+from .color_utils import resolve_color_token
 
+
+def _legend_no_frame(ax, *args, **kwargs):
+    leg = ax.legend(*args, **kwargs)
+    if leg is not None:
+        try:
+            leg.set_frame_on(False)
+        except Exception:
+            pass
+    return leg
 
 def _colorize_menu(text):
     """Colorize menu items: command in cyan, colon in white, description in default."""
@@ -67,6 +82,22 @@ def _colorize_inline_commands(text):
     # Color specific known commands: q, i, l, list, help, all
     text = re.sub(r'\b(q|i|l|list|help|all)\b(?=\s*[=,]|\s*$)', lambda m: f"\033[96m{m.group(1)}\033[0m", text)
     return text
+
+
+def _collect_file_paths(file_data) -> list:
+    """Extract absolute file paths from file_data structures."""
+    paths = []
+    if isinstance(file_data, list):
+        for entry in file_data:
+            if isinstance(entry, dict):
+                path = entry.get('filepath')
+                if path:
+                    paths.append(path)
+    elif isinstance(file_data, dict):
+        path = file_data.get('filepath')
+        if path:
+            paths.append(path)
+    return paths
 
 
 def _generate_similar_color(base_color):
@@ -172,7 +203,7 @@ def _rebuild_legend(ax, ax2, file_data):
                 h_all.append(h)
                 l_all.append(l)
         if h_all:
-            ax.legend(h_all, l_all, loc='best', borderaxespad=1.0)
+            _legend_no_frame(ax, h_all, l_all, loc='best', borderaxespad=1.0)
         else:
             leg = ax.get_legend()
             if leg:
@@ -222,13 +253,16 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     fam0 = fam[0] if fam else ''
     fsize = plt.rcParams.get('font.size', None)
     # Tick widths helper
-    def _tick_width(axis, which: str):
+    def _tick_width(axis_obj, which: str):
         try:
-            ticks = axis.get_major_ticks() if which == 'major' else axis.get_minor_ticks()
-            for t in ticks:
-                ln = t.tick1line
-                if ln.get_visible():
-                    return ln.get_linewidth()
+            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+            width = tick_kw.get('width')
+            if width is None:
+                axis_name = getattr(axis_obj, 'axis_name', 'x')
+                rc_key = f"{axis_name}tick.{which}.width"
+                width = plt.rcParams.get(rc_key)
+            if width is not None:
+                return float(width)
         except Exception:
             return None
         return None
@@ -338,13 +372,17 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         'wasd_state': wasd_state,
         'spines': {
             'bottom': {'linewidth': ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else None,
-                       'visible': ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else None},
+                       'visible': ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else None,
+                       'color': ax.spines.get('bottom').get_edgecolor() if ax.spines.get('bottom') else None},
             'top':    {'linewidth': ax.spines.get('top').get_linewidth() if ax.spines.get('top') else None,
-                       'visible': ax.spines.get('top').get_visible() if ax.spines.get('top') else None},
+                       'visible': ax.spines.get('top').get_visible() if ax.spines.get('top') else None,
+                       'color': ax.spines.get('top').get_edgecolor() if ax.spines.get('top') else None},
             'left':   {'linewidth': ax.spines.get('left').get_linewidth() if ax.spines.get('left') else None,
-                       'visible': ax.spines.get('left').get_visible() if ax.spines.get('left') else None},
+                       'visible': ax.spines.get('left').get_visible() if ax.spines.get('left') else None,
+                       'color': ax.spines.get('left').get_edgecolor() if ax.spines.get('left') else None},
             'right':  {'linewidth': ax2.spines.get('right').get_linewidth() if ax2.spines.get('right') else None,
-                       'visible': ax2.spines.get('right').get_visible() if ax2.spines.get('right') else None},
+                       'visible': ax2.spines.get('right').get_visible() if ax2.spines.get('right') else None,
+                       'color': ax2.spines.get('right').get_edgecolor() if ax2.spines.get('right') else None},
         },
         'labelpads': {
             'x': getattr(ax.xaxis, 'labelpad', None),
@@ -552,30 +590,13 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         if leg_cfg:
             leg_visible = leg_cfg.get('visible', True)
             leg_xy_in = leg_cfg.get('position_inches')
-            
-            # Store position for later use
             if leg_xy_in is not None:
-                fig._cpc_legend_xy_in = leg_xy_in
-            
+                fig._cpc_legend_xy_in = _sanitize_legend_offset(tuple(leg_xy_in))
             leg = ax.get_legend()
             if leg is not None:
                 leg.set_visible(leg_visible)
-                
-                # Reposition legend if position is stored
-                if leg_visible and leg_xy_in is not None:
-                    try:
-                        fig_w, fig_h = fig.get_size_inches()
-                        cx, cy = fig_w / 2.0, fig_h / 2.0
-                        x_in, y_in = leg_xy_in
-                        fx = (cx + x_in) / fig_w
-                        fy = (cy + y_in) / fig_h
-                        
-                        h1, l1 = ax.get_legend_handles_labels()
-                        h2, l2 = ax2.get_legend_handles_labels()
-                        ax.legend(h1 + h2, l1 + l2, loc='center', bbox_to_anchor=(fx, fy), 
-                                 bbox_transform=fig.transFigure, borderaxespad=1.0)
-                    except Exception:
-                        pass
+            if leg_visible:
+                _apply_legend_position()
     except Exception:
         pass
     # Apply tick visibility/widths and spines
@@ -666,21 +687,34 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         for name, spec in sp.items():
             if name in ('bottom','top','left') and name in ax.spines:
                 spn = ax.spines.get(name)
-                if spn is None: continue
+                if spn is None:
+                    continue
                 if spec.get('linewidth') is not None:
-                    try: spn.set_linewidth(float(spec['linewidth']))
-                    except Exception: pass
+                    try:
+                        spn.set_linewidth(float(spec['linewidth']))
+                    except Exception:
+                        pass
                 if spec.get('visible') is not None:
-                    try: spn.set_visible(bool(spec['visible']))
-                    except Exception: pass
+                    try:
+                        spn.set_visible(bool(spec['visible']))
+                    except Exception:
+                        pass
+                if spec.get('color') is not None:
+                    _set_spine_color(name, spec['color'])
             if name == 'right' and ax2.spines.get('right') is not None:
                 spn = ax2.spines.get('right')
                 if spec.get('linewidth') is not None:
-                    try: spn.set_linewidth(float(spec['linewidth']))
-                    except Exception: pass
+                    try:
+                        spn.set_linewidth(float(spec['linewidth']))
+                    except Exception:
+                        pass
                 if spec.get('visible') is not None:
-                    try: spn.set_visible(bool(spec['visible']))
-                    except Exception: pass
+                    try:
+                        spn.set_visible(bool(spec['visible']))
+                    except Exception:
+                        pass
+                if spec.get('color') is not None:
+                    _set_spine_color('right', spec['color'])
     except Exception:
         pass
     # Restore labelpads
@@ -722,6 +756,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         }]
     
     current_file_idx = 0  # Index of currently selected file for editing
+    file_paths = _collect_file_paths(file_data)
     
     # Tick state for CPC (primary ax + twin right ax2)
     tick_state = {
@@ -737,6 +772,41 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
 
     # --- Undo stack using style snapshots ---
     state_history = []  # list of cfg dicts
+
+    if not hasattr(fig, '_cpc_spine_colors') or not isinstance(getattr(fig, '_cpc_spine_colors'), dict):
+        fig._cpc_spine_colors = {}
+
+    def _set_spine_color(spine_name: str, color: str):
+        if not hasattr(fig, '_cpc_spine_colors') or not isinstance(fig._cpc_spine_colors, dict):
+            fig._cpc_spine_colors = {}
+        fig._cpc_spine_colors[spine_name] = color
+        axes_map = {
+            'top': [ax, ax2],
+            'bottom': [ax, ax2],
+            'left': [ax],
+            'right': [ax2],
+        }
+        target_axes = axes_map.get(spine_name, [ax, ax2])
+        for curr_ax in target_axes:
+            if curr_ax is None or spine_name not in curr_ax.spines:
+                continue
+            sp = curr_ax.spines[spine_name]
+            try:
+                sp.set_edgecolor(color)
+            except Exception:
+                pass
+            try:
+                if spine_name in ('top', 'bottom'):
+                    curr_ax.tick_params(axis='x', which='both', colors=color)
+                    curr_ax.xaxis.label.set_color(color)
+                elif spine_name == 'left':
+                    curr_ax.tick_params(axis='y', which='both', colors=color)
+                    curr_ax.yaxis.label.set_color(color)
+                elif spine_name == 'right':
+                    curr_ax.tick_params(axis='y', which='both', colors=color)
+                    curr_ax.yaxis.label.set_color(color)
+            except Exception:
+                pass
 
     def push_state(note: str = ""):
         try:
@@ -788,6 +858,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             # Position label spacings (bottom/left) for consistency
             _ui_position_bottom_xlabel(ax, fig, tick_state)
             _ui_position_left_ylabel(ax, fig, tick_state)
+            try:
+                for spine_name, color in getattr(fig, '_cpc_spine_colors', {}).items():
+                    _set_spine_color(spine_name, color)
+            except Exception:
+                pass
             fig.canvas.draw_idle()
         except Exception:
             pass
@@ -807,10 +882,27 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         except Exception:
             pass
 
+    def _sanitize_legend_offset(xy: Optional[tuple]) -> Optional[tuple]:
+        if xy is None or not isinstance(xy, tuple) or len(xy) != 2:
+            return None
+        x_in, y_in = xy
+        try:
+            x_val = float(x_in)
+            y_val = float(y_in)
+        except Exception:
+            return None
+        fw, fh = fig.get_size_inches()
+        if fw <= 0 or fh <= 0:
+            return None
+        max_offset = max(fw, fh) * 2.0
+        if abs(x_val) > max_offset or abs(y_val) > max_offset:
+            return None
+        return (x_val, y_val)
+
     def _apply_legend_position():
         """Reapply legend position using stored inches offset relative to canvas center."""
         try:
-            xy_in = getattr(fig, '_cpc_legend_xy_in', None)
+            xy_in = _sanitize_legend_offset(getattr(fig, '_cpc_legend_xy_in', None))
             leg = ax.get_legend()
             if xy_in is None or leg is None:
                 return
@@ -824,7 +916,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             h1, l1 = ax.get_legend_handles_labels()
             h2, l2 = ax2.get_legend_handles_labels()
             if h1 or h2:
-                ax.legend(h1 + h2, l1 + l2, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                _legend_no_frame(ax, h1 + h2, l1 + l2, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
         except Exception:
             pass
 
@@ -1224,25 +1316,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"Unknown key: {key_part} (use w/a/s/d)")
                             continue
                         spine_name = key_to_spine[key_part]
-                        # Set for both axes
-                        for curr_ax in [ax, ax2]:
-                            if curr_ax is None:
-                                continue
-                            if spine_name not in curr_ax.spines:
-                                continue
-                            try:
-                                # Set spine color
-                                curr_ax.spines[spine_name].set_edgecolor(color)
-                                # Set tick colors and axis label color for this axis
-                                if spine_name in ('top', 'bottom'):
-                                    curr_ax.tick_params(axis='x', which='both', colors=color)
-                                    curr_ax.xaxis.label.set_color(color)
-                                else:  # left or right
-                                    curr_ax.tick_params(axis='y', which='both', colors=color)
-                                    curr_ax.yaxis.label.set_color(color)
-                            except Exception as e:
-                                print(f"Error setting {spine_name} color: {e}")
-                        print(f"Set {spine_name} spine to {color}")
+                        resolved = resolve_color_token(color, fig)
+                        _set_spine_color(spine_name, resolved)
+                        print(f"Set {spine_name} spine to {resolved}")
                     fig.canvas.draw()
                 else:
                     print("Canceled.")
@@ -1254,13 +1330,17 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             continue
         elif key == 'e':
             try:
+                base_path = choose_save_path(file_paths, purpose="figure export")
+                if not base_path:
+                    _print_menu()
+                    continue
                 # List existing figure files from Figures/ subdirectory
-                from .utils import list_files_in_subdirectory, get_organized_path
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
-                file_list = list_files_in_subdirectory(fig_extensions, 'figure')
+                file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
                 files = [f[0] for f in file_list]
                 if files:
-                    print("Existing figure files in Figures/:")
+                    figures_dir = os.path.join(base_path, 'Figures')
+                    print(f"Existing figure files in {figures_dir}:")
                     for i, f in enumerate(files, 1):
                         print(f"  {i}: {f}")
                 
@@ -1288,7 +1368,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     if os.path.isabs(fname):
                         target = fname
                     else:
-                        target = get_organized_path(fname, 'figure')
+                        target = get_organized_path(fname, 'figure', base_path=base_path)
                     if os.path.exists(target):
                         yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
@@ -1334,7 +1414,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             # Save CPC session (.pkl) with all data and styles
             try:
                 from .session import dump_cpc_session
-                folder = os.getcwd()
+                folder = choose_save_path(file_paths, purpose="CPC session save")
+                if not folder:
+                    _print_menu(); continue
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -1418,7 +1500,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         props = spines.get(name, {})
                         lw = props.get('linewidth', '?')
                         vis = props.get('visible', False)
-                        print(f"  {name:<6} lw={lw} visible={vis}")
+                        col = props.get('color')
+                        print(f"  {name:<6} lw={lw} visible={vis} color={col}")
                 
                 ticks = snap.get('ticks', {})
                 print(f"Tick widths: x_major={ticks.get('x_major_width')}, x_minor={ticks.get('x_minor_width')}")
@@ -1498,17 +1581,19 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         print(f"Y limits (right): {ylim_r[0]:.4g} to {ylim_r[1]:.4g}")
                 
                 print("--- End Style ---\n")
-                # List existing files and allow numeric overwrite on export
-                from .utils import list_files_in_subdirectory, get_organized_path
-                style_extensions = ('.bps', '.bpsg', '.bpcfg')
-                file_list = list_files_in_subdirectory(style_extensions, 'style')
-                files = [f[0] for f in file_list]
-                if files:
-                    print(f"Existing style files in Styles/:")
-                    for i, f in enumerate(files, 1):
-                        print(f"  {i}: {f}")
                 sub = input(_colorize_prompt("Style submenu: (e=export, q=return): ")).strip().lower()
                 if sub == 'e':
+                    save_base = choose_save_path(file_paths, purpose="style export")
+                    if not save_base:
+                        _print_menu(); continue
+                    style_extensions = ('.bps', '.bpsg', '.bpcfg')
+                    file_list = list_files_in_subdirectory(style_extensions, 'style', base_path=save_base)
+                    files = [f[0] for f in file_list]
+                    if files:
+                        styles_dir = os.path.join(save_base, 'Styles')
+                        print(f"Existing style files in {styles_dir}:")
+                        for i, f in enumerate(files, 1):
+                            print(f"  {i}: {f}")
                     choice = input("Enter new filename or number to overwrite (q=cancel): ").strip()
                     if not choice or choice.lower() == 'q':
                         _print_menu(); continue
@@ -1531,7 +1616,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         if os.path.isabs(name):
                             target = name
                         else:
-                            target = get_organized_path(name, 'style')
+                            target = get_organized_path(name, 'style', base_path=save_base)
                         if os.path.exists(target):
                             yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                             if yn != 'y':
@@ -1545,7 +1630,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             _print_menu(); continue
         elif key == 'i':
             try:
-                from .utils import list_files_in_subdirectory, get_organized_path
                 style_extensions = ('.bps', '.bpsg', '.bpcfg')
                 file_list = list_files_in_subdirectory(style_extensions, 'style')
                 files = [f[0] for f in file_list]
@@ -1688,11 +1772,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 fw, fh = fig.get_size_inches()
                                 fx = 0.5 + float(xy_in[0]) / float(fw)
                                 fy = 0.5 + float(xy_in[1]) / float(fh)
-                                ax.legend(H, L, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                                _legend_no_frame(ax, H, L, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
                             except Exception:
-                                ax.legend(H, L, loc='best', borderaxespad=1.0)
+                                _legend_no_frame(ax, H, L, loc='best', borderaxespad=1.0)
                         else:
-                            ax.legend(H, L, loc='best', borderaxespad=1.0)
+                            _legend_no_frame(ax, H, L, loc='best', borderaxespad=1.0)
                     except Exception:
                         pass
                 else:
@@ -1729,7 +1813,10 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 # Convert display -> figure fraction
                                 fx, fy = fig.transFigure.inverted().transform((cx, cy))
                                 fw, fh = fig.get_size_inches()
-                                fig._cpc_legend_xy_in = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                                offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                                offset = _sanitize_legend_offset(offset)
+                                if offset is not None:
+                                    fig._cpc_legend_xy_in = offset
                             except Exception:
                                 pass
                 except Exception:
@@ -1739,6 +1826,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 vis = bool(leg.get_visible()) if leg is not None else False
                 fw, fh = fig.get_size_inches()
                 xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
+                xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
                     sub = input("Legend: t=toggle, m=set position (x y inches), q=back: ").strip().lower()
@@ -1757,16 +1845,19 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 h1, l1 = ax.get_legend_handles_labels()
                                 h2, l2 = ax2.get_legend_handles_labels()
                                 if h1 or h2:
-                                    if hasattr(fig, '_cpc_legend_xy_in') and getattr(fig, '_cpc_legend_xy_in') is not None:
+                                    offset = _sanitize_legend_offset(getattr(fig, '_cpc_legend_xy_in', None))
+                                    if offset is not None:
+                                        fig._cpc_legend_xy_in = offset
                                         _apply_legend_position()
                                     else:
-                                        ax.legend(h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
+                                        _legend_no_frame(ax, h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
                             fig.canvas.draw_idle()
                         except Exception:
                             pass
                     elif sub == 'm':
                         push_state("legend-move")
                         xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
+                        xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                         print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                         vals = input("Enter legend position x y (inches from center; e.g., 0.0 0.0): ").strip()
                         parts = vals.replace(',', ' ').split()
@@ -1779,6 +1870,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         # Store and apply
                         try:
                             fig._cpc_legend_xy_in = (x_in, y_in)
+                            fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
                             _apply_legend_position()
                             fig.canvas.draw_idle()
                         except Exception:
@@ -2330,7 +2422,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 elif sub == 'c':
                     try:
                         push_state("resize-canvas")
-                        resize_canvas(fig)
+                        resize_canvas(fig, ax)
                     except Exception as e:
                         print(f"Resize failed: {e}")
             _print_menu(); continue
