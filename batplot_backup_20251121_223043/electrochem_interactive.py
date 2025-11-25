@@ -31,7 +31,6 @@ from .utils import (
     list_files_in_subdirectory,
     get_organized_path,
 )
-import time
 from .color_utils import (
     color_block,
     color_bar,
@@ -50,23 +49,6 @@ def _colorize_menu(text):
     cmd = parts[0].strip()
     desc = parts[1].strip() if len(parts) > 1 else ''
     return f"\033[96m{cmd}\033[0m: {desc}"  # Cyan for command, default for description
-
-
-def _format_file_timestamp(filepath: str) -> str:
-    """Format file modification time for display.
-    
-    Args:
-        filepath: Full path to the file
-        
-    Returns:
-        Formatted timestamp string (e.g., "2024-01-15 14:30") or empty string if error
-    """
-    try:
-        mtime = os.path.getmtime(filepath)
-        # Format as YYYY-MM-DD HH:MM
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-    except Exception:
-        return ""
 
 
 def _colorize_prompt(text):
@@ -237,6 +219,7 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False):
         "t: toggle axes",
         "h: legend",
         "g: size",
+        "ro: rotation",
     ]
     if is_dqdv:
         col1.insert(2, "sm: smooth")
@@ -724,34 +707,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         is_dqdv = 'dQ' in base_ylabel
         # Store the mode on the axes for persistence
         ax._is_dqdv_mode = is_dqdv
-    
-    # Store original x/y limits for 'auto' command (restore to original data range)
-    if not hasattr(ax, '_original_xlim'):
-        # Get original limits from all cycle lines
-        try:
-            all_x = []
-            all_y = []
-            for cyc, role, ln in _iter_cycle_lines(cycle_lines):
-                try:
-                    xd = np.asarray(ln.get_xdata(), dtype=float)
-                    yd = np.asarray(ln.get_ydata(), dtype=float)
-                    if xd.size > 0:
-                        all_x.extend([xd.min(), xd.max()])
-                    if yd.size > 0:
-                        all_y.extend([yd.min(), yd.max()])
-                except Exception:
-                    pass
-            if all_x:
-                ax._original_xlim = (min(all_x), max(all_x))
-            else:
-                ax._original_xlim = ax.get_xlim()
-            if all_y:
-                ax._original_ylim = (min(all_y), max(all_y))
-            else:
-                ax._original_ylim = ax.get_ylim()
-        except Exception:
-            ax._original_xlim = ax.get_xlim()
-            ax._original_ylim = ax.get_ylim()
 
     source_paths = []
     _source_seen = set()
@@ -1120,9 +1075,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 },
                 'tick_lengths': dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
                 'tick_direction': getattr(fig, '_tick_direction', 'out'),
-                'font_size': plt.rcParams.get('font.size'),
-                'font_family': plt.rcParams.get('font.family'),
-                'font_sans_serif': list(plt.rcParams.get('font.sans-serif', [])),
                 'titles': {
                     'top_x': bool(getattr(ax, '_top_xlabel_on', False)),
                     'right_y': bool(getattr(ax, '_right_ylabel_on', False))
@@ -1162,11 +1114,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         'lw': ln.get_linewidth(),
                         'ls': ln.get_linestyle(),
                         'alpha': ln.get_alpha(),
-                        'visible': ln.get_visible(),
-                        'marker': ln.get_marker(),
-                        'markersize': getattr(ln, 'get_markersize', lambda: None)(),
-                        'markerfacecolor': getattr(ln, 'get_markerfacecolor', lambda: None)(),
-                        'markeredgecolor': getattr(ln, 'get_markeredgecolor', lambda: None)()
+                        'visible': ln.get_visible()
                     })
                 except Exception:
                     snap['lines'].append({'index': i})
@@ -1269,32 +1217,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     ax.tick_params(axis='both', which='both', direction=tick_dir)
             except Exception:
                 pass
-            # Font size and family
-            try:
-                import matplotlib as mpl
-                font_size = snap.get('font_size')
-                if font_size is not None:
-                    mpl.rcParams['font.size'] = font_size
-                    _apply_font_size(ax, font_size)
-            except Exception:
-                pass
-            try:
-                import matplotlib as mpl
-                font_family = snap.get('font_family')
-                font_sans_serif = snap.get('font_sans_serif')
-                if font_family is not None:
-                    mpl.rcParams['font.family'] = font_family
-                if font_sans_serif is not None:
-                    mpl.rcParams['font.sans-serif'] = font_sans_serif
-                    # Apply to axes if family was set
-                    if font_family or font_sans_serif:
-                        # Get the actual font family to use
-                        if font_sans_serif and len(font_sans_serif) > 0:
-                            _apply_font_family(ax, font_sans_serif[0])
-                        elif font_family:
-                            _apply_font_family(ax, font_family)
-            except Exception:
-                pass
             # Title offsets - all four titles
             try:
                 offsets = snap.get('title_offsets', {})
@@ -1369,23 +1291,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             ln.set_alpha(item['alpha'])
                         if item.get('visible') is not None:
                             ln.set_visible(bool(item['visible']))
-                        if item.get('marker') is not None:
-                            ln.set_marker(item['marker'])
-                        if item.get('markersize') is not None:
-                            try:
-                                ln.set_markersize(item['markersize'])
-                            except Exception:
-                                pass
-                        if item.get('markerfacecolor') is not None:
-                            try:
-                                ln.set_markerfacecolor(item['markerfacecolor'])
-                            except Exception:
-                                pass
-                        if item.get('markeredgecolor') is not None:
-                            try:
-                                ln.set_markeredgecolor(item['markeredgecolor'])
-                            except Exception:
-                                pass
             except Exception:
                 pass
             legend_snap = snap.get('legend', {})
@@ -1414,11 +1319,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             print(f"Undo failed: {e}")
     _print_menu(len(all_cycles), is_dqdv)
     while True:
-        try:
-            key = input("Press a key: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\n\nExiting interactive menu...")
-            break
+        key = input("Press a key: ").strip().lower()
         if not key:
             continue
         if key == 'q':
@@ -1449,12 +1350,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if files:
                     figures_dir = os.path.join(base_path, 'Figures')
                     print(f"Existing figure files in {figures_dir}:")
-                    for i, (fname, fpath) in enumerate(file_list, 1):
-                        timestamp = _format_file_timestamp(fpath)
-                        if timestamp:
-                            print(f"  {i}: {fname}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {fname}")
+                    for i, f in enumerate(files, 1):
+                        print(f"  {i}: {f}")
                 
                 fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
@@ -1536,7 +1433,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 except Exception as e:
                     print(f"Export failed: {e}")
             except Exception as e:
-                print(f"Export failed: {e}")
+                print(f"Error exporting figure: {e}")
             _print_menu(len(all_cycles), is_dqdv)
             continue
         elif key == 'h':
@@ -1584,13 +1481,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
-                    sub = input(_colorize_prompt("Legend: (t=toggle, p=set position, q=back): ")).strip().lower()
+                    sub = input(_colorize_prompt("Legend: (t=toggle, m=set position, q=back): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub == 't':
-                        push_state("legend-toggle")
                         try:
                             leg = ax.get_legend()
                             if leg is not None and leg.get_visible():
@@ -1603,91 +1499,29 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             fig.canvas.draw_idle()
                         except Exception:
                             pass
-                    elif sub == 'p':
-                        # Position submenu with x and y subcommands
-                        while True:
-                            xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
-                            print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                            pos_cmd = input(_colorize_prompt("Position: (x y) or x=x only, y=y only, q=back: ")).strip().lower()
-                            if not pos_cmd or pos_cmd == 'q':
-                                break
-                            if pos_cmd == 'x':
-                                # X only: stay in loop
-                                while True:
-                                    xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
-                                    print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
-                                        break
-                                    try:
-                                        x_in = float(val)
-                                    except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
-                                        continue
-                                    push_state("legend-position")
-                                    try:
-                                        fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, xy_in[1]))
-                                        # If legend visible, reposition now
-                                        leg = ax.get_legend()
-                                        if leg is not None and leg.get_visible():
-                                            if not _apply_legend_position(fig, ax):
-                                                handles, labels = _visible_legend_entries(ax)
-                                                if handles:
-                                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={x_in:.2f}, y={xy_in[1]:.2f}")
-                                    except Exception:
-                                        pass
-                            elif pos_cmd == 'y':
-                                # Y only: stay in loop
-                                while True:
-                                    xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
-                                    print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
-                                        break
-                                    try:
-                                        y_in = float(val)
-                                    except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
-                                        continue
-                                    push_state("legend-position")
-                                    try:
-                                        fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (xy_in[0], y_in))
-                                        # If legend visible, reposition now
-                                        leg = ax.get_legend()
-                                        if leg is not None and leg.get_visible():
-                                            if not _apply_legend_position(fig, ax):
-                                                handles, labels = _visible_legend_entries(ax)
-                                                if handles:
-                                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={xy_in[0]:.2f}, y={y_in:.2f}")
-                                    except Exception:
-                                        pass
-                            else:
-                                # Try to parse as "x y" format
-                                parts = pos_cmd.replace(',', ' ').split()
-                                if len(parts) != 2:
-                                    print("Need two numbers or 'x'/'y' command."); continue
-                                try:
-                                    x_in = float(parts[0]); y_in = float(parts[1])
-                                except Exception:
-                                    print("Invalid numbers."); continue
-                                push_state("legend-position")
-                                try:
-                                    fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, y_in))
-                                    # If legend visible, reposition now
-                                    leg = ax.get_legend()
-                                    if leg is not None and leg.get_visible():
-                                        if not _apply_legend_position(fig, ax):
-                                            handles, labels = _visible_legend_entries(ax)
-                                            if handles:
-                                                _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                    fig.canvas.draw_idle()
-                                    print(f"Legend position updated: x={x_in:.2f}, y={y_in:.2f}")
-                                except Exception:
-                                    pass
+                    elif sub == 'm':
+                        xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
+                        print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
+                        vals = input("Enter legend position x y (inches from center; e.g., 0.0 0.0): ").strip()
+                        parts = vals.replace(',', ' ').split()
+                        if len(parts) != 2:
+                            print("Need two numbers."); continue
+                        try:
+                            x_in = float(parts[0]); y_in = float(parts[1])
+                        except Exception:
+                            print("Invalid numbers."); continue
+                        try:
+                            fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, y_in))
+                            # If legend visible, reposition now
+                            leg = ax.get_legend()
+                            if leg is not None and leg.get_visible():
+                                if not _apply_legend_position(fig, ax):
+                                    handles, labels = _visible_legend_entries(ax)
+                                    if handles:
+                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
+                            fig.canvas.draw_idle()
+                        except Exception:
+                            pass
                     else:
                         print("Unknown option.")
             except Exception:
@@ -1709,12 +1543,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     _bpcfg_files = [f[0] for f in style_file_list]
                     if _bpcfg_files:
                         print("Existing style files in Styles/ (.bps/.bpsg):")
-                        for _i, (fname, fpath) in enumerate(style_file_list, 1):
-                            timestamp = _format_file_timestamp(fpath)
-                            if timestamp:
-                                print(f"  {_i}: {fname}  ({timestamp})")
-                            else:
-                                print(f"  {_i}: {fname}")
+                        for _i, _f in enumerate(_bpcfg_files, 1):
+                            print(f"  {_i}: {_f}")
                     
                     sub = input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
@@ -1756,7 +1586,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         if not save_base:
                             print("Style export canceled.")
                             continue
-                        print(f"\nChosen path: {save_base}")
                         _export_style_dialog(cfg, default_ext=default_ext, base_path=save_base)
                         style_menu_active = False  # Exit style submenu and return to main menu
                         break
@@ -2663,7 +2492,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 folder = choose_save_path(source_paths, purpose="EC session save")
                 if not folder:
                     _print_menu(len(all_cycles), is_dqdv); continue
-                print(f"\nChosen path: {folder}")
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -2671,12 +2499,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if files:
                     print("Existing .pkl files:")
                     for i, f in enumerate(files, 1):
-                        filepath = os.path.join(folder, f)
-                        timestamp = _format_file_timestamp(filepath)
-                        if timestamp:
-                            print(f"  {i}: {f}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {f}")
+                        print(f"  {i}: {f}")
                 prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
                 choice = input(prompt).strip()
                 if not choice or choice.lower() == 'q':
@@ -2776,56 +2599,20 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     for cyc, col in mapping2.items():
                         print(f"  Cycle {cyc}: {color_block(col)} {col}")
             elif mode == 'palette' and existing:
-                # ====================================================================
-                # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
-                # ====================================================================
-                # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
-                #
-                # HOW IT WORKS:
-                # Similar to XY mode, but works with cycles instead of individual files.
-                # Each cycle gets a different color sampled from the colormap.
-                #
-                # Example with 10 cycles and 'viridis':
-                #   Cycle 1 → dark purple
-                #   Cycle 2 → purple-blue
-                #   Cycle 3 → blue
-                #   ...
-                #   Cycle 10 → bright yellow
-                #
-                # This creates a visual progression showing how the battery changes
-                # over multiple cycles (degradation, capacity fade, etc.)
-                # ====================================================================
-                
                 try:
-                    # Get the continuous colormap from matplotlib
-                    # This allows direct sampling without quantization
                     cmap = cm.get_cmap(palette) if palette else None
                 except Exception:
                     cmap = None
-                
                 if cmap is None:
                     print(f"Unknown colormap '{palette}'.")
                 else:
-                    # Get number of cycles to color
                     n = len(existing)
-                    
-                    # Sample colors from colormap at evenly spaced positions
                     if n == 1:
-                        # Single cycle: use middle of colormap
                         cols = [cmap(0.55)]
                     elif n == 2:
-                        # Two cycles: use endpoints for maximum contrast
                         cols = [cmap(0.15), cmap(0.85)]
                     else:
-                        # Multiple cycles: sample evenly across colormap range
-                        # np.linspace(0.08, 0.88, n) creates n evenly spaced positions
-                        # Example with 5 cycles: [0.08, 0.28, 0.48, 0.68, 0.88]
-                        # Each position is passed to cmap() to get the color at that position
                         cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
-                    
-                    # Apply colors to cycles
-                    # Create dictionary mapping cycle number to color
-                    # Then apply to all line objects for those cycles
                     _apply_colors(cycle_lines, {c: col for c, col in zip(existing, cols)})
                     try:
                         preview = color_bar([mcolors.to_hex(col) for col in cols])
@@ -3072,79 +2859,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         elif key == 'x':
             # X-axis: set limits only
             while True:
-                current_xlim = ax.get_xlim()
-                print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                lim = input("Set X limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = input("Set X limits (min max, q=back): ").strip()
                 if not lim or lim.lower() == 'q':
                     break
-                if lim.lower() == 'a':
-                    # Auto: restore original range
-                    push_state("x-limits-auto")
-                    orig_xlim = getattr(ax, '_original_xlim', ax.get_xlim())
-                    ax.set_xlim(*orig_xlim)
-                    _apply_nice_ticks()
-                    try:
-                        ax.relim()
-                        ax.autoscale_view(scalex=True, scaley=False)
-                    except Exception:
-                        pass
-                    fig.canvas.draw()
-                    print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                    continue
-                if lim.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        current_xlim = ax.get_xlim()
-                        print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("x-limits")
-                        ax.set_xlim(current_xlim[0], new_upper)
-                        _apply_nice_ticks()
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position(fig, ax)
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                if lim.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        current_xlim = ax.get_xlim()
-                        print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("x-limits")
-                        ax.set_xlim(new_lower, current_xlim[1])
-                        _apply_nice_ticks()
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position(fig, ax)
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                 try:
                     lo, hi = map(float, lim.split())
-                    push_state("x-limits")
                     ax.set_xlim(lo, hi)
+                    push_state("x-limits")
                     _apply_nice_ticks()
                     fig.canvas.draw()
                 except Exception:
@@ -3154,79 +2875,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
         elif key == 'y':
             # Y-axis: set limits only
             while True:
-                current_ylim = ax.get_ylim()
-                print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                lim = input("Set Y limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = input("Set Y limits (min max, q=back): ").strip()
                 if not lim or lim.lower() == 'q':
                     break
-                if lim.lower() == 'a':
-                    # Auto: restore original range
-                    push_state("y-limits-auto")
-                    orig_ylim = getattr(ax, '_original_ylim', ax.get_ylim())
-                    ax.set_ylim(*orig_ylim)
-                    _apply_nice_ticks()
-                    try:
-                        ax.relim()
-                        ax.autoscale_view(scalex=False, scaley=True)
-                    except Exception:
-                        pass
-                    fig.canvas.draw()
-                    print(f"Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    continue
-                if lim.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        current_ylim = ax.get_ylim()
-                        print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("y-limits")
-                        ax.set_ylim(current_ylim[0], new_upper)
-                        _apply_nice_ticks()
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position(fig, ax)
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                if lim.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        current_ylim = ax.get_ylim()
-                        print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("y-limits")
-                        ax.set_ylim(new_lower, current_ylim[1])
-                        _apply_nice_ticks()
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position(fig, ax)
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
                 try:
                     lo, hi = map(float, lim.split())
-                    push_state("y-limits")
                     ax.set_ylim(lo, hi)
+                    push_state("y-limits")
                     _apply_nice_ticks()
                     fig.canvas.draw()
                 except Exception:
@@ -3260,6 +2915,77 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     fig.canvas.draw()
                 except Exception:
                     fig.canvas.draw_idle()
+            _print_menu(len(all_cycles), is_dqdv)
+            continue
+        elif key == 'ro':
+            # Rotation feature: rotate plot by 90 degrees
+            while True:
+                print("Rotation menu: c=clockwise 90°, a=anticlockwise 90°, q=back")
+                sub = input("ro> ").strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub in ('c', 'a'):
+                    push_state("rotation")
+                    current_angle = getattr(fig, '_ec_rotation_angle', 0)
+                    # Increment or decrement rotation angle
+                    if sub == 'c':
+                        new_angle = (current_angle + 90) % 360
+                    else:  # 'a'
+                        new_angle = (current_angle - 90) % 360
+                    
+                    try:
+                        print(f"WARNING: Rotation is experimental.")
+                        import traceback
+                        # Rotate all lines on the axes
+                        for ln in ax.lines:
+                            x_data = np.array(ln.get_xdata(), copy=True)
+                            y_data = np.array(ln.get_ydata(), copy=True)
+                            
+                            if sub == 'c':
+                                # Clockwise: (x, y) → (y, -x)
+                                ln.set_data(y_data.copy(), -x_data.copy())
+                            else:  # 'a'
+                                # Anticlockwise: (x, y) → (-y, x)
+                                ln.set_data(-y_data.copy(), x_data.copy())
+                        
+                        # Swap and update labels
+                        xlabel = ax.get_xlabel()
+                        ylabel = ax.get_ylabel()
+                        if sub == 'c':
+                            ax.set_xlabel(ylabel)
+                            ax.set_ylabel(xlabel)
+                        else:
+                            ax.set_xlabel(ylabel)
+                            ax.set_ylabel(xlabel)
+                        
+                        # Swap xlim and ylim
+                        xlim = ax.get_xlim()
+                        ylim = ax.get_ylim()
+                        if sub == 'c':
+                            ax.set_xlim(ylim)
+                            ax.set_ylim(-xlim[1], -xlim[0])
+                        else:
+                            ax.set_xlim(-ylim[1], -ylim[0])
+                            ax.set_ylim(xlim)
+                        
+                        # Store new rotation angle
+                        setattr(fig, '_ec_rotation_angle', new_angle)
+                        
+                        # Rebuild legend to ensure it's positioned correctly
+                        _rebuild_legend(ax)
+                        
+                        print(f"Rotated {'clockwise' if sub == 'c' else 'anticlockwise'} 90°. Total rotation: {new_angle}°")
+                        
+                    except Exception as e:
+                        print(f"Rotation failed: {e}")
+                        traceback.print_exc()
+                    
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
             _print_menu(len(all_cycles), is_dqdv)
             continue
         elif key == 'sm':
@@ -3869,12 +3595,7 @@ def _print_style_snapshot(cfg: Dict):
                     continue
                 color = style.get('color', 'unknown')
                 vis = 'ON' if style.get('visible', True) else 'off'
-                # Show color block for better visualization
-                try:
-                    color_block_str = color_block(color) if color != 'unknown' else ''
-                    segments.append(f"{role_label}={color_block_str} {color} ({vis})")
-                except Exception:
-                    segments.append(f"{role_label}={color} ({vis})")
+                segments.append(f"{role_label}={color} ({vis})")
             if segments:
                 print(f"  Cycle {cyc_key}: {', '.join(segments)}")
 
@@ -3889,8 +3610,6 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Opti
         default_ext: Default file extension ('.bps' for style-only, '.bpsg' for style+geometry)
     """
     try:
-        if base_path:
-            print(f"\nChosen path: {base_path}")
         # List files with matching extension in Styles/ subdirectory
         file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
         bpcfg_files = [f[0] for f in file_list]

@@ -1,43 +1,17 @@
 """Utility helpers for batplot.
 
-This module provides file organization and text formatting utilities used
-throughout batplot. It handles cross-platform file dialogs, directory management,
-and text formatting.
-
-MAIN FUNCTIONS:
---------------
-1. **Directory Management**: Create and manage subdirectories (e.g., Figures/)
-   for organized output when batch processing files.
-
-2. **File Dialogs**: Cross-platform folder/file picker dialogs:
-   - macOS: Uses AppleScript (native, no dependencies)
-   - Windows/Linux: Uses tkinter (if available)
-   - Linux fallback: Uses zenity/kdialog (if available)
-
-3. **Text Normalization**: Format labels for matplotlib rendering:
-   - Handles LaTeX/mathtext syntax
-   - Escapes special characters
-   - Ensures proper rendering in plots
-
-4. **Overwrite Protection**: Ask user before overwriting existing files
-   (prevents accidental data loss).
-
-CROSS-PLATFORM COMPATIBILITY:
-----------------------------
-This module handles differences between operating systems:
-- macOS: Uses AppleScript (avoids tkinter crashes)
-- Windows: Uses tkinter (standard GUI library)
-- Linux: Tries tkinter first, falls back to zenity/kdialog
-
-All dialogs gracefully degrade: if GUI dialogs aren't available, functions
-return None and calling code can fall back to manual input.
+This module provides file organization and text formatting utilities.
+Main functions:
+- Directory management: Create and use subdirectories for organized output
+- File path resolution: Get appropriate paths for figures, styles, projects
+- Text normalization: Format labels for matplotlib rendering
+- Overwrite protection: Ask user before overwriting files
 """
 
 import os
 import sys
 import shutil
 import subprocess
-import time
 from typing import Optional, List, Tuple
 
 
@@ -860,22 +834,10 @@ def choose_style_file(file_paths: List[str], purpose: str = "style import", exte
     print(f"\nSearching for style files for {purpose} in:")
     for dir_path in search_dirs:
         print(f"  - {dir_path}")
-    def _format_file_timestamp(filepath: str) -> str:
-        """Format file modification time for display."""
-        try:
-            mtime = os.path.getmtime(filepath)
-            return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        except Exception:
-            return ""
-    
     if style_candidates:
         print("\nAvailable style files:")
         for idx, cand in enumerate(style_candidates, start=1):
-            timestamp = _format_file_timestamp(cand['path'])
-            if timestamp:
-                print(f"  {idx}. {cand['name']}  ({timestamp})  (in {cand['location']})")
-            else:
-                print(f"  {idx}. {cand['name']}  (in {cand['location']})")
+            print(f"  {idx}. {cand['name']}  (in {cand['location']})")
     else:
         print("\nNo style files found in scanned directories.")
     

@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Tuple, Dict, Optional, Any
 import json
 import os
-import time
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -489,23 +488,6 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
         fig.canvas.draw()
     except Exception:
         fig.canvas.draw_idle()
-
-
-def _format_file_timestamp(filepath: str) -> str:
-    """Format file modification time for display.
-    
-    Args:
-        filepath: Full path to the file
-        
-    Returns:
-        Formatted timestamp string (e.g., "2024-01-15 14:30") or empty string if error
-    """
-    try:
-        mtime = os.path.getmtime(filepath)
-        # Format as YYYY-MM-DD HH:MM
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-    except Exception:
-        return ""
 
 
 def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
@@ -1630,11 +1612,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 pass
             print("Crosshair OFF.")
     while True:
-        try:
-            cmd = input("Press a key: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\n\nExiting interactive menu...")
-            break
+        cmd = input("Press a key: ").strip().lower()
         if not cmd:
             continue
         if cmd == 'q':
@@ -1666,19 +1644,15 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 base_path = choose_save_path(file_paths, purpose="figure export")
                 if not base_path:
                     print_menu(); continue
-                print(f"\nChosen path: {base_path}")
+
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
                 file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
                 files = [f[0] for f in file_list]
                 if files:
                     print("Existing figure files in Figures/:")
-                    for i, (fname, fpath) in enumerate(file_list, 1):
-                        timestamp = _format_file_timestamp(fpath)
-                        if timestamp:
-                            print(f"  {i}: {fname}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {fname}")
+                    for i, f in enumerate(files, 1):
+                        print(f"  {i}: {f}")
                 
                 fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
@@ -1935,7 +1909,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 folder = choose_save_path(file_paths, purpose="operando session save")
                 if not folder:
                     print_menu(); continue
-                print(f"\nChosen path: {folder}")
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -1943,12 +1916,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 if files:
                     print("Existing .pkl files:")
                     for i, f in enumerate(files, 1):
-                        filepath = os.path.join(folder, f)
-                        timestamp = _format_file_timestamp(filepath)
-                        if timestamp:
-                            print(f"  {i}: {f}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {f}")
+                        print(f"  {i}: {f}")
                 prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
                 choice = input(prompt).strip()
                 if not choice or choice.lower() == 'q':
@@ -2817,67 +2785,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'ox':
             while True:
                 cur = ax.get_xlim(); print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = input("New X range (min max, q=back): ").strip()
                 if not line or line.lower() == 'q':
                     break
-                if line.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        cur = ax.get_xlim()
-                        print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-xrange")
-                        ax.set_xlim(cur[0], new_upper)
-                        _renormalize_to_visible()
-                        fig.canvas.draw_idle()
-                        print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
-                if line.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        cur = ax.get_xlim()
-                        print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-xrange")
-                        ax.set_xlim(new_lower, cur[1])
-                        _renormalize_to_visible()
-                        fig.canvas.draw_idle()
-                        print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
-                if line.lower() == 'a':
-                    # Auto: restore original range from image data
-                    _snapshot("operando-xrange-auto")
-                    try:
-                        data_array = np.asarray(im.get_array(), dtype=float)
-                        if data_array.size > 0:
-                            # Get original extent from image
-                            extent = im.get_extent()
-                            if extent and len(extent) == 4:
-                                orig_min = min(extent[0], extent[1])
-                                orig_max = max(extent[0], extent[1])
-                                ax.set_xlim(orig_min, orig_max)
-                                _renormalize_to_visible()
-                                fig.canvas.draw_idle()
-                                print(f"Operando X range restored to original: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
-                            else:
-                                print("No original data available.")
-                        else:
-                            print("No original data available.")
-                    except Exception as e:
-                        print(f"Error restoring original X range: {e}")
-                    continue
                 _snapshot("operando-xrange")
                 try:
                     lo, hi = map(float, line.split())
@@ -2891,67 +2801,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'oy':
             while True:
                 cur = ax.get_ylim(); print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = input("New Y range (min max, q=back): ").strip()
                 if not line or line.lower() == 'q':
                     break
-                if line.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        cur = ax.get_ylim()
-                        print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper Y limit (current lower: {cur[0]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-yrange")
-                        ax.set_ylim(cur[0], new_upper)
-                        _renormalize_to_visible()
-                        fig.canvas.draw_idle()
-                        print(f"Operando Y range updated: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
-                if line.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        cur = ax.get_ylim()
-                        print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower Y limit (current upper: {cur[1]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-yrange")
-                        ax.set_ylim(new_lower, cur[1])
-                        _renormalize_to_visible()
-                        fig.canvas.draw_idle()
-                        print(f"Operando Y range updated: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
-                if line.lower() == 'a':
-                    # Auto: restore original range from image data
-                    _snapshot("operando-yrange-auto")
-                    try:
-                        data_array = np.asarray(im.get_array(), dtype=float)
-                        if data_array.size > 0:
-                            # Get original extent from image
-                            extent = im.get_extent()
-                            if extent and len(extent) == 4:
-                                orig_min = min(extent[2], extent[3])
-                                orig_max = max(extent[2], extent[3])
-                                ax.set_ylim(orig_min, orig_max)
-                                _renormalize_to_visible()
-                                fig.canvas.draw_idle()
-                                print(f"Operando Y range restored to original: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
-                            else:
-                                print("No original data available.")
-                        else:
-                            print("No original data available.")
-                    except Exception as e:
-                        print(f"Error restoring original Y range: {e}")
-                    continue
                 _snapshot("operando-yrange")
                 try:
                     lo, hi = map(float, line.split())
@@ -3022,65 +2874,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     auto_available = False
                 
                 if auto_available:
-                    line = input("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ").strip()
+                    line = input("New intensity range (min max, a=auto-fit to visible, q=back): ").strip()
                 else:
-                    line = input("New intensity range (min max, w=upper only, s=lower only, q=back): ").strip()
+                    line = input("New intensity range (min max, q=back): ").strip()
                 
                 if not line or line.lower() == 'q':
                     break
-                
-                if line.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        try:
-                            cur = im.get_clim()
-                            print(f"Current color scale range: {cur[0]:.4g} to {cur[1]:.4g}")
-                        except Exception:
-                            print("Could not retrieve current color scale range")
-                            break
-                        val = input(f"Enter new upper intensity limit (current lower: {cur[0]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-intensity-range")
-                        im.set_clim(cur[0], new_upper)
-                        try:
-                            if cbar is not None:
-                                _update_custom_colorbar(cbar.ax, im)
-                        except Exception:
-                            pass
-                        fig.canvas.draw_idle()
-                        print(f"Intensity range updated: {im.get_clim()[0]:.4g} to {im.get_clim()[1]:.4g}")
-                if line.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        try:
-                            cur = im.get_clim()
-                            print(f"Current color scale range: {cur[0]:.4g} to {cur[1]:.4g}")
-                        except Exception:
-                            print("Could not retrieve current color scale range")
-                            break
-                        val = input(f"Enter new lower intensity limit (current upper: {cur[1]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("operando-intensity-range")
-                        im.set_clim(new_lower, cur[1])
-                        try:
-                            if cbar is not None:
-                                _update_custom_colorbar(cbar.ax, im)
-                        except Exception:
-                            pass
-                        fig.canvas.draw_idle()
-                        print(f"Intensity range updated: {im.get_clim()[0]:.4g} to {im.get_clim()[1]:.4g}")
                 
                 _snapshot("operando-intensity-range")
                 try:
@@ -3417,12 +3216,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     _bpcfg_files = [f[0] for f in style_file_list]
                     if _bpcfg_files:
                         print("Existing style files in Styles/ (.bps/.bpsg):")
-                        for _i, (fname, fpath) in enumerate(style_file_list, 1):
-                            timestamp = _format_file_timestamp(fpath)
-                            if timestamp:
-                                print(f"  {_i}: {fname}  ({timestamp})")
-                            else:
-                                print(f"  {_i}: {fname}")
+                        for _i, _f in enumerate(_bpcfg_files, 1):
+                            print(f"  {_i}: {_f}")
                     
                     if ec_ax is None:
                         print("\nNote: Style export (.bps/.bpsg) is only available in dual-pane mode (with EC file).")
@@ -3607,7 +3402,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     if not save_base:
                         print("Style export canceled.")
                         continue
-                    print(f"\nChosen path: {save_base}")
                     # List existing style files in Styles/ subdirectory
                     style_extensions = ('.bps', '.bpsg', '.bpcfg')
                     file_list = list_files_in_subdirectory(style_extensions, 'style', base_path=save_base)
@@ -3615,12 +3409,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     if _style_files:
                         styles_dir = os.path.join(save_base, 'Styles')
                         print(f"\nExisting {default_ext} files in {styles_dir}:")
-                        for _i, (fname, fpath) in enumerate(file_list, 1):
-                            timestamp = _format_file_timestamp(fpath)
-                            if timestamp:
-                                print(f"  {_i}: {fname}  ({timestamp})")
-                            else:
-                                print(f"  {_i}: {fname}")
+                        for _i, _f in enumerate(_style_files, 1):
+                            print(f"  {_i}: {_f}")
                     
                     choice_name = input("Enter new filename or number to overwrite (q=cancel): ").strip()
                     if not choice_name or choice_name.lower() == 'q':
@@ -4063,6 +3853,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             ec_ax._ec_y_mode = 'ions'
                             
                             # Compute and apply ions formatter
+                            import numpy as np
                             
                             time_h = getattr(ec_ax, '_ec_time_h', None)
                             current_mA = getattr(ec_ax, '_ec_current_mA', None)
@@ -4443,69 +4234,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 continue
             while True:
                 cur = ec_ax.get_ylim(); print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = input("New time range (min max, q=back): ").strip()
                 if not line or line.lower() == 'q':
                     break
-                if line.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        cur = ec_ax.get_ylim()
-                        print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper time limit (current lower: {cur[0]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("ec-time-range")
-                        ec_ax.set_ylim(cur[0], new_upper)
-                        ec_ax._saved_time_ylim = (cur[0], new_upper)
-                        fig.canvas.draw_idle()
-                        print(f"EC time range updated: {ec_ax.get_ylim()[0]:.4g} {ec_ax.get_ylim()[1]:.4g}")
-                if line.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        cur = ec_ax.get_ylim()
-                        print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower time limit (current upper: {cur[1]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("ec-time-range")
-                        ec_ax.set_ylim(new_lower, cur[1])
-                        ec_ax._saved_time_ylim = (new_lower, cur[1])
-                        fig.canvas.draw_idle()
-                        print(f"EC time range updated: {ec_ax.get_ylim()[0]:.4g} {ec_ax.get_ylim()[1]:.4g}")
-                if line.lower() == 'a':
-                    # Auto: restore original range from EC lines
-                    _snapshot("ec-time-range-auto")
-                    try:
-                        all_y = []
-                        for ln in ec_ax.lines:
-                            try:
-                                yd = np.asarray(ln.get_ydata(), dtype=float)
-                                if yd.size > 0:
-                                    all_y.extend([yd.min(), yd.max()])
-                            except Exception:
-                                pass
-                        if all_y:
-                            orig_min = min(all_y)
-                            orig_max = max(all_y)
-                            ec_ax.set_ylim(orig_min, orig_max)
-                            ec_ax._saved_time_ylim = (orig_min, orig_max)
-                            fig.canvas.draw_idle()
-                            print(f"EC time range restored to original: {ec_ax.get_ylim()[0]:.4g} {ec_ax.get_ylim()[1]:.4g}")
-                        else:
-                            print("No original data available.")
-                    except Exception as e:
-                        print(f"Error restoring original time range: {e}")
-                    continue
                 _snapshot("ec-time-range")
                 try:
                     lo, hi = map(float, line.split())
@@ -4518,6 +4249,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     # If in ions mode, refresh formatter/locator for nice ticks
                     if getattr(ec_ax, '_ec_y_mode', 'time') == 'ions':
                         try:
+                            import numpy as np
                             t = np.asarray(getattr(ec_ax, '_ec_time_h'))
                             ions_abs = getattr(ec_ax, '_ions_abs', None)
                             if ions_abs is not None:
@@ -4620,6 +4352,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 material = 'cathode'
                             ec_ax._ion_params = {"mass_mg": mass_mg, "cap_per_ion_mAh_g": cap_per_ion, "start_ions": start_ions, "material": material}
                         _snapshot("ey->ions")
+                        import numpy as np
                         t = np.asarray(time_h, float)
                         i_mA = np.asarray(current_mA, float)
                         v = np.asarray(voltage_v, float)
@@ -4886,72 +4619,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 cur = ec_ax.get_xlim()
                 print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = input("New EC X range (min max, q=back): ").strip()
                 if not line or line.lower() == 'q':
                     break
-                if line.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        cur = ec_ax.get_xlim()
-                        print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper EC X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("ec-x-range")
-                        ec_ax.set_xlim(cur[0], new_upper)
-                        ec_ax._prev_ec_xlim = (cur[0], new_upper)
-                        ec_ax._ions_xlim_expanded = False
-                        fig.canvas.draw_idle()
-                        print(f"EC X range updated: {ec_ax.get_xlim()[0]:.4g} {ec_ax.get_xlim()[1]:.4g}")
-                if line.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        cur = ec_ax.get_xlim()
-                        print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower EC X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        _snapshot("ec-x-range")
-                        ec_ax.set_xlim(new_lower, cur[1])
-                        ec_ax._prev_ec_xlim = (new_lower, cur[1])
-                        ec_ax._ions_xlim_expanded = False
-                        fig.canvas.draw_idle()
-                        print(f"EC X range updated: {ec_ax.get_xlim()[0]:.4g} {ec_ax.get_xlim()[1]:.4g}")
-                if line.lower() == 'a':
-                    # Auto: restore original range from EC lines
-                    _snapshot("ec-x-range-auto")
-                    try:
-                        all_x = []
-                        for ln in ec_ax.lines:
-                            try:
-                                xd = np.asarray(ln.get_xdata(), dtype=float)
-                                if xd.size > 0:
-                                    all_x.extend([xd.min(), xd.max()])
-                            except Exception:
-                                pass
-                        if all_x:
-                            orig_min = min(all_x)
-                            orig_max = max(all_x)
-                            ec_ax.set_xlim(orig_min, orig_max)
-                            ec_ax._prev_ec_xlim = (orig_min, orig_max)
-                            ec_ax._ions_xlim_expanded = False
-                            fig.canvas.draw_idle()
-                            print(f"EC X range restored to original: {ec_ax.get_xlim()[0]:.4g} {ec_ax.get_xlim()[1]:.4g}")
-                        else:
-                            print("No original data available.")
-                    except Exception as e:
-                        print(f"Error restoring original EC X range: {e}")
-                    continue
                 _snapshot("ec-x-range")
                 try:
                     lo, hi = map(float, line.split())

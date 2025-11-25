@@ -1,43 +1,4 @@
-"""Shared helpers for color previews and user-defined color management.
-
-COLOR PALETTE SYSTEM OVERVIEW:
-==============================
-This module manages how colors are assigned to multiple curves/lines in batplot plots.
-
-HOW COLOR PALETTES WORK:
-------------------------
-When you have many curves (e.g., 100 files in XY mode, or 50 cycles in EC mode), you want
-each one to have a different color that smoothly transitions across a color palette.
-
-Example: Using 'viridis' palette with 5 curves:
-    Curve 1 → Dark purple (start of viridis)
-    Curve 2 → Blue-purple
-    Curve 3 → Green
-    Curve 4 → Yellow-green
-    Curve 5 → Bright yellow (end of viridis)
-
-The system works by:
-1. Getting a continuous colormap (e.g., 'viridis')
-2. Sampling colors at evenly spaced points along the colormap
-3. Assigning each sampled color to a different curve
-
-For 100 curves, we sample 100 evenly spaced points from the colormap, ensuring each
-curve gets a unique, smoothly varying color.
-
-COLORMAP SOURCES:
-----------------
-1. Matplotlib built-in: 'viridis', 'plasma', 'inferno', 'magma', etc.
-2. cmcrameri scientific colormaps: 'batlow', 'batlowk', 'batloww' (if installed)
-3. Custom colormaps: Defined in _CUSTOM_CMAPS dictionary below
-
-REVERSED COLORMAPS:
-------------------
-Colormaps can be reversed by adding '_r' suffix:
-    'viridis' → normal (dark to bright)
-    'viridis_r' → reversed (bright to dark)
-
-This is useful when you want the color order flipped.
-"""
+"""Shared helpers for color previews and user-defined color management."""
 
 from __future__ import annotations
 
@@ -50,107 +11,43 @@ from matplotlib.colors import LinearSegmentedColormap
 from .config import get_user_colors as _cfg_get_user_colors
 from .config import save_user_colors as _cfg_save_user_colors
 
-# ====================================================================================
-# CUSTOM COLORMAP DEFINITIONS
-# ====================================================================================
-# These are custom color palettes designed for scientific visualization.
-# Each colormap is defined as a list of hex color codes that smoothly transition
-# from one color to the next.
-#
-# Format: List of hex color strings, ordered from start to end of colormap
-# Example: ['#02121d', '#053061', ...] means start with very dark blue, end with light yellow
-#
-# These colormaps are registered with matplotlib so they can be used like built-in ones.
-# ====================================================================================
 _CUSTOM_CMAPS = {
-    # 'batlow' - Scientific colormap optimized for colorblind accessibility
-    # Colors transition: dark blue → teal → green → yellow
     'batlow': ['#02121d', '#053061', '#2b7a8b', '#7cbf7b', '#c7e6a2', '#f9f0c3'],
-    
-    # 'batlowk' - Variant with more purple tones
-    # Colors transition: dark purple → purple → brown → yellow
     'batlowk': ['#150b2d', '#3d2e63', '#5f4f85', '#81718f', '#a6938e', '#cbb58f', '#efd78d'],
-    
-    # 'batloww' - Variant with more blue-green tones
-    # Colors transition: dark blue → blue → teal → green → yellow
     'batloww': ['#0a1427', '#17385d', '#295f8d', '#4f8fa3', '#7db7a1', '#b2d39a', '#e3e6a8'],
 }
 
 
 def ensure_colormap(name: Optional[str]) -> bool:
-    """
-    Ensure that a named colormap exists and is registered with matplotlib.
-    
-    HOW IT WORKS:
-    ------------
-    This function checks if a colormap is available, and if not, tries to register it.
-    It searches in this order:
-    1. Built-in matplotlib colormaps (viridis, plasma, etc.)
-    2. cmcrameri scientific colormaps (if package is installed)
-    3. Custom colormaps defined in _CUSTOM_CMAPS
-    4. Any other matplotlib-compatible colormap
-    
-    WHY THIS IS NEEDED:
-    -------------------
-    Different colormap sources need to be registered with matplotlib before they can
-    be used. This function ensures the colormap is available regardless of its source.
-    
-    Args:
-        name: Colormap name (e.g., 'viridis', 'batlow', 'viridis_r')
-              '_r' suffix indicates reversed colormap
-    
-    Returns:
-        True if colormap exists and is registered, False otherwise
-    """
+    """Ensure that a named colormap exists (register custom/cmcrameri fallback if needed)."""
     if not name:
         return False
-    
-    # Handle reversed colormaps (remove '_r' suffix to get base name)
-    # Example: 'viridis_r' → base = 'viridis', we'll reverse it later if needed
     base = name[:-2] if name.lower().endswith('_r') else name
     base_lower = base.lower()
-    
-    # STEP 1: Check if it's already a registered matplotlib colormap
     if base_lower in plt.colormaps():
         return True
-    
-    # STEP 2: Try to load from cmcrameri package (scientific colormaps)
-    # cmcrameri is an optional package with colorblind-friendly colormaps
     try:
         import cmcrameri.cm as cmc
         if hasattr(cmc, base_lower):
             cmap_obj = getattr(cmc, base_lower)
             try:
-                # Register it with matplotlib so it can be used like built-in colormaps
                 plt.register_cmap(name=base_lower, cmap=cmap_obj)
             except ValueError:
-                # Already registered, that's fine
                 pass
             return True
     except Exception:
-        # cmcrameri not installed or colormap not found, continue to next step
         pass
-    
-    # STEP 3: Check if it's a custom colormap defined in this module
     custom = _CUSTOM_CMAPS.get(base_lower)
     if custom:
         try:
-            # Create a LinearSegmentedColormap from the list of colors
-            # N=256 means create 256 intermediate colors by interpolating between the given colors
-            # This creates a smooth gradient
             cmap_obj = LinearSegmentedColormap.from_list(base_lower, custom, N=256)
             try:
-                # Register with matplotlib
                 plt.register_cmap(name=base_lower, cmap=cmap_obj)
             except ValueError:
-                # Already registered, that's fine
                 pass
             return True
         except Exception:
             return False
-    
-    # STEP 4: Final fallback - try to get it directly from matplotlib
-    # This handles any other matplotlib-compatible colormap
     try:
         plt.get_cmap(base_lower)
         return True
@@ -188,47 +85,12 @@ def color_bar(colors: Sequence[str]) -> str:
 
 
 def palette_preview(name: str, steps: int = 8) -> str:
-    """
-    Return a visual preview of a colormap as colored blocks in the terminal.
-    
-    HOW IT WORKS:
-    ------------
-    This function samples colors from a colormap at evenly spaced intervals and
-    displays them as colored blocks. This lets users see what the colormap looks
-    like before applying it to their data.
-    
-    Example output for 'viridis' with 8 steps:
-        [dark purple block] [purple block] [blue block] [green block] [yellow block] ...
-    
-    SAMPLING METHOD:
-    ---------------
-    For a colormap with N steps:
-    - Step 0: Sample at position 0.0 (start of colormap)
-    - Step 1: Sample at position 1/(N-1)
-    - Step 2: Sample at position 2/(N-1)
-    - ...
-    - Step N-1: Sample at position 1.0 (end of colormap)
-    
-    This gives evenly distributed colors across the entire colormap range.
-    
-    Args:
-        name: Colormap name (e.g., 'viridis', 'plasma', 'batlow')
-        steps: Number of color samples to show (default 8)
-               More steps = more detailed preview but longer output
-    
-    Returns:
-        String of ANSI color codes that display as colored blocks in terminal
-        Empty string if colormap not found
-    """
-    # Ensure colormap is registered
+    """Return a color bar preview for a matplotlib colormap."""
     ensure_colormap(name)
-    
-    # Try to get the colormap from matplotlib
     try:
         cmap = plt.get_cmap(name)
     except Exception:
         cmap = None
-        # Fallback: try cmcrameri if it's a batlow variant
         lower = name.lower()
         if lower.startswith('batlow'):
             try:
@@ -241,19 +103,12 @@ def palette_preview(name: str, steps: int = 8) -> str:
                 return ""
         else:
             return ""
-    
-    # Ensure steps is at least 1 (avoid division by zero)
     if steps < 1:
         steps = 1
-    
-    # Sample colors at evenly spaced positions along the colormap
-    # Position ranges from 0.0 (start) to 1.0 (end)
     samples = [
-        mcolors.to_hex(cmap(i / max(steps - 1, 1)))  # Convert to hex color code
+        mcolors.to_hex(cmap(i / max(steps - 1, 1)))
         for i in range(steps)
     ]
-    
-    # Convert color codes to visual blocks and return as string
     return color_bar(samples)
 
 

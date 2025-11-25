@@ -374,72 +374,14 @@ def _apply_ec_style(fig, ax, cfg: dict):
 
 
 def batch_process(directory: str, args):
-    """
-    Batch process all data files in a directory, creating individual plots for each file.
-    
-    HOW BATCH MODE WORKS:
-    --------------------
-    This function automates the process of creating plots for many files at once.
-    Instead of plotting files one by one, you can process an entire directory.
-    
-    Workflow:
-    1. Scan directory for data files (XY format: 2-column x,y data)
-    2. For each file:
-       a. Read the data (x, y, optional error bars)
-       b. Determine axis type (Q, 2theta, r, energy, k, rft) from file extension or --xaxis flag
-       c. Create a matplotlib figure with the data
-       d. Apply style file if available (from --all flag or per-file style)
-       e. Save as SVG (or PNG if --format png)
-    3. All plots saved to Figures/ subdirectory
-    
-    FILE TYPE DETECTION:
-    -------------------
-    The function automatically detects file types from extensions:
-    - .qye → Q-space (momentum transfer, Å⁻¹)
-    - .gr → r-space (PDF, Pair Distribution Function, Å)
-    - .nor → Energy space (XAS, eV)
-    - .chik → k-space (EXAFS, Å⁻¹)
-    - .chir → r-space (Fourier transform of EXAFS, Å)
-    - .xy, .xye, .dat, .csv, .txt → Generic 2-column data (requires --xaxis flag)
-    
-    STYLE FILE SUPPORT:
-    ------------------
-    You can apply styles in two ways:
-    1. Global style: batplot --all style.bps (applies same style to all files)
-    2. Per-file style: If style file has same name as data file (e.g., data.xy + data.bps)
-    
-    Args:
-        directory: Path to directory containing data files
-        args: Argument namespace with batch processing options:
-            - all: Style file path (if provided) or 'all' string
-            - xaxis: X-axis type for unknown extensions (Q, 2theta, r, energy, k, rft)
-            - xrange: Optional X-axis range (min, max)
-            - yrange: Optional Y-axis range (min, max)
-            - format: Output format ('svg' or 'png', default 'svg')
-            - wl: Wavelength for 2theta→Q conversion (if needed)
-            - norm: Normalize Y data to 0-1 range
-    """
     print(f"Batch mode: scanning {directory}")
-    
-    # ====================================================================
-    # FILE EXTENSION CLASSIFICATION
-    # ====================================================================
-    # We classify file extensions into three categories:
-    # 1. Known extensions with automatic axis detection (don't need --xaxis)
-    # 2. Known generic extensions (need --xaxis if axis type unclear)
-    # 3. Excluded extensions (not data files, skip them)
-    # ====================================================================
-    
-    # Extensions that automatically determine axis type (no --xaxis needed)
+    # Known extensions that don't need --xaxis
     known_axis_ext = {'.qye', '.gr', '.nor', '.chik', '.chir'}
-    
-    # All acceptable data file extensions (includes both auto-detect and generic)
+    # All acceptable data extensions (known + common generic formats)
     known_ext = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt'}
-    
-    # Extensions to exclude (not data files, or require special handling)
+    # Extensions to exclude from processing
     excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat', '.mpt'}
     
-    # Create output directory for saved plots
     from .utils import ensure_subdirectory
     out_dir = ensure_subdirectory('Figures', directory)
     
@@ -447,43 +389,24 @@ def batch_process(directory: str, args):
     style_cfg = None
     style_file_arg = getattr(args, 'all', None)
     if style_file_arg and style_file_arg != 'all':
-        # User provided a style file path - resolve it properly
-        # Handle absolute paths, relative paths, and paths with/without extensions
-        style_path = None
-        if os.path.isabs(style_file_arg):
-            # Absolute path provided
-            style_path = os.path.normpath(style_file_arg)
-        else:
-            # Relative path - try multiple locations
-            # 1. Relative to current working directory
-            cwd_path = os.path.normpath(os.path.join(os.getcwd(), style_file_arg))
-            # 2. Relative to batch directory
-            dir_path = os.path.normpath(os.path.join(directory, style_file_arg))
-            
-            # Try current working directory first (for paths like ./Style/style.bps)
-            if os.path.exists(cwd_path) and cwd_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
-                style_path = cwd_path
-            elif os.path.exists(dir_path) and dir_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
-                style_path = dir_path
-            else:
-                # Try adding extensions if not present
-                for test_path in [cwd_path, dir_path]:
-                    for ext in ['.bps', '.bpsg', '.bpcfg']:
-                        if test_path.lower().endswith(ext):
-                            continue
-                        test_full = test_path + ext
-                        if os.path.exists(test_full):
-                            style_path = test_full
-                            break
-                    if style_path:
-                        break
-        
-        if style_path and os.path.exists(style_path):
+        # User provided a style file path
+        style_path = style_file_arg if os.path.isabs(style_file_arg) else os.path.join(directory, style_file_arg)
+        if os.path.exists(style_path) and style_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
             style_cfg = _load_style_file(style_path)
             if style_cfg:
                 print(f"Using style file: {os.path.basename(style_path)}")
         else:
-            print(f"Warning: Could not find style file '{style_file_arg}'")
+            # Try to find the file in current directory
+            for ext in ['.bps', '.bpsg', '.bpcfg']:
+                test_path = style_file_arg if style_file_arg.endswith(ext) else style_file_arg + ext
+                test_full = os.path.join(directory, test_path)
+                if os.path.exists(test_full):
+                    style_cfg = _load_style_file(test_full)
+                    if style_cfg:
+                        print(f"Using style file: {os.path.basename(test_full)}")
+                    break
+            if not style_cfg:
+                print(f"Warning: Could not find style file '{style_file_arg}'")
     
     # Collect all files, including those with unknown extensions
     files = []
@@ -523,26 +446,11 @@ def batch_process(directory: str, args):
         print(f"Note: Processing {len(unknown_ext_files)} file(s) with unknown extension(s) using --xaxis {args.xaxis}")
     
     print(f"Found {len(files)} files. Exporting SVG plots to Figures/")
-    
-    # ====================================================================
-    # PROCESS EACH FILE
-    # ====================================================================
-    # Loop through each data file and create a plot for it.
-    # Each file becomes a separate figure saved to Figures/ directory.
-    # ====================================================================
     for fname in files:
         fpath = os.path.join(directory, fname)
         ext = os.path.splitext(fname)[1].lower()
-        
         try:
-            # ============================================================
-            # STEP 1: READ DATA FROM FILE
-            # ============================================================
-            # Different file formats require different reading methods.
-            # We detect the format from the file extension and use the
-            # appropriate reader function.
-            # ============================================================
-            
+            # ---- Read data ----
             if ext == '.gr':
                 x, y = read_gr_file(fpath); e = None
                 axis_mode = 'r'
@@ -755,43 +663,24 @@ def batch_process_ec(directory: str, args):
     style_cfg = None
     style_file_arg = getattr(args, 'all', None)
     if style_file_arg and style_file_arg != 'all':
-        # User provided a style file path - resolve it properly
-        # Handle absolute paths, relative paths, and paths with/without extensions
-        style_path = None
-        if os.path.isabs(style_file_arg):
-            # Absolute path provided
-            style_path = os.path.normpath(style_file_arg)
-        else:
-            # Relative path - try multiple locations
-            # 1. Relative to current working directory
-            cwd_path = os.path.normpath(os.path.join(os.getcwd(), style_file_arg))
-            # 2. Relative to batch directory
-            dir_path = os.path.normpath(os.path.join(directory, style_file_arg))
-            
-            # Try current working directory first (for paths like ./Style/style.bps)
-            if os.path.exists(cwd_path) and cwd_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
-                style_path = cwd_path
-            elif os.path.exists(dir_path) and dir_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
-                style_path = dir_path
-            else:
-                # Try adding extensions if not present
-                for test_path in [cwd_path, dir_path]:
-                    for ext in ['.bps', '.bpsg', '.bpcfg']:
-                        if test_path.lower().endswith(ext):
-                            continue
-                        test_full = test_path + ext
-                        if os.path.exists(test_full):
-                            style_path = test_full
-                            break
-                    if style_path:
-                        break
-        
-        if style_path and os.path.exists(style_path):
+        # User provided a style file path
+        style_path = style_file_arg if os.path.isabs(style_file_arg) else os.path.join(directory, style_file_arg)
+        if os.path.exists(style_path) and style_path.lower().endswith(('.bps', '.bpsg', '.bpcfg')):
             style_cfg = _load_style_file(style_path)
             if style_cfg:
                 print(f"Using style file: {os.path.basename(style_path)}")
         else:
-            print(f"Warning: Could not find style file '{style_file_arg}'")
+            # Try to find the file in current directory
+            for ext in ['.bps', '.bpsg', '.bpcfg']:
+                test_path = style_file_arg if style_file_arg.endswith(ext) else style_file_arg + ext
+                test_full = os.path.join(directory, test_path)
+                if os.path.exists(test_full):
+                    style_cfg = _load_style_file(test_full)
+                    if style_cfg:
+                        print(f"Using style file: {os.path.basename(test_full)}")
+                    break
+            if not style_cfg:
+                print(f"Warning: Could not find style file '{style_file_arg}'")
     
     # Determine which EC mode is active
     mode = None

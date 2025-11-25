@@ -1,35 +1,6 @@
 """Interactive menu for Capacity-Per-Cycle (CPC) plots.
 
-This module provides the interactive menu for CPC (Capacity Per Cycle) mode.
-CPC plots show how battery capacity changes over multiple cycles, displaying:
-- Charge capacity vs cycle number
-- Discharge capacity vs cycle number  
-- Coulombic efficiency vs cycle number
-
-HOW CPC MODE WORKS:
-------------------
-CPC mode reads battery cycling data and extracts:
-1. Maximum charge capacity for each cycle
-2. Maximum discharge capacity for each cycle
-3. Coulombic efficiency = (discharge_capacity / charge_capacity) × 100%
-
-These values are plotted as scatter points (one point per cycle), allowing you
-to see capacity fade and efficiency trends over the battery's lifetime.
-
-INTERACTIVE FEATURES:
---------------------
-The interactive menu allows you to:
-- Customize colors for each file (charge, discharge, efficiency)
-- Adjust line/marker styles and sizes
-- Show/hide individual files
-- Modify axis ranges and labels
-- Export style files (.bpcfg) for reuse
-- Save/load sessions
-
-MULTI-FILE SUPPORT:
------------------
-CPC mode can plot multiple files simultaneously, each with its own color scheme.
-This is useful for comparing different battery cells, materials, or conditions.
+Controls focus on style/geometry, and print/export/import of a .bpcfg style.
 """
 from __future__ import annotations
 
@@ -56,7 +27,6 @@ from .utils import (
     list_files_in_subdirectory,
     get_organized_path,
 )
-import time
 from .color_utils import resolve_color_token
 
 
@@ -892,155 +862,39 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         pass
 
 
-def _format_file_timestamp(filepath: str) -> str:
-    """Format file modification time for display.
-    
-    Args:
-        filepath: Full path to the file
-        
-    Returns:
-        Formatted timestamp string (e.g., "2024-01-15 14:30") or empty string if error
-    """
-    try:
-        mtime = os.path.getmtime(filepath)
-        # Format as YYYY-MM-DD HH:MM
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-    except Exception:
-        return ""
-
-
 def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None):
-    """
-    Interactive menu for Capacity-Per-Cycle (CPC) plots.
-    
-    HOW CPC INTERACTIVE MENU WORKS:
-    ------------------------------
-    This function provides an interactive command-line menu for customizing CPC plots.
-    CPC plots show battery capacity and efficiency over multiple cycles.
-    
-    PLOT STRUCTURE:
-    --------------
-    CPC plots have two Y-axes (twin axes):
-    - Left Y-axis: Capacity (mAh/g or mAh) - shows charge and discharge capacity
-    - Right Y-axis: Efficiency (%) - shows coulombic efficiency
-    
-    X-axis: Cycle number (1, 2, 3, ...)
-    
-    Each cycle is represented by scatter points:
-    - Charge capacity point (left axis)
-    - Discharge capacity point (left axis)
-    - Efficiency point (right axis)
-    
-    MULTI-FILE MODE:
-    --------------
-    CPC mode supports plotting multiple files simultaneously:
-    - Each file gets its own set of scatter points (charge, discharge, efficiency)
-    - Each file can have different colors
-    - Files can be shown/hidden individually
-    - You can switch between files to edit their properties
-    
-    MENU COMMANDS:
-    -------------
-    The menu is organized into three categories:
-    
-    **Styles** (visual appearance):
-    - f: font (size and family)
-    - l: line (width and style)
-    - m: marker sizes
-    - c: colors (for charge, discharge, efficiency)
-    - k: spine colors (plot border colors)
-    - ry: show/hide efficiency (right Y-axis)
-    - t: toggle axes (show/hide tick labels)
-    - h: legend (show/hide)
-    - g: size (figure and axes size)
-    - v: show/hide files (multi-file mode)
-    
-    **Geometries** (axis ranges and labels):
-    - r: rename titles (axis labels)
-    - x: x range (cycle number range)
-    - y: y ranges (capacity and efficiency ranges)
-    
-    **Options** (file operations):
-    - p: print/export style/geometry (save .bpcfg file)
-    - i: import style/geometry (load .bpcfg file)
-    - e: export figure (save plot as image)
-    - s: save project (save session as .pkl)
-    - b: undo (revert last change)
-    - q: quit (exit menu)
+    """CPC interactive menu with optional multi-file support.
     
     Args:
-        fig: Matplotlib figure object
-        ax: Primary axes (left Y-axis, shows capacity)
-        ax2: Twin axes (right Y-axis, shows efficiency)
-        sc_charge: Scatter plot artist for charge capacity (primary file)
-        sc_discharge: Scatter plot artist for discharge capacity (primary file)
-        sc_eff: Scatter plot artist for efficiency (primary file)
-        file_data: Optional list of dictionaries, one per file:
-            - 'filename': File name (for display)
-            - 'sc_charge': Scatter artist for charge capacity
-            - 'sc_discharge': Scatter artist for discharge capacity
-            - 'sc_eff': Scatter artist for efficiency
-            - 'visible': Whether file is currently visible
-            - 'filepath': Path to source file (optional)
+        fig, ax, ax2: Matplotlib figure and axes
+        sc_charge, sc_discharge, sc_eff: Primary file scatter artists (for backward compatibility)
+        file_data: Optional list of dicts with file info and scatter artists for multi-file mode
     """
-    # ====================================================================
-    # MULTI-FILE MODE SETUP
-    # ====================================================================
-    # CPC mode can handle multiple files simultaneously. Each file gets its
-    # own set of scatter points (charge, discharge, efficiency) with its
-    # own colors. This allows comparing multiple battery cells or conditions.
-    #
-    # If file_data is provided, we're in multi-file mode.
-    # If not provided, we create a single-file structure for backward compatibility.
-    # ====================================================================
+    # Multi-file mode setup
     is_multi_file = file_data is not None and len(file_data) > 1
-    
     if file_data is None:
-        # Backward compatibility: create file_data structure from single file
-        # This allows the function to work with old code that passes individual artists
+        # Backward compatibility: create file_data from single file
         file_data = [{
-            'filename': 'Data',  # Default filename
-            'sc_charge': sc_charge,      # Charge capacity scatter artist
-            'sc_discharge': sc_discharge,  # Discharge capacity scatter artist
-            'sc_eff': sc_eff,            # Efficiency scatter artist
-            'visible': True               # File is visible by default
+            'filename': 'Data',
+            'sc_charge': sc_charge,
+            'sc_discharge': sc_discharge,
+            'sc_eff': sc_eff,
+            'visible': True
         }]
     
-    # Track which file is currently selected for editing (in multi-file mode)
-    current_file_idx = 0  # Index of currently selected file (0 = first file)
-    
-    # Collect file paths for session saving (if available)
+    current_file_idx = 0  # Index of currently selected file for editing
     file_paths = _collect_file_paths(file_data)
     
-    # ====================================================================
-    # TICK STATE MANAGEMENT
-    # ====================================================================
-    # CPC plots have two axes (primary + twin), so we need to track tick
-    # visibility for both. The tick_state dictionary tracks:
-    #
-    # Primary axes (ax):
-    #   - bx: bottom x-axis ticks and labels
-    #   - tx: top x-axis ticks and labels
-    #   - ly: left y-axis ticks and labels (capacity)
-    #   - mbx: minor bottom x-axis ticks
-    #   - mtx: minor top x-axis ticks
-    #   - mly: minor left y-axis ticks
-    #
-    # Twin axes (ax2):
-    #   - ry: right y-axis ticks and labels (efficiency)
-    #   - mry: minor right y-axis ticks
-    #
-    # Users can toggle these with 't' command to customize plot appearance.
-    # ====================================================================
+    # Tick state for CPC (primary ax + twin right ax2)
     tick_state = {
-        'bx': True,   # bottom x-axis (cycle numbers) - shown by default
-        'tx': False,  # top x-axis - hidden by default
-        'ly': True,   # left y-axis (capacity) - shown by default
-        'ry': True,   # right y-axis (efficiency) - shown by default
-        'mbx': False, # minor bottom x-axis ticks - hidden by default
-        'mtx': False, # minor top x-axis ticks - hidden by default
-        'mly': False, # minor left y-axis ticks - hidden by default
-        'mry': False, # minor right y-axis ticks - hidden by default
+        'bx': True,  # bottom x
+        'tx': False, # top x
+        'ly': True,  # left y (primary)
+        'ry': True,  # right y (twin)
+        'mbx': False,
+        'mtx': False,
+        'mly': False,
+        'mry': False,
     }
 
     # --- Undo stack using style snapshots ---
@@ -1212,14 +1066,10 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         _print_file_list(file_data, current_file_idx)
     
     while True:
-        try:
-            # Update current file's scatter artists for commands that need them
-            sc_charge, sc_discharge, sc_eff = _get_current_file_artists(file_data, current_file_idx)
-            
-            key = input("Press a key: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\n\nExiting interactive menu...")
-            break
+        # Update current file's scatter artists for commands that need them
+        sc_charge, sc_discharge, sc_eff = _get_current_file_artists(file_data, current_file_idx)
+        
+        key = input("Press a key: ").strip().lower()
         if not key:
             continue
         
@@ -1611,7 +1461,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if not base_path:
                     _print_menu()
                     continue
-                print(f"\nChosen path: {base_path}")
                 # List existing figure files from Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
                 file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
@@ -1619,12 +1468,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if files:
                     figures_dir = os.path.join(base_path, 'Figures')
                     print(f"Existing figure files in {figures_dir}:")
-                    for i, (fname, fpath) in enumerate(file_list, 1):
-                        timestamp = _format_file_timestamp(fpath)
-                        if timestamp:
-                            print(f"  {i}: {fname}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {fname}")
+                    for i, f in enumerate(files, 1):
+                        print(f"  {i}: {f}")
                 
                 fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
@@ -1699,7 +1544,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 folder = choose_save_path(file_paths, purpose="CPC session save")
                 if not folder:
                     _print_menu(); continue
-                print(f"\nChosen path: {folder}")
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
                 except Exception:
@@ -1707,12 +1551,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if files:
                     print("Existing .pkl files:")
                     for i, f in enumerate(files, 1):
-                        filepath = os.path.join(folder, f)
-                        timestamp = _format_file_timestamp(filepath)
-                        if timestamp:
-                            print(f"  {i}: {f}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {f}")
+                        print(f"  {i}: {f}")
                 prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
                 choice = input(prompt).strip()
                 if not choice or choice.lower() == 'q':
@@ -1846,12 +1685,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     _bpcfg_files = [f[0] for f in style_file_list]
                     if _bpcfg_files:
                         print("Existing style files in Styles/ (.bps/.bpsg):")
-                        for _i, (fname, fpath) in enumerate(style_file_list, 1):
-                            timestamp = _format_file_timestamp(fpath)
-                            if timestamp:
-                                print(f"  {_i}: {fname}  ({timestamp})")
-                            else:
-                                print(f"  {_i}: {fname}")
+                        for _i, _f in enumerate(_bpcfg_files, 1):
+                            print(f"  {_i}: {_f}")
                     
                     sub = input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
@@ -1902,19 +1737,14 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         if not save_base:
                             print("Style export canceled.")
                             continue
-                        print(f"\nChosen path: {save_base}")
                         style_extensions = ('.bps', '.bpsg', '.bpcfg')
                         file_list = list_files_in_subdirectory(style_extensions, 'style', base_path=save_base)
                         files = [f[0] for f in file_list]
                         if files:
                             styles_dir = os.path.join(save_base, 'Styles')
                             print(f"Existing {default_ext} files in {styles_dir}:")
-                            for i, (fname, fpath) in enumerate(file_list, 1):
-                                timestamp = _format_file_timestamp(fpath)
-                                if timestamp:
-                                    print(f"  {i}: {fname}  ({timestamp})")
-                                else:
-                                    print(f"  {i}: {fname}")
+                            for i, f in enumerate(files, 1):
+                                print(f"  {i}: {f}")
                         choice = input("Enter new filename or number to overwrite (q=cancel): ").strip()
                         if not choice or choice.lower() == 'q':
                             print("Style export canceled.")
@@ -2126,7 +1956,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
-                    sub = input("Legend: t=toggle, p=set position, q=back: ").strip().lower()
+                    sub = input("Legend: t=toggle, m=set position (x y inches), q=back: ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -2151,79 +1981,27 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             fig.canvas.draw_idle()
                         except Exception:
                             pass
-                    elif sub == 'p':
-                        # Position submenu with x and y subcommands
-                        while True:
-                            xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
-                            xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
-                            print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                            pos_cmd = input("Position: (x y) or x=x only, y=y only, q=back: ").strip().lower()
-                            if not pos_cmd or pos_cmd == 'q':
-                                break
-                            if pos_cmd == 'x':
-                                # X only: stay in loop
-                                while True:
-                                    xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
-                                    xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
-                                    print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
-                                        break
-                                    try:
-                                        x_in = float(val)
-                                    except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
-                                        continue
-                                    push_state("legend-position")
-                                    try:
-                                        fig._cpc_legend_xy_in = (x_in, xy_in[1])
-                                        fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                        _apply_legend_position()
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={x_in:.2f}, y={xy_in[1]:.2f}")
-                                    except Exception:
-                                        pass
-                            elif pos_cmd == 'y':
-                                # Y only: stay in loop
-                                while True:
-                                    xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
-                                    xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
-                                    print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
-                                        break
-                                    try:
-                                        y_in = float(val)
-                                    except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
-                                        continue
-                                    push_state("legend-position")
-                                    try:
-                                        fig._cpc_legend_xy_in = (xy_in[0], y_in)
-                                        fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                        _apply_legend_position()
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={xy_in[0]:.2f}, y={y_in:.2f}")
-                                    except Exception:
-                                        pass
-                            else:
-                                # Try to parse as "x y" format
-                                parts = pos_cmd.replace(',', ' ').split()
-                                if len(parts) != 2:
-                                    print("Need two numbers or 'x'/'y' command."); continue
-                                try:
-                                    x_in = float(parts[0]); y_in = float(parts[1])
-                                except Exception:
-                                    print("Invalid numbers."); continue
-                                push_state("legend-position")
-                                try:
-                                    fig._cpc_legend_xy_in = (x_in, y_in)
-                                    fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                    _apply_legend_position()
-                                    fig.canvas.draw_idle()
-                                    print(f"Legend position updated: x={x_in:.2f}, y={y_in:.2f}")
-                                except Exception:
-                                    pass
+                    elif sub == 'm':
+                        push_state("legend-move")
+                        xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
+                        xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
+                        print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
+                        vals = input("Enter legend position x y (inches from center; e.g., 0.0 0.0): ").strip()
+                        parts = vals.replace(',', ' ').split()
+                        if len(parts) != 2:
+                            print("Need two numbers."); continue
+                        try:
+                            x_in = float(parts[0]); y_in = float(parts[1])
+                        except Exception:
+                            print("Invalid numbers."); continue
+                        # Store and apply
+                        try:
+                            fig._cpc_legend_xy_in = (x_in, y_in)
+                            fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
+                            _apply_legend_position()
+                            fig.canvas.draw_idle()
+                        except Exception:
+                            pass
                     else:
                         print("Unknown option.")
             except Exception:
@@ -3141,86 +2919,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             _print_menu(); continue
         elif key == 'x':
             while True:
-                current_xlim = ax.get_xlim()
-                print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                rng = input("Enter x-range: min max, w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                rng = input("Enter x-range: min max (q=back): ").strip()
                 if not rng or rng.lower() == 'q':
                     break
-                if rng.lower() == 'w':
-                    # Upper only: change upper limit, fix lower - stay in loop
-                    while True:
-                        current_xlim = ax.get_xlim()
-                        print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_upper = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("x-range")
-                        ax.set_xlim(current_xlim[0], new_upper)
-                        ax.relim()
-                        ax.autoscale_view(scalex=True, scaley=False)
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position()
-                        except Exception:
-                            pass
-                        fig.canvas.draw_idle()
-                        print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                if rng.lower() == 's':
-                    # Lower only: change lower limit, fix upper - stay in loop
-                    while True:
-                        current_xlim = ax.get_xlim()
-                        print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
-                        if not val or val.lower() == 'q':
-                            break
-                        try:
-                            new_lower = float(val)
-                        except (ValueError, KeyboardInterrupt):
-                            print("Invalid value, ignored.")
-                            continue
-                        push_state("x-range")
-                        ax.set_xlim(new_lower, current_xlim[1])
-                        ax.relim()
-                        ax.autoscale_view(scalex=True, scaley=False)
-                        # Reapply legend position after axis change to prevent movement
-                        try:
-                            leg = ax.get_legend()
-                            if leg is not None and leg.get_visible():
-                                _apply_legend_position()
-                        except Exception:
-                            pass
-                        fig.canvas.draw_idle()
-                        print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                if rng.lower() == 'a':
-                    # Auto: restore original range from scatter plots
-                    push_state("x-range-auto")
-                    try:
-                        all_x = []
-                        for sc in [sc_charge, sc_discharge]:
-                            if sc is not None and hasattr(sc, 'get_offsets'):
-                                offsets = sc.get_offsets()
-                                if offsets.size > 0:
-                                    all_x.extend([offsets[:, 0].min(), offsets[:, 0].max()])
-                        if all_x:
-                            orig_min = min(all_x)
-                            orig_max = max(all_x)
-                            ax.set_xlim(orig_min, orig_max)
-                            ax.relim()
-                            ax.autoscale_view(scalex=True, scaley=False)
-                            fig.canvas.draw_idle()
-                            print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                        else:
-                            print("No original data available.")
-                    except Exception as e:
-                        print(f"Error restoring original X range: {e}")
-                    continue
                 parts = rng.replace(',', ' ').split()
                 if len(parts) != 2:
                     print("Need two numbers.")
@@ -3245,85 +2946,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if ycmd == 'q':
                     break
                 if ycmd == 'ly':
-                    current_ylim = ax.get_ylim()
-                    print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter left y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=cancel: ").strip()
+                    rng = input("Enter left y-range: min max (q=cancel): ").strip()
                     if not rng or rng.lower() == 'q':
-                        continue
-                    if rng.lower() == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper left Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-left-range")
-                            ax.set_ylim(current_ylim[0], new_upper)
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng.lower() == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower left Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-left-range")
-                            ax.set_ylim(new_lower, current_ylim[1])
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng.lower() == 'a':
-                        # Auto: restore original range from scatter plots
-                        push_state("y-left-range-auto")
-                        try:
-                            all_y = []
-                            for sc in [sc_charge, sc_discharge]:
-                                if sc is not None and hasattr(sc, 'get_offsets'):
-                                    offsets = sc.get_offsets()
-                                    if offsets.size > 0:
-                                        all_y.extend([offsets[:, 1].min(), offsets[:, 1].max()])
-                            if all_y:
-                                orig_min = min(all_y)
-                                orig_max = max(all_y)
-                                ax.set_ylim(orig_min, orig_max)
-                                ax.relim()
-                                ax.autoscale_view(scalex=False, scaley=True)
-                                fig.canvas.draw_idle()
-                                print(f"Left Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                            else:
-                                print("No original data available.")
-                        except Exception as e:
-                            print(f"Error restoring original left Y range: {e}")
                         continue
                     parts = rng.replace(',', ' ').split()
                     if len(parts) != 2:
@@ -3345,83 +2969,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     if not eff_on:
                         print("Right Y is not shown; enable efficiency with 'ry' first.")
                         continue
-                    current_ylim = ax2.get_ylim()
-                    print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter right y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=cancel: ").strip()
+                    rng = input("Enter right y-range: min max (q=cancel): ").strip()
                     if not rng or rng.lower() == 'q':
-                        continue
-                    if rng.lower() == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_ylim = ax2.get_ylim()
-                            print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper right Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-right-range")
-                            ax2.set_ylim(current_ylim[0], new_upper)
-                            ax2.relim()
-                            ax2.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
-                    if rng.lower() == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_ylim = ax2.get_ylim()
-                            print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower right Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-right-range")
-                            ax2.set_ylim(new_lower, current_ylim[1])
-                            ax2.relim()
-                            ax2.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
-                    if rng.lower() == 'a':
-                        # Auto: restore original range from efficiency scatter plot
-                        push_state("y-right-range-auto")
-                        try:
-                            if sc_eff is not None and hasattr(sc_eff, 'get_offsets'):
-                                offsets = sc_eff.get_offsets()
-                                if offsets.size > 0:
-                                    orig_min = float(offsets[:, 1].min())
-                                    orig_max = float(offsets[:, 1].max())
-                                    ax2.set_ylim(orig_min, orig_max)
-                                    ax2.relim()
-                                    ax2.autoscale_view(scalex=False, scaley=True)
-                                    fig.canvas.draw_idle()
-                                    print(f"Right Y range restored to original: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
-                                else:
-                                    print("No original data available.")
-                            else:
-                                print("No original data available.")
-                        except Exception as e:
-                            print(f"Error restoring original right Y range: {e}")
                         continue
                     parts = rng.replace(',', ' ').split()
                     if len(parts) != 2:

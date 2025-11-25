@@ -27,7 +27,6 @@ from .utils import (
     list_files_in_subdirectory,
     get_organized_path,
 )
-import time
 from .session import dump_session as _bp_dump_session
 from .ui import (
     apply_font_changes as _ui_apply_font_changes,
@@ -180,22 +179,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         
         return re.sub(pattern, colorize_match, text)
     
-    def format_file_timestamp(filepath: str) -> str:
-        """Format file modification time for display.
-        
-        Args:
-            filepath: Full path to the file
-            
-        Returns:
-            Formatted timestamp string (e.g., "2024-01-15 14:30") or empty string if error
-        """
-        try:
-            mtime = os.path.getmtime(filepath)
-            # Format as YYYY-MM-DD HH:MM
-            return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-        except Exception:
-            return ""
-    
     def colorize_inline_commands(text):
         """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
         import re
@@ -218,15 +201,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 has_cif = bool(getattr(_bp, 'cif_tick_series', None))
         except Exception:
             pass
-        col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend"]
+        col1 = ["c: colors", "f: font", "l: line", "ro: rotate", "t: toggle axes", "g: size", "h: legend"]
         if has_cif:
             col1.append("z: hkl")
             col1.append("j: CIF titles")
         col2 = ["a: rearrange", "d: offset", "r: rename", "x: change X", "y: change Y"]
         col3 = ["v: find peaks", "n: crosshair", "p: print(export) style/geom", "i: import style/geom", "e: export figure", "s: save project", "b: undo", "q: quit"]
         
-        # Hide offset/y-range in stack mode
+        # Hide rotation and offset/y-range in stack mode
         if args.stack:
+            col1 = [item for item in col1 if not item.startswith("ro:")]
             col2 = [item for item in col2 if not item.startswith("d:") and not item.startswith("y:")]
         
         if not is_diffraction:
@@ -532,8 +516,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         BIRD_X = 5
         GRAVITY = 1
         JUMP_VEL = -3   # stronger jump for easier play
-        GAP_SIZE = 5    # larger gap for easier passage
-        MIN_OBS_SPACING = 12  # more spacing between obstacles
+        GAP_SIZE = 4    # larger gap
+        MIN_OBS_SPACING = 8  # fewer pillars
 
         class Obstacle:
             __slots__ = ("x", "gap_start", "scored")
@@ -556,8 +540,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
         def new_obstacle():
             obstacles.append(Obstacle(WIDTH - 1))
-
-        def collision():
             # Out of bounds
             if bird_y < 0 or bird_y >= HEIGHT:
                 return True
@@ -1422,15 +1404,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
 
     while True:
-        try:
-            print_main_menu()
-            key = input("Press a key: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\n\nExiting interactive menu...")
-            break
-        
-        if not key:
-            continue
+        print_main_menu()
+        key = input("Press a key: ")
+
 
         # NEW: disable 'y' and 'd' in stack mode
         if args.stack and key in ('y', 'd'):
@@ -1438,11 +1414,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             continue
 
         if key == 'q':
-            try:
-                confirm = input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print("\nExiting interactive menu...")
-                break
+            confirm = input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             if confirm == 'y':
                 break
             else:
@@ -1560,7 +1532,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if not folder:
                     print("Save canceled.")
                     continue
-                print(f"\nChosen path: {folder}")
                 files = []
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
@@ -1569,12 +1540,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if files:
                     print("Existing .pkl files:")
                     for i, f in enumerate(files, 1):
-                        filepath = os.path.join(folder, f)
-                        timestamp = format_file_timestamp(filepath)
-                        if timestamp:
-                            print(f"  {i}: {f}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {f}")
+                        print(f"  {i}: {f}")
                 prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
                 choice = input(prompt).strip()
                 if not choice or choice.lower() == 'q':
@@ -1904,48 +1870,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 if not indices:
                                     print("No valid indices parsed.")
                                 else:
-                                    # ====================================================================
-                                    # APPLY COLOR PALETTE TO MULTIPLE CURVES
-                                    # ====================================================================
-                                    # This section applies a colormap (like 'viridis') to selected curves,
-                                    # assigning each curve a different color that smoothly transitions
-                                    # across the colormap.
-                                    #
-                                    # HOW IT WORKS:
-                                    # 1. Get the continuous colormap (e.g., 'viridis')
-                                    # 2. Sample colors at evenly spaced positions along the colormap
-                                    # 3. Assign each sampled color to a different curve
-                                    #
-                                    # Example with 5 curves and 'viridis':
-                                    #   Curve 1 → position 0.08 → dark purple
-                                    #   Curve 2 → position 0.27 → blue-purple
-                                    #   Curve 3 → position 0.46 → green
-                                    #   Curve 4 → position 0.65 → yellow-green
-                                    #   Curve 5 → position 0.85 → bright yellow
-                                    #
-                                    # WHY CLIP THE RANGE (0.08 to 0.85)?
-                                    # The very start (0.0) and end (1.0) of colormaps are often too dark
-                                    # or too bright. Clipping to 0.08-0.85 gives better visual contrast
-                                    # and ensures all colors are visible.
-                                    # ====================================================================
-                                    
-                                    # Ensure colormap is registered (makes it available for use)
                                     ensure_colormap(palette_name)
                                     cmap = None
-                                    
-                                    # STEP 1: Try to get colormap from matplotlib's built-in colormaps
-                                    # This handles standard colormaps like 'viridis', 'plasma', 'inferno', etc.
                                     try:
                                         import matplotlib.cm as cm
-                                        # Get the continuous colormap (without specifying N)
-                                        # This allows us to sample directly from the continuous colormap
-                                        # without quantization issues
                                         cmap = cm.get_cmap(palette_name)
                                     except (ValueError, Exception):
                                         pass
-                                    
-                                    # STEP 2: Fallback - try cmcrameri package for scientific colormaps
-                                    # cmcrameri provides colorblind-friendly colormaps like 'batlow', 'batlowk', etc.
+                                    # Fallback: try cmcrameri for batlow variants
                                     if cmap is None and palette_name.lower().startswith("batlow"):
                                         try:
                                             import importlib
@@ -1957,58 +1889,32 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                                 cmap = getattr(cmc, 'batlow')
                                         except Exception:
                                             pass
-                                    
-                                    # STEP 3: Final fallback - create from custom colormaps defined in color_utils
+                                    # Final fallback: create from _CUSTOM_CMAPS
                                     if cmap is None:
                                         base_name = palette_name.lower()
-                                        # Handle reversed colormaps (remove '_r' suffix)
                                         if base_name.endswith('_r'):
                                             base_name = base_name[:-2]
                                         custom_colors = _CUSTOM_CMAPS.get(base_name)
                                         if custom_colors:
                                             from matplotlib.colors import LinearSegmentedColormap
-                                            # Create a continuous colormap by interpolating between custom colors
-                                            # N=256 means create 256 intermediate colors for smooth gradient
                                             cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
-                                            # If user requested reversed version, reverse it now
                                             if palette_name.lower().endswith('_r'):
                                                 cmap = cmap.reversed()
-                                    
-                                    # Check if we successfully got a colormap
                                     if cmap is None:
                                         print(f"Unknown colormap '{palette_name}'.")
                                     else:
-                                        # Save current state for undo functionality
                                         push_state("color-palette")
-                                        
-                                        # Get number of selected curves
                                         nsel = len(indices)
-                                        
-                                        # Define color sampling range (clipped to avoid too dark/bright extremes)
-                                        low_clip = 0.08   # Start sampling at 8% into colormap (avoids very dark colors)
-                                        high_clip = 0.85  # End sampling at 85% into colormap (avoids very bright colors)
-                                        
-                                        # STEP 4: Sample colors from colormap at evenly spaced positions
+                                        low_clip = 0.08
+                                        high_clip = 0.85
                                         if nsel == 1:
-                                            # Single curve: use middle of colormap (good visibility)
                                             colors = [cmap(0.55)]
                                         elif nsel == 2:
-                                            # Two curves: use clipped range endpoints (maximum contrast)
                                             colors = [cmap(low_clip), cmap(high_clip)]
                                         else:
-                                            # Multiple curves: sample evenly across clipped range
-                                            # np.linspace creates evenly spaced positions from low_clip to high_clip
-                                            # Example with 5 curves: [0.08, 0.27, 0.46, 0.65, 0.85]
                                             positions = np.linspace(low_clip, high_clip, nsel)
-                                            # Sample color at each position
-                                            # cmap(position) returns an RGBA color tuple for that position
                                             colors = [cmap(p) for p in positions]
-                                        
-                                        # STEP 5: Apply colors to the selected curves
-                                        # Loop through selected curve indices and assign corresponding color
                                         for c_idx, line_idx in enumerate(indices):
-                                            # c_idx = index in colors array (0, 1, 2, ...)
-                                            # line_idx = index of line in ax.lines (the actual matplotlib line object)
                                             ax.lines[line_idx].set_color(colors[c_idx])
                                         # Update label colors to match new curve colors
                                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -2269,122 +2175,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_xlim = ax.get_xlim()
                     print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                    rng = input("Enter new X range (min max), w=upper only, s=lower only, 'full', or 'a'=auto (restore original) (q=back): ").strip()
+                    rng = input("Enter new X range (min max) or 'full' (q=back): ").strip()
                     if not rng or rng.lower() == 'q':
                         break
-                    if rng.lower() == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_xlim = ax.get_xlim()
-                            print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("xrange")
-                            ax.set_xlim(current_xlim[0], new_upper)
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            try:
-                                if hasattr(ax, '_cif_extend_func'):
-                                    ax._cif_extend_func(ax.get_xlim()[1])
-                            except Exception:
-                                pass
-                            try:
-                                if hasattr(ax, '_cif_draw_func'):
-                                    ax._cif_draw_func()
-                            except Exception:
-                                pass
-                            fig.canvas.draw()
-                            print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                    if rng.lower() == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_xlim = ax.get_xlim()
-                            print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("xrange")
-                            ax.set_xlim(new_lower, current_xlim[1])
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            try:
-                                if hasattr(ax, '_cif_extend_func'):
-                                    ax._cif_extend_func(ax.get_xlim()[1])
-                            except Exception:
-                                pass
-                            try:
-                                if hasattr(ax, '_cif_draw_func'):
-                                    ax._cif_draw_func()
-                            except Exception:
-                                pass
-                            fig.canvas.draw()
-                            print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                    if rng.lower() == 'a':
-                        # Auto: restore original range from x_full_list
-                        push_state("xrange-auto")
-                        if x_full_list:
-                            new_min = min(xf.min() for xf in x_full_list if xf.size)
-                            new_max = max(xf.max() for xf in x_full_list if xf.size)
-                        else:
-                            print("No original data available.")
-                            continue
-                        # Restore all data
-                        for i in range(len(labels)):
-                            xf = x_full_list[i]; yf_raw = raw_y_full_list[i]
-                            mask = (xf>=new_min) & (xf<=new_max)
-                            x_sub = xf[mask]; y_sub_raw = yf_raw[mask]
-                            if x_sub.size == 0:
-                                ax.lines[i].set_data([], [])
-                                y_data_list[i] = np.array([]); orig_y[i] = np.array([]); continue
-                            should_normalize = args.stack or getattr(args, 'norm', False)
-                            if should_normalize:
-                                if y_sub_raw.size:
-                                    y_min = float(y_sub_raw.min())
-                                    y_max = float(y_sub_raw.max())
-                                    span = y_max - y_min
-                                    if span > 0:
-                                        y_sub_norm = (y_sub_raw - y_min) / span
-                                    else:
-                                        y_sub_norm = np.zeros_like(y_sub_raw)
-                                else:
-                                    y_sub_norm = y_sub_raw
-                            else:
-                                y_sub_norm = y_sub_raw
-                            offset_val = offsets_list[i]
-                            y_with_offset = y_sub_norm + offset_val
-                            ax.lines[i].set_data(x_sub, y_with_offset)
-                            x_data_list[i] = x_sub
-                            y_data_list[i] = y_with_offset
-                            orig_y[i] = y_sub_norm
-                        ax.set_xlim(new_min, new_max)
-                        ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        try:
-                            if hasattr(ax, '_cif_extend_func'):
-                                ax._cif_extend_func(ax.get_xlim()[1])
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ax, '_cif_draw_func'):
-                                ax._cif_draw_func()
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                        continue
                     push_state("xrange")
                     if rng.lower() == 'full':
                         new_min = min(xf.min() for xf in x_full_list if xf.size)
@@ -2441,73 +2234,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_ylim = ax.get_ylim()
                     print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter new Y range (min max), w=upper only, s=lower only, 'auto', 'a'=auto (restore original), or 'full' (q=back): ").strip().lower()
+                    rng = input("Enter new Y range (min max), 'auto', or 'full' (q=back): ").strip().lower()
                     if not rng or rng == 'q':
                         break
-                    if rng == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("yrange")
-                            ax.set_ylim(current_ylim[0], new_upper)
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            fig.canvas.draw_idle()
-                            print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("yrange")
-                            ax.set_ylim(new_lower, current_ylim[1])
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            fig.canvas.draw_idle()
-                            print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng == 'a':
-                        # Auto: restore original range from y_data_list
-                        push_state("yrange-auto")
-                        if y_data_list:
-                            all_min = None
-                            all_max = None
-                            for arr in y_data_list:
-                                if arr.size:
-                                    mn = float(arr.min())
-                                    mx = float(arr.max())
-                                    all_min = mn if all_min is None else min(all_min, mn)
-                                    all_max = mx if all_max is None else max(all_max, mx)
-                            if all_min is None or all_max is None:
-                                print("No original data available.")
-                                continue
-                            ax.set_ylim(all_min, all_max)
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            fig.canvas.draw_idle()
-                            print(f"Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                        else:
-                            print("No original data available.")
-                        continue
                     push_state("yrange")
                     if rng == 'auto':
                         ax.relim()
@@ -2756,6 +2485,107 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print(f"Error setting curve offset: {e}")
                 else:
                     print("Unknown command. Use 1-{}, a, r, d, or q".format(len(labels)))
+        elif key == 'ro':
+            # Rotate plot 90 degrees clockwise or counter-clockwise
+            # Only allowed in normal XY mode (not stack mode)
+            if args.stack:
+                print("Rotation is disabled in --stack mode.")
+                continue
+            
+            while True:
+                print("\nRotate plot:")
+                print("  c: clockwise (90°)")
+                print("  a: anti-clockwise (-90°)")
+                print("  q: back")
+                
+                rot_cmd = input("Rotate> ").strip().lower()
+                
+                if rot_cmd == 'q' or rot_cmd == '':
+                    break
+                
+                if rot_cmd == 'c' or rot_cmd == 'a':
+                    try:
+                        push_state("rotate")
+                        
+                        # Determine rotation direction
+                        angle_delta = 90 if rot_cmd == 'c' else -90
+                        ax._rotation_angle = (ax._rotation_angle + angle_delta) % 360
+                        
+                        # Swap X and Y data for all curves - MUST COPY to avoid mutation
+                        for i in range(len(labels)):
+                            xdata = x_data_list[i].copy()  # COPY to avoid mutation
+                            ydata = y_data_list[i].copy()  # COPY to avoid mutation
+                            
+                            if rot_cmd == 'c':
+                                # Clockwise: X->Y, -Y->X
+                                new_x = -ydata
+                                new_y = xdata
+                            else:
+                                # Counter-clockwise: Y->X, -X->Y  
+                                new_x = ydata
+                                new_y = -xdata
+                            
+                            x_data_list[i] = new_x
+                            y_data_list[i] = new_y
+                            ax.lines[i].set_data(new_x, new_y)
+                            
+                            # Also update orig_y (normalized data without offset)
+                            if i < len(orig_y):
+                                orig_y_data = orig_y[i].copy()  # COPY original
+                                if rot_cmd == 'c':
+                                    # For clockwise, orig_y should come from old x_data 
+                                    # But we need the normalized version, so recalculate from offset
+                                    offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
+                                    orig_y[i] = xdata - offset_val
+                                else:
+                                    # For counter-clockwise
+                                    offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
+                                    orig_y[i] = -(xdata - offset_val)
+                        
+                        # Also rotate full data - MUST COPY
+                        for i in range(len(x_full_list)):
+                            xf = x_full_list[i].copy()  # COPY to avoid mutation
+                            yf = raw_y_full_list[i].copy()  # COPY to avoid mutation
+                            
+                            if rot_cmd == 'c':
+                                x_full_list[i] = -yf
+                                raw_y_full_list[i] = xf
+                            else:
+                                x_full_list[i] = yf
+                                raw_y_full_list[i] = -xf
+                        
+                        # Swap axis limits
+                        xlim = ax.get_xlim()
+                        ylim = ax.get_ylim()
+                        if rot_cmd == 'c':
+                            ax.set_xlim(-ylim[1], -ylim[0])
+                            ax.set_ylim(xlim)
+                        else:
+                            ax.set_xlim(ylim)
+                            ax.set_ylim(-xlim[1], -xlim[0])
+                        
+                        # Swap axis labels
+                        xlabel = ax.get_xlabel()
+                        ylabel = ax.get_ylabel()
+                        ax.set_xlabel(ylabel)
+                        ax.set_ylabel(xlabel)
+                        
+                        # Relimit and redraw
+                        ax.relim()
+                        ax.autoscale_view()
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        fig.canvas.draw()
+                        
+                        direction = "clockwise" if rot_cmd == 'c' else "anti-clockwise"
+                        print(f"Plot rotated 90° {direction}. Current rotation: {ax._rotation_angle}°")
+                        print("WARNING: Rotation is experimental. Offsets may need adjustment.")
+                        
+                    except Exception as e:
+                        print(f"Error rotating plot: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print("Invalid choice")
         elif key == 'l':
             try:
                 def _select_lines(ax_obj, prompt_text):
@@ -3447,12 +3277,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     _bpcfg_files = [f[0] for f in style_file_list]
                     if _bpcfg_files:
                         print("Existing style files in Styles/ (.bps/.bpsg):")
-                        for _i, (fname, fpath) in enumerate(style_file_list, 1):
-                            timestamp = format_file_timestamp(fpath)
-                            if timestamp:
-                                print(f"  {_i}: {fname}  ({timestamp})")
-                            else:
-                                print(f"  {_i}: {fname}")
+                        for _i, _f in enumerate(_bpcfg_files, 1):
+                            print(f"  {_i}: {_f}")
                     sub = input(colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
                         break
@@ -3463,7 +3289,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         if not save_base:
                             print("Style export canceled.")
                             continue
-                        print(f"\nChosen path: {save_base}")
                         # Call export_style_config which handles the entire export dialog
                         export_style_config(None, base_path=save_base)  # filename parameter ignored
                         style_menu_active = False  # Exit style submenu and return to main menu
@@ -3488,7 +3313,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if not base_path:
                     print("Export canceled.")
                     continue
-                print(f"\nChosen path: {base_path}")
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
                 file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
@@ -3496,12 +3320,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if files:
                     figures_dir = os.path.join(base_path, 'Figures')
                     print(f"Existing figure files in {figures_dir}:")
-                    for i, (fname, fpath) in enumerate(file_list, 1):
-                        timestamp = format_file_timestamp(fpath)
-                        if timestamp:
-                            print(f"  {i}: {fname}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {fname}")
+                    for i, f in enumerate(files, 1):
+                        print(f"  {i}: {f}")
                 
                 filename = input("Enter filename (default SVG if no extension) or number to overwrite (q=cancel): ").strip()
                 if not filename or filename.lower() == 'q':

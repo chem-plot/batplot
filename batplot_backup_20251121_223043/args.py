@@ -1,23 +1,4 @@
-"""Argument parsing for batplot CLI.
-
-This module handles all command-line argument parsing for batplot. It defines
-the command-line interface, including:
-- All command-line flags and options
-- Help text for each mode (XY, EC, Operando)
-- Argument validation and conversion
-- Colored help output (if rich library is available)
-
-HOW COMMAND-LINE ARGUMENTS WORK:
---------------------------------
-When you run 'batplot file.xy --interactive', Python's argparse library:
-1. Parses the command line into structured arguments
-2. Validates that required arguments are present
-3. Converts string arguments to appropriate types (int, float, bool, etc.)
-4. Groups related arguments together
-5. Provides helpful error messages if arguments are invalid
-
-This module defines all the valid arguments and their meanings.
-"""
+"""Argument parsing for batplot CLI."""
 
 from __future__ import annotations
 
@@ -25,18 +6,7 @@ import argparse
 import sys
 import re
 
-# ====================================================================
-# COLORED HELP OUTPUT (OPTIONAL ENHANCEMENT)
-# ====================================================================
-# The 'rich' library provides colored terminal output. If available,
-# we use it to make help text more readable by highlighting:
-# - Command-line flags in cyan
-# - File extensions in yellow
-# - Example commands in green
-# - Section headers in blue
-#
-# If rich is not installed, we fall back to plain text (still works fine).
-# ====================================================================
+# Try to import rich for colored output
 try:
     from rich.console import Console
     from rich.markup import escape
@@ -48,62 +18,34 @@ except ImportError:
 
 
 def _colorize_help(text: str) -> str:
-    """
-    Add colors to help text by highlighting flags and special elements.
-    
-    HOW IT WORKS:
-    ------------
-    Uses regular expressions to find patterns in help text and wrap them
-    with rich markup codes for colored output.
-    
-    Patterns colored:
-    - Command-line flags: --flag or -f → cyan
-    - File extensions: .xy, .csv, etc. → yellow
-    - Example commands: batplot ... → green
-    - Section headers: lines ending with : → bold blue
-    - Bullet points: • → bold
-    
-    Example:
-        Input:  "batplot file.xy --interactive"
-        Output: "[green]batplot[/green] [yellow]file.xy[/yellow] [cyan]--interactive[/cyan]"
+    """Add colors to help text by highlighting flags and special elements.
     
     Args:
-        text: Plain help text (uncolored)
+        text: Plain help text
         
     Returns:
-        Text with rich markup codes for colored output
-        (or original text if rich is not available)
+        Text with rich markup for colored output
     """
     if not _HAS_RICH:
-        return text  # No coloring available, return as-is
+        return text
     
-    # STEP 1: Escape any existing markup to prevent conflicts
-    # This ensures that if the help text already contains rich markup,
-    # we don't accidentally break it
+    # Escape any existing markup
     text = escape(text)
     
-    # STEP 2: Color command-line flags
-    # Pattern: --flag-name or -f (single letter flag)
-    # Example: "--interactive" → "[cyan]--interactive[/cyan]"
-    text = re.sub(r'(--[\w-]+)', r'[cyan]\1[/cyan]', text)  # Long flags (--flag)
-    text = re.sub(r'(\s-[a-zA-Z]\b)', r'[cyan]\1[/cyan]', text)  # Short flags (-f)
+    # Color all flags (--flag or -f)
+    text = re.sub(r'(--[\w-]+)', r'[cyan]\1[/cyan]', text)
+    text = re.sub(r'(\s-[a-zA-Z]\b)', r'[cyan]\1[/cyan]', text)
     
-    # STEP 3: Color file extensions
-    # Pattern: .extension (2-4 characters)
-    # Example: ".xy" → "[yellow].xy[/yellow]"
+    # Color file extensions
     text = re.sub(r'(\.\w{2,4}\b)', r'[yellow]\1[/yellow]', text)
     
-    # STEP 4: Color example commands
-    # Pattern: "batplot" followed by arguments
-    # Example: "batplot file.xy --i" → "[green]batplot file.xy --i[/green]"
+    # Color example commands (batplot at start of line or after whitespace)
     text = re.sub(r'(batplot\s+[^\n]+)', r'[green]\1[/green]', text)
     
-    # STEP 5: Color section headers
-    # Pattern: Lines that start with capital letter and end with colon
-    # Example: "Examples:" → "[bold blue]Examples:[/bold blue]"
+    # Color section headers (lines ending with :)
     text = re.sub(r'^([A-Z][\w\s/()]+:)$', r'[bold blue]\1[/bold blue]', text, flags=re.MULTILINE)
     
-    # STEP 6: Make bullet points bold
+    # Color special markers
     text = text.replace('•', '[bold]•[/bold]')
     
     return text
@@ -146,23 +88,19 @@ def _print_general_help() -> None:
 "    batplot allfiles --interactive         # Plot all files with interactive menu\n"
 "    batplot allxyfiles                     # Plot only .xy files (natural sorted)\n"
 "    batplot /path/to/data allnorfiles --i  # Plot only .nor files from a directory\n"
-    "    batplot --all                          # Batch mode: all XY files → Figures/ as .svg\n"
+"    batplot --all                          # Batch mode: all XY files → Figures/ as .svg\n"
     "    batplot --all --format png             # Batch mode: export as .png files\n"
     "    batplot --all --xaxis 2theta --xrange 10 80  # Batch mode with custom axis and range\n"
     "    batplot --all style.bps                # Batch with style: apply style.bps to all XY files\n"
-    "    batplot --all ./Style/style.bps        # Batch with style: use relative path to style file\n"
     "    batplot --all config.bpsg              # Batch with style+geom: apply to all XY files\n"
-    "    batplot file1.xy file2.xye style.bps  # Apply style to multiple files and export\n"
-    "    batplot file1.xy file2.xye ./Style/style.bps  # Apply style from relative path\n\n"
+    "    batplot file1.xy file2.xye style.bps  # Apply style to multiple files and export\n\n"
     "  [Electrochemistry]\n"
     "    batplot --gc FILE.mpt --mass 7.0       # EC GC from .mpt (requires --mass mg)\n"
     "    batplot --gc FILE.csv                  # EC GC from supported .csv (no mass required)\n"
     "    batplot --gc --all --mass 7.0          # Batch: all .mpt/.csv → Figures/ as .svg\n"
     "    batplot --gc --all --mass 7 --format pdf  # Batch: export as .pdf files\n"
     "    batplot --all --gc style.bps --mass 7  # Batch with style: apply style.bps to all GC files\n"
-    "    batplot --all --gc ./Style/style.bps --mass 7  # Batch with style: use relative path\n"
     "    batplot --all --cv config.bpsg         # Batch with style+geom: apply to all CV files\n"
-    "    batplot --all --cv ./Style/config.bpsg  # Batch with style+geom: use relative path\n"
     "    batplot --dqdv FILE.csv                # EC dQ/dV from supported .csv\n"
     "    batplot --dqdv --all                   # Batch: all .csv in directory (dQdV mode)\n"
     "    batplot --cv FILE.mpt                  # EC CV (cyclic voltammetry) from .mpt\n"
@@ -220,14 +158,10 @@ def _print_xy_help() -> None:
         "  batplot --all --xrange 10 80           # Batch mode with X-axis range\n"
         "  batplot --all --wl 1.5406              # Batch mode with wavelength conversion\n"
         "  batplot --all style.bps                # Apply style.bps to all XY files\n"
-        "  batplot --all ./Style/style.bps        # Apply style from relative path (e.g., ./Style/style.bps)\n"
-        "  batplot --all config.bpsg              # Apply style+geometry to all XY files\n"
-        "  batplot --all ./Style/config.bpsg      # Apply style+geometry from relative path\n\n"
+        "  batplot --all config.bpsg              # Apply style+geometry to all XY files\n\n"
         "Normal mode with style files (apply style to multiple files and export):\n"
         "  batplot file1.xy file2.xye style.bps --out output.svg  # Apply style and export\n"
-        "  batplot file1.xy file2.xye ./Style/style.bps --out output.svg  # Style from relative path\n"
-        "  batplot file1.xy file2.xye style.bpsg --xaxis 2theta   # Apply style+geometry\n"
-        "  batplot file1.xy file2.xye ./Style/style.bpsg --xaxis 2theta  # Style+geom from relative path\n\n"
+        "  batplot file1.xy file2.xye style.bpsg --xaxis 2theta   # Apply style+geometry\n\n"
         "Tips and options:\n"
         "[XY plot]\n"
     "  --interactive / -i        : open interactive menu for styling, ranges, fonts, export, sessions\n"
@@ -241,8 +175,6 @@ def _print_xy_help() -> None:
     "  --out/-o <filename>       : save figure to file, e.g. --out file.svg\n"
     "  --xaxis <type>            : set x-axis type (Q, 2theta, r, k, energy, rft, time, or user defined)\n"
     "                              e.g. --xaxis 2theta, or --xaxis time for electrochemistry CSV/MPT time-voltage plots\n"
-    "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
-    "                              e.g. --xaxis time --ro plots time as y-axis and voltage as x-axis\n"
     "  --wl <float>              : set wavelength for Q conversion for all files, e.g. --wl 1.5406\n"
     "  File wavelength syntax   : specify wavelength(s) per file using colon syntax:\n"
     "                              - file:wl          : single wavelength (for Q conversion or CIF 2theta calculation)\n"
@@ -296,29 +228,17 @@ def _print_ec_help() -> None:
         "  batplot --gc /path/to/folder --mass 6  # Process specific directory\n\n"
         "Batch mode with style/geometry: Apply .bps/.bpsg files to all batch exports.\n"
         "  batplot --all style.bps --gc --mass 7  # Apply style to all GC plots\n"
-        "  batplot --all ./Style/style.bps --gc --mass 7  # Apply style from relative path\n"
         "  batplot --all config.bpsg --cv         # Apply style+geometry to all CV plots\n"
-        "  batplot --all ./Style/config.bpsg --cv  # Apply style+geometry from relative path\n"
         "  batplot --all my.bps --dqdv            # Apply style to all dQdV plots\n"
-        "  batplot --all ./Style/my.bps --dqdv    # Apply style from relative path\n"
-        "  batplot --all geom.bpsg --cpc --mass 6 # Apply style+geom to all CPC plots\n"
-        "  batplot --all ./Style/geom.bpsg --cpc --mass 6  # Apply style+geom from relative path\n\n"
+        "  batplot --all geom.bpsg --cpc --mass 6 # Apply style+geom to all CPC plots\n\n"
         "Normal mode with style files: Apply style to multiple files and export.\n"
         "  batplot file1.csv file2.mpt style.bps --gc --mass 7 --out output.svg  # GC mode\n"
-        "  batplot file1.csv file2.mpt ./Style/style.bps --gc --mass 7 --out output.svg  # Style from relative path\n"
         "  batplot file1.mpt file2.txt style.bpsg --cv                           # CV mode\n"
-        "  batplot file1.mpt file2.txt ./Style/style.bpsg --cv                   # Style+geom from relative path\n"
         "  batplot file1.csv file2.csv style.bps --dqdv                          # dQdV mode\n"
-        "  batplot file1.csv file2.csv ./Style/style.bps --dqdv                  # Style from relative path\n"
-        "  batplot file1.csv file2.mpt style.bpsg --cpc --mass 6                 # CPC mode\n"
-        "  batplot file1.csv file2.mpt ./Style/style.bpsg --cpc --mass 6         # Style+geom from relative path\n\n"
+        "  batplot file1.csv file2.mpt style.bpsg --cpc --mass 6                 # CPC mode\n\n"
         "Interactive (--interactive): choose cycles, colors/palettes, line widths, axis scales (linear/log/symlog),\n"
         "rename axes, toggle ticks/titles/spines, print/export/import style (.bps/.bpsg), save session (.pkl).\n"
-        "Note: Batch mode (--all) exports SVG files automatically; --interactive is for single-file plotting only.\n\n"
-        "Axis swapping:\n"
-        "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
-        "                              e.g. --gc --ro plots voltage as x-axis and capacity as y-axis\n"
-        "                              e.g. --xaxis time --ro plots time as y-axis and voltage as x-axis\n"
+        "Note: Batch mode (--all) exports SVG files automatically; --interactive is for single-file plotting only.\n"
     )
     _print_help(msg)
 
@@ -342,68 +262,11 @@ def _print_op_help() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """
-    Build the argument parser for batplot command-line interface.
-    
-    HOW ARGUMENT PARSING WORKS:
-    --------------------------
-    This function creates an ArgumentParser object that defines all valid
-    command-line arguments for batplot. When you run 'batplot file.xy --interactive',
-    argparse uses this parser to:
-    1. Recognize which arguments are valid
-    2. Extract values from the command line
-    3. Convert them to appropriate Python types (int, float, bool, etc.)
-    4. Store them in a namespace object (args.files, args.interactive, etc.)
-    
-    ARGUMENT TYPES:
-    --------------
-    - Positional arguments: 'files' - list of file paths (can be 0 or more)
-    - Flags (boolean): '--interactive' - True if present, False if absent
-    - Options with values: '--mass 7.0' - requires a value (float in this case)
-    - Optional arguments: '--help xy' - can have optional value
-    
-    WHY add_help=False?
-    -------------------
-    We use a custom help system that supports topic-specific help:
-    - 'batplot -h' → general help
-    - 'batplot -h xy' → XY mode help
-    - 'batplot -h ec' → EC mode help
-    - 'batplot -h op' → Operando mode help
-    
-    This gives users more targeted help instead of one giant help page.
-    
-    Returns:
-        Configured ArgumentParser object ready to parse command-line arguments
-    """
-    # Create parser with custom help system (we handle help ourselves)
+    # We use a custom help so users can request topic help via `-h xy|ec|op`.
     parser = argparse.ArgumentParser(add_help=False)
-    
-    # ====================================================================
-    # TOPIC-AWARE HELP SYSTEM
-    # ====================================================================
-    # Instead of standard --help, we support topic-specific help:
-    #   batplot -h        → general help
-    #   batplot -h xy     → XY mode help
-    #   batplot -h ec     → EC mode help
-    #   batplot -h op     → Operando mode help
-    #
-    # nargs="?" means the argument is optional:
-    #   - If not provided: const="" (empty string)
-    #   - If provided: uses the value (e.g., "xy", "ec", "op")
-    # ====================================================================
+    # Topic-aware help flag (optional argument)
     parser.add_argument("--help", "-h", nargs="?", const="", metavar="topic",
-                        help=argparse.SUPPRESS)  # SUPPRESS hides from auto-generated help
-    
-    # ====================================================================
-    # POSITIONAL ARGUMENTS (FILE PATHS)
-    # ====================================================================
-    # 'files' is a positional argument, meaning it doesn't need a flag.
-    # nargs="*" means it accepts 0 or more values (list).
-    # Examples:
-    #   batplot file1.xy file2.xy        → args.files = ['file1.xy', 'file2.xy']
-    #   batplot allfiles                 → args.files = ['allfiles']
-    #   batplot --interactive            → args.files = [] (empty list)
-    # ====================================================================
+                        help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
     parser.add_argument("--delta", "-d", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--autoscale", action="store_true", help=argparse.SUPPRESS)
@@ -428,7 +291,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--ro", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--all", type=str, nargs='?', const='all', help=argparse.SUPPRESS)
     parser.add_argument("--format", type=str, default='svg', 
                        choices=['svg', 'png', 'pdf', 'jpg', 'jpeg', 'eps', 'tif', 'tiff'],
@@ -452,151 +314,62 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv=None):
-    """
-    Parse command-line arguments with support for dynamic --readcol<ext> flags.
-    
-    HOW IT WORKS:
-    ------------
-    This function:
-    1. Scans command line for custom --readcol<ext> flags (e.g., --readcolafes)
-    2. Dynamically adds them to the parser (so argparse recognizes them)
-    3. Parses all arguments using the parser
-    4. Handles topic-specific help requests
-    
-    WHY DYNAMIC ARGUMENTS?
-    ---------------------
-    We support custom file extensions (e.g., .afes files). Users can specify
-    which columns to read using --readcol<ext> syntax:
-        batplot file.afes --readcolafes 2 3
-    
-    We can't know all possible extensions ahead of time, so we:
-    1. Scan the command line first to find --readcol<ext> patterns
-    2. Add them to the parser dynamically
-    3. Then parse normally
-    
-    Args:
-        argv: Optional list of command-line arguments (for testing).
-              If None, uses sys.argv[1:] (skips program name).
-    
-    Returns:
-        Parsed arguments namespace object with all arguments as attributes.
-        Example: args.files, args.interactive, args.mass, etc.
-    """
     import re
     
-    # ====================================================================
-    # STEP 1: SCAN FOR CUSTOM --readcol<ext> FLAGS
-    # ====================================================================
-    # Before parsing, we need to find any custom --readcol<ext> flags
-    # (e.g., --readcolafes) and add them to the parser dynamically.
-    #
-    # Why? We support arbitrary file extensions, and users can specify
-    # column selection for any extension using --readcol<ext> syntax.
-    #
-    # Example:
-    #   batplot file.afes --readcolafes 2 3
-    #   This means: for .afes files, read column 2 as x, column 3 as y
-    # ====================================================================
-    
-    # Get command-line arguments (skip program name 'batplot')
+    # First, scan for custom --readcol<ext> flags and dynamically add them to parser
     if argv is None:
         argv = sys.argv[1:]
     
-    # Find all --readcol<ext> patterns in command line
-    # Pattern: --readcol followed by lowercase letters/numbers
-    # Example: --readcolafes → ext = 'afes'
+    # Find all --readcol<ext> patterns
     custom_readcol_exts = set()
     i = 0
     while i < len(argv):
         arg = argv[i]
-        # Match pattern: --readcol<extension>
         match = re.match(r'^--readcol([a-z0-9]+)$', arg)
         if match:
-            ext = match.group(1)  # Extract extension name
-            # Skip predefined extensions (already in parser)
+            ext = match.group(1)
+            # Skip the predefined ones
             if ext not in ['xy', 'xye', 'qye', 'nor', 'dat', 'csv']:
                 custom_readcol_exts.add(ext)
         i += 1
     
-    # ====================================================================
-    # STEP 2: BUILD PARSER AND ADD DYNAMIC ARGUMENTS
-    # ====================================================================
-    # Create the base parser (with all standard arguments)
     parser = build_parser()
     
-    # Add custom --readcol<ext> arguments dynamically
-    # This allows argparse to recognize and parse them
+    # Dynamically add custom extension readcol arguments
     for ext in custom_readcol_exts:
         parser.add_argument(f"--readcol{ext}", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
                            help=argparse.SUPPRESS)
     
-    # ====================================================================
-    # STEP 3: HANDLE HELP REQUESTS (TOPIC-SPECIFIC HELP)
-    # ====================================================================
-    # We use parse_known_args() first to handle help requests without
-    # complaining about unknown arguments. This allows:
-    #   batplot -h xy    → XY mode help
-    #   batplot -h ec    → EC mode help
-    #   batplot -h op    → Operando mode help
-    #
-    # If help is requested, we print it and exit immediately (don't continue parsing).
-    # ====================================================================
-    
-    # Parse with known_args_only=True to avoid errors from unknown arguments
-    # This is needed because we might have custom --readcol<ext> flags that
-    # weren't in the parser yet when we built it
+    # We need to parse known args first to handle our custom help without errors
     ns, _unknown = parser.parse_known_args(argv)
     topic = getattr(ns, 'help', None)
-    
     if topic is not None:
-        # Help was requested, print topic-specific help and exit
         t = (topic or '').strip().lower()
         if t in ("", "help"):
-            _print_general_help()  # General help (no topic specified)
+            _print_general_help()
         elif t in ("xy",):
-            _print_xy_help()  # XY mode help
+            _print_xy_help()
         elif t in ("ec", "gc", "dqdv"):
-            _print_ec_help()  # EC mode help (GC, dQ/dV, CV, CPC)
+            _print_ec_help()
         elif t in ("op", "operando"):
-            _print_op_help()  # Operando mode help
+            _print_op_help()
         else:
-            # Unknown topic, show general help with warning
             _print_general_help()
             if _HAS_RICH and _console:
                 _console.print("\n[yellow]Unknown help topic. Use: xy, ec, op[/yellow]")
             else:
                 print("\nUnknown help topic. Use: xy, ec, op")
-        sys.exit(0)  # Exit after showing help (don't continue to actual plotting)
-    
-    # ====================================================================
-    # STEP 4: PARSE ALL ARGUMENTS (NORMAL OPERATION)
-    # ====================================================================
-    # No help requested, so parse all arguments normally.
-    # This will raise an error if required arguments are missing or invalid.
-    # ====================================================================
+        sys.exit(0)
+    # No help requested: parse fully
     args = parser.parse_args(argv)
     
-    # ====================================================================
-    # STEP 5: BUILD readcol_by_ext DICTIONARY
-    # ====================================================================
-    # Collect all --readcol<ext> arguments into a convenient dictionary
-    # mapping file extension to (x_col, y_col) tuple.
-    #
-    # Example:
-    #   User runs: batplot file.xy --readcolxy 2 3 file.afes --readcolafes 4 5
-    #   Result: args.readcol_by_ext = {'.xy': (2, 3), '.afes': (4, 5)}
-    #
-    # This makes it easy to look up column specification for any file extension.
-    # ====================================================================
+    # Store a dictionary mapping extension to column specification
     args.readcol_by_ext = {}
-    
-    # Check all predefined and custom extensions
     for ext in ['xy', 'xye', 'qye', 'nor', 'dat', 'csv'] + list(custom_readcol_exts):
-        attr_name = f'readcol{ext}'  # e.g., 'readcolxy', 'readcolafes'
+        attr_name = f'readcol{ext}'
         if hasattr(args, attr_name):
-            val = getattr(args, attr_name)  # Get (x_col, y_col) tuple or None
+            val = getattr(args, attr_name)
             if val is not None:
-                # Store with dot prefix (e.g., '.xy' not 'xy') for easy matching
                 args.readcol_by_ext[f'.{ext}'] = val
     
     return args

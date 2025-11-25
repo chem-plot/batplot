@@ -124,98 +124,36 @@ def _resolve_palette_cmap(palette_name: str):
 
 
 def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
-    """
-    Apply a color palette to curves when loading a saved style/session file.
-    
-    HOW IT WORKS:
-    ------------
-    This function is called when you load a style file (p i s command) that contains
-    palette information. It restores the exact same colors that were used when the
-    style was saved.
-    
-    The style file stores:
-    - palette_name: Which colormap was used (e.g., 'viridis')
-    - indices: Which curves were colored (e.g., [1, 2, 3, 4, 5])
-    - low_clip, high_clip: The sampling range used (e.g., 0.08 to 0.85)
-    
-    This function:
-    1. Gets the same colormap that was used originally
-    2. Samples colors at the same positions (using stored low_clip/high_clip)
-    3. Applies colors to the same curves (using stored indices)
-    
-    This ensures that when you reload a style, the colors look exactly the same
-    as when you saved it.
-    
-    Args:
-        ax: Matplotlib axes object containing the plot lines
-        record: Dictionary from style file containing:
-            - 'palette': Colormap name (e.g., 'viridis')
-            - 'indices': List of curve indices (1-indexed, e.g., [1, 2, 3])
-            - 'low_clip': Lower bound for color sampling (default 0.08)
-            - 'high_clip': Upper bound for color sampling (default 0.85)
-    
-    Returns:
-        True if palette was successfully applied, False otherwise
-    """
-    # Extract palette information from style record
     palette_name = record.get('palette')
     indices = record.get('indices')
-    
-    # Validate that we have the required information
     if not palette_name or not indices:
         return False
-    
-    # Get the colormap (same one used when style was saved)
     cmap = _resolve_palette_cmap(palette_name)
     if cmap is None:
         print(f"Warning: Unknown palette '{palette_name}' in style file.")
         return False
-    
-    # Convert 1-indexed curve numbers to 0-indexed array indices
-    # Style files store curves as 1, 2, 3, ... (user-friendly)
-    # But matplotlib uses 0, 1, 2, ... (programmer-friendly)
     try:
         zero_based = [int(i) - 1 for i in indices]
     except Exception:
         zero_based = []
-    
-    # Filter out invalid indices (curves that don't exist)
     zero_based = [i for i in zero_based if 0 <= i < len(ax.lines)]
     if not zero_based:
         return False
-    
-    # Get the color sampling range from style file (or use defaults)
-    # These values determine which part of the colormap to sample from
-    low_clip = float(record.get('low_clip', 0.08))   # Default: start at 8% into colormap
-    high_clip = float(record.get('high_clip', 0.85))  # Default: end at 85% into colormap
-    
-    # Get number of curves to color
+    low_clip = float(record.get('low_clip', 0.08))
+    high_clip = float(record.get('high_clip', 0.85))
     nsel = len(zero_based)
-    
-    # Sample colors from colormap at evenly spaced positions
-    # This recreates the exact same color assignment as when the style was saved
     if nsel == 1:
-        # Single curve: use middle of colormap
         colors = [cmap(0.55)]
     elif nsel == 2:
-        # Two curves: use clipped range endpoints for maximum contrast
         colors = [cmap(low_clip), cmap(high_clip)]
     else:
-        # Multiple curves: sample evenly across the stored range
-        # np.linspace creates the same positions that were used originally
         positions = np.linspace(low_clip, high_clip, nsel)
-        # Sample color at each position
         colors = [cmap(p) for p in positions]
-    
-    # Apply colors to the curves
-    # Loop through curve indices and assign corresponding color
     for idx, color in zip(zero_based, colors):
         try:
             ax.lines[idx].set_color(color)
         except Exception:
-            # Skip if curve doesn't exist (shouldn't happen due to filtering above)
             pass
-    
     return True
 
 
@@ -610,8 +548,6 @@ def export_style_config(
         import os
         from .utils import list_files_in_subdirectory, get_organized_path
         
-        if base_path:
-            print(f"\nChosen path: {base_path}")
         file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
         style_files = [f[0] for f in file_list]
 

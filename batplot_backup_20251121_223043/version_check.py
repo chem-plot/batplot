@@ -1,49 +1,7 @@
 """Version checking utility for batplot.
 
-This module checks PyPI (Python Package Index) for newer versions of batplot
-and notifies users when updates are available.
-
-HOW VERSION CHECKING WORKS:
---------------------------
-When you run batplot, it automatically (and silently) checks for updates:
-
-1. **Check Cache**: First checks a local cache file to see if we've checked recently
-   - Cache is valid for 1 hour (3600 seconds)
-   - If cache is fresh, use cached result (no network request)
-
-2. **Fetch from PyPI**: If cache is stale or missing:
-   - Makes HTTP request to PyPI API (https://pypi.org/pypi/batplot/json)
-   - Gets latest version number
-   - Updates cache with new version and timestamp
-
-3. **Compare Versions**: Compares current version vs latest version
-   - If latest > current: Show update notification
-   - If latest <= current: Do nothing (you're up to date)
-
-4. **Show Notification**: If update available, prints a friendly message
-   - Shows current and latest version numbers
-   - Provides update command: `pip install --upgrade batplot`
-   - Can be disabled with environment variable
-
-DESIGN PRINCIPLES:
------------------
-- **Non-blocking**: 2 second timeout (won't slow down startup)
-- **Cached**: Only checks once per hour (saves network requests)
-- **Silent failure**: If check fails, program continues normally
-- **Optional**: Can be disabled with BATPLOT_NO_VERSION_CHECK=1
-- **User-friendly**: Clear, colored notification message
-
-WHY CACHE?
----------
-Checking PyPI on every run would:
-- Slow down startup (network latency)
-- Waste bandwidth (unnecessary requests)
-- Annoy PyPI servers (too many requests)
-
-Caching for 1 hour means:
-- Fast startup (no network request if cache is fresh)
-- Still timely (checks once per hour, not once per day)
-- Respectful to PyPI (fewer requests)
+Checks PyPI for newer versions and notifies users.
+Caches the check result to avoid excessive API calls.
 """
 
 import os

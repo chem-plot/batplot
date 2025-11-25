@@ -29,12 +29,8 @@ from .readers import (
     read_mpt_file,
     read_ec_csv_file,
     read_ec_csv_dqdv_file,
-    read_mpt_dqdv_file,
     read_csv_time_voltage,
     read_mpt_time_voltage,
-    read_cs_b_csv_file,
-    is_cs_b_format,
-    _load_csv_header_and_rows,
 )
 from .cif import (
     simulate_cif_pattern_Q,
@@ -202,122 +198,53 @@ def _maybe_expand_allfiles_argument(args, ec_mode_active: bool = False) -> None:
 
 
 def batplot_main() -> int:
-    """
-    Main entry point for batplot CLI.
+    """Main entry point for batplot CLI.
     
-    This is the central routing function that:
-    1. Parses command-line arguments
-    2. Determines which mode to use (XY, EC, Operando, Batch, etc.)
-    3. Routes to the appropriate handler function
-    4. Handles errors and returns exit codes
-    
-    HOW ROUTING WORKS:
-    -----------------
-    batplot supports multiple modes, determined by command-line flags:
-    
-    XY MODE (default):
-        batplot file1.xy file2.xy          → Normal XY plotting
-        batplot allfiles                    → Plot all files together
-        batplot --all                       → Batch mode (separate files)
-    
-    EC MODES (electrochemistry):
-        batplot --gc file.mpt --mass 7.0    → Galvanostatic cycling
-        batplot --cv file.mpt               → Cyclic voltammetry
-        batplot --dqdv file.csv             → Differential capacity
-        batplot --cpc file.csv              → Capacity per cycle
-    
-    OPERANDO MODE:
-        batplot --operando folder/          → Contour plot from folder
-    
-    BATCH MODES:
-        batplot --all                       → Batch XY mode
-        batplot --gc --all --mass 7.0       → Batch EC mode
-    
-    CONVERSION:
-        batplot --convert file.xy --wl 1.54 → Convert 2θ to Q
-    
-    The function checks flags in priority order and routes accordingly.
+    Parses arguments and executes the appropriate plotting mode.
+    This function contains all the side-effect code that was previously at module level.
     
     Returns:
-        Exit code: 0 for success, non-zero for error
-        (Follows Unix convention: 0 = success, non-zero = error)
+        Exit code (0 for success, non-zero for error)
     """
-    # ====================================================================
-    # STEP 1: PARSE COMMAND-LINE ARGUMENTS
-    # ====================================================================
-    # Parse all command-line arguments into a namespace object.
-    # This includes files, flags (--gc, --cv, etc.), and options (--mass, --wl, etc.)
-    # ====================================================================
+    # Parse CLI arguments
     args = _bp_parse_args()
 
-    # ====================================================================
-    # STEP 2: VALIDATE INPUT
-    # ====================================================================
-    # Check if user provided any input (files or special flags).
-    # If nothing provided, show help message and exit gracefully.
-    # ====================================================================
-    
-    # Check for special flags that don't require file arguments
-    # These modes can work without explicit file arguments (e.g., --all scans directory)
+    # Check if no input provided (no files and no special flags)
     has_special_flag = any([
-        getattr(args, 'gc', False),      # Galvanostatic cycling mode
-        getattr(args, 'cv', False),      # Cyclic voltammetry mode
-        getattr(args, 'dqdv', False),    # Differential capacity mode
-        getattr(args, 'cpc', False),     # Capacity per cycle mode
-        getattr(args, 'operando', False), # Operando contour mode
-        getattr(args, 'all', None) is not None,  # Batch mode flag
-        getattr(args, 'convert', None) is not None,  # Conversion mode
+        getattr(args, 'gc', False),
+        getattr(args, 'cv', False),
+        getattr(args, 'dqdv', False),
+        getattr(args, 'cpc', False),
+        getattr(args, 'operando', False),
+        getattr(args, 'all', None) is not None,
+        getattr(args, 'convert', None) is not None,
     ])
     
-    # If no files AND no special flags, nothing to do
     if not args.files and not has_special_flag:
         print("No input provided, nothing to do.")
         print("Use 'batplot -h' to see help.")
-        return 0  # Exit successfully (not an error, just nothing to do)
+        return 0
 
-    # ====================================================================
-    # STEP 3: ROUTE TO APPROPRIATE MODE HANDLER
-    # ====================================================================
-    # Check flags in priority order and route to corresponding handler.
-    # Priority matters: some modes are checked before others.
-    # ====================================================================
-    
-    # ====================================================================
-    # EC BATCH MODE (HIGHEST PRIORITY)
-    # ====================================================================
-    # If any EC mode is active AND user specified batch processing,
-    # route to EC batch handler (processes all EC files in directory).
-    #
-    # EC batch mode examples:
-    #   batplot --gc --all --mass 7.0        → Process all .mpt/.csv files
-    #   batplot --cv --all                   → Process all .mpt/.txt files
-    #   batplot --gc all --mass 7.0          → Same as above (alternative syntax)
-    #   batplot --gc /path/to/folder --mass 7 → Process specific directory
-    # ====================================================================
-    
-    # Check if any EC mode is active
+    # --- EC Batch Mode: process all EC files in a directory ---
+    # Check if any EC mode is active and user specified 'all' or a directory
     ec_mode_active = any([
-        getattr(args, 'gc', False),      # Galvanostatic cycling
-        getattr(args, 'cv', False),      # Cyclic voltammetry
-        getattr(args, 'dqdv', False),     # Differential capacity
-        getattr(args, 'cpc', False)       # Capacity per cycle
+        getattr(args, 'gc', False),
+        getattr(args, 'cv', False),
+        getattr(args, 'dqdv', False),
+        getattr(args, 'cpc', False)
     ])
     
-    # Check for --all flag (explicit batch mode)
+    # Check for --all flag (with or without style file)
     if ec_mode_active and getattr(args, 'all', None) is not None:
-        # Process all EC files in current directory
         batch_process_ec(os.getcwd(), args)
-        exit()  # Exit after batch processing (don't continue to other modes)
+        exit()
     
-    # Check for 'all' as file argument or directory path
     if ec_mode_active and len(args.files) == 1:
         sole = args.files[0]
         if sole.lower() == 'all':
-            # User typed 'all' as file argument (alternative syntax)
             batch_process_ec(os.getcwd(), args)
             exit()
         elif os.path.isdir(sole):
-            # User provided directory path
             batch_process_ec(os.path.abspath(sole), args)
             exit()
 
@@ -434,13 +361,8 @@ def batplot_main() -> int:
                         ln, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                       linewidth=2.0, label=str(cyc), alpha=0.8)
                         cycle_lines[cyc] = ln
-                # Swap axis labels if --ro flag is set
-                if getattr(args, 'ro', False):
-                    ax.set_xlabel('Current (mA)', labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
-                else:
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
-                    ax.set_ylabel('Current (mA)', labelpad=8.0)
+                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel('Current (mA)', labelpad=8.0)
                 legend = ax.legend(title='Cycle')
                 if legend is not None:
                     try:
@@ -679,18 +601,8 @@ def batplot_main() -> int:
                     x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
                     cap_x = specific_capacity
                 elif ec_file.lower().endswith('.csv'):
-                    # Check if this is CS-B format
-                    try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader
-                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
-                        else:
-                            # Use standard CSV reader
-                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                    except Exception:
-                        # Fallback to standard reader
-                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                    # For supported CSV export, use specific capacity directly when available (no mass required)
+                    cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
                     x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
                 else:
                     print(f"GC mode: file must be .mpt or .csv: {ec_file}")
@@ -795,14 +707,8 @@ def batplot_main() -> int:
                         if idx.size >= 2:
                             x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
                             # Label only once per cycle for legend: Cycle N
-                            # Swap x and y if --ro flag is set
-                            if getattr(args, 'ro', False):
-                                ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                                linewidth=2.0, label=str(cyc), alpha=0.8)
-                            else:
-
-                                ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                                linewidth=2.0, label=str(cyc), alpha=0.8)
+                            ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                                            linewidth=2.0, label=str(cyc), alpha=0.8)
                         else:
                             ln_c = None
                         # Discharge
@@ -812,13 +718,7 @@ def batplot_main() -> int:
                             xd_b, yd_b = _broken_arrays_from_indices(idxd, cap_x, voltage)
                             # Use no legend entry for the second line of the same cycle
                             lbl = '_nolegend_' if ln_c is not None else str(cyc)
-                            # Swap x and y if --ro flag is set
-                            if getattr(args, 'ro', False):
-                                ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                                linewidth=2.0, label=lbl, alpha=0.8)
-                            else:
-
-                                ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                            ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                             linewidth=2.0, label=lbl, alpha=0.8)
                         else:
                             ln_d = None
@@ -835,13 +735,7 @@ def batplot_main() -> int:
                             a, b = ch_blocks[i]
                             idx = np.arange(a, b + 1)
                             x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
-                            # Swap x and y if --ro flag is set
-                            if getattr(args, 'ro', False):
-                                ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                                linewidth=2.0, label=str(cyc), alpha=0.8)
-                            else:
-
-                                ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                            ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                             linewidth=2.0, label=str(cyc), alpha=0.8)
                         ln_d = None
                         if i < len(dch_blocks):
@@ -849,23 +743,12 @@ def batplot_main() -> int:
                             idx = np.arange(a, b + 1)
                             xd_b, yd_b = _broken_arrays_from_indices(idx, cap_x, voltage)
                             lbl = '_nolegend_' if ln_c is not None else str(cyc)
-                            # Swap x and y if --ro flag is set
-                            if getattr(args, 'ro', False):
-                                ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                                linewidth=2.0, label=lbl, alpha=0.8)
-                            else:
-
-                                ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                            ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                             linewidth=2.0, label=lbl, alpha=0.8)
                         cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
                 # Labels with consistent labelpad
-                # Swap axis labels if --ro flag is set
-                if getattr(args, 'ro', False):
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
-                    ax.set_ylabel(x_label_gc, labelpad=8.0)
-                else:
-                    ax.set_xlabel(x_label_gc, labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                ax.set_xlabel(x_label_gc, labelpad=8.0)
+                ax.set_ylabel('Voltage (V)', labelpad=8.0)
                 legend = ax.legend(title='Cycle')
                 if legend is not None:
                     try:
@@ -1009,42 +892,16 @@ def batplot_main() -> int:
         import os as _os
         import numpy as _np
 
-        # Separate style files from data files
-        data_files = []
-        style_file_path = None
-        for f in args.files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in ('.bps', '.bpsg', '.bpcfg'):
-                if style_file_path is None:
-                    style_file_path = f
-                else:
-                    print(f"Warning: Multiple style files provided, using first: {style_file_path}")
-            else:
-                data_files.append(f)
-        
-        if len(data_files) < 1:
+        if len(args.files) < 1:
             print("CPC mode: provide at least one file (.csv, .xlsx, or .mpt).")
             exit(1)
-        
-        # Load style file if provided
-        style_cfg = None
-        if style_file_path:
-            if not os.path.isfile(style_file_path):
-                print(f"Warning: Style file not found: {style_file_path}")
-            else:
-                try:
-                    with open(style_file_path, 'r', encoding='utf-8') as f:
-                        style_cfg = json.load(f)
-                    print(f"Using style file: {os.path.basename(style_file_path)}")
-                except Exception as e:
-                    print(f"Warning: Could not load style file {style_file_path}: {e}")
         
         # Process multiple files
         file_data = []  # List of dicts with file info and data
         # Use perceptually-uniform palettes for capacity (viridis) and efficiency (plasma)
         import matplotlib.cm as cm
         import matplotlib.colors as mcolors
-        n_files = len(data_files)
+        n_files = len(args.files)
         
         capacity_cmap = cm.get_cmap('viridis')
         efficiency_cmap = cm.get_cmap('plasma')
@@ -1057,7 +914,7 @@ def batplot_main() -> int:
         capacity_colors = [mcolors.rgb2hex(capacity_cmap(pos)[:3]) for pos in cap_positions]
         efficiency_colors = [mcolors.rgb2hex(efficiency_cmap(pos)[:3]) for pos in eff_positions]
         
-        for file_idx, ec_file in enumerate(data_files):
+        for file_idx, ec_file in enumerate(args.files):
             if not _os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
@@ -1067,64 +924,30 @@ def batplot_main() -> int:
             
             try:
                 if ext in ['.csv', '.xlsx', '.xls']:
-                    # Check if this is CS-B format
-                    try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader for CPC
-                            cyc_nums, cap_charge, cap_discharge, eff = read_cs_b_csv_file(ec_file, mode='cpc')
-                        else:
-                            # Use standard CSV reader
-                            cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                            cyc = _np.array(cycles, dtype=int)
-                            unique_cycles = _np.unique(cyc)
-                            unique_cycles = unique_cycles[_np.isfinite(unique_cycles)]
-                            unique_cycles = [int(x) for x in unique_cycles]
-                            if not unique_cycles:
-                                unique_cycles = [1]
-                            cyc_nums = []
-                            cap_charge = []
-                            cap_discharge = []
-                            eff = []
-                            for c in sorted(unique_cycles):
-                                m_c = (cyc == c)
-                                qchg = _np.nanmax(cap_x[m_c & chg_mask]) if _np.any(m_c & chg_mask) else _np.nan
-                                qdch = _np.nanmax(cap_x[m_c & dchg_mask]) if _np.any(m_c & dchg_mask) else _np.nan
-                                eta = (qdch / qchg * 100.0) if (_np.isfinite(qchg) and qchg > 0 and _np.isfinite(qdch)) else _np.nan
-                                cyc_nums.append(c)
-                                cap_charge.append(qchg)
-                                cap_discharge.append(qdch)
-                                eff.append(eta)
-                            cyc_nums = _np.array(cyc_nums, dtype=float)
-                            cap_charge = _np.array(cap_charge, dtype=float)
-                            cap_discharge = _np.array(cap_discharge, dtype=float)
-                            eff = _np.array(eff, dtype=float)
-                    except Exception as e:
-                        # Fallback to standard reader
-                        cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                        cyc = _np.array(cycles, dtype=int)
-                        unique_cycles = _np.unique(cyc)
-                        unique_cycles = unique_cycles[_np.isfinite(unique_cycles)]
-                        unique_cycles = [int(x) for x in unique_cycles]
-                        if not unique_cycles:
-                            unique_cycles = [1]
-                        cyc_nums = []
-                        cap_charge = []
-                        cap_discharge = []
-                        eff = []
-                        for c in sorted(unique_cycles):
-                            m_c = (cyc == c)
-                            qchg = _np.nanmax(cap_x[m_c & chg_mask]) if _np.any(m_c & chg_mask) else _np.nan
-                            qdch = _np.nanmax(cap_x[m_c & dchg_mask]) if _np.any(m_c & dchg_mask) else _np.nan
-                            eta = (qdch / qchg * 100.0) if (_np.isfinite(qchg) and qchg > 0 and _np.isfinite(qdch)) else _np.nan
-                            cyc_nums.append(c)
-                            cap_charge.append(qchg)
-                            cap_discharge.append(qdch)
-                            eff.append(eta)
-                        cyc_nums = _np.array(cyc_nums, dtype=float)
-                        cap_charge = _np.array(cap_charge, dtype=float)
-                        cap_discharge = _np.array(cap_discharge, dtype=float)
-                        eff = _np.array(eff, dtype=float)
+                    cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                    cyc = _np.array(cycles, dtype=int)
+                    unique_cycles = _np.unique(cyc)
+                    unique_cycles = unique_cycles[_np.isfinite(unique_cycles)]
+                    unique_cycles = [int(x) for x in unique_cycles]
+                    if not unique_cycles:
+                        unique_cycles = [1]
+                    cyc_nums = []
+                    cap_charge = []
+                    cap_discharge = []
+                    eff = []
+                    for c in sorted(unique_cycles):
+                        m_c = (cyc == c)
+                        qchg = _np.nanmax(cap_x[m_c & chg_mask]) if _np.any(m_c & chg_mask) else _np.nan
+                        qdch = _np.nanmax(cap_x[m_c & dchg_mask]) if _np.any(m_c & dchg_mask) else _np.nan
+                        eta = (qdch / qchg * 100.0) if (_np.isfinite(qchg) and qchg > 0 and _np.isfinite(qdch)) else _np.nan
+                        cyc_nums.append(c)
+                        cap_charge.append(qchg)
+                        cap_discharge.append(qdch)
+                        eff.append(eta)
+                    cyc_nums = _np.array(cyc_nums, dtype=float)
+                    cap_charge = _np.array(cap_charge, dtype=float)
+                    cap_discharge = _np.array(cap_discharge, dtype=float)
+                    eff = _np.array(eff, dtype=float)
                 elif ext == '.mpt':
                     mass_mg = getattr(args, 'mass', None)
                     if mass_mg is None:
@@ -1358,33 +1181,13 @@ def batplot_main() -> int:
             if not _os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
-            if not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
-                print(f"dQ/dV mode: file must be a supported cycler .csv or .mpt export: {ec_file}")
+            if not ec_file.lower().endswith('.csv'):
+                print(f"dQ/dV mode: file must be a supported cycler .csv export: {ec_file}")
                 continue
             
             try:
                 # Load voltage, dQ/dV, cycles, and charge/discharge masks
-                if ec_file.lower().endswith('.mpt'):
-                    # .mpt files require mass for dQ/dV calculation
-                    mass_mg = getattr(args, 'mass', None)
-                    if mass_mg is None or mass_mg <= 0:
-                        print(f"dQ/dV mode (.mpt): --mass parameter is required (active material mass in milligrams).")
-                        print(f"Example: batplot {ec_file} --dqdv --mass 7.0")
-                        continue
-                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=mass_mg, prefer_specific=True)
-                else:
-                    # Check if this is CS-B format
-                    try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
-                        else:
-                            # Use standard CSV reader
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
-                    except Exception:
-                        # Fallback to standard reader
-                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
 
                 # Create the plot
                 fig, ax = _plt.subplots(figsize=(10, 6))
@@ -1443,19 +1246,11 @@ def batplot_main() -> int:
                             cycle_id += 1
                             current = cycle_lines.setdefault(cycle_id, {"charge": None, "discharge": None})
                         else:
-                            # Swap x and y if --ro flag is set when appending segment
-                            if getattr(args, 'ro', False):
-                                _append_segment(current[role], y_seg, x_seg)
-                            else:
-                                _append_segment(current[role], x_seg, y_seg)
+                            _append_segment(current[role], x_seg, y_seg)
                             continue
 
                     label = str(cycle_id) if first_segment else '_nolegend_'
-                    # Swap x and y if --ro flag is set
-                    if getattr(args, 'ro', False):
-                        ln, = ax.plot(y_seg, x_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
-                    else:
-                        ln, = ax.plot(x_seg, y_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                    ln, = ax.plot(x_seg, y_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
                     current[role] = ln
 
                     if current['charge'] is not None and current['discharge'] is not None:
@@ -1465,13 +1260,7 @@ def batplot_main() -> int:
                     cycle_lines.pop(cycle_id, None)
 
                 # Labels with consistent labelpad (same as GC/CPC)
-                # Swap axis labels if --ro flag is set
-                if getattr(args, 'ro', False):
-                    ax.set_xlabel(y_label, labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
-                else:
-
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_xlabel('Voltage (V)', labelpad=8.0)
                 ax.set_ylabel(y_label, labelpad=8.0)
                 legend = ax.legend(title='Cycle')
                 if legend is not None:
@@ -2099,7 +1888,6 @@ def batplot_main() -> int:
                 if bottom_title_on:
                     ax.set_xlabel(stored_xlabel)
                 else:
-
                     ax.set_xlabel('')  # Hidden by user via s5
                     # Store the hidden label for later restoration
                     if stored_xlabel:
@@ -2110,7 +1898,6 @@ def batplot_main() -> int:
                 if left_title_on:
                     ax.set_ylabel(stored_ylabel)
                 else:
-
                     ax.set_ylabel('')  # Hidden by user via a5
                     # Store the hidden label for later restoration
                     if stored_ylabel:
@@ -2531,9 +2318,6 @@ def batplot_main() -> int:
     use_rft = axis_mode == "rft"    # NEW
     use_time = axis_mode == "time"  # NEW: electrochemistry time mode
 
-    # Initialize wavelength_file from args.wl (may be overridden per-file later)
-    wavelength_file = getattr(args, 'wl', None)
-
     # Validate: if using 2theta mode with CIF files, wavelength is required
     if use_2th and any_cif and not wavelength_file:
         raise ValueError(
@@ -2900,14 +2684,7 @@ def batplot_main() -> int:
             offset += increment
 
         # ---- Plot curve ----
-        # Swap x and y if --ro flag is set
-        if getattr(args, 'ro', False):
-            ax.plot(y_plot_offset, x_plot, "-", lw=1, alpha=0.8)
-            y_data_list.append(x_plot.copy())
-            x_data_list.append(y_plot_offset)
-        else:
-
-            ax.plot(x_plot, y_plot_offset, "-", lw=1, alpha=0.8)
+        ax.plot(x_plot, y_plot_offset, "-", lw=1, alpha=0.8)
         y_data_list.append(y_plot_offset.copy())
         x_data_list.append(x_plot)
         labels_list.append(label)
@@ -3328,14 +3105,8 @@ def batplot_main() -> int:
         else:
             y_label = "Intensity"
     
-    # Swap axis labels if --ro flag is set
-    if getattr(args, 'ro', False):
-        ax.set_xlabel(y_label, fontsize=16)
-        ax.set_ylabel(x_label, fontsize=16)
-    else:
-
-        ax.set_xlabel(x_label, fontsize=16)
-        ax.set_ylabel(y_label, fontsize=16)
+    ax.set_xlabel(x_label, fontsize=16)
+    ax.set_ylabel(y_label, fontsize=16)
 
     # Store originals for axis-title toggle restoration (t menu bn/ln)
     try:

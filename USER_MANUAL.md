@@ -1,5 +1,5 @@
 # batplot User Manual
-**v1.3.0, 2025-10-21**
+**v1.7.5, 2025-11-21**
 
 Batplot is a lightweight CLI tool for plotting XRD, PDF, XAS, electrochemistry, and operando data, featuring interactive and batch modes.
 The electrochemistry and operando plotting functions are inspired by the script written by Amalie, Erlend and Casper.
@@ -109,7 +109,67 @@ batplot --all --xaxis 2theta --xrange 10 80
 
 batplot --all --wl 1.5406
 # Batch mode: convert 2theta to Q with wavelength 1.5406 Å
+
+batplot --all style.bps
+# Batch mode: apply style.bps to all XY files
+# Applies: fonts, colors, line widths, tick parameters, spine properties
+
+batplot --all ./Style/style.bps
+# Batch mode: apply style from relative path (e.g., ./Style/style.bps)
+# Supports absolute paths, relative paths, and paths with/without extensions
+
+batplot --all config.bpsg
+# Batch mode: apply style+geometry to all XY files
+# Applies: all style elements PLUS axis labels and limits
+
+batplot --all ./Style/config.bpsg
+# Batch mode: apply style+geometry from relative path
+
+batplot file1.xy file2.xye style.bps --out output.svg
+# Normal mode: apply style to multiple files and export as figure
+# Style file can be included in the file list along with data files
+
+batplot file1.xy file2.xye ./Style/style.bps --out output.svg
+# Normal mode: apply style from relative path to multiple files
 ```
+
+### Wavelength Specification
+
+Batplot supports flexible wavelength specification for XRD data conversion and CIF tick calculation. You can specify wavelengths globally using `--wl` or per-file using colon syntax.
+
+**Per-file wavelength syntax:**
+
+1. **Single wavelength**: `file:wl`
+   - For data files: converts 2theta to Q using the specified wavelength
+   - For CIF files: calculates 2theta tick positions using the specified wavelength (requires `--xaxis 2theta`)
+
+2. **Dual wavelength**: `file:wl1:wl2`
+   - Converts data from 2theta using first wavelength (wl1) to Q, then back to 2theta using second wavelength (wl2)
+   - Useful for comparing data collected at different wavelengths
+   - Crosshair will display both original 2theta (λ₁) and current 2theta (λ₂)
+
+**Examples:**
+
+```bash
+# Single wavelength for Q conversion
+batplot data.xye:1.5406 --xaxis Q
+# Converts 2theta data to Q using Cu Kα wavelength
+
+# CIF file with wavelength for 2theta tick calculation
+batplot data.xye pattern.cif:0.25448 --xaxis 2theta --interactive
+# CIF ticks are calculated in 2theta range using synchrotron wavelength 0.25448 Å
+
+# Dual wavelength conversion
+batplot data.xye:0.25:1.54 --xaxis 2theta --interactive
+# Converts: 2theta (λ=0.25) → Q → 2theta (λ=1.54)
+# Crosshair shows both original and converted 2theta values
+
+# Multiple files with different wavelengths
+batplot file1.xye:1.5406 file2.xye:0.7093 pattern.cif:1.5406 --xaxis 2theta
+# Each file uses its own wavelength; CIF ticks use 1.5406 Å
+```
+
+**Note:** When using dual wavelength conversion, the crosshair (press `n` in interactive mode) will automatically display both the original 2theta (calculated from λ₁) and the current 2theta (displayed axis, calculated from λ₂), along with Q and d-spacing values.
 
 ### EXAFS k-Weighting
 
@@ -292,15 +352,59 @@ batplot --all mystyle.bps --gc --mass 7.0
 # Apply style.bps formatting to all GC files in current directory
 # Applies: fonts, colors, line widths, tick parameters, spine properties
 
+batplot --all ./Style/mystyle.bps --gc --mass 7.0
+# Apply style from relative path (e.g., ./Style/mystyle.bps)
+# Supports absolute paths, relative paths, and paths with/without extensions
+
 batplot --all config.bpsg --cv
 # Apply style+geometry to all CV files
 # Applies: all style elements PLUS axis labels and limits
 
+batplot --all ./Style/config.bpsg --cv
+# Apply style+geometry from relative path
+
 batplot --all style.bps --dqdv
 # Apply style to all dQdV files
 
+batplot --all ./Style/style.bps --dqdv
+# Apply style from relative path
+
 batplot --all geom.bpsg --cpc --mass 5.4
 # Apply style+geometry to all CPC files
+
+batplot --all ./Style/geom.bpsg --cpc --mass 5.4
+# Apply style+geometry from relative path
+```
+
+### Normal Mode with Style Files
+
+Apply style files to multiple EC files and export each as a separate figure:
+
+```bash
+batplot file1.csv file2.mpt style.bps --gc --mass 7.0
+# Apply style to multiple GC files, each exported to Figures/ directory
+
+batplot file1.csv file2.mpt ./Style/style.bps --gc --mass 7.0
+# Apply style from relative path to multiple GC files
+# Style file can be included in the file list along with data files
+
+batplot file1.mpt file2.txt style.bpsg --cv
+# Apply style+geometry to multiple CV files
+
+batplot file1.mpt file2.txt ./Style/style.bpsg --cv
+# Apply style+geometry from relative path to multiple CV files
+
+batplot file1.csv file2.csv style.bps --dqdv
+# Apply style to multiple dQdV files
+
+batplot file1.csv file2.csv ./Style/style.bps --dqdv
+# Apply style from relative path to multiple dQdV files
+
+batplot file1.csv file2.mpt style.bpsg --cpc --mass 6.0
+# Apply style+geometry to multiple CPC files
+
+batplot file1.csv file2.mpt ./Style/style.bpsg --cpc --mass 6.0
+# Apply style+geometry from relative path to multiple CPC files
 ```
 
 **Workflow: Create Once, Apply to All**

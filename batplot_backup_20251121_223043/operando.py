@@ -1,50 +1,17 @@
 """Operando (time/sequence) contour plotting utilities.
 
-This module provides functions to create operando contour plots from a folder
-of diffraction data files. Operando plots show how diffraction patterns change
-over time (or scan number) as a 2D intensity map.
+This module provides a single helper `plot_operando_folder` that scans a folder
+for diffraction data files (.xy, .xye, .qye, .dat) and renders them as
+an intensity contour (imshow / pcolormesh) stack vs scan index.
 
-WHAT IS AN OPERANDO PLOT?
-------------------------
-An operando plot is a 2D visualization where:
-- X-axis: Diffraction angle (2θ) or momentum transfer (Q)
-- Y-axis: Time/scan number (which file/measurement in sequence)
-- Color/Z-axis: Intensity (how bright the diffraction signal is)
+Rules:
+- X axis: 2θ by default; if --xaxis Q provided, or files are .qye, or a global
+  wavelength is specified and conversion is desired, Q will be used.
+- No automatic normalization is applied; Z-scale (colorbar) is auto-adjusted
+  to span from min to max intensity across all data.
+- Sort files alphabetically for deterministic order.
 
-Think of it like a "heat map" where:
-- Each row is one diffraction pattern (one file)
-- Each column is one angle/Q value
-- Color intensity shows how strong the diffraction signal is
-
-Example use cases:
-- Watching a material transform during heating (phase transitions)
-- Monitoring battery electrode changes during cycling
-- Tracking crystal growth over time
-- Observing chemical reactions in real-time
-
-HOW IT WORKS:
-------------
-1. Scan folder for diffraction data files (.xy, .xye, .qye, .dat)
-2. Load each file as one "scan" (one row in the contour)
-3. Create a common X-axis grid (interpolate all scans to same grid)
-4. Stack all scans vertically to form a 2D array
-5. Display as intensity contour (color map)
-6. Optionally add electrochemistry data as side panel (if .mpt file present)
-
-AXIS MODE DETECTION:
--------------------
-The X-axis type is determined automatically:
-- If --xaxis Q specified → Use Q-space
-- If files are .qye → Use Q-space (already in Q)
-- If --wl specified → Convert 2θ to Q using wavelength
-- Otherwise → Use 2θ (degrees)
-
-NO NORMALIZATION:
----------------
-Unlike some other modes, operando plots don't normalize intensity.
-The color scale spans from minimum to maximum intensity across ALL scans.
-This preserves the absolute intensity information, which is important for
-comparing different time points.
+Returned figure/axes so caller can further tweak or save.
 """
 from __future__ import annotations
 
@@ -148,62 +115,15 @@ def _maybe_convert_to_Q(x, wl):
     return 4.0 * np.pi * np.sin(theta) / wl
 
 def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
-    """
-    Plot operando contour from a folder of diffraction files.
-    
-    HOW IT WORKS:
-    ------------
-    This function creates a 2D intensity contour plot from a sequence of
-    diffraction patterns. The workflow:
-    
-    1. **Scan folder**: Find all diffraction data files (.xy, .xye, .qye, .dat)
-    2. **Load data**: Read each file as one "scan" (one time point)
-    3. **Determine axis mode**: Detect if data is in 2θ or Q space
-    4. **Convert if needed**: Convert 2θ to Q if wavelength provided
-    5. **Create common grid**: Interpolate all scans to same X-axis grid
-    6. **Stack scans**: Build 2D array (n_scans × n_x_points)
-    7. **Create contour**: Display as intensity map using imshow/pcolormesh
-    8. **Add colorbar**: Show intensity scale
-    9. **Optional EC panel**: If .mpt file found, add electrochemistry side panel
-    
-    DATA INTERPOLATION:
-    ------------------
-    Different scans might have different X-axis points (different angle ranges
-    or resolutions). We create a common grid by:
-    - Finding global min/max X values across all scans
-    - Creating evenly spaced grid points
-    - Interpolating each scan to this common grid
-    
-    This ensures all scans align perfectly for the contour plot.
-    
-    ELECTROCHEMISTRY INTEGRATION:
-    ----------------------------
-    If a .mpt file is found in the folder, an electrochemistry plot is added
-    as a side panel. This shows voltage/capacity vs time alongside the
-    diffraction contour, allowing correlation between structural changes
-    (diffraction) and electrochemical behavior (voltage).
+    """Plot operando contour from a folder of diffraction files.
     
     Args:
         folder: Path to directory containing diffraction data files
-        args: Argument namespace with attributes:
-            - xaxis: X-axis type ('Q', '2theta', 'r', etc.)
-            - wl: Wavelength for 2θ→Q conversion (if needed)
-            - raw: Whether to use raw intensity (no processing)
-            - interactive: Whether to launch interactive menu
-            - savefig/out: Optional output filename
+        args: Argument namespace with attributes: xaxis, wl, raw, interactive, savefig, out
         
     Returns:
-        Tuple of (figure, axes, metadata_dict) where:
-        - figure: Matplotlib figure object
-        - axes: Main axes object (contour plot)
-        - metadata_dict: Dictionary containing:
-            - 'files': List of file paths used
-            - 'axis_mode': Detected axis mode ('Q', '2theta', etc.)
-            - 'x_grid': Common X-axis grid (1D array)
-            - 'imshow': Image object (for colormap changes)
-            - 'colorbar': Colorbar object (for intensity scale)
-            - 'has_ec': Whether EC panel was added
-            - 'ec_ax': EC axes object (if has_ec is True)
+        Tuple of (figure, axes, metadata_dict)
+        metadata_dict contains: files, axis_mode, x_grid, imshow, colorbar, has_ec, ec_ax
     """
     p = Path(folder)
     if not p.is_dir():
@@ -254,59 +174,19 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     if not x_arrays:
         raise RuntimeError("No curves loaded after filtering/conversion.")
 
-    # ====================================================================
-    # CREATE COMMON X-AXIS GRID AND INTERPOLATE ALL SCANS
-    # ====================================================================
-    # Different scans might have:
-    # - Different angle ranges (some from 10-80°, others from 20-70°)
-    # - Different resolutions (some with 1000 points, others with 500)
-    # - Slightly different X values (measurement variations)
-    #
-    # To create a contour plot, all scans must have the SAME X-axis grid.
-    # We solve this by:
-    # 1. Finding the global min/max X values (covers all scans)
-    # 2. Creating a common evenly-spaced grid
-    # 3. Interpolating each scan to this common grid
-    #
-    # This ensures perfect alignment for the 2D contour visualization.
-    # ====================================================================
-    
-    # STEP 1: Find global X-axis range
-    # Find the minimum and maximum X values across ALL scans
-    # This determines the range of our common grid
-    xmin = min(arr.min() for arr in x_arrays if arr.size)  # Global minimum
-    xmax = max(arr.max() for arr in x_arrays if arr.size)  # Global maximum
-    
-    # STEP 2: Determine grid resolution
-    # Use the maximum number of points from any scan as the grid size
-    # This preserves the highest resolution available
+    # Create common X grid (union, simple linear interpolation) for contour
+    # Determine global min/max and pick reasonable number of points (~max original length)
+    xmin = min(arr.min() for arr in x_arrays if arr.size)
+    xmax = max(arr.max() for arr in x_arrays if arr.size)
     base_len = int(max(arr.size for arr in x_arrays))
-    
-    # STEP 3: Create evenly-spaced common grid
-    # np.linspace creates evenly spaced points from xmin to xmax
-    # Example: xmin=10, xmax=80, base_len=1000 → 1000 evenly spaced points
     grid_x = np.linspace(xmin, xmax, base_len)
-    
-    # STEP 4: Interpolate each scan to common grid
-    # For each scan, interpolate its Y values to the common X grid
     stack = []
     for x, y in zip(x_arrays, y_arrays):
         if x.size < 2:
-            # Can't interpolate with less than 2 points, fill with NaN
             interp = np.full_like(grid_x, np.nan)
         else:
-            # Linear interpolation: find Y value at each grid_x point
-            # np.interp() does linear interpolation:
-            #   - For grid_x[i] between x[j] and x[j+1], interpolate between y[j] and y[j+1]
-            #   - left=np.nan: If grid_x < x.min(), use NaN (outside scan range)
-            #   - right=np.nan: If grid_x > x.max(), use NaN (outside scan range)
             interp = np.interp(grid_x, x, y, left=np.nan, right=np.nan)
         stack.append(interp)
-    
-    # STEP 5: Stack all interpolated scans into 2D array
-    # np.vstack() stacks arrays vertically (one scan per row)
-    # Result shape: (n_scans, n_x_points)
-    # Example: 50 scans × 1000 points = (50, 1000) array
     Z = np.vstack(stack)  # shape (n_scans, n_x)
 
     # Detect an electrochemistry .mpt file in the same folder (if any)

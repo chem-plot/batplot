@@ -1,30 +1,7 @@
 """Session helpers for batplot interactive mode.
 
-This module provides functions to save and load interactive plotting sessions.
-Sessions allow you to save your current plot state (colors, labels, ranges, etc.)
-and restore it later, so you don't have to recreate your styling from scratch.
-
-HOW SESSIONS WORK:
------------------
-A session file (.pkl) contains a complete snapshot of your plot state:
-- Data: Original x/y data, labels, offsets
-- Styling: Colors, line widths, fonts, tick settings
-- Geometry: Axis ranges, figure size, axes position
-- State: Which curves are visible, label positions, etc.
-
-When you save a session:
-1. All plot state is collected into a dictionary
-2. Dictionary is serialized using pickle (Python's object serialization)
-3. Saved to a .pkl file
-
-When you load a session:
-1. .pkl file is read and deserialized
-2. Plot is recreated from saved data
-3. All styling and state is restored exactly as it was
-
-This is different from style files (.bps/.bpsg):
-- Style files: Save only styling (colors, fonts, ticks) - can be applied to different data
-- Session files: Save everything including data - exact recreation of a specific plot
+This module provides functions to persist and restore interactive plotting
+state for both the general XY plots and operando+EC combined plots.
 """
 
 from __future__ import annotations
@@ -163,55 +140,10 @@ def dump_session(
     show_cif_titles: bool | None = None,
     skip_confirm: bool = False,
 ) -> None:
-    """
-    Save current interactive session to a pickle file.
-    
-    HOW SESSION SAVING WORKS:
-    ------------------------
-    This function captures the complete state of your interactive plot and
-    saves it to a .pkl file. When you load this file later, the plot will be
-    recreated exactly as it was, including:
-    
-    - Data: All x/y data arrays, labels, file paths
-    - Styling: Colors, line widths, fonts, tick settings, spine properties
-    - Geometry: Figure size, axes position, axis ranges
-    - State: Which curves are visible, label positions, CIF overlays, etc.
-    
-    SERIALIZATION PROCESS:
-    ---------------------
-    1. Collect all plot state into a dictionary
-    2. Infer axis mode from current labels (Q, 2theta, r, etc.)
-    3. Capture figure/axes geometry (size, position)
-    4. Save spine properties (linewidth, color, visibility)
-    5. Save tick properties (widths, lengths, directions)
-    6. Save axis labels (including duplicate top/right labels)
-    7. Save curve properties (colors, linewidths, visibility)
-    8. Serialize everything using pickle and write to file
-    
-    WHY PICKLE?
-    -----------
-    Pickle is Python's built-in serialization format. It can save complex
-    Python objects (numpy arrays, matplotlib objects, etc.) to disk and
-    restore them exactly. This is perfect for saving complete plot state.
-    
-    Args:
-        filename: Path to .pkl file where session will be saved
-        fig: Matplotlib figure object
-        ax: Matplotlib axes object
-        x_data_list: List of x-data arrays (one per curve)
-        y_data_list: List of y-data arrays (one per curve, with offsets applied)
-        orig_y: List of original y-data arrays (before offsets)
-        offsets_list: List of vertical offsets applied to each curve
-        labels: List of curve labels (file names or custom labels)
-        delta: Spacing between stacked curves (if stack mode)
-        args: Command-line arguments namespace (for axis mode, etc.)
-        tick_state: Dictionary of tick visibility states (top, bottom, left, right)
-        cif_tick_series: Optional CIF overlay data (for diffraction patterns)
-        cif_hkl_map: Optional CIF hkl indices mapping
-        cif_hkl_label_map: Optional CIF hkl label mapping
-        show_cif_hkl: Whether to show CIF hkl labels
-        show_cif_titles: Whether to show CIF titles
-        skip_confirm: If True, skip overwrite confirmation dialog
+    """Serialize the current interactive session to a pickle file.
+
+    Parameters mirror the state captured in the original inline helper.
+    skip_confirm: If True, skip overwrite confirmation (already confirmed by caller).
     """
 
     # Infer axis mode string
@@ -1335,21 +1267,8 @@ def dump_ec_session(
                     except Exception:
                         x = np.array([]); y = np.array([])
                     try:
-                        # Convert color to hex for consistency with style export
-                        color_raw = ln.get_color()
-                        try:
-                            from matplotlib.colors import to_hex
-                            color_hex = to_hex(color_raw)
-                        except Exception:
-                            # Fallback: try to convert via rgba
-                            try:
-                                from matplotlib.colors import to_hex, to_rgba
-                                color_hex = to_hex(to_rgba(color_raw))
-                            except Exception:
-                                # Last resort: use as-is if it's already a string
-                                color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
                         st = {
-                            'color': color_hex,
+                            'color': ln.get_color(),
                             'linewidth': float(ln.get_linewidth() or 1.0),
                             'linestyle': ln.get_linestyle() or '-',
                             'alpha': ln.get_alpha(),
@@ -1357,7 +1276,7 @@ def dump_ec_session(
                             'label': ln.get_label() or '',
                         }
                     except Exception:
-                        st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
+                        st = {'color': 'tab:blue', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
                     entry[role] = {'x': x, 'y': y, 'style': st}
             else:
                 # CV mode: parts is a Line2D object directly
@@ -1368,21 +1287,8 @@ def dump_ec_session(
                 except Exception:
                     x = np.array([]); y = np.array([])
                 try:
-                    # Convert color to hex for consistency with style export
-                    color_raw = ln.get_color()
-                    try:
-                        from matplotlib.colors import to_hex
-                        color_hex = to_hex(color_raw)
-                    except Exception:
-                        # Fallback: try to convert via rgba
-                        try:
-                            from matplotlib.colors import to_hex, to_rgba
-                            color_hex = to_hex(to_rgba(color_raw))
-                        except Exception:
-                            # Last resort: use as-is if it's already a string
-                            color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
                     st = {
-                        'color': color_hex,
+                        'color': ln.get_color(),
                         'linewidth': float(ln.get_linewidth() or 1.0),
                         'linestyle': ln.get_linestyle() or '-',
                         'alpha': ln.get_alpha(),
@@ -1390,7 +1296,7 @@ def dump_ec_session(
                         'label': ln.get_label() or '',
                     }
                 except Exception:
-                    st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
+                    st = {'color': 'tab:blue', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
                 # Store under 'line' key to distinguish from GC mode's 'charge'/'discharge' keys
                 entry['line'] = {'x': x, 'y': y, 'style': st}
             lines_state[int(cyc)] = entry

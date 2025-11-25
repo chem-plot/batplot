@@ -1,23 +1,4 @@
-"""UI utilities for batplot: font/tick helpers and resize operations.
-
-This module provides functions for managing fonts, tick labels, and axis labels
-in batplot plots. It handles:
-- Font family and size changes across all text elements
-- Positioning of duplicate axis labels (top x-axis, right y-axis)
-- Font synchronization to ensure consistency
-
-HOW FONT MANAGEMENT WORKS:
---------------------------
-When you change fonts in the interactive menu, we need to update fonts for:
-- Curve labels (text objects identifying each curve)
-- Axis labels (x-axis and y-axis titles)
-- Duplicate axis labels (top x-axis, right y-axis)
-- Tick labels (numbers on axes)
-- All of these must stay synchronized
-
-This module provides functions to apply font changes consistently across
-all these elements.
-"""
+"""UI utilities for batplot: font/tick helpers and resize operations."""
 
 from __future__ import annotations
 
@@ -29,43 +10,6 @@ import matplotlib.transforms as mtransforms
 
 
 def apply_font_changes(ax, fig, label_text_objects: List, normalize_label_text, new_size=None, new_family=None):
-    """
-    Apply font size and/or family changes to all text elements in the plot.
-    
-    HOW IT WORKS:
-    ------------
-    This function updates fonts for all text elements in the plot:
-    1. Curve labels (text objects next to curves)
-    2. Axis labels (x-axis and y-axis titles)
-    3. Duplicate axis labels (top x-axis, right y-axis)
-    4. Tick labels (numbers on axes, including top/right ticks)
-    
-    FONT FAMILY HANDLING:
-    --------------------
-    When changing font family, we:
-    1. Build a fallback chain (primary font + common fallbacks)
-    2. Update matplotlib's rcParams (affects new text)
-    3. Update all existing text objects
-    
-    FONT SIZE HANDLING:
-    -------------------
-    When changing font size, we:
-    1. Update matplotlib's rcParams (affects new text)
-    2. Update all existing text objects directly
-    
-    MATH TEXT FONT SET:
-    ------------------
-    If font family contains "stix", "times", or "roman", we use STIX math font
-    (better for mathematical notation). Otherwise, use DejaVu Sans math font.
-    
-    Args:
-        ax: Matplotlib axes object
-        fig: Matplotlib figure object
-        label_text_objects: List of Text objects for curve labels
-        normalize_label_text: Function to normalize label text (handles LaTeX)
-        new_size: New font size (None = don't change)
-        new_family: New font family name (None = don't change)
-    """
     if new_family:
         fallback_chain = ['DejaVu Sans', 'Arial Unicode MS', 'Liberation Sans']
         existing = plt.rcParams.get('font.sans-serif', [])

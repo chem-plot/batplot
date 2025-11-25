@@ -30,139 +30,58 @@ Special Features:
 
 from __future__ import annotations
 
-import csv
 import numpy as np
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List
 
 
 def _infer_cycles_from_masks(charge_mask: np.ndarray, discharge_mask: np.ndarray, n_points: int) -> np.ndarray:
     """Infer full-cycle numbers by pairing alternating charge/discharge segments.
 
-    HOW IT WORKS:
-    ------------
-    Battery cycling data often comes with charge and discharge segments as separate runs.
-    This function intelligently pairs them into complete cycles:
-    
-    Example data structure:
-        Charge mask:  [T T T F F F T T T F F F]  (True = charging point)
-        Discharge mask: [F F F T T T F F F T T T]  (True = discharging point)
-        Result cycles: [1 1 1 1 1 1 2 2 2 2 2 2]  (Cycle 1 = charge+discharge, Cycle 2 = charge+discharge)
-    
-    Algorithm Steps:
-    1. Find all contiguous charge segments (runs of True in charge_mask)
-    2. Find all contiguous discharge segments (runs of True in discharge_mask)
-    3. Sort all segments by their starting position (chronological order)
-    4. Pair segments sequentially: segment 0+1 = Cycle 1, segment 2+3 = Cycle 2, etc.
-    5. Fill in gaps (rest periods, CV steps) with the cycle number of the previous segment
-    
-    WHY THIS IS NEEDED:
-    ------------------
-    Many battery cyclers export data where each charge and discharge is numbered separately
-    (e.g., "Charge 1", "Discharge 1", "Charge 2", "Discharge 2"). But for plotting, we want
-    "Cycle 1" to mean the first complete charge+discharge pair. This function ensures consistent
-    cycle numbering regardless of how the cycler software numbered the segments.
-
-    Args:
-        charge_mask: Boolean array, True where data point is during charging
-        discharge_mask: Boolean array, True where data point is during discharging
-        n_points: Total number of data points in the dataset
-    
-    Returns:
-        cycles: Integer array of cycle numbers (1-indexed), same length as n_points
-                Example: [1, 1, 1, 1, 2, 2, 2, 2] means first 4 points are Cycle 1, next 4 are Cycle 2
+    Each contiguous charge or discharge block becomes a "run". Runs are ordered by their
+    starting index and paired sequentially so that run 0 and 1 form Cycle 1, run 2 and 3
+    form Cycle 2, etc. If a final run has no pair (e.g., data ends mid-cycle), it is
+    assigned to the previous cycle. Rest/CV intervals inherit the cycle number of the
+    preceding segment so filters cover both halves seamlessly.
     """
 
-    # STEP 1: Find all contiguous segments (runs) of charge and discharge
-    # A segment is a continuous block of True values in the mask
-    # We store each segment as (start_index, end_index, is_charge_flag)
     segments: List[Tuple[int, int, bool]] = []  # (start, end_exclusive, is_charge)
 
     def _append_segments(mask: np.ndarray, is_charge_segment: bool):
-        """
-        Helper function to find all contiguous segments in a boolean mask.
-        
-        HOW IT WORKS:
-        - np.where(mask)[0] gives us all indices where mask is True
-        - We scan through these indices looking for gaps (non-consecutive numbers)
-        - Each continuous block becomes one segment
-        
-        Example:
-            mask = [F, T, T, T, F, F, T, T, F]
-            indices = [1, 2, 3, 6, 7]
-            Segments found: (1, 4) and (6, 8)
-        """
-        # Get all indices where mask is True
         idx = np.where(mask)[0]
         if idx.size == 0:
-            return  # No True values found, nothing to do
-        
-        # Start tracking the first segment
-        start = int(idx[0])  # Beginning of current segment
-        prev = int(idx[0])   # Previous index we saw
-        
-        # Scan through remaining indices looking for gaps
+            return
+        start = int(idx[0])
+        prev = int(idx[0])
         for cur in idx[1:]:
-            # If current index is not consecutive with previous, we found a gap
-            # This means the previous segment ended, and a new one starts here
             if cur != prev + 1:
-                # Save the segment we just finished: from start to prev+1 (exclusive end)
                 segments.append((start, prev + 1, is_charge_segment))
-                # Start tracking a new segment
                 start = int(cur)
             prev = int(cur)
-        
-        # Don't forget the last segment (after the loop ends)
         segments.append((start, prev + 1, is_charge_segment))
 
-    # Find all charge segments (continuous blocks where charge_mask is True)
     _append_segments(charge_mask, True)
-    
-    # Find all discharge segments (continuous blocks where discharge_mask is True)
     _append_segments(discharge_mask, False)
-    
-    # STEP 2: Sort all segments by their starting position
-    # This puts them in chronological order (first segment that appears in data, then second, etc.)
     segments.sort(key=lambda seg: seg[0])
 
-    # STEP 3: Initialize the cycles array (all zeros means "not assigned yet")
     cycles = np.zeros(n_points, dtype=int)
-    
-    # Edge case: if no segments found, assign everything to Cycle 1
     if not segments:
         cycles.fill(1)
         return cycles
 
-    # STEP 4: Assign cycle numbers by pairing segments
-    # Strategy: Every two segments form one complete cycle
-    #   - Segment 0 + Segment 1 = Cycle 1
-    #   - Segment 2 + Segment 3 = Cycle 2
-    #   - etc.
-    current_cycle = 1  # Start counting cycles from 1 (not 0, for user-friendly display)
-    half_index = 0     # Track which half of the cycle we're on (0 = first half, 1 = second half)
-    
+    current_cycle = 1
+    half_index = 0  # 0 = first half, 1 = second half of current cycle
     for start, end, _flag in segments:
-        # Assign all points in this segment to the current cycle number
         cycles[start:end] = current_cycle
-        
-        # Move to next half of cycle
         half_index += 1
-        
-        # If we've completed both halves (charge + discharge), move to next cycle
         if half_index == 2:
             current_cycle += 1
-            half_index = 0  # Reset for next cycle
+            half_index = 0
 
-    # STEP 5: Fill in gaps (points that weren't in charge or discharge masks)
-    # These are typically rest periods, CV steps, or other non-active intervals
-    # We assign them to the same cycle as the previous segment (so they're included in cycle filters)
     last_cycle = 1
     for i in range(n_points):
         if cycles[i] == 0:
-            # This point wasn't assigned (it's a gap/rest period)
-            # Give it the cycle number of the last assigned point
             cycles[i] = last_cycle
         else:
-            # This point was assigned, remember its cycle number for future gaps
             last_cycle = cycles[i]
 
     return cycles
@@ -213,145 +132,6 @@ def read_excel_to_csv_like(fname: str, header_row: int = 2, data_start_row: int 
     
     wb.close()
     return header, rows
-
-
-def _normalize_header_value(cell: Any) -> str:
-    """Normalize header cell text by removing BOMs, tabs, and trimming whitespace."""
-    if cell is None:
-        return ''
-    return str(cell).replace('\ufeff', '').replace('\t', ' ').strip()
-
-
-def _normalize_data_value(cell: Any) -> str:
-    """Normalize data cell text by removing BOMs and trimming whitespace."""
-    if cell is None:
-        return ''
-    return str(cell).replace('\ufeff', '').strip()
-
-
-def _looks_like_neware_multilevel(rows: List[List[str]]) -> bool:
-    """Detect Neware multi-section CSV with cycle/step/record headers."""
-    if len(rows) < 3:
-        return False
-    r1 = rows[0]
-    r2 = rows[1]
-    r3 = rows[2]
-    c1 = _normalize_header_value(r1[0]) if r1 else ''
-    c2_first = _normalize_header_value(r2[0]) if r2 else ''
-    c2_second = _normalize_header_value(r2[1]) if len(r2) > 1 else ''
-    c3_first = _normalize_header_value(r3[0]) if r3 else ''
-    c3_second = _normalize_header_value(r3[1]) if len(r3) > 1 else ''
-    c3_third = _normalize_header_value(r3[2]) if len(r3) > 2 else ''
-    return (
-        c1.lower() == 'cycle id'
-        and c2_first == ''
-        and c2_second.lower() == 'step id'
-        and c3_first == ''
-        and c3_second == ''
-        and c3_third.lower() == 'record id'
-    )
-
-
-def _parse_neware_multilevel_rows(rows: List[List[str]]) -> Optional[Dict[str, Any]]:
-    """Parse multi-level Neware CSV into normalized headers/rows."""
-    record_header: Optional[List[str]] = None
-    record_rows: List[List[str]] = []
-    cycle_header: Optional[List[str]] = None
-    cycle_rows: List[List[str]] = []
-    step_header: Optional[List[str]] = None
-    step_rows: List[List[str]] = []
-
-    current_cycle_id: Optional[str] = None
-    current_step_id: Optional[str] = None
-    current_step_name: Optional[str] = None
-
-    for raw_row in rows:
-        normalized = [_normalize_data_value(cell) for cell in raw_row]
-        if not any(normalized):
-            continue
-
-        first = normalized[0] if len(normalized) > 0 else ''
-        second = normalized[1] if len(normalized) > 1 else ''
-
-        # Header rows
-        if first.lower() == 'cycle id':
-            cycle_header = [_normalize_header_value(cell) for cell in raw_row]
-            continue
-        if first == '' and second.lower() == 'step id':
-            step_header = ['Cycle ID'] + [_normalize_header_value(cell) for cell in raw_row[1:]]
-            continue
-        if first == '' and second == '' and len(normalized) > 2 and normalized[2].lower() == 'record id':
-            record_header = ['Cycle ID', 'Step ID', 'Step Type'] + [
-                _normalize_header_value(cell) for cell in raw_row[2:]
-            ]
-            continue
-
-        # Cycle summary row
-        if first != '':
-            current_cycle_id = first
-            cycle_rows.append(normalized)
-            continue
-
-        # Step summary row (belongs to current cycle)
-        if first == '' and second != '':
-            current_step_id = second
-            current_step_name = normalized[2] if len(normalized) > 2 else ''
-            step_rows.append([current_cycle_id or '', second] + normalized[2:])
-            continue
-
-        # Record row
-        if record_header is None:
-            continue
-        record_payload = normalized[2:]
-        required_len = max(len(record_header) - 3, 0)
-        if len(record_payload) < required_len:
-            record_payload.extend([''] * (required_len - len(record_payload)))
-        elif len(record_payload) > required_len:
-            record_payload = record_payload[:required_len]
-        record_rows.append([
-            current_cycle_id or '',
-            current_step_id or '',
-            current_step_name or '',
-        ] + record_payload)
-
-    if record_header is None or not record_rows:
-        return None
-
-    return {
-        'record_header': record_header,
-        'record_rows': record_rows,
-        'cycle_header': cycle_header,
-        'cycle_rows': cycle_rows,
-        'step_header': step_header,
-        'step_rows': step_rows,
-    }
-
-
-def _load_csv_header_and_rows(fname: str) -> Tuple[List[str], List[List[str]], Optional[Dict[str, Any]]]:
-    """Load CSV file and return header/rows with Neware multi-level fallback."""
-    with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
-        reader = csv.reader(f)
-        all_rows = list(reader)
-
-    if len(all_rows) < 2:
-        raise ValueError(f"CSV '{fname}' is empty or missing header rows")
-
-    if _looks_like_neware_multilevel(all_rows):
-        parsed = _parse_neware_multilevel_rows(all_rows)
-        if parsed is None:
-            raise ValueError("Detected Neware multi-section CSV but failed to parse record rows.")
-        return parsed['record_header'], parsed['record_rows'], parsed
-
-    r1 = all_rows[0]
-    r2 = all_rows[1]
-    if len(r2) > 0 and (_normalize_header_value(r2[0]) == ''):
-        header = [_normalize_header_value(c) for c in r1] + [_normalize_header_value(c) for c in r2[1:]]
-        rows = all_rows[2:]
-    else:
-        header = [_normalize_header_value(c) for c in r1]
-        rows = all_rows[1:]
-
-    return header, rows, None
 
 
 def read_csv_file(fname: str):
@@ -614,116 +394,6 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: float = None):
     
     # Create column index mapping
     col_map = {name: i for i, name in enumerate(column_names)}
-    col_map_lower = {name.lower(): i for name, i in col_map.items()}
-
-    def _find_column_index(candidates):
-        """Return the index of the first matching column"""
-        for cand in candidates:
-            if cand in col_map:
-                return col_map[cand]
-        for cand in candidates:
-            idx = col_map_lower.get(cand.lower())
-            if idx is not None:
-                return idx
-        return None
-
-    def _split_combined_q_arrays():
-        """Build Q charge/discharge arrays from combined columns."""
-        combined_idx = _find_column_index([
-            'Q charge/discharge/mA.h',
-            'Q charge/discharge/mAh',
-            'Capacity/mA.h',
-            'Capacity/mAh',
-        ])
-        half_cycle_idx = _find_column_index(['half cycle', 'Half cycle', 'Half-cycle'])
-
-        if combined_idx is None or half_cycle_idx is None:
-            missing = []
-            if combined_idx is None:
-                missing.append("'Q charge/discharge/mA.h'")
-            if half_cycle_idx is None:
-                missing.append("'half cycle'")
-            missing_str = " and ".join(missing)
-            available = ', '.join(f"'{c}'" for c in column_names)
-            raise ValueError(
-                f"Could not find {missing_str} columns required to parse combined capacity format.\n"
-                f"Available columns: {available}"
-            )
-
-        combined = data[:, combined_idx]
-        half_cycle = data[:, half_cycle_idx]
-        half_cycle_int = half_cycle.astype(int)
-        current_idx = _find_column_index(['<I>/mA', '<I>/A', 'I/mA'])
-        current_data = data[:, current_idx] if current_idx is not None else None
-
-        n = len(combined)
-        q_charge = np.zeros(n, dtype=float)
-        q_discharge = np.zeros(n, dtype=float)
-
-        # Determine charge/discharge roles for each half-cycle block
-        unique_states = list(dict.fromkeys(half_cycle_int.tolist()))
-        if not unique_states:
-            unique_states = [0]
-
-        state_roles = {}
-        if current_data is not None:
-            for state in unique_states:
-                mask = (half_cycle_int == state)
-                if not np.any(mask):
-                    continue
-                mean_current = np.nanmean(current_data[mask])
-                if np.isnan(mean_current):
-                    continue
-                if mean_current > 0:
-                    state_roles[state] = 'charge'
-                elif mean_current < 0:
-                    state_roles[state] = 'discharge'
-
-        # Ensure both roles exist; fall back to alternating assignment if needed
-        if 'charge' not in state_roles.values() or 'discharge' not in state_roles.values():
-            for idx, state in enumerate(unique_states):
-                if state not in state_roles:
-                    state_roles[state] = 'charge' if idx % 2 == 1 else 'discharge'
-        if 'charge' not in state_roles.values():
-            state_roles[unique_states[-1]] = 'charge'
-        if 'discharge' not in state_roles.values():
-            state_roles[unique_states[0]] = 'discharge'
-
-        i = 0
-        segment_counter = 0
-        while i < n:
-            state = half_cycle_int[i]
-            start = i
-            start_val = combined[i]
-            i += 1
-            while i < n and half_cycle_int[i] == state:
-                i += 1
-            segment = np.abs(combined[start:i] - start_val)
-            if segment.size:
-                segment = np.maximum.accumulate(segment)
-            role = state_roles.get(state)
-            if role is None:
-                role = 'charge' if segment_counter % 2 == 1 else 'discharge'
-            if role == 'charge':
-                q_charge[start:i] = segment
-            else:
-                q_discharge[start:i] = segment
-            segment_counter += 1
-
-        return q_charge, q_discharge
-
-    def _get_q_columns_or_fallback():
-        """Return Q charge and Q discharge arrays, building them if necessary."""
-        q_charge_idx = _find_column_index(['Q charge/mA.h', 'Q charge/mAh'])
-        q_discharge_idx = _find_column_index(['Q discharge/mA.h', 'Q discharge/mAh'])
-        q_charge = data[:, q_charge_idx] if q_charge_idx is not None else None
-        q_discharge = data[:, q_discharge_idx] if q_discharge_idx is not None else None
-
-        if q_charge is not None and q_discharge is not None:
-            return q_charge, q_discharge
-
-        # Fall back to combined column format (newer EC-Lab exports)
-        return _split_combined_q_arrays()
     
     if mode == 'gc':
         # Galvanostatic cycling: use BioLogic's Q charge and Q discharge columns
@@ -740,14 +410,28 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: float = None):
         if voltage_col is None:
             voltage_col = col_map.get('Ewe', None)
         
-        q_charge, q_discharge = _get_q_columns_or_fallback()
+        q_charge_col = col_map.get('Q charge/mA.h', None)
+        if q_charge_col is None:
+            q_charge_col = col_map.get('Q charge/mAh', None)
+        
+        q_discharge_col = col_map.get('Q discharge/mA.h', None)
+        if q_discharge_col is None:
+            q_discharge_col = col_map.get('Q discharge/mAh', None)
         
         if voltage_col is None:
             available = ', '.join(f"'{c}'" for c in column_names)
             raise ValueError(f"Could not find 'Ewe/V' or 'Ewe' column for voltage.\nAvailable columns: {available}")
+        if q_charge_col is None:
+            available = ', '.join(f"'{c}'" for c in column_names)
+            raise ValueError(f"Could not find 'Q charge/mA.h' or 'Q charge/mAh' column.\nAvailable columns: {available}")
+        if q_discharge_col is None:
+            available = ', '.join(f"'{c}'" for c in column_names)
+            raise ValueError(f"Could not find 'Q discharge/mA.h' or 'Q discharge/mAh' column.\nAvailable columns: {available}")
 
         voltage = data[:, voltage_col]
-
+        q_charge = data[:, q_charge_col]
+        q_discharge = data[:, q_discharge_col]
+        
         n = len(voltage)
         
         # Determine if experiment starts with charge or discharge
@@ -899,7 +583,24 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: float = None):
         # Skip first line of data
         data = data[1:]
 
-        q_charge, q_discharge = _get_q_columns_or_fallback()
+        # Required columns - try common variations
+        q_charge_col = col_map.get('Q charge/mA.h', None)
+        if q_charge_col is None:
+            q_charge_col = col_map.get('Q charge/mAh', None)
+        
+        q_discharge_col = col_map.get('Q discharge/mA.h', None)
+        if q_discharge_col is None:
+            q_discharge_col = col_map.get('Q discharge/mAh', None)
+        
+        if q_charge_col is None:
+            available = ', '.join(f"'{c}'" for c in column_names)
+            raise ValueError(f"Could not find 'Q charge/mA.h' or 'Q charge/mAh' column.\nAvailable columns: {available}")
+        if q_discharge_col is None:
+            available = ', '.join(f"'{c}'" for c in column_names)
+            raise ValueError(f"Could not find 'Q discharge/mA.h' or 'Q discharge/mAh' column.\nAvailable columns: {available}")
+
+        q_charge = data[:, q_charge_col]
+        q_discharge = data[:, q_discharge_col]
         
         n = len(q_charge)
         
@@ -1218,7 +919,22 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         # Read Excel file
         header, rows = read_excel_to_csv_like(fname)
     else:
-        header, rows, _ = _load_csv_header_and_rows(fname)
+        # Read first two rows to compose header from CSV
+        with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
+            r = csv.reader(f)
+            try:
+                r1 = next(r)
+                r2 = next(r)
+            except StopIteration:
+                raise ValueError(f"CSV '{fname}' is empty or missing header rows")
+            # If second line begins with an empty first cell, treat it as a continuation of header.
+            if len(r2) > 0 and (r2[0] == '' or str(r2[0]).strip() == ''):
+                header = [c.strip() for c in r1] + [c.strip() for c in r2[1:]]
+                rows = list(r)
+            else:
+                # Single-line header: r2 is the first data row; include it back in rows
+                header = [c.strip() for c in r1]
+                rows = [r2] + list(r)
 
     # Build fast name->index map (case-insensitive match on exact header text)
     name_to_idx = {h: i for i, h in enumerate(header)}
@@ -1361,255 +1077,130 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         elif (not use_specific) and cap_abs_idx is not None:
             cap_x[k] = _to_float(row[cap_abs_idx])
 
-    # ====================================================================================
-    # CHARGE/DISCHARGE DETECTION ALGORITHM
-    # ====================================================================================
-    # This section determines which data points are during charging vs discharging.
-    # 
-    # WHY THIS IS NEEDED:
-    # Battery cycler files don't always clearly mark charge/discharge. Different cyclers
-    # use different formats. We need a robust method that works with many file types.
-    #
-    # THREE-TIER PRIORITY SYSTEM (tries most reliable method first):
-    #   1. Step Type column (highest priority) - explicit labels like "CC Chg", "CC DChg"
-    #   2. Split capacity columns (medium priority) - separate charge/discharge capacity columns
-    #   3. Voltage trend analysis (fallback) - infer from whether voltage is increasing/decreasing
-    #
-    # HOW IT WORKS:
-    # We try each method in order. If method 1 works, we use it. If not, try method 2, etc.
-    # This ensures we always get a result, even if the file format is unusual.
-    # ====================================================================================
+    # --- Derive charge/discharge from Step Type column, capacity columns, or voltage trend ---
+    # Priority 1: Use explicit Step Type column (e.g., "CC Chg", "CC DChg", "Charge", "Discharge")
+    is_charge = np.zeros(n, dtype=bool)
+    is_rest_segment = np.zeros(n, dtype=bool)
+    is_rest_segment = np.zeros(n, dtype=bool)
+    used_step_type = False
+    used_capacity_columns = False
     
-    # Initialize arrays to track charge/discharge status for each data point
-    is_charge = np.zeros(n, dtype=bool)  # True = charging, False = discharging
-    is_rest_segment = np.zeros(n, dtype=bool)  # Track rest/CV periods (excluded from both masks)
-    used_step_type = False  # Flag: did we successfully use Step Type method?
-    used_capacity_columns = False  # Flag: did we successfully use capacity column method?
-    
-    # ====================================================================================
-    # PRIORITY 1: STEP TYPE COLUMN (Most Reliable Method)
-    # ====================================================================================
-    # Many cyclers have a "Step Type" column that explicitly labels each row:
-    #   - "CC Chg" = Constant Current Charge
-    #   - "CC DChg" = Constant Current Discharge
-    #   - "Rest" = Rest period (no current)
-    #   - "CV" = Constant Voltage (usually end of charge)
-    #
-    # This is the most reliable method because it's explicit - the cycler software tells
-    # us directly what's happening. We parse the text to find keywords.
-    # ====================================================================================
     if step_type_idx is not None:
-        # Parse Step Type column to determine charge/discharge for each data point
-        # We'll also track which rows are Rest/CV/other non-active steps (these get excluded)
+        # Parse Step Type to determine charge/discharge
+        # We'll also track which rows are Rest/CV/other non-charge/discharge steps
         is_rest_or_other = np.zeros(n, dtype=bool)
         
-        # Loop through each row in the data file
         for k, row in enumerate(rows):
-            # Ensure row has enough columns (some CSV files have inconsistent row lengths)
             if len(row) < len(header):
                 row = row + [''] * (len(header) - len(row))
-            
-            # Get the Step Type value for this row and convert to lowercase for case-insensitive matching
             step_type = str(row[step_type_idx]).strip().lower()
             
-            # STEP 1: Check if this is a Rest/CV/pause period (non-active step)
-            # These are periods where the battery is not being charged or discharged
-            # Examples: "Rest", "Pause", "CV" (Constant Voltage), "Wait"
-            is_cv_only = (
-                ('cv' in step_type)
-                and ('chg' not in step_type)
-                and ('dchg' not in step_type)
-                and ('dis' not in step_type)
-            )
-            is_rest = ('rest' in step_type) or ('pause' in step_type) or is_cv_only
+            # Check for Rest or other non-active steps
+            is_rest = 'rest' in step_type or 'pause' in step_type or 'cv' in step_type
             
-            # STEP 2: Check for discharge indicators
-            # IMPORTANT: Check discharge BEFORE charge because the word "discharge" contains "charge"
-            # If we checked for "charge" first, we'd incorrectly match "discharge" as charge!
-            # Discharge keywords: "dchg", "dischg", "discharge", "cc dchg", etc.
+            # Check for discharge first (since "discharge" contains "charge")
+            # Discharge indicators: "dchg", "dischg", "discharge", "cc dchg", etc.
             is_dchg = 'dchg' in step_type or 'dischg' in step_type or step_type.startswith('dis')
-            
-            # STEP 3: Check for charge indicators
-            # Only check if it's NOT discharge and NOT rest (to avoid false matches)
-            # Charge keywords: "chg", "charge", "cc chg", etc.
+            # Then check for charge indicators: "chg", "charge", "cc chg", etc.
             is_chg = (not is_dchg) and (not is_rest) and (('chg' in step_type) or ('charge' in step_type))
             
-            # STEP 4: Assign charge/discharge status based on what we found
+            # Mark Rest/CV steps to exclude them from masks
             if is_rest:
-                # This is a rest period - mark it but don't include in charge/discharge masks
                 is_rest_or_other[k] = True
-                is_charge[k] = False  # Will be excluded from both masks later
+                is_charge[k] = False  # Will be excluded from both masks
             elif is_chg:
-                # This row is during charging
                 is_charge[k] = True
             elif is_dchg:
-                # This row is during discharging
                 is_charge[k] = False
             else:
-                # Unknown step type - inherit from previous row (assume same state continues)
-                # This handles edge cases where step type might be missing or unrecognized
+                # For unknown types, inherit from previous row (or default to False)
                 is_charge[k] = is_charge[k-1] if k > 0 else False
-        
-        # Mark that we successfully used the Step Type method
         used_step_type = True
     
-    # ====================================================================================
-    # PRIORITY 2: SPLIT CAPACITY COLUMNS (Medium Reliability Method)
-    # ====================================================================================
-    # Some cyclers have separate columns for charge capacity and discharge capacity:
-    #   - "Chg. Spec. Cap.(mAh/g)" or "Chg. Cap.(mAh)" = charge capacity
-    #   - "DChg. Spec. Cap.(mAh/g)" or "DChg. Cap.(mAh)" = discharge capacity
-    #
-    # HOW IT WORKS:
-    # During charging, only the charge capacity column has values (discharge column = 0)
-    # During discharging, only the discharge capacity column has values (charge column = 0)
-    # We check which column has a non-zero value to determine the state.
-    #
-    # WHY THIS WORKS:
-    # Battery cyclers track capacity separately for charge and discharge. When you're
-    # charging, the charge capacity increases but discharge capacity stays at 0 (or resets).
-    # When discharging, the opposite happens.
-    # ====================================================================================
+    # Priority 2: Use split charge/discharge capacity columns if available
     elif (use_specific and cap_spec_chg_idx is not None and cap_spec_dch_idx is not None) or \
          (not use_specific and cap_abs_chg_idx is not None and cap_abs_dch_idx is not None):
+        # Read capacity columns to determine charge/discharge
+        # Whichever column has non-zero value indicates the segment type
+        cap_chg_vals = np.empty(n, dtype=float)
+        cap_dch_vals = np.empty(n, dtype=float)
         
-        # STEP 1: Choose which capacity columns to use (specific vs absolute)
-        # Specific capacity = mAh/g (normalized by active material mass)
-        # Absolute capacity = mAh (total capacity)
         if use_specific:
-            chg_col_idx = cap_spec_chg_idx  # Charge specific capacity column index
-            dch_col_idx = cap_spec_dch_idx  # Discharge specific capacity column index
+            chg_col_idx = cap_spec_chg_idx
+            dch_col_idx = cap_spec_dch_idx
         else:
-            chg_col_idx = cap_abs_chg_idx   # Charge absolute capacity column index
-            dch_col_idx = cap_abs_dch_idx   # Discharge absolute capacity column index
-        
-        # STEP 2: Read all capacity values from the file
-        cap_chg_vals = np.empty(n, dtype=float)  # Array to store charge capacity for each point
-        cap_dch_vals = np.empty(n, dtype=float)  # Array to store discharge capacity for each point
+            chg_col_idx = cap_abs_chg_idx
+            dch_col_idx = cap_abs_dch_idx
         
         for k, row in enumerate(rows):
-            # Ensure row has enough columns
             if len(row) < len(header):
                 row = row + [''] * (len(header) - len(row))
-            # Parse capacity values (convert string to float, handle errors)
             cap_chg_vals[k] = _to_float(row[chg_col_idx])
             cap_dch_vals[k] = _to_float(row[dch_col_idx])
         
-        # STEP 3: Determine charge/discharge based on which capacity column has values
-        # Logic:
-        #   - If charge capacity > threshold AND discharge capacity ≈ 0 → CHARGING
-        #   - If discharge capacity > threshold AND charge capacity ≈ 0 → DISCHARGING
-        #   - If both are zero or both are non-zero → inherit from previous point (transition period)
-        threshold = 1e-6  # Small threshold to avoid floating-point precision issues
-        
+        # A point is charge if its charge capacity > threshold AND discharge capacity ≈ 0
+        # A point is discharge if its discharge capacity > threshold AND charge capacity ≈ 0
+        threshold = 1e-6
         for k in range(n):
-            # Get capacity values, treating NaN as 0 (missing data)
             chg_val = cap_chg_vals[k] if not np.isnan(cap_chg_vals[k]) else 0.0
             dch_val = cap_dch_vals[k] if not np.isnan(cap_dch_vals[k]) else 0.0
             
-            # Decision logic:
             if chg_val > threshold and dch_val <= threshold:
-                # Charge capacity is non-zero, discharge is zero → this is a charging point
                 is_charge[k] = True
             elif dch_val > threshold and chg_val <= threshold:
-                # Discharge capacity is non-zero, charge is zero → this is a discharging point
                 is_charge[k] = False
             else:
-                # Both zero or both non-zero (unusual case, might be transition or data error)
-                # Inherit state from previous point (assume state continues)
-                is_charge[k] = is_charge[k-1] if k > 0 else True  # Default to charge if first point
-        
-        # Mark that we successfully used the capacity column method
+                # Both zero or both non-zero: inherit from previous or default
+                is_charge[k] = is_charge[k-1] if k > 0 else True
         used_capacity_columns = True
     
-    # ====================================================================================
-    # PRIORITY 3: VOLTAGE TREND ANALYSIS (Fallback Method)
-    # ====================================================================================
-    # If neither Step Type nor split capacity columns are available, we infer charge/discharge
-    # from the voltage trend:
-    #   - Voltage INCREASING (dV > 0) → CHARGING (battery voltage goes up as it charges)
-    #   - Voltage DECREASING (dV < 0) → DISCHARGING (battery voltage goes down as it discharges)
-    #
-    # WHY THIS WORKS:
-    # During charging, the battery voltage increases (e.g., 3.0V → 4.2V for Li-ion)
-    # During discharging, the battery voltage decreases (e.g., 4.2V → 3.0V for Li-ion)
-    # This is a fundamental property of batteries.
-    #
-    # CHALLENGES:
-    # - Voltage can have noise (small fluctuations)
-    # - Voltage can have plateaus (flat regions where dV ≈ 0)
-    # - We need to be robust to these issues
-    # ====================================================================================
+    # Priority 3: Fallback to voltage trend (robust to current sign conventions)
     else:
-        # STEP 1: Prepare voltage data and calculate voltage differences
-        v_clean = np.array(voltage, dtype=float)  # Clean copy of voltage array
-        
-        # Calculate voltage range to set a noise threshold
-        # We need to distinguish real voltage changes from measurement noise
+        # Compute a tolerant derivative and propagate direction over plateaus (|dv| <= eps)
+        # eps based on dynamic range to avoid noise flips
+        v_clean = np.array(voltage, dtype=float)
         v_min = np.nanmin(v_clean) if np.isfinite(v_clean).any() else 0.0
         v_max = np.nanmax(v_clean) if np.isfinite(v_clean).any() else 1.0
-        v_span = max(1e-6, float(v_max - v_min))  # Total voltage range
-        
-        # Set noise threshold: 0.01% of voltage range
-        # Changes smaller than this are considered noise, not real voltage changes
+        v_span = max(1e-6, float(v_max - v_min))
         eps = max(1e-6, 1e-4 * v_span)
-        
-        # Calculate voltage differences: dv[i] = voltage[i+1] - voltage[i]
-        # This tells us if voltage is increasing (positive) or decreasing (negative)
         dv = np.diff(v_clean)
-        dv = np.nan_to_num(dv, nan=0.0, posinf=0.0, neginf=0.0)  # Handle NaN/inf values
-        
-        # STEP 2: Determine initial direction (is the experiment starting with charge or discharge?)
-        # We look at the first 500 points to find the first significant voltage change
+        dv = np.nan_to_num(dv, nan=0.0, posinf=0.0, neginf=0.0)
+        # Initial direction: first significant dv sets the sign; fallback to current sign if needed
         init_dir = None
         for d in dv[: min(500, dv.size)]:
-            if abs(d) > eps:  # Found a significant change (not noise)
-                init_dir = (d > 0)  # True if increasing (charge), False if decreasing (discharge)
+            if abs(d) > eps:
+                init_dir = (d > 0)
                 break
-        
-        # If we couldn't determine initial direction from voltage, use current sign as fallback
         if init_dir is None:
-            # Look for first non-zero current value
-            # Positive current usually means charge, negative means discharge
+            # Fallback: use sign of first non-zero current; else assume charge
             nz = None
             for i_val in current:
                 if abs(i_val) > 1e-12 and np.isfinite(i_val):
-                    nz = (i_val >= 0)  # True if positive current (charge)
+                    nz = (i_val >= 0)
                     break
-            # Default to charge if we still can't determine
             init_dir = True if nz is None else bool(nz)
-        
-        # STEP 3: Assign charge/discharge status to each point based on voltage trend
-        prev_dir = init_dir  # Track previous direction (for handling plateaus)
-        
+        prev_dir = init_dir
         for k in range(n):
-            dir_set = None  # Will be True for charge, False for discharge
-            
-            # Strategy: Look backward first (prefer recent trend)
-            # This keeps the last point of a segment with its segment
+            dir_set = None
+            # Prefer backward-looking difference to keep the last sample of a run with its run
             if k > 0:
-                db = dv[k-1]  # Voltage difference from previous point
-                if abs(db) > eps:  # Significant change (not noise)
-                    dir_set = (db > 0)  # True if voltage increased (charge)
-            
-            # Fallback: If backward look didn't work, look forward
-            # This handles the first point of a new segment
+                db = dv[k-1]
+                if abs(db) > eps:
+                    dir_set = (db > 0)
+            # Fallback: look forward to the next informative change (for first sample of a run)
             if dir_set is None:
                 j = k
                 while j < n-1:
-                    d = dv[j]  # Look at voltage difference ahead
-                    if abs(d) > eps:  # Found significant change
-                        dir_set = (d > 0)  # True if voltage will increase (charge)
+                    d = dv[j]
+                    if abs(d) > eps:
+                        dir_set = (d > 0)
                         break
                     j += 1
-            
-            # If still couldn't determine (flat voltage plateau), inherit from previous point
+            # If still None (flat series), keep previous
             if dir_set is None:
-                dir_set = prev_dir  # Assume state continues
-            
-            # Assign charge/discharge status
+                dir_set = prev_dir
             is_charge[k] = dir_set
-            prev_dir = dir_set  # Remember for next iteration
+            prev_dir = dir_set
 
     # Build run-length encoding and optionally merge very short flicker runs
     # (Only apply smoothing when using voltage trend detection, not when using explicit methods)
@@ -1861,7 +1452,22 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
         - Memory: Uses numpy arrays for efficient handling of large datasets (100k+ points)
         - Cycle inference: Assumes alternating charge/discharge; unusual protocols may need manual cycle assignment
     """
-    header, rows, _ = _load_csv_header_and_rows(fname)
+    import csv
+
+    # Read two header rows logic identical to read_ec_csv_file
+    with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
+        r = csv.reader(f)
+        try:
+            r1 = next(r)
+            r2 = next(r)
+        except StopIteration:
+            raise ValueError(f"CSV '{fname}' is empty or missing header rows")
+        if len(r2) > 0 and (r2[0] == '' or str(r2[0]).strip() == ''):
+            header = [c.strip() for c in r1] + [c.strip() for c in r2[1:]]
+            rows = list(r)
+        else:
+            header = [c.strip() for c in r1]
+            rows = [r2] + list(r)
 
     name_to_idx = {h: i for i, h in enumerate(header)}
     def _find(name: str):
@@ -1926,19 +1532,12 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
             if len(row) < len(header):
                 row = row + [''] * (len(header) - len(row))
             step_type = str(row[step_type_idx]).strip().lower()
-            is_cv_only = (
-                ('cv' in step_type)
-                and ('chg' not in step_type)
-                and ('dchg' not in step_type)
-                and ('dis' not in step_type)
-            )
-            is_rest = (
-                ('rest' in step_type)
-                or ('pause' in step_type)
-                or ('wait' in step_type)
-                or (step_type in {'idle'})
-                or is_cv_only
-            )
+            is_rest = 'rest' in step_type or 'pause' in step_type or 'wait' in step_type or step_type in {'cv', 'idle'}
+            if is_rest:
+                is_rest_segment[k] = True
+                is_charge[k] = is_charge[k-1] if k > 0 else True
+                continue
+            is_rest = ('rest' in step_type) or ('wait' in step_type) or step_type in {'pause', 'idle'}
             if is_rest:
                 is_rest_segment[k] = True
                 is_charge[k] = is_charge[k-1] if k > 0 else True
@@ -2039,339 +1638,6 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
     return voltage, dqdv, inferred_cycles, charge_mask, discharge_mask, y_label
 
 
-def _compute_dqdv_from_capacity(capacity: np.ndarray,
-                                voltage: np.ndarray,
-                                charge_mask: np.ndarray) -> np.ndarray:
-    """Compute dQ/dV for contiguous segments without mixing charge/discharge transitions."""
-    n = len(voltage)
-    dqdv = np.full(n, np.nan, dtype=float)
-    if n == 0:
-        return dqdv
-
-    mask_int = charge_mask.astype(np.int8)
-    boundaries = np.where(np.diff(mask_int) != 0)[0] + 1
-    boundaries = np.concatenate(([0], boundaries, [n]))
-
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        seg_len = end - start
-        if seg_len <= 1:
-            dqdv[start:end] = 0.0
-            continue
-        v_seg = voltage[start:end]
-        cap_seg = capacity[start:end]
-        if np.allclose(v_seg, v_seg[0]):
-            dqdv[start:end] = np.nan
-            continue
-        with np.errstate(divide='ignore', invalid='ignore'):
-            grad = np.gradient(cap_seg, v_seg, edge_order=1)
-        grad = np.asarray(grad, dtype=float)
-        grad[~np.isfinite(grad)] = np.nan
-        dqdv[start:end] = grad
-    return dqdv
-
-
-def read_mpt_dqdv_file(fname: str,
-                       mass_mg: float,
-                       prefer_specific: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
-    """Compute dQ/dV curves from BioLogic .mpt galvanostatic data."""
-    if mass_mg is None or mass_mg <= 0:
-        raise ValueError("Mass loading (mg) is required and must be positive for dQ/dV from .mpt files. Use --mass.")
-
-    specific_capacity, voltage, cycles, charge_mask, discharge_mask = read_mpt_file(
-        fname, mode='gc', mass_mg=mass_mg
-    )
-
-    mass_g = float(mass_mg) / 1000.0
-    absolute_capacity = specific_capacity * mass_g
-
-    dqdv_specific = _compute_dqdv_from_capacity(specific_capacity, voltage, charge_mask)
-    dqdv_absolute = _compute_dqdv_from_capacity(absolute_capacity, voltage, charge_mask)
-
-    if prefer_specific:
-        y_data = dqdv_specific
-        y_label = r'dQm/dV (mAh g$^{-1}$ V$^{-1}$)'
-    else:
-        y_data = dqdv_absolute
-        y_label = r'dQ/dV (mAh V$^{-1}$)'
-
-    return voltage, y_data, cycles, charge_mask, discharge_mask, y_label
-
-
-def is_cs_b_format(header: List[str]) -> bool:
-    """Check if CSV has CS-B-001 format (has 'Capacity Density(mAh/g)' and 'dQ/dV(mAh/V)' columns)."""
-    header_stripped = [h.strip().replace('\t', '') for h in header]
-    has_cap_density = any('Capacity Density(mAh/g)' in h for h in header_stripped)
-    has_dqdv = any('dQ/dV(mAh/V)' in h for h in header_stripped)
-    return has_cap_density and has_dqdv
-
-
-def read_cs_b_csv_file(fname: str, mode: str = 'gc') -> Tuple:
-    """Read CS-B-001.csv format with support for GC, CPC, and DQDV modes.
-    
-    This function handles a specific CSV format with 3-line headers:
-    - Line 1: Cycle-level headers
-    - Line 2: Step-level headers
-    - Line 3: Record-level headers (actual data columns)
-    
-    Column mapping (in record header after prefix):
-    - Current(mA) (column F in raw CSV)
-    - Capacity Density(mAh/g) (column I in raw CSV)
-    - dQ/dV(mAh/V) (column U in raw CSV)
-    
-    For GC mode:
-    - Skips resting points (current == 0)
-    - Uses capacity from Capacity Density column
-    - Resets capacity to 0 at start of each charge/discharge segment
-    - Determines charge/discharge from current sign (positive = charge, negative = discharge)
-    - If starts with discharge, first cycle is discharge then charge; if starts with charge, first cycle is charge then discharge
-    
-    Args:
-        fname: Path to CSV file
-        mode: 'gc', 'cpc', or 'dqdv'
-    
-    Returns:
-        For GC mode: (capacity, voltage, cycles, charge_mask, discharge_mask)
-        For CPC mode: (cycle_nums, cap_charge, cap_discharge, efficiency)
-        For DQDV mode: (voltage, dqdv, cycles, charge_mask, discharge_mask, y_label)
-    """
-    header, rows, parsed = _load_csv_header_and_rows(fname)
-    
-    # Build column index map (strip tabs and whitespace)
-    name_to_idx = {}
-    for i, h in enumerate(header):
-        h_clean = h.strip().replace('\t', '')
-        name_to_idx[h_clean] = i
-        # Also try without cleaning for exact match
-        name_to_idx[h] = i
-    
-    def _find(name: str):
-        # Try exact match first
-        if name in name_to_idx:
-            return name_to_idx[name]
-        # Try cleaned version
-        name_clean = name.strip().replace('\t', '')
-        return name_to_idx.get(name_clean, None)
-    
-    # Find required columns
-    v_idx = _find('Voltage(V)')
-    i_idx = _find('Current(mA)')
-    cap_density_idx = _find('Capacity Density(mAh/g)')
-    cap_abs_idx = _find('Capacity(mAh)')
-    dqdv_idx = _find('dQ/dV(mAh/V)')
-    
-    if v_idx is None:
-        raise ValueError("CSV missing required 'Voltage(V)' column")
-    if i_idx is None:
-        raise ValueError("CSV missing required 'Current(mA)' column")
-    
-    def _to_float(val: str) -> float:
-        try:
-            val_str = str(val).strip().replace('\t', '')
-            return float(val_str) if val_str else np.nan
-        except Exception:
-            return np.nan
-    
-    # Read all data
-    n = len(rows)
-    voltage = np.empty(n, dtype=float)
-    current = np.empty(n, dtype=float)
-    capacity_values = np.full(n, np.nan, dtype=float)
-    dqdv = np.full(n, np.nan, dtype=float)
-    
-    for k, row in enumerate(rows):
-        if len(row) < len(header):
-            row = row + [''] * (len(header) - len(row))
-        voltage[k] = _to_float(row[v_idx])
-        current[k] = _to_float(row[i_idx])
-        if cap_density_idx is not None:
-            capacity_values[k] = _to_float(row[cap_density_idx])
-        elif cap_abs_idx is not None:
-            capacity_values[k] = _to_float(row[cap_abs_idx])
-        if dqdv_idx is not None:
-            dqdv[k] = _to_float(row[dqdv_idx])
-    
-    # Skip resting points (current == 0)
-    non_rest_mask = np.abs(current) > 1e-10
-    if not np.any(non_rest_mask):
-        raise ValueError("No non-zero current data found (all points are resting)")
-    
-    # Filter out resting points
-    voltage = voltage[non_rest_mask]
-    current = current[non_rest_mask]
-    capacity_values = capacity_values[non_rest_mask]
-    dqdv = dqdv[non_rest_mask] if dqdv_idx is not None else np.full(np.sum(non_rest_mask), np.nan)
-    n_active = len(voltage)
-    
-    # Determine charge/discharge from current sign
-    # Positive current = charge, negative current = discharge
-    is_charge = current > 0
-    charge_mask = is_charge
-    discharge_mask = ~is_charge
-    
-    # Find segment boundaries (where charge/discharge changes)
-    run_starts = [0]
-    for k in range(1, n_active):
-        if is_charge[k] != is_charge[k-1]:
-            run_starts.append(k)
-    run_starts.append(n_active)
-    
-    # Determine if experiment starts with charge or discharge
-    starts_with_charge = is_charge[0] if n_active > 0 else True
-    
-    if mode == 'gc':
-        # GC mode: capacity from column I, reset to 0 for each segment
-        if cap_density_idx is None and cap_abs_idx is None:
-            raise ValueError("CSV missing required capacity column for GC mode (need 'Capacity Density(mAh/g)' or 'Capacity(mAh)')")
-        
-        capacity = np.zeros(n_active, dtype=float)
-        
-        # Process each segment, resetting capacity to 0 at start
-        for seg_idx in range(len(run_starts) - 1):
-            start = run_starts[seg_idx]
-            end = run_starts[seg_idx + 1]
-            
-            # Get capacity values for this segment
-            seg_cap_density = capacity_values[start:end]
-            
-            # Find first valid (non-NaN) capacity value in segment
-            first_valid_idx = None
-            first_valid_val = None
-            for i in range(len(seg_cap_density)):
-                val = seg_cap_density[i]
-                if not np.isnan(val) and np.isfinite(val):
-                    first_valid_idx = i
-                    first_valid_val = val
-                    break
-            
-            if first_valid_val is not None:
-                # Reset capacity: subtract the first value so segment starts at 0
-                for i in range(start, end):
-                    idx_in_seg = i - start
-                    val = capacity_values[i]
-                    if not np.isnan(val) and np.isfinite(val):
-                        capacity[i] = val - first_valid_val
-                    else:
-                        # Use previous value or 0
-                        if idx_in_seg > 0:
-                            capacity[i] = capacity[i-1]
-                        else:
-                            capacity[i] = 0.0
-        
-        # Infer cycles by pairing alternating charge/discharge segments
-        # If starts with discharge, first cycle is discharge then charge
-        # If starts with charge, first cycle is charge then discharge
-        cycles = np.zeros(n_active, dtype=int)
-        current_cycle = 1
-        half_cycle = 0
-        
-        for seg_idx in range(len(run_starts) - 1):
-            start = run_starts[seg_idx]
-            end = run_starts[seg_idx + 1]
-            cycles[start:end] = current_cycle
-            half_cycle += 1
-            
-            # Complete cycle when we have both charge and discharge
-            if half_cycle == 2:
-                current_cycle += 1
-                half_cycle = 0
-        
-        return (capacity, voltage, cycles, charge_mask, discharge_mask)
-    
-    elif mode == 'cpc':
-        # CPC mode: extract end-of-segment capacities
-        if cap_density_idx is None and cap_abs_idx is None:
-            raise ValueError("CSV missing required capacity column for CPC mode (need 'Capacity Density(mAh/g)' or 'Capacity(mAh)')")
-        
-        cyc_nums = []
-        cap_charge = []
-        cap_discharge = []
-        eff_percent = []
-        
-        current_cycle = 1
-        half_cycle = 0
-        cycle_charge_cap = np.nan
-        cycle_discharge_cap = np.nan
-        
-        for seg_idx in range(len(run_starts) - 1):
-            start = run_starts[seg_idx]
-            end = run_starts[seg_idx + 1]
-            
-            # Get capacity values for this segment
-            seg_cap = capacity_values[start:end]
-            
-            # Find first and last valid capacity values
-            first_valid = None
-            last_valid = None
-            for val in seg_cap:
-                if not np.isnan(val) and np.isfinite(val):
-                    if first_valid is None:
-                        first_valid = val
-                    last_valid = val
-            
-            # Reset capacity relative to segment start
-            end_cap = 0.0
-            if first_valid is not None and last_valid is not None:
-                end_cap = last_valid - first_valid
-            
-            if is_charge[start]:
-                cycle_charge_cap = end_cap
-            else:
-                cycle_discharge_cap = end_cap
-            
-            half_cycle += 1
-            if half_cycle == 2:
-                # Completed one full cycle
-                cyc_nums.append(current_cycle)
-                cap_charge.append(cycle_charge_cap)
-                cap_discharge.append(cycle_discharge_cap)
-                
-                # Calculate efficiency
-                if np.isfinite(cycle_charge_cap) and cycle_charge_cap > 0 and np.isfinite(cycle_discharge_cap):
-                    eff = (cycle_discharge_cap / cycle_charge_cap) * 100.0
-                else:
-                    eff = np.nan
-                eff_percent.append(eff)
-                
-                # Reset for next cycle
-                current_cycle += 1
-                half_cycle = 0
-                cycle_charge_cap = np.nan
-                cycle_discharge_cap = np.nan
-        
-        return (np.array(cyc_nums, dtype=float),
-                np.array(cap_charge, dtype=float),
-                np.array(cap_discharge, dtype=float),
-                np.array(eff_percent, dtype=float))
-    
-    elif mode == 'dqdv':
-        # DQDV mode: use dQ/dV from column U
-        if dqdv_idx is None:
-            raise ValueError("CSV missing required 'dQ/dV(mAh/V)' column for DQDV mode")
-        
-        # Infer cycles by pairing alternating charge/discharge segments
-        cycles = np.zeros(n_active, dtype=int)
-        current_cycle = 1
-        half_cycle = 0
-        
-        for seg_idx in range(len(run_starts) - 1):
-            start = run_starts[seg_idx]
-            end = run_starts[seg_idx + 1]
-            cycles[start:end] = current_cycle
-            half_cycle += 1
-            
-            # Complete cycle when we have both charge and discharge
-            if half_cycle == 2:
-                current_cycle += 1
-                half_cycle = 0
-        
-        y_label = r'dQ/dV (mAh V$^{-1}$)'
-        
-        return (voltage, dqdv, cycles, charge_mask, discharge_mask, y_label)
-    
-    else:
-        raise ValueError(f"Unknown mode '{mode}'. Use 'gc', 'cpc', or 'dqdv'.")
-
-
 def read_csv_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
     """Read time (in hours) and voltage from a cycler CSV file.
     
@@ -2381,7 +1647,24 @@ def read_csv_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
     Returns:
         (time_h, voltage) where time_h is in hours and voltage in volts
     """
-    header, rows, _ = _load_csv_header_and_rows(fname)
+    import csv
+    
+    # Read first two rows to compose header (same logic as read_ec_csv_file)
+    with open(fname, newline='', encoding='utf-8', errors='ignore') as f:
+        r = csv.reader(f)
+        try:
+            r1 = next(r)
+            r2 = next(r)
+        except StopIteration:
+            raise ValueError(f"CSV '{fname}' is empty or missing header rows")
+        
+        # If second line begins with an empty first cell, treat it as continuation of header
+        if len(r2) > 0 and (r2[0] == '' or str(r2[0]).strip() == ''):
+            header = [c.strip() for c in r1] + [c.strip() for c in r2[1:]]
+            rows = list(r)
+        else:
+            header = [c.strip() for c in r1]
+            rows = [r2] + list(r)
     
     # Build column index map
     name_to_idx = {h: i for i, h in enumerate(header)}

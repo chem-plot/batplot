@@ -97,50 +97,20 @@ def handle_cv_mode(args) -> int:
         else:
             voltage, current, cycles = read_mpt_file(ec_file, mode='cv')
         
-        # ====================================================================
-        # CYCLE NORMALIZATION
-        # ====================================================================
-        # Different cycler software may number cycles differently:
-        #   - Some start at 0 (Cycle 0, Cycle 1, Cycle 2, ...)
-        #   - Some start at 1 (Cycle 1, Cycle 2, Cycle 3, ...)
-        #   - Some use negative numbers or other schemes
-        #
-        # We normalize all cycles to start at 1 for consistency and user-friendliness.
-        # This ensures Cycle 1 always means "the first cycle" regardless of file format.
-        #
-        # HOW IT WORKS:
-        # 1. Round cycle numbers to integers (they might be floats from file)
-        # 2. Find the minimum cycle number
-        # 3. Calculate shift needed to make minimum = 1
-        # 4. Apply shift to all cycles
-        #
-        # Example:
-        #   File has cycles: [0, 0, 0, 1, 1, 1, 2, 2, 2]
-        #   min_c = 0
-        #   shift = 1 - 0 = 1
-        #   Result: [1, 1, 1, 2, 2, 2, 3, 3, 3]
-        # ====================================================================
-        
-        # Convert cycle numbers to integers (round to nearest integer first)
-        # Some files might have fractional cycle numbers due to data processing
+        # === CYCLE NORMALIZATION ===
+        # Convert cycle numbers to integers and ensure they start at 1
+        # Some files may have cycles starting at 0 or negative numbers
         cyc_int_raw = np.array(np.rint(cycles), dtype=int)
-        
-        # Find the minimum cycle number in the data
         if cyc_int_raw.size:
             min_c = int(np.min(cyc_int_raw))
         else:
-            min_c = 1  # Default if no data
+            min_c = 1
         
-        # Calculate shift needed to make cycles start at 1
-        # If min_c is 0 or negative, we need to shift up
-        # If min_c is already 1 or greater, no shift needed
+        # Calculate shift needed to start at 1
         shift = 1 - min_c if min_c <= 0 else 0
-        
-        # Apply shift to all cycles
         cyc_int = cyc_int_raw + shift
         
         # Get sorted list of unique cycle numbers present in data
-        # This tells us which cycles we need to plot (e.g., [1, 2, 3, 5, 7] if cycles 4 and 6 are missing)
         cycles_present = sorted(int(c) for c in np.unique(cyc_int)) if cyc_int.size else [1]
         
         # === STYLING SETUP ===
@@ -160,126 +130,55 @@ def handle_cv_mode(args) -> int:
         fig, ax = plt.subplots(figsize=(10, 6))
         cycle_lines = {}  # Store line objects for interactive menu
         
-        # ====================================================================
-        # PLOTTING EACH CYCLE
-        # ====================================================================
-        # Loop through each cycle and plot it as a separate line.
-        # Each cycle gets a different color from the base_colors list.
-        #
-        # HOW CYCLES ARE READ:
-        # --------------------
-        # The data file contains voltage and current measurements, with each
-        # measurement point labeled with a cycle number. We group points by
-        # cycle number and plot each group as a separate line.
-        #
-        # Example data structure:
-        #   voltage = [3.0, 3.1, 3.2, 2.9, 2.8, 2.7, 3.0, 3.1, 3.2, ...]
-        #   current = [0.1, 0.2, 0.3, -0.1, -0.2, -0.3, 0.1, 0.2, 0.3, ...]
-        #   cycles  = [1,   1,   1,   2,   2,   2,   3,   3,   3,   ...]
-        #
-        # This means:
-        #   - Points 0-2 belong to Cycle 1 (voltage increasing = charge)
-        #   - Points 3-5 belong to Cycle 2 (voltage decreasing = discharge)
-        #   - Points 6-8 belong to Cycle 3 (voltage increasing = charge)
-        #
-        # We plot each cycle as a separate line with a different color.
-        # ====================================================================
-        
+        # === PLOTTING EACH CYCLE ===
         for cyc in cycles_present:
-            # STEP 1: Find all data points that belong to this cycle
-            # Create a boolean mask: True where cycle number matches current cycle
+            # Get data points belonging to this cycle
             mask = (cyc_int == cyc)
-            # Get indices where mask is True (these are the data points for this cycle)
             idx = np.where(mask)[0]
             
-            # Need at least 2 points to draw a line
             if idx.size >= 2:
-                # ============================================================
-                # HANDLE DISCONTINUITIES (Gaps in Data)
-                # ============================================================
-                # Sometimes experiments are paused, or data is recorded in segments.
-                # This creates gaps in the data where consecutive indices are not
-                # sequential (e.g., indices [10, 11, 12, 50, 51, 52] has a gap).
-                #
-                # Problem: If we plot all points as one line, matplotlib will draw
-                #          a line connecting the gap (which looks wrong).
-                #
-                # Solution: Split into continuous segments and insert NaN between them.
-                #           Matplotlib treats NaN as a break in the line, so it won't
-                #           draw across the gap.
-                #
-                # Example:
-                #   Original indices: [10, 11, 12, 50, 51, 52]
-                #   Segments found: [10-12] and [50-52]
-                #   After NaN insertion: [10, 11, 12, NaN, 50, 51, 52]
-                #   Result: Two separate line segments, no line across the gap
-                # ============================================================
+                # === HANDLE DISCONTINUITIES ===
+                # Some cycles may have gaps (e.g., paused experiments)
+                # Split into continuous segments and insert NaN between them
+                # This prevents matplotlib from drawing lines across gaps
                 
-                # Find all continuous segments (runs of consecutive indices)
-                parts_x = []  # Will store voltage arrays for each segment
-                parts_y = []  # Will store current arrays for each segment
-                start = 0     # Start index of current segment
-                
-                # Scan through indices looking for gaps
+                # Find continuous segments
+                parts_x = []
+                parts_y = []
+                start = 0
                 for k in range(1, idx.size):
-                    # If current index is not consecutive with previous, we found a gap
                     if idx[k] != idx[k-1] + 1:  # Gap detected
-                        # Save the segment we just finished (from start to k-1)
+                        # Save current segment
                         parts_x.append(voltage[idx[start:k]])
                         parts_y.append(current[idx[start:k]])
-                        # Start tracking a new segment
                         start = k
-                
-                # Don't forget the last segment (after the loop ends)
+                # Save final segment
                 parts_x.append(voltage[idx[start:]])
                 parts_y.append(current[idx[start:]])
                 
-                # STEP 2: Concatenate segments with NaN separators
-                # This creates one array per axis, with NaN values marking segment breaks
-                X = []  # Will contain all voltage segments with NaN separators
-                Y = []  # Will contain all current segments with NaN separators
-                
+                # Concatenate segments with NaN separators
+                X = []
+                Y = []
                 for i, (px, py) in enumerate(zip(parts_x, parts_y)):
                     if i > 0:
-                        # Insert NaN between segments (except before the first segment)
-                        # This tells matplotlib to break the line here
+                        # Insert NaN between segments
                         X.append(np.array([np.nan]))
                         Y.append(np.array([np.nan]))
-                    # Add the segment data
                     X.append(px)
                     Y.append(py)
                 
-                # Concatenate all segments into single arrays for plotting
                 x_b = np.concatenate(X) if X else np.array([])
                 y_b = np.concatenate(Y) if Y else np.array([])
                 
-                # STEP 3: Plot this cycle with a unique color
-                # Color selection: Cycle through base_colors list, wrapping around if needed
-                # Example: Cycle 1 → color[0], Cycle 2 → color[1], ..., Cycle 11 → color[0] (wrapped)
-                # The modulo operator (%) ensures we wrap around: (cyc-1) % 10 gives 0-9
-                # Swap x and y if --ro flag is set
-                if getattr(args, 'ro', False):
-                    ln, = ax.plot(y_b, x_b, '-',  # '-' = solid line style
-                                 color=base_colors[(cyc-1) % len(base_colors)],  # Cycle through colors
-                                 linewidth=2.0,   # Line thickness
-                                 label=str(cyc),  # Cycle number for legend
-                                 alpha=0.8)       # Slight transparency (80% opaque)
-                else:
-                    ln, = ax.plot(x_b, y_b, '-',  # '-' = solid line style
-                                 color=base_colors[(cyc-1) % len(base_colors)],  # Cycle through colors
-                                 linewidth=2.0,   # Line thickness
-                                 label=str(cyc),  # Cycle number for legend
-                                 alpha=0.8)       # Slight transparency (80% opaque)
-                
-                # Store line object for interactive menu (allows changing color later)
+                # Plot with cycling color (wraps around after 10 colors)
+                ln, = ax.plot(x_b, y_b, '-', 
+                             color=base_colors[(cyc-1) % len(base_colors)],
+                             linewidth=2.0, 
+                             label=str(cyc),  # Cycle number in legend
+                             alpha=0.8)
                 cycle_lines[cyc] = ln
         
         # === FINAL STYLING ===
-        # Swap axis labels if --ro flag is set
-        if getattr(args, 'ro', False):
-            ax.set_xlabel('Current (mA)', labelpad=8.0)
-            ax.set_ylabel('Voltage (V)', labelpad=8.0)
-        else:
         ax.set_xlabel('Voltage (V)', labelpad=8.0)
         ax.set_ylabel('Current (mA)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
@@ -458,141 +357,48 @@ def handle_gc_mode(args) -> int:
         # Create the plot
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        # ====================================================================
-        # CYCLE PROCESSING: BUILD PER-CYCLE LINES FOR CHARGE AND DISCHARGE
-        # ====================================================================
-        # In GC mode, each cycle consists of two parts:
-        #   1. Charge segment: capacity increases, voltage increases
-        #   2. Discharge segment: capacity continues, voltage decreases
-        #
-        # We need to:
-        #   - Group data points by cycle number
-        #   - Separate charge and discharge segments within each cycle
-        #   - Handle gaps in data (paused experiments)
-        #   - Plot each cycle with a unique color
-        #
-        # Helper functions below handle the data segmentation.
-        # ====================================================================
-        
+        # Build per-cycle lines for charge and discharge
         def _contiguous_blocks(mask):
-            """
-            Find all contiguous blocks (runs) of True values in a boolean mask.
-            
-            HOW IT WORKS:
-            ------------
-            Scans through indices where mask is True, looking for gaps.
-            Each continuous run becomes one block.
-            
-            Example:
-                mask = [F, T, T, T, F, F, T, T, F]
-                indices = [1, 2, 3, 6, 7]
-                Blocks found: (1, 3) and (6, 7)
-            
-            Returns:
-                List of (start_index, end_index) tuples for each contiguous block
-            """
-            inds = np.where(mask)[0]  # Get all indices where mask is True
+            inds = np.where(mask)[0]
             if inds.size == 0:
                 return []
-            
             blocks = []
-            start = inds[0]  # Start of current block
-            prev = inds[0]   # Previous index seen
-            
-            # Scan through indices looking for gaps
+            start = inds[0]
+            prev = inds[0]
             for j in inds[1:]:
                 if j == prev + 1:
-                    # Consecutive, continue current block
                     prev = j
                 else:
-                    # Gap found, save current block and start new one
                     blocks.append((start, prev))
                     start = j
                     prev = j
-            
-            # Don't forget the last block
             blocks.append((start, prev))
             return blocks
 
         def _broken_arrays_from_indices(idx: np.ndarray, x: np.ndarray, y: np.ndarray):
-            """
-            Extract x and y data for given indices, handling gaps with NaN separators.
-            
-            HOW IT WORKS:
-            ------------
-            If indices are not consecutive (e.g., [10, 11, 12, 50, 51, 52]),
-            we split into segments and insert NaN between them. This prevents
-            matplotlib from drawing lines across gaps.
-            
-            Example:
-                idx = [10, 11, 12, 50, 51, 52]
-                x = [0, 1, 2, ..., 100]
-                y = [3.0, 3.1, 3.2, ..., 4.0]
-                
-                Result:
-                    x_b = [x[10], x[11], x[12], NaN, x[50], x[51], x[52]]
-                    y_b = [y[10], y[11], y[12], NaN, y[50], y[51], y[52]]
-            
-            This creates two separate line segments with no connecting line.
-            
-            Args:
-                idx: Array of indices to extract
-                x: Full x data array
-                y: Full y data array
-            
-            Returns:
-                Tuple of (x_broken, y_broken) arrays with NaN separators
-            """
             if idx.size == 0:
                 return np.array([]), np.array([])
-            
-            # Find continuous segments
-            parts_x = []  # Will store x segments
-            parts_y = []  # Will store y segments
-            start = 0     # Start of current segment
-            
-            # Scan for gaps
+            parts_x = []
+            parts_y = []
+            start = 0
             for k in range(1, idx.size):
-                if idx[k] != idx[k-1] + 1:  # Gap detected
-                    # Save segment from start to k-1
+                if idx[k] != idx[k-1] + 1:
                     parts_x.append(x[idx[start:k]])
                     parts_y.append(y[idx[start:k]])
                     start = k
-            
-            # Save last segment
             parts_x.append(x[idx[start:]])
             parts_y.append(y[idx[start:]])
-            
-            # Concatenate with NaN separators
             X = []
             Y = []
             for i, (px, py) in enumerate(zip(parts_x, parts_y)):
                 if i > 0:
-                    # Insert NaN between segments
                     X.append(np.array([np.nan]))
                     Y.append(np.array([np.nan]))
                 X.append(px)
                 Y.append(py)
-            
             return np.concatenate(X) if X else np.array([]), np.concatenate(Y) if Y else np.array([])
 
-        # ====================================================================
-        # CYCLE NUMBER PROCESSING
-        # ====================================================================
-        # Some files have explicit cycle numbers, others don't.
-        # We handle both cases:
-        #
-        # Case 1: File has cycle numbers
-        #   - Normalize to start at 1 (same as CV mode)
-        #   - Use cycle numbers directly
-        #
-        # Case 2: File has no cycle numbers (or only one cycle)
-        #   - Infer cycles from charge/discharge segments
-        #   - Each charge+discharge pair becomes one cycle
-        # ====================================================================
-
         if cycle_numbers is not None:
-            # File has cycle numbers: normalize them to start at 1
             cyc_int_raw = np.array(np.rint(cycle_numbers), dtype=int)
             if cyc_int_raw.size:
                 min_c = int(np.min(cyc_int_raw))
@@ -602,28 +408,13 @@ def handle_gc_mode(args) -> int:
             cyc_int = cyc_int_raw + shift
             cycles_present = sorted(int(c) for c in np.unique(cyc_int))
         else:
-            # No cycle numbers in file
             cycles_present = [1]
 
-        # ====================================================================
-        # DETERMINE IF WE NEED TO INFER CYCLES
-        # ====================================================================
-        # If file has only 1 cycle (or none), we infer cycles from charge/discharge
-        # segments. This handles files where cycle numbers weren't recorded.
-        #
-        # Inference method:
-        #   - Find all contiguous charge blocks
-        #   - Find all contiguous discharge blocks
-        #   - Pair them sequentially: block 0+1 = Cycle 1, block 2+3 = Cycle 2, etc.
-        # ====================================================================
+        # Determine if cycle numbers are meaningful
         inferred = len(cycles_present) <= 1
         if inferred:
-            # Infer cycles from charge/discharge segments
-            ch_blocks = _contiguous_blocks(charge_mask)   # All charge segments
-            dch_blocks = _contiguous_blocks(discharge_mask)  # All discharge segments
-            
-            # Number of cycles = max of charge or discharge segments
-            # (Some experiments might start with charge, others with discharge)
+            ch_blocks = _contiguous_blocks(charge_mask)
+            dch_blocks = _contiguous_blocks(discharge_mask)
             cycles_present = list(range(1, max(len(ch_blocks), len(dch_blocks)) + 1)) if (ch_blocks or dch_blocks) else [1]
 
         base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
@@ -637,11 +428,6 @@ def handle_gc_mode(args) -> int:
                 idx = np.where(mask_c)[0]
                 if idx.size >= 2:
                     x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
-                    # Swap x and y if --ro flag is set
-                    if getattr(args, 'ro', False):
-                        ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                        linewidth=2.0, label=str(cyc), alpha=0.8)
-                    else:
                     ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                     linewidth=2.0, label=str(cyc), alpha=0.8)
                 else:
@@ -651,11 +437,6 @@ def handle_gc_mode(args) -> int:
                 if idxd.size >= 2:
                     xd_b, yd_b = _broken_arrays_from_indices(idxd, cap_x, voltage)
                     lbl = '_nolegend_' if ln_c is not None else str(cyc)
-                    # Swap x and y if --ro flag is set
-                    if getattr(args, 'ro', False):
-                        ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                        linewidth=2.0, label=lbl, alpha=0.8)
-                    else:
                     ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                     linewidth=2.0, label=lbl, alpha=0.8)
                 else:
@@ -672,11 +453,6 @@ def handle_gc_mode(args) -> int:
                     a, b = ch_blocks[i]
                     idx = np.arange(a, b + 1)
                     x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
-                    # Swap x and y if --ro flag is set
-                    if getattr(args, 'ro', False):
-                        ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                        linewidth=2.0, label=str(cyc), alpha=0.8)
-                    else:
                     ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                     linewidth=2.0, label=str(cyc), alpha=0.8)
                 ln_d = None
@@ -685,20 +461,10 @@ def handle_gc_mode(args) -> int:
                     idx = np.arange(a, b + 1)
                     xd_b, yd_b = _broken_arrays_from_indices(idx, cap_x, voltage)
                     lbl = '_nolegend_' if ln_c is not None else str(cyc)
-                    # Swap x and y if --ro flag is set
-                    if getattr(args, 'ro', False):
-                        ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                        linewidth=2.0, label=lbl, alpha=0.8)
-                    else:
                     ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                     linewidth=2.0, label=lbl, alpha=0.8)
                 cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
                 
-        # Swap x and y if --ro flag is set
-        if getattr(args, 'ro', False):
-            ax.set_xlabel('Voltage (V)', labelpad=8.0)
-            ax.set_ylabel(x_label_gc, labelpad=8.0)
-        else:
         ax.set_xlabel(x_label_gc, labelpad=8.0)
         ax.set_ylabel('Voltage (V)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
