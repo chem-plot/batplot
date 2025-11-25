@@ -183,11 +183,11 @@ def _print_general_help() -> None:
     "  batplot -h xy   # XY file plotting guide\n"
     "  batplot -h ec   # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
     "  batplot -h op   # Operando guide\n"
-    "  Manual: https://github.com/tiandai-chem/batplot/blob/main/USER_MANUAL.md\n\n"
+    "  Manual: to be added\n\n"
     "Contact & Updates:\n"
     "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
     "  (If you are not from UiO, send an email to sympa@kjemi.uio.no with the subject line \"subscribe batplot-lab@kjemi.uio.no your-name\")\n"
-    "  GitHub: https://github.com/tiandai-chem/batplot\n"
+    "  GitHub: https://github.com/TianDaiChem\n"
     "  Kindly cite the github page if the plot is used for publication\n"
     "  Email: tianda@uio.no\n"
     )
