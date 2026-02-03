@@ -38,56 +38,229 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .utils import _confirm_overwrite
+from .color_utils import ensure_colormap
+
+
+def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
+    """Try to extract package_versions from a pickle file even if it fails to fully load.
+    
+    Note: This may not work if pickle.load() fails completely due to missing modules.
+    In that case, we can't extract version info, but we can still show current version.
+    
+    Returns:
+        dict with package versions, or empty dict if extraction fails
+    """
+    try:
+        with open(filename, 'rb') as f:
+            # Try to load the pickle
+            # This will fail if numpy._core is missing, but we try anyway
+            sess = pickle.load(f)
+            if isinstance(sess, dict):
+                return sess.get('package_versions', {})
+    except Exception:
+        # If loading fails completely (e.g., ModuleNotFoundError for numpy._core),
+        # we can't extract version info. This is expected in version mismatch cases.
+        pass
+    return {}
+
+
+def _get_current_numpy_version() -> str:
+    """Get current numpy version, even if import fails.
+    
+    Tries multiple methods:
+    1. Direct import (fastest)
+    2. pip show (works even if import fails)
+    3. Returns 'unknown' if all fail
+    
+    Returns:
+        Version string or 'unknown'
+    """
+    # Method 1: Try direct import
+    try:
+        import numpy
+        return numpy.__version__
+    except Exception:
+        pass
+    
+    # Method 2: Try pip show
+    try:
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'show', 'numpy'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if line.startswith('Version:'):
+                    return line.split(':', 1)[1].strip()
+    except Exception:
+        pass
+    
+    return 'unknown'
 
 
 def _current_tick_width(axis_obj, which: str):
-    """Return the configured tick width for the given X/Y axis."""
+    """
+    Return the configured tick width for the given X/Y axis.
+    
+    HOW IT WORKS:
+    ------------
+    Tick widths can be set in two places:
+    1. **Per-axis setting**: Stored in axis object's internal dictionary
+       - This is set when you use ax.tick_params(axis='x', which='major', width=2.0)
+       - Stored in axis_obj._major_tick_kw or axis_obj._minor_tick_kw
+    
+    2. **Global matplotlib setting**: Stored in plt.rcParams
+       - This is the default used when per-axis setting isn't specified
+       - Key format: 'xtick.major.width' or 'ytick.minor.width'
+    
+    This function checks both locations (per-axis first, then global) to find
+    the actual width being used.
+    
+    Args:
+        axis_obj: Matplotlib axis object (ax.xaxis or ax.yaxis)
+        which: 'major' or 'minor' (which type of ticks)
+    
+    Returns:
+        Tick width as float, or None if not found
+    """
     try:
+        # Try to get width from axis object's internal settings
+        # _major_tick_kw and _minor_tick_kw are dictionaries storing tick parameters
         tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-        width = tick_kw.get('width')
+        width = tick_kw.get('width')  # Get 'width' key from dictionary
+        
+        # If not found in axis object, check global matplotlib settings
         if width is None:
+            # Get axis name ('x' or 'y') - defaults to 'x' if not found
             axis_name = getattr(axis_obj, 'axis_name', 'x')
+            # Build rcParams key: 'xtick.major.width' or 'ytick.minor.width'
             rc_key = f"{axis_name}tick.{which}.width"
-            width = plt.rcParams.get(rc_key)
+            width = plt.rcParams.get(rc_key)  # Get from global settings
+        
+        # Convert to float if found
         if width is not None:
             return float(width)
     except Exception:
+        # If anything fails (attribute error, type error, etc.), return None
         pass
     return None
 
 
 def _axis_label_text(ax, attr_name: str, getter):
+    """
+    Get axis label text, trying stored value first, then current label.
+    
+    HOW IT WORKS:
+    ------------
+    Sometimes axis labels are hidden but we still want to know what they were.
+    This function tries two sources:
+    
+    1. **Stored attribute**: Check if label was saved in a special attribute
+       - Example: ax._stored_xlabel might contain "Voltage (V)" even if label is hidden
+       - This preserves the label text when labels are temporarily hidden
+    
+    2. **Current label**: Get text from the actual label object
+       - Example: ax.xaxis.label.get_text()
+       - This is the "live" label that's currently displayed
+    
+    WHY TWO SOURCES?
+    ---------------
+    When labels are hidden (via WASD menu), the label object might be empty,
+    but we saved the text in a stored attribute. This function ensures we can
+    always retrieve the label text, even when hidden.
+    
+    Args:
+        ax: Matplotlib axes object
+        attr_name: Name of stored attribute (e.g., '_stored_xlabel')
+        getter: Function to call to get current label (e.g., lambda: ax.get_xlabel())
+    
+    Returns:
+        Label text string, or empty string if not found
+    """
+    # Try stored attribute first (preserves text even when label is hidden)
     try:
         stored = getattr(ax, attr_name)
         if isinstance(stored, str) and stored:
             return stored
     except Exception:
         pass
+    
+    # Fallback: get from current label object
     try:
-        return getter() or ''
+        return getter() or ''  # getter() returns current label text
     except Exception:
         return ''
 
 
 def _apply_axes_bbox(ax, bbox) -> bool:
-    """Apply stored axes bbox (left/right/bottom/top fractions)."""
+    """
+    Apply stored axes bounding box (position and size) to restore plot geometry.
+    
+    HOW IT WORKS:
+    ------------
+    The bounding box (bbox) defines where the plot area is positioned within
+    the figure. It's stored as fractions (0.0 to 1.0) of the figure size.
+    
+    COORDINATE SYSTEM:
+    -----------------
+    Figure coordinates (fractions):
+    - (0.0, 0.0) = bottom-left corner of figure
+    - (1.0, 1.0) = top-right corner of figure
+    - left, right, bottom, top are all between 0.0 and 1.0
+    
+    Example bbox:
+        left=0.15, right=0.95, bottom=0.15, top=0.95
+        This means plot occupies 80% of figure width (0.95-0.15) and 80% of height,
+        centered with 15% margins on all sides.
+    
+    CALCULATION:
+    -----------
+    - width = right - left (horizontal size)
+    - height = top - bottom (vertical size)
+    - Position = [left, bottom, width, height]
+    
+    Args:
+        ax: Matplotlib axes object
+        bbox: Dictionary with keys 'left', 'right', 'bottom', 'top' (all floats 0.0-1.0)
+    
+    Returns:
+        True if bbox was successfully applied, False if invalid or error occurred
+    """
+    # Validate input: must be a dictionary
     if not isinstance(bbox, dict):
         return False
+    
+    # Check that all required keys are present
     required = ('left', 'right', 'bottom', 'top')
     if not all(k in bbox for k in required):
         return False
+    
     try:
+        # Extract and convert to floats
         left = float(bbox['left'])
         right = float(bbox['right'])
         bottom = float(bbox['bottom'])
         top = float(bbox['top'])
-        width = right - left
-        height = top - bottom
+        
+        # Calculate dimensions
+        width = right - left   # Horizontal size
+        height = top - bottom  # Vertical size
+        
+        # Validate dimensions (must be positive)
         if width <= 0 or height <= 0:
             return False
+        
+        # Apply position and size to axes
+        # set_position([left, bottom, width, height]) sets plot area within figure
         ax.set_position([left, bottom, width, height])
         return True
     except Exception:
+        # If any conversion or application fails, return False
         return False
 
 
@@ -327,6 +500,30 @@ def dump_session(
             'orig_y': [np.array(a) for a in orig_y],
             'offsets': list(offsets_list),
             'labels': list(labels),
+            # Processed data (for smooth/reduce operations)
+            'original_x_data_list': ([np.array(a) for a in getattr(fig, '_original_x_data_list', [])] 
+                                     if hasattr(fig, '_original_x_data_list') else None),
+            'original_y_data_list': ([np.array(a) for a in getattr(fig, '_original_y_data_list', [])] 
+                                     if hasattr(fig, '_original_y_data_list') else None),
+            'full_processed_x_data_list': ([np.array(a) for a in getattr(fig, '_full_processed_x_data_list', [])] 
+                                            if hasattr(fig, '_full_processed_x_data_list') else None),
+            'full_processed_y_data_list': ([np.array(a) for a in getattr(fig, '_full_processed_y_data_list', [])] 
+                                            if hasattr(fig, '_full_processed_y_data_list') else None),
+            'smooth_settings': (dict(getattr(fig, '_smooth_settings', {})) 
+                               if hasattr(fig, '_smooth_settings') else None),
+            'last_smooth_settings': (dict(getattr(fig, '_last_smooth_settings', {})) 
+                                    if hasattr(fig, '_last_smooth_settings') else None),
+            # Derivative data (for derivative operations)
+            'pre_derivative_x_data_list': ([np.array(a) for a in getattr(fig, '_pre_derivative_x_data_list', [])] 
+                                           if hasattr(fig, '_pre_derivative_x_data_list') else None),
+            'pre_derivative_y_data_list': ([np.array(a) for a in getattr(fig, '_pre_derivative_y_data_list', [])] 
+                                           if hasattr(fig, '_pre_derivative_y_data_list') else None),
+            'pre_derivative_ylabel': (str(getattr(fig, '_pre_derivative_ylabel', '')) 
+                                      if hasattr(fig, '_pre_derivative_ylabel') else None),
+            'derivative_order': (int(getattr(fig, '_derivative_order', 0)) 
+                                if hasattr(fig, '_derivative_order') else None),
+            'derivative_reversed': (bool(getattr(fig, '_derivative_reversed', False)) 
+                                   if hasattr(fig, '_derivative_reversed') else None),
             'line_styles': [
                 {
                     'color': ln.get_color(),
@@ -367,6 +564,7 @@ def dump_session(
             'tick_state': dict(tick_state),
             'tick_widths': tick_widths,
             'tick_lengths': tick_lengths,
+            'tick_direction': getattr(fig, '_tick_direction', 'out'),
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
@@ -396,8 +594,11 @@ def dump_session(
         }
         # Save curve names visibility
         sess['curve_names_visible'] = bool(getattr(fig, '_curve_names_visible', True))
-        # Save stack label position preference
+        # Save whether data were plotted with swapped axes via --ro
+        sess['ro_active'] = bool(getattr(fig, '_ro_active', False))
+        # Save stack/legend anchor preferences
         sess['stack_label_at_bottom'] = bool(getattr(fig, '_stack_label_at_bottom', False))
+        sess['label_anchor_left'] = bool(getattr(fig, '_label_anchor_left', False))
         # Save grid state
         sess['grid'] = ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
         if skip_confirm:
@@ -407,6 +608,10 @@ def dump_session(
             if not target:
                 print("Session save canceled.")
                 return
+        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+        from .utils import ensure_exact_case_filename
+        target = ensure_exact_case_filename(target)
+        
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"Session saved to {target}")
@@ -462,7 +667,10 @@ def dump_operando_session(
         # Use masked arrays to preserve NaNs if present
         data = _np.array(arr)  # preserves mask where possible
         extent = tuple(map(float, im.get_extent())) if hasattr(im, 'get_extent') else None
-        cmap_name = getattr(im.get_cmap(), 'name', None)
+        # Get colormap name: first check if we stored it explicitly, otherwise try to get from colormap object
+        cmap_name = getattr(im, '_operando_cmap_name', None)
+        if cmap_name is None:
+            cmap_name = getattr(im.get_cmap(), 'name', None)
         clim = tuple(map(float, im.get_clim())) if hasattr(im, 'get_clim') else None
         origin = getattr(im, 'origin', 'upper')
         interpolation = getattr(im, 'get_interpolation', lambda: None)() or 'nearest'
@@ -502,20 +710,34 @@ def dump_operando_session(
         def _capture_wasd_state(axis):
             ts = getattr(axis, '_saved_tick_state', {})
             wasd = {}
+            # Check if ylabel is positioned on right (typical for EC axis)
+            ylabel_on_right = False
+            try:
+                ylabel_on_right = (axis.yaxis.get_label_position() == 'right')
+            except Exception:
+                pass
+            
             for side in ('top', 'bottom', 'left', 'right'):
                 sp = axis.spines.get(side)
                 prefix = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}[side]
-                # For 'left' side ylabel: check if it's currently visible (has text)
-                # If hidden but has stored text, the title state should be False (hidden)
+                # Title state logic
                 if side == 'left':
-                    ylabel_text = axis.get_ylabel()
-                    title_state = bool(ylabel_text)  # True only if currently visible with text
+                    # If ylabel is positioned on right (EC axis), left has no title
+                    if ylabel_on_right:
+                        title_state = False
+                    else:
+                        ylabel_text = axis.get_ylabel()
+                        title_state = bool(ylabel_text)  # True only if currently visible with text
                 elif side == 'bottom':
                     title_state = bool(axis.get_xlabel())
                 elif side == 'top':
                     title_state = bool(getattr(axis, '_top_xlabel_on', False))
                 elif side == 'right':
-                    title_state = bool(getattr(axis, '_right_ylabel_on', False))
+                    # If ylabel is positioned on right (EC axis), check if ylabel is visible (not empty)
+                    if ylabel_on_right:
+                        title_state = bool(axis.get_ylabel())  # Empty string = hidden by user
+                    else:
+                        title_state = bool(getattr(axis, '_right_ylabel_on', False))
                 else:
                     title_state = False
                 
@@ -551,6 +773,16 @@ def dump_operando_session(
         # Capture operando WASD state, spines, and tick widths
         op_wasd_state = _capture_wasd_state(ax)
         op_spines, op_ticks = _capture_spine_tick_widths(ax)
+        
+        # Capture operando title offsets
+        op_title_offsets = {
+            'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
 
         # EC panel (optional)
         ec_state = None
@@ -589,6 +821,16 @@ def dump_operando_session(
             ec_wasd_state = _capture_wasd_state(ec_ax)
             ec_spines, ec_ticks = _capture_spine_tick_widths(ec_ax)
             
+            # Capture EC title offsets
+            ec_title_offsets = {
+                'top_y': float(getattr(ec_ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                'top_x': float(getattr(ec_ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                'bottom_y': float(getattr(ec_ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                'left_x': float(getattr(ec_ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                'right_x': float(getattr(ec_ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                'right_y': float(getattr(ec_ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+            }
+            
             ec_state = {
                 'time_h': time_h,
                 'volt_v': volt_v,
@@ -604,6 +846,7 @@ def dump_operando_session(
                 'wasd_state': ec_wasd_state,
                 'spines': ec_spines,
                 'ticks': {'widths': ec_ticks},
+                'title_offsets': ec_title_offsets,
                 'stored_ylabel': getattr(ec_ax, '_stored_ylabel', None),  # Save hidden ylabel text
                 'visible': bool(ec_ax.get_visible()),
             }
@@ -638,6 +881,7 @@ def dump_operando_session(
                 'wasd_state': op_wasd_state,
                 'spines': op_spines,
                 'ticks': {'widths': op_ticks},
+                'title_offsets': op_title_offsets,
                 'stored_ylabel': getattr(ax, '_stored_ylabel', None),  # Save hidden ylabel text
             },
             'colorbar': {
@@ -659,6 +903,10 @@ def dump_operando_session(
             if not target:
                 print("Session save canceled.")
                 return
+        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+        from .utils import ensure_exact_case_filename
+        target = ensure_exact_case_filename(target)
+        
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"Operando session saved to {target}")
@@ -674,6 +922,37 @@ def load_operando_session(filename: str):
     try:
         with open(filename, 'rb') as f:
             sess = pickle.load(f)
+    except ModuleNotFoundError as e:
+        # Handle numpy._core and other module import errors
+        if '_core' in str(e) or 'numpy' in str(e).lower():
+            # Try to extract version info before the error
+            saved_versions = _try_extract_version_from_pickle(filename)
+            current_numpy = _get_current_numpy_version()
+            
+            saved_numpy = saved_versions.get('numpy', 'unknown')
+            
+            print(f"\nERROR: NumPy version mismatch detected when loading: {filename}")
+            print("This session was saved with a different NumPy version.")
+            print()
+            print(f"Session was saved with:  NumPy {saved_numpy}")
+            print(f"Currently installed:     NumPy {current_numpy}")
+            print()
+            print("The error 'No module named numpy._core' indicates:")
+            print("  - Session saved with NumPy 2.0+ but loading with NumPy <2.0, OR")
+            print("  - Session saved with NumPy <2.0 but loading with NumPy 2.0+")
+            print()
+            print("Solutions:")
+            if saved_numpy != 'unknown':
+                print(f"  1. Install matching version: pip install 'numpy=={saved_numpy}'")
+            else:
+                print("  1. Try installing NumPy <2.0: pip install 'numpy<2.0'")
+                print("     OR try installing NumPy 2.0+: pip install 'numpy>=2.0'")
+            print("  2. Recreate the session from original data files")
+        else:
+            print(f"\nERROR: Module import error when loading: {filename}")
+            print(f"Error: {e}")
+            print("This usually indicates a package version mismatch.")
+        return None
     except Exception as e:
         print(f"Failed to load session: {e}")
         return None
@@ -685,6 +964,11 @@ def load_operando_session(filename: str):
     # Use standard DPI of 100 instead of saved DPI to avoid display-dependent issues
     # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
     fig = plt.figure(figsize=tuple(sess['figure']['size']), dpi=100)
+    # Seed last-session path so 'os' overwrite command is available immediately
+    try:
+        fig._last_session_save_path = os.path.abspath(filename)
+    except Exception:
+        pass
     # Disable automatic layout adjustments to preserve saved geometry
     try:
         fig.set_layout_engine('none')
@@ -720,8 +1004,16 @@ def load_operando_session(filename: str):
     op = sess['operando']
     arr = _ma.masked_invalid(op['array'])
     extent = tuple(op['extent']) if op['extent'] is not None else None
+    cmap_name = op.get('cmap') or 'viridis'
+    try:
+        if not ensure_colormap(cmap_name):
+            cmap_name = 'viridis'
+    except Exception:
+        cmap_name = 'viridis'
     im = ax.imshow(arr, aspect='auto', origin=op.get('origin', 'upper'), extent=extent,
-                   cmap=op.get('cmap') or 'viridis', interpolation=op.get('interpolation', 'nearest'))
+                   cmap=cmap_name, interpolation=op.get('interpolation', 'nearest'))
+    # Store the colormap name explicitly so it can be retrieved reliably when saving
+    setattr(im, '_operando_cmap_name', cmap_name)
     if op.get('clim'):
         try:
             im.set_clim(*op['clim'])
@@ -821,6 +1113,19 @@ def load_operando_session(filename: str):
     stored_ylabel = op.get('stored_ylabel')
     if stored_ylabel is not None:
         setattr(ax, '_stored_ylabel', stored_ylabel)
+    
+    # Restore operando title offsets
+    try:
+        op_title_offsets = op.get('title_offsets', {})
+        if op_title_offsets:
+            ax._top_xlabel_manual_offset_y_pts = float(op_title_offsets.get('top_y', 0.0) or 0.0)
+            ax._top_xlabel_manual_offset_x_pts = float(op_title_offsets.get('top_x', 0.0) or 0.0)
+            ax._bottom_xlabel_manual_offset_y_pts = float(op_title_offsets.get('bottom_y', 0.0) or 0.0)
+            ax._left_ylabel_manual_offset_x_pts = float(op_title_offsets.get('left_x', 0.0) or 0.0)
+            ax._right_ylabel_manual_offset_x_pts = float(op_title_offsets.get('right_x', 0.0) or 0.0)
+            ax._right_ylabel_manual_offset_y_pts = float(op_title_offsets.get('right_y', 0.0) or 0.0)
+    except Exception:
+        pass
         
         # Apply operando spines
         op_spines = op.get('spines', {})
@@ -950,11 +1255,33 @@ def load_operando_session(filename: str):
                                      bottom=bool(ec_wasd.get('bottom', {}).get('ticks', True)),
                                      labeltop=bool(ec_wasd.get('top', {}).get('labels', False)),
                                      labelbottom=bool(ec_wasd.get('bottom', {}).get('labels', True)))
+                    # For EC: ticks and labels are on RIGHT by default, not left!
+                    # CRITICAL: EC y-axis defaults are: left=False, right=True (both ticks and labels)
+                    # Old sessions may have saved wrong values, so we need to sanitize them
+                    
+                    # EC left side should ALWAYS be False (EC uses right side for y-axis)
+                    left_ticks = False
+                    left_labels = False
+                    
+                    # EC right side should be True when ylabel is visible
+                    right_title = ec_wasd.get('right', {}).get('title', True)
+                    
+                    # If right title is ON, ticks/labels should also be ON
+                    if right_title:
+                        right_ticks = True
+                        right_labels = True
+                    else:
+                        # Title is hidden - respect the saved tick/label state or use False
+                        right_ticks_val = ec_wasd.get('right', {}).get('ticks')
+                        right_labels_val = ec_wasd.get('right', {}).get('labels')
+                        right_ticks = bool(right_ticks_val) if right_ticks_val is not None else False
+                        right_labels = bool(right_labels_val) if right_labels_val is not None else False
+                    
                     ec_ax.tick_params(axis='y',
-                                     left=bool(ec_wasd.get('left', {}).get('ticks', True)),
-                                     right=bool(ec_wasd.get('right', {}).get('ticks', False)),
-                                     labelleft=bool(ec_wasd.get('left', {}).get('labels', True)),
-                                     labelright=bool(ec_wasd.get('right', {}).get('labels', False)))
+                                     left=left_ticks,
+                                     right=right_ticks,
+                                     labelleft=left_labels,
+                                     labelright=right_labels)
                     # Apply minor ticks
                     if ec_wasd.get('top', {}).get('minor') or ec_wasd.get('bottom', {}).get('minor'):
                         ec_ax.xaxis.set_minor_locator(AutoMinorLocator())
@@ -1071,6 +1398,19 @@ def load_operando_session(filename: str):
         if stored_ylabel is not None:
             setattr(ec_ax, '_stored_ylabel', stored_ylabel)
         
+        # Restore EC title offsets
+        try:
+            ec_title_offsets = ec.get('title_offsets', {})
+            if ec_title_offsets:
+                ec_ax._top_xlabel_manual_offset_y_pts = float(ec_title_offsets.get('top_y', 0.0) or 0.0)
+                ec_ax._top_xlabel_manual_offset_x_pts = float(ec_title_offsets.get('top_x', 0.0) or 0.0)
+                ec_ax._bottom_xlabel_manual_offset_y_pts = float(ec_title_offsets.get('bottom_y', 0.0) or 0.0)
+                ec_ax._left_ylabel_manual_offset_x_pts = float(ec_title_offsets.get('left_x', 0.0) or 0.0)
+                ec_ax._right_ylabel_manual_offset_x_pts = float(ec_title_offsets.get('right_x', 0.0) or 0.0)
+                ec_ax._right_ylabel_manual_offset_y_pts = float(ec_title_offsets.get('right_y', 0.0) or 0.0)
+        except Exception:
+            pass
+        
         # Apply EC spines (WASD state already applied above)
         if version >= 2:
             # Apply EC spines
@@ -1140,6 +1480,18 @@ def load_operando_session(filename: str):
                 setattr(ec_ax, '_ec_h_offset_in', 0.0)
         elif ec_h_offset is not None:
             # EC panel doesn't exist but offset was saved - ignore it
+            pass
+        
+        # Apply layout with loaded offsets to ensure visual position matches saved position
+        # This must happen after all offsets and geometry parameters are set
+        try:
+            from .operando_ec_interactive import _apply_group_layout_inches, _ensure_fixed_params
+            # Get current geometry parameters (which should match what was just loaded)
+            cb_w_i, cb_gap_i, ec_gap_i, ec_w_i, ax_w_i, ax_h_i = _ensure_fixed_params(fig, ax, cbar_ax, ec_ax)
+            # Apply layout with loaded offsets (offsets are already set as attributes above)
+            _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax, ax_w_i, ax_h_i, cb_w_i, cb_gap_i, ec_gap_i, ec_w_i)
+        except Exception:
+            # If layout application fails, continue - better to have a slightly wrong layout than crash
             pass
     except Exception:
         pass
@@ -1309,6 +1661,15 @@ def dump_ec_session(
             'top_x': bool(getattr(ax, '_top_xlabel_on', False)),
             'right_y': bool(getattr(ax, '_right_ylabel_on', False)),
         }
+        # Title offsets
+        title_offsets = {
+            'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
         # Subplot margins
         sp = fig.subplotpars
         subplot_margins = {
@@ -1427,6 +1788,7 @@ def dump_ec_session(
             'tick_direction': tick_direction,
             'spines': spines_state,
             'titles': titles,
+            'title_offsets': title_offsets,
             'mode': getattr(ax, '_is_dqdv_mode', None),  # Store dQdV mode flag
             'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),  # Store rotation angle
             'source_paths': list(getattr(fig, '_bp_source_paths', []) or []),
@@ -1456,6 +1818,37 @@ def load_ec_session(filename: str):
     try:
         with open(filename, 'rb') as f:
             sess = pickle.load(f)
+    except ModuleNotFoundError as e:
+        # Handle numpy._core and other module import errors
+        if '_core' in str(e) or 'numpy' in str(e).lower():
+            # Try to extract version info before the error
+            saved_versions = _try_extract_version_from_pickle(filename)
+            current_numpy = _get_current_numpy_version()
+            
+            saved_numpy = saved_versions.get('numpy', 'unknown')
+            
+            print(f"\nERROR: NumPy version mismatch detected when loading: {filename}")
+            print("This session was saved with a different NumPy version.")
+            print()
+            print(f"Session was saved with:  NumPy {saved_numpy}")
+            print(f"Currently installed:     NumPy {current_numpy}")
+            print()
+            print("The error 'No module named numpy._core' indicates:")
+            print("  - Session saved with NumPy 2.0+ but loading with NumPy <2.0, OR")
+            print("  - Session saved with NumPy <2.0 but loading with NumPy 2.0+")
+            print()
+            print("Solutions:")
+            if saved_numpy != 'unknown':
+                print(f"  1. Install matching version: pip install 'numpy=={saved_numpy}'")
+            else:
+                print("  1. Try installing NumPy <2.0: pip install 'numpy<2.0'")
+                print("     OR try installing NumPy 2.0+: pip install 'numpy>=2.0'")
+            print("  2. Recreate the session from original data files")
+        else:
+            print(f"\nERROR: Module import error when loading: {filename}")
+            print(f"Error: {e}")
+            print("This usually indicates a package version mismatch.")
+        return None
     except Exception as e:
         print(f"Failed to load EC session: {e}")
         return None
@@ -1467,6 +1860,11 @@ def load_ec_session(filename: str):
     # Use standard DPI of 100 instead of saved DPI to avoid display-dependent issues
     # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
     fig = plt.figure(figsize=tuple(sess['figure']['size']), dpi=100)
+    # Seed last-session path so 'os' overwrite command is available immediately
+    try:
+        fig._last_session_save_path = os.path.abspath(filename)
+    except Exception:
+        pass
     # Preserve saved geometry by disabling auto layout
     try:
         fig.set_layout_engine('none')
@@ -1864,6 +2262,19 @@ def load_ec_session(filename: str):
         ax.set_ylabel('')
         ax.yaxis.label.set_visible(False)
 
+    # Restore title offsets BEFORE positioning titles
+    try:
+        title_offsets = sess.get('title_offsets', {})
+        if title_offsets:
+            ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+            ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+            ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+            ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+            ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+            ax._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
+    except Exception:
+        pass
+    
     # Duplicate titles
     try:
         titles = sess.get('titles', {})
@@ -2144,6 +2555,15 @@ def dump_cpc_session(
             'top_xlabel': getattr(ax, '_stored_top_xlabel', ''),
             'right_ylabel': getattr(ax2, '_stored_ylabel', ax2.get_ylabel()),
         }
+        # Title offsets
+        title_offsets = {
+            'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_x': float(getattr(ax2, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_y': float(getattr(ax2, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
         
         meta = {
             'kind': 'cpc',
@@ -2206,6 +2626,7 @@ def dump_cpc_session(
             'wasd_state': wasd_state,
             'tick_widths': tick_widths,
             'stored_titles': stored_titles,
+            'title_offsets': title_offsets,
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
@@ -2219,6 +2640,30 @@ def dump_cpc_session(
         if file_data and isinstance(file_data, list) and len(file_data) > 0:
             multi_files = []
             for f in file_data:
+                def _marker_of(sc, default_val):
+                    try:
+                        m = getattr(sc, 'get_marker', lambda: default_val)()
+                        if m is None:
+                            return default_val
+                        return m
+                    except Exception:
+                        return default_val
+                def _alpha_of(sc, default_val=None):
+                    try:
+                        a = sc.get_alpha()
+                        return float(a) if a is not None else default_val
+                    except Exception:
+                        return default_val
+                def _visible_of(sc, default_val=True):
+                    try:
+                        return bool(sc.get_visible())
+                    except Exception:
+                        return default_val
+                def _label_of(sc, default_val=""):
+                    try:
+                        return sc.get_label() or default_val
+                    except Exception:
+                        return default_val
                 file_info = {
                     'filename': f.get('filename', 'unknown'),
                     'visible': f.get('visible', True),
@@ -2226,16 +2671,31 @@ def dump_cpc_session(
                         'x': _np.array(_scatter_xy(f.get('sc_charge', sc_charge))[0]),
                         'y': _np.array(_scatter_xy(f.get('sc_charge', sc_charge))[1]),
                         'color': _color_of(f.get('sc_charge')),
+                        'size': _size_of(f.get('sc_charge'), 32.0),
+                        'alpha': _alpha_of(f.get('sc_charge')),
+                        'marker': _marker_of(f.get('sc_charge'), 'o'),
+                        'label': _label_of(f.get('sc_charge'), 'Charge capacity'),
+                        'visible': _visible_of(f.get('sc_charge')),
                     },
                     'discharge': {
                         'x': _np.array(_scatter_xy(f.get('sc_discharge', sc_discharge))[0]),
                         'y': _np.array(_scatter_xy(f.get('sc_discharge', sc_discharge))[1]),
                         'color': _color_of(f.get('sc_discharge')),
+                        'size': _size_of(f.get('sc_discharge'), 32.0),
+                        'alpha': _alpha_of(f.get('sc_discharge')),
+                        'marker': _marker_of(f.get('sc_discharge'), 's'),
+                        'label': _label_of(f.get('sc_discharge'), 'Discharge capacity'),
+                        'visible': _visible_of(f.get('sc_discharge')),
                     },
                     'efficiency': {
                         'x': _np.array(_scatter_xy(f.get('sc_eff', sc_eff))[0]),
                         'y': _np.array(_scatter_xy(f.get('sc_eff', sc_eff))[1]),
                         'color': _color_of(f.get('sc_eff')),
+                        'size': _size_of(f.get('sc_eff'), 40.0),
+                        'alpha': _alpha_of(f.get('sc_eff')),
+                        'marker': _marker_of(f.get('sc_eff'), '^'),
+                        'label': _label_of(f.get('sc_eff'), 'Coulombic efficiency'),
+                        'visible': _visible_of(f.get('sc_eff')),
                     }
                 }
                 multi_files.append(file_info)
@@ -2256,13 +2716,44 @@ def dump_cpc_session(
 
 
 def load_cpc_session(filename: str):
-    """Load a CPC session and reconstruct fig, axes, and scatter artists.
+    """Load a CPC session and reconstruct fig, axes, scatter artists, and file_data.
 
-    Returns: (fig, ax, ax2, sc_charge, sc_discharge, sc_eff)
+    Returns: (fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
     """
     try:
         with open(filename, 'rb') as f:
             sess = pickle.load(f)
+    except ModuleNotFoundError as e:
+        # Handle numpy._core and other module import errors
+        if '_core' in str(e) or 'numpy' in str(e).lower():
+            # Try to extract version info before the error
+            saved_versions = _try_extract_version_from_pickle(filename)
+            current_numpy = _get_current_numpy_version()
+            
+            saved_numpy = saved_versions.get('numpy', 'unknown')
+            
+            print(f"\nERROR: NumPy version mismatch detected when loading: {filename}")
+            print("This session was saved with a different NumPy version.")
+            print()
+            print(f"Session was saved with:  NumPy {saved_numpy}")
+            print(f"Currently installed:     NumPy {current_numpy}")
+            print()
+            print("The error 'No module named numpy._core' indicates:")
+            print("  - Session saved with NumPy 2.0+ but loading with NumPy <2.0, OR")
+            print("  - Session saved with NumPy <2.0 but loading with NumPy 2.0+")
+            print()
+            print("Solutions:")
+            if saved_numpy != 'unknown':
+                print(f"  1. Install matching version: pip install 'numpy=={saved_numpy}'")
+            else:
+                print("  1. Try installing NumPy <2.0: pip install 'numpy<2.0'")
+                print("     OR try installing NumPy 2.0+: pip install 'numpy>=2.0'")
+            print("  2. Recreate the session from original data files")
+        else:
+            print(f"\nERROR: Module import error when loading: {filename}")
+            print(f"Error: {e}")
+            print("This usually indicates a package version mismatch.")
+        return None
     except Exception as e:
         print(f"Failed to load session: {e}")
         return None
@@ -2273,6 +2764,11 @@ def load_cpc_session(filename: str):
         # Use standard DPI of 100 instead of saved DPI to avoid display-dependent issues
         # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
         fig = plt.figure(figsize=tuple(sess['figure']['size']), dpi=100)
+        # Seed last-session path so 'os' overwrite command is available immediately
+        try:
+            fig._last_session_save_path = os.path.abspath(filename)
+        except Exception:
+            pass
         # Disable auto layout
         try:
             fig.set_layout_engine('none')
@@ -2345,12 +2841,47 @@ def load_cpc_session(filename: str):
             except Exception:
                 pass
             return sc
-        sc_charge = _mk_sc(ax, ch, 'o')
-        sc_discharge = _mk_sc(ax, dh, 'o')
-        # efficiency on ax2 with triangles
-        if 'marker' not in ef:
-            ef['marker'] = '^'
-        sc_eff = _mk_sc(ax2, ef, '^')
+        # If multi_files exist, rebuild all files and pick the first as primary
+        multi_files = sess.get('multi_files')
+        file_data = []
+        if multi_files and isinstance(multi_files, list) and len(multi_files) > 0:
+            for idx, finfo in enumerate(multi_files):
+                ch_info = finfo.get('charge', {})
+                dh_info = finfo.get('discharge', {})
+                ef_info = finfo.get('efficiency', {})
+                sc_ch = _mk_sc(ax, ch_info, ch_info.get('marker', 'o') or 'o')
+                sc_dh = _mk_sc(ax, dh_info, dh_info.get('marker', 's') or 's')
+                eff_marker = ef_info.get('marker', '^') or '^'
+                sc_ef = _mk_sc(ax2, ef_info, eff_marker)
+                # Respect overall file visibility
+                try:
+                    vis_file = bool(finfo.get('visible', True))
+                except Exception:
+                    vis_file = True
+                for sc_tmp in (sc_ch, sc_dh, sc_ef):
+                    try:
+                        sc_tmp.set_visible(sc_tmp.get_visible() and vis_file)
+                    except Exception:
+                        pass
+                file_data.append({
+                    'filename': finfo.get('filename', f'File {idx+1}'),
+                    'visible': vis_file,
+                    'sc_charge': sc_ch,
+                    'sc_discharge': sc_dh,
+                    'sc_eff': sc_ef,
+                })
+            # Use the first file as primary artists for interactive menu
+            sc_charge = file_data[0]['sc_charge']
+            sc_discharge = file_data[0]['sc_discharge']
+            sc_eff = file_data[0]['sc_eff']
+        else:
+            # No multi-file info: fall back to single-file series
+            sc_charge = _mk_sc(ax, ch, 'o')
+            sc_discharge = _mk_sc(ax, dh, 's')
+            if 'marker' not in ef:
+                ef['marker'] = '^'
+            sc_eff = _mk_sc(ax2, ef, '^')
+            file_data = None
         
         # Restore spines state (version 2+)
         try:
@@ -2504,6 +3035,16 @@ def load_cpc_session(filename: str):
                     ax2.tick_params(axis='y',
                                     right=wasd_state['right'].get('ticks', True),
                                     labelright=wasd_state['right'].get('labels', True))
+                # Axis title visibility
+                try:
+                    if 'bottom' in wasd_state:
+                        ax.xaxis.label.set_visible(bool(wasd_state['bottom'].get('title', True)))
+                    if 'left' in wasd_state:
+                        ax.yaxis.label.set_visible(bool(wasd_state['left'].get('title', True)))
+                    if 'right' in wasd_state:
+                        ax2.yaxis.label.set_visible(bool(wasd_state['right'].get('title', True)))
+                except Exception:
+                    pass
                 
                 # Minor ticks
                 if wasd_state.get('top', {}).get('minor') or wasd_state.get('bottom', {}).get('minor'):
@@ -2520,6 +3061,23 @@ def load_cpc_session(filename: str):
                     ax2.yaxis.set_minor_locator(AutoMinorLocator())
                     ax2.yaxis.set_minor_formatter(NullFormatter())
                     ax2.tick_params(axis='y', which='minor', right=True)
+                # Store tick_state on axes for interactive menu
+                tick_state = {}
+                for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
+                    s = wasd_state.get(side_key, {})
+                    tick_state[f'{prefix}_ticks'] = bool(s.get('ticks', side_key in ('bottom', 'left')))
+                    tick_state[f'{prefix}_labels'] = bool(s.get('labels', side_key in ('bottom', 'left')))
+                    tick_state[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
+                # Legacy keys
+                tick_state['bx'] = tick_state.get('b_ticks', True)
+                tick_state['tx'] = tick_state.get('t_ticks', False)
+                tick_state['ly'] = tick_state.get('l_ticks', True)
+                tick_state['ry'] = tick_state.get('r_ticks', True)  # CPC has right axis
+                tick_state['mbx'] = tick_state.get('mbx', False)
+                tick_state['mtx'] = tick_state.get('mtx', False)
+                tick_state['mly'] = tick_state.get('mly', False)
+                tick_state['mry'] = tick_state.get('mry', False)
+                ax._saved_tick_state = tick_state
         except Exception:
             pass
         
@@ -2539,6 +3097,19 @@ def load_cpc_session(filename: str):
                     ax2.tick_params(axis='y', which='major', width=float(tw['ry_major']))
                 if tw.get('ry_minor') is not None:
                     ax2.tick_params(axis='y', which='minor', width=float(tw['ry_minor']))
+        except Exception:
+            pass
+        
+        # Restore title offsets BEFORE restoring titles
+        try:
+            title_offsets = sess.get('title_offsets', {})
+            if title_offsets:
+                ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+                ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+                ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+                ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+                ax2._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+                ax2._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
         except Exception:
             pass
         
@@ -2565,26 +3136,54 @@ def load_cpc_session(filename: str):
         try:
             handles1, labels1 = ax.get_legend_handles_labels()
             handles2, labels2 = ax2.get_legend_handles_labels()
-            if handles1 or handles2:
-                leg_meta = sess.get('legend', {})
-                xy_in = leg_meta.get('xy_in')
+            # Filter visible handles only
+            H, L = [], []
+            for h, l in list(zip(handles1, labels1)) + list(zip(handles2, labels2)):
+                try:
+                    if hasattr(h, 'get_visible') and not h.get_visible():
+                        continue
+                except Exception:
+                    pass
+                H.append(h); L.append(l)
+            leg_meta = sess.get('legend', {})
+            xy_in = leg_meta.get('xy_in')
+            vis = bool(leg_meta.get('visible', True))
+            if H and vis:
                 if xy_in is not None:
                     fw, fh = fig.get_size_inches()
                     fx = 0.5 + float(xy_in[0]) / float(fw)
                     fy = 0.5 + float(xy_in[1]) / float(fh)
-                    ax.legend(handles1 + handles2, labels1 + labels2, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+                    # Use same spacing parameters as _legend_no_frame for consistent legend appearance
+                    leg = ax.legend(H, L, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, 
+                                   handlelength=1.0, handletextpad=0.35, labelspacing=0.25, 
+                                   borderaxespad=0.5, borderpad=0.3, columnspacing=0.6,
+                                   labelcolor='linecolor', frameon=False)
                     # persist inches on fig for interactive menu
                     try:
                         fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1]))
                     except Exception:
                         pass
                 else:
-                    ax.legend(handles1 + handles2, labels1 + labels2, loc='best', borderaxespad=1.0)
-                # Apply visibility
-                vis = bool(leg_meta.get('visible', True))
+                    # Use same spacing parameters as _legend_no_frame for consistent legend appearance
+                    leg = ax.legend(H, L, loc='best', 
+                                   handlelength=1.0, handletextpad=0.35, labelspacing=0.25, 
+                                   borderaxespad=0.5, borderpad=0.3, columnspacing=0.6,
+                                   labelcolor='linecolor', frameon=False)
+                # Ensure legend frame is off (redundant but safe)
+                try:
+                    if leg is not None:
+                        leg.set_frame_on(False)
+                except Exception:
+                    pass
+            else:
+                try:
+                    fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
+                except Exception:
+                    pass
+                # ensure legend hidden
                 leg = ax.get_legend()
                 if leg is not None:
-                    leg.set_visible(vis)
+                    leg.set_visible(False)
         except Exception:
             pass
         try:
@@ -2594,7 +3193,7 @@ def load_cpc_session(filename: str):
                 fig.canvas.draw_idle()
             except Exception:
                 pass
-        return fig, ax, ax2, sc_charge, sc_discharge, sc_eff
+        return fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data
     except Exception as e:
         import traceback
         print(f"Error loading CPC session: {e}")

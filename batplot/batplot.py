@@ -1,16 +1,15 @@
-"""batplot - Interactive plotting for XRD, PDF, XAS and electrochemistry data.
-
-This module can be imported as a library (safe, no side effects) or run as CLI (via batplot_main()).
+"""batplot - Interactive plotting for 1D, electrochemistry and operando contour plots.
+   It is designed for researchers working on materials science and electrochemistry, aiming to speed up the plotting process.
 """
 
 from __future__ import annotations
 
-# Import all dependencies at module level (no side effects)
+# Import all dependencies at module level
 from .electrochem_interactive import electrochem_interactive_menu
 from .args import parse_args as _bp_parse_args
 from .interactive import interactive_menu
 from .batch import batch_process, batch_process_ec
-from .converters import convert_to_qye
+from .converters import convert_xrd_data
 from .session import (
     dump_session as _bp_dump_session,
     load_ec_session,
@@ -77,9 +76,32 @@ except ImportError:
     operando_ec_interactive_menu = None
 
 try:
-    from .cpc_interactive import cpc_interactive_menu
+    from .cpc_interactive import cpc_interactive_menu, _generate_similar_color
 except ImportError:
     cpc_interactive_menu = None
+    # Fallback function if import fails
+    def _generate_similar_color(base_color):
+        """Generate a similar but distinguishable color for discharge from charge color."""
+        try:
+            from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
+            rgb = to_rgb(base_color)
+            hsv = rgb_to_hsv(rgb)
+            h, s, v = hsv
+            h_new = (h + 0.04) % 1.0
+            s_new = max(0.3, s * 0.85)
+            v_new = max(0.4, v * 0.9)
+            rgb_new = hsv_to_rgb([h_new, s_new, v_new])
+            # Convert numpy array to tuple to avoid truth value ambiguity
+            if hasattr(rgb_new, 'tolist'):
+                return tuple(rgb_new.tolist())
+            return tuple(rgb_new)
+        except Exception:
+            try:
+                from matplotlib.colors import to_rgb
+                rgb = to_rgb(base_color)
+                return tuple(max(0, c * 0.7) for c in rgb)
+            except Exception:
+                return base_color
 
 # Global state variables (used by interactive menus and style system)
 keep_canvas_fixed = False
@@ -272,7 +294,7 @@ def batplot_main() -> int:
     # If no files AND no special flags, nothing to do
     if not args.files and not has_special_flag:
         print("No input provided, nothing to do.")
-        print("Use 'batplot -h' to see help.")
+        print("Use 'batplot -h' for CLI help or 'batplot -m' to open the txt manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
     # ====================================================================
@@ -400,7 +422,10 @@ def batplot_main() -> int:
                 # Ensure font and canvas settings match GC/dQdV
                 _plt.rcParams.update({
                     'font.family': 'sans-serif',
-                    'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
+                    # Prefer DejaVu Sans first because it has good Unicode
+                    # coverage (including subscript/superscript digits), then
+                    # fall back to other common sans-serif fonts.
+                    'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
                     'mathtext.fontset': 'dejavusans',
                     'font.size': 16
                 })
@@ -485,6 +510,11 @@ def batplot_main() -> int:
                     except Exception:
                         pass
                     _plt.show(block=False)
+                    # Track whether data axes were swapped via --ro for this EC figure
+                    try:
+                        fig._ro_active = bool(getattr(args, "ro", False))
+                    except Exception:
+                        pass
                     try:
                         fig._bp_source_paths = [_os.path.abspath(ec_file)]
                     except Exception:
@@ -589,8 +619,10 @@ def batplot_main() -> int:
     # Set global default font
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
-        'mathtext.fontset': 'dejavusans',   # keeps math consistent with Arial-like sans
+        # Use DejaVu Sans first to ensure good Unicode coverage (subscripts,
+        # superscripts, Greek, etc.), then fall back to other common fonts.
+        'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
+        'mathtext.fontset': 'dejavusans',   # keeps math consistent with sans-serif
         'font.size': 16
     })
 
@@ -1041,20 +1073,23 @@ def batplot_main() -> int:
         
         # Process multiple files
         file_data = []  # List of dicts with file info and data
-        # Use perceptually-uniform palettes for capacity (viridis) and efficiency (plasma)
+        # Use tab10 for capacity and viridis for efficiency
         import matplotlib.cm as cm
         import matplotlib.colors as mcolors
         n_files = len(data_files)
         
-        capacity_cmap = cm.get_cmap('viridis')
-        efficiency_cmap = cm.get_cmap('plasma')
+        # Use tab10 hardcoded colors for capacity (matching interactive menu)
+        default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
         if n_files <= 1:
-            cap_positions = [0.55]
-            eff_positions = [0.35]
+            capacity_colors = [default_tab10_colors[0]]
+            eff_positions = [0.55]
         else:
-            cap_positions = np.linspace(0.15, 0.85, n_files)
-            eff_positions = np.linspace(0.2, 0.9, n_files)
-        capacity_colors = [mcolors.rgb2hex(capacity_cmap(pos)[:3]) for pos in cap_positions]
+            capacity_colors = [default_tab10_colors[i % len(default_tab10_colors)] for i in range(n_files)]
+            eff_positions = np.linspace(0.08, 0.88, n_files)
+        
+        # Use viridis for efficiency
+        efficiency_cmap = cm.get_cmap('viridis')
         efficiency_colors = [mcolors.rgb2hex(efficiency_cmap(pos)[:3]) for pos in eff_positions]
         
         for file_idx, ec_file in enumerate(data_files):
@@ -1135,7 +1170,7 @@ def batplot_main() -> int:
                     print(f"Skipped {file_basename}: unsupported format (must be .csv, .xlsx, or .mpt)")
                     continue
                 
-                # Assign colors: distinct hue for each file
+                # Assign colors: distinct hue per file
                 capacity_color = capacity_colors[file_idx % len(capacity_colors)]
                 efficiency_color = efficiency_colors[file_idx % len(efficiency_colors)]
                 
@@ -1174,7 +1209,7 @@ def batplot_main() -> int:
             cap_charge = file_info['cap_charge']
             cap_discharge = file_info['cap_discharge']
             eff = file_info['eff']
-            color = file_info['color']  # Warm color for capacity
+            color = file_info['color']  # Base color for capacity (both charge/discharge)
             eff_color = file_info['eff_color']  # Cold color for efficiency
             label = file_info['filename']
             
@@ -1188,20 +1223,30 @@ def batplot_main() -> int:
                 label_dch = f'{label} (Dch)'
                 label_eff = f'{label} (Eff)'
             
-            # Use slightly different shades for charge/discharge from same file
-            from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
-            rgb = to_rgb(color)
-            # Discharge: shift hue slightly and reduce brightness for clear distinction
-            hsv = rgb_to_hsv(rgb)
-            h, s, v = hsv
-            h_new = (h - 0.05) % 1.0  # Shift hue slightly (more red/brown)
-            v_new = max(0.3, v * 0.75)  # Darker but not too dark
-            discharge_color = hsv_to_rgb([h_new, s, v_new])
-            
-            sc_charge = ax.scatter(cyc_nums, cap_charge, color=color, label=label_chg, 
-                                  s=32, zorder=3, alpha=0.8, marker='o')
-            sc_discharge = ax.scatter(cyc_nums, cap_discharge, color=discharge_color, label=label_dch, 
-                                     s=32, zorder=3, alpha=0.8, marker='s')
+            # Capacity curves: same color, different fill style
+            # - Charge: filled square
+            # - Discharge: hollow square (edge only)
+            sc_charge = ax.scatter(
+                cyc_nums,
+                cap_charge,
+                label=label_chg,
+                s=32,
+                zorder=3,
+                alpha=0.8,
+                marker='s',
+                color=color,
+            )
+            sc_discharge = ax.scatter(
+                cyc_nums,
+                cap_discharge,
+                label=label_dch,
+                s=32,
+                zorder=3,
+                alpha=0.8,
+                marker='s',
+                facecolor='none',
+                edgecolor=color,
+            )
             sc_eff = ax2.scatter(cyc_nums, eff, color=eff_color, marker='^', label=label_eff, 
                                s=40, alpha=0.7, zorder=3)
             
@@ -1217,14 +1262,26 @@ def batplot_main() -> int:
         try:
             h1, l1 = ax.get_legend_handles_labels()
             h2, l2 = ax2.get_legend_handles_labels()
-            leg = ax.legend(h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
-            if leg is not None:
-                try:
-                    leg.set_frame_on(False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            combined_handles = h1 + h2
+            combined_labels = l1 + l2
+            if combined_handles:
+                # Don't use labelcolor='linecolor' for scatter plots with hollow markers
+                # as it causes issues with color extraction
+                leg = ax.legend(
+                    combined_handles, combined_labels,
+                    loc='best',
+                    frameon=False,
+                    handlelength=1.0,
+                    handletextpad=0.35,
+                    labelspacing=0.25,
+                    borderaxespad=0.5,
+                    borderpad=0.3,
+                    columnspacing=0.6,
+                )
+        except Exception as e:
+            print(f"Warning: Could not create CPC legend: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Adjust layout to ensure top and bottom labels/titles are visible
         fig.subplots_adjust(left=0.12, right=0.88, top=0.88, bottom=0.15)
@@ -1279,15 +1336,7 @@ def batplot_main() -> int:
                     pass
                 plt.show(block=False)
                 try:
-                    # Pass file_data for multi-file support, but keep backward compatibility
-                    if len(file_data) == 1:
-                        # Single file: use original signature
-                        cpc_interactive_menu(fig, ax, ax2, 
-                                           file_data[0]['sc_charge'], 
-                                           file_data[0]['sc_discharge'], 
-                                           file_data[0]['sc_eff'])
-                    else:
-                        # Multiple files: pass file_data list
+                    # Always pass file_data so filename is available
                         cpc_interactive_menu(fig, ax, ax2, 
                                            file_data[0]['sc_charge'], 
                                            file_data[0]['sc_discharge'], 
@@ -1755,6 +1804,38 @@ def batplot_main() -> int:
             if not isinstance(sess, dict) or 'version' not in sess:
                 print("Not a valid batplot session file.")
                 exit(1)
+        except ModuleNotFoundError as e:
+            # Handle numpy._core and other module import errors
+            if '_core' in str(e) or 'numpy' in str(e).lower():
+                # Try to extract version info before the error
+                from .session import _try_extract_version_from_pickle, _get_current_numpy_version
+                saved_versions = _try_extract_version_from_pickle(sess_path)
+                current_numpy = _get_current_numpy_version()
+                
+                saved_numpy = saved_versions.get('numpy', 'unknown')
+                
+                print(f"\nERROR: NumPy version mismatch detected when loading: {sess_path}")
+                print("This session was saved with a different NumPy version.")
+                print()
+                print(f"Session was saved with:  NumPy {saved_numpy}")
+                print(f"Currently installed:     NumPy {current_numpy}")
+                print()
+                print("The error 'No module named numpy._core' indicates:")
+                print("  - Session saved with NumPy 2.0+ but loading with NumPy <2.0, OR")
+                print("  - Session saved with NumPy <2.0 but loading with NumPy 2.0+")
+                print()
+                print("Solutions:")
+                if saved_numpy != 'unknown':
+                    print(f"  1. Install matching version: pip install 'numpy=={saved_numpy}'")
+                else:
+                    print("  1. Try installing NumPy <2.0: pip install 'numpy<2.0'")
+                    print("     OR try installing NumPy 2.0+: pip install 'numpy>=2.0'")
+                print("  2. Recreate the session from original data files")
+            else:
+                print(f"\nERROR: Module import error when loading: {sess_path}")
+                print(f"Error: {e}")
+                print("This usually indicates a package version mismatch.")
+            exit(1)
         except Exception as e:
             print(f"Failed to load session: {e}")
             exit(1)
@@ -1773,6 +1854,11 @@ def batplot_main() -> int:
                     pass
                 try:
                     _plt.show(block=False)
+                except Exception:
+                    pass
+                # Seed last-session path so 'os' overwrite command is available immediately
+                try:
+                    fig._last_session_save_path = os.path.abspath(sess_path)
                 except Exception:
                     pass
                 try:
@@ -1810,6 +1896,11 @@ def batplot_main() -> int:
                     _plt.show(block=False)
                 except Exception:
                     pass
+                # Seed last-session path so 'os' overwrite command is available immediately
+                try:
+                    fig2._last_session_save_path = os.path.abspath(sess_path)
+                except Exception:
+                    pass
                 try:
                     if operando_ec_interactive_menu is not None:
                         operando_ec_interactive_menu(fig2, ax2, im2, cbar2, ec_ax2)
@@ -1829,7 +1920,7 @@ def batplot_main() -> int:
                 if not res:
                     print("Failed to load CPC session.")
                     exit(1)
-                fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e = res
+                fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data = res
                 try:
                     _plt.ion()
                 except Exception:
@@ -1838,9 +1929,14 @@ def batplot_main() -> int:
                     _plt.show(block=False)
                 except Exception:
                     pass
+                # Seed last-session path so 'os' overwrite command is available immediately
+                try:
+                    fig_c._last_session_save_path = os.path.abspath(sess_path)
+                except Exception:
+                    pass
                 try:
                     if cpc_interactive_menu is not None:
-                        cpc_interactive_menu(fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e)
+                        cpc_interactive_menu(fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data=file_data)
                 except Exception as _ie:
                     print(f"CPC interactive menu failed: {_ie}")
                 _plt.show()
@@ -1852,6 +1948,11 @@ def batplot_main() -> int:
         # Reconstruct minimal state and go to interactive if requested
         plt.ion() if args.interactive else None
         fig, ax = plt.subplots(figsize=(8,6))
+        # Restore ro flag from session (if present) so style/geom imports can enforce compatibility
+        try:
+            fig._ro_active = bool(sess.get('ro_active', False))
+        except Exception:
+            pass
         y_data_list = []
         x_data_list = []
         labels_list = []
@@ -1860,10 +1961,31 @@ def batplot_main() -> int:
         x_full_list = []
         raw_y_full_list = []
         offsets_list = []
-        tick_state = {
-            'bx': True,'tx': False,'ly': True,'ry': False,
-            'mbx': False,'mtx': False,'mly': False,'mry': False
-        }
+        # Load tick_state from wasd_state if available (version 2+), otherwise use defaults
+        wasd_loaded = sess.get('wasd_state')
+        if wasd_loaded and isinstance(wasd_loaded, dict):
+            # Convert wasd_state to tick_state format
+            tick_state = {}
+            for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
+                s = wasd_loaded.get(side_key, {})
+                tick_state[f'{prefix}_ticks'] = bool(s.get('ticks', side_key in ('bottom', 'left')))
+                tick_state[f'{prefix}_labels'] = bool(s.get('labels', side_key in ('bottom', 'left')))
+                tick_state[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
+            # Legacy keys for backward compatibility
+            tick_state['bx'] = tick_state.get('b_ticks', True)
+            tick_state['tx'] = tick_state.get('t_ticks', False)
+            tick_state['ly'] = tick_state.get('l_ticks', True)
+            tick_state['ry'] = tick_state.get('r_ticks', False)
+            tick_state['mbx'] = tick_state.get('mbx', False)
+            tick_state['mtx'] = tick_state.get('mtx', False)
+            tick_state['mly'] = tick_state.get('mly', False)
+            tick_state['mry'] = tick_state.get('mry', False)
+        else:
+            # Fallback to legacy tick_state or defaults
+            tick_state = sess.get('tick_state', {
+                'bx': True,'tx': False,'ly': True,'ry': False,
+                'mbx': False,'mtx': False,'mly': False,'mry': False
+            })
         saved_stack = bool(sess.get('args_subset', {}).get('stack', False))
         # Pull data
         # --- Robust reconstruction of stored curves ---
@@ -1871,16 +1993,58 @@ def batplot_main() -> int:
         y_loaded = sess.get('y_data', [])  # stored plotted (baseline+offset) values
         orig_loaded = sess.get('orig_y', [])  # stored baseline (normalized/raw w/out offsets)
         offsets_saved = sess.get('offsets', [])
+        # Restore processed data (for smooth/reduce operations)
+        original_x_data_list = sess.get('original_x_data_list')
+        original_y_data_list = sess.get('original_y_data_list')
+        smooth_settings = sess.get('smooth_settings')
+        if original_x_data_list is not None:
+            fig._original_x_data_list = [np.array(a) for a in original_x_data_list]
+        if original_y_data_list is not None:
+            fig._original_y_data_list = [np.array(a) for a in original_y_data_list]
+        full_processed_x_data_list = sess.get('full_processed_x_data_list')
+        full_processed_y_data_list = sess.get('full_processed_y_data_list')
+        if full_processed_x_data_list is not None:
+            fig._full_processed_x_data_list = [np.array(a) for a in full_processed_x_data_list]
+        if full_processed_y_data_list is not None:
+            fig._full_processed_y_data_list = [np.array(a) for a in full_processed_y_data_list]
+        if smooth_settings is not None:
+            fig._smooth_settings = dict(smooth_settings)
+        last_smooth_settings = sess.get('last_smooth_settings')
+        if last_smooth_settings is not None:
+            fig._last_smooth_settings = dict(last_smooth_settings)
+        # Restore derivative data (for derivative operations)
+        pre_derivative_x_data_list = sess.get('pre_derivative_x_data_list')
+        pre_derivative_y_data_list = sess.get('pre_derivative_y_data_list')
+        pre_derivative_ylabel = sess.get('pre_derivative_ylabel')
+        derivative_order = sess.get('derivative_order')
+        if pre_derivative_x_data_list is not None:
+            fig._pre_derivative_x_data_list = [np.array(a) for a in pre_derivative_x_data_list]
+        if pre_derivative_y_data_list is not None:
+            fig._pre_derivative_y_data_list = [np.array(a) for a in pre_derivative_y_data_list]
+        if pre_derivative_ylabel is not None:
+            fig._pre_derivative_ylabel = str(pre_derivative_ylabel)
+        if derivative_order is not None:
+            fig._derivative_order = int(derivative_order)
+        derivative_reversed = sess.get('derivative_reversed')
+        if derivative_reversed is not None:
+            fig._derivative_reversed = bool(derivative_reversed)
         n_curves = len(x_loaded)
         for i in range(n_curves):
-            x_arr = np.array(x_loaded[i])
+            # Ensure arrays are 1D and have matching shapes
+            x_arr = np.asarray(x_loaded[i], dtype=float).flatten()
             off = offsets_saved[i] if i < len(offsets_saved) else 0.0
             if orig_loaded and i < len(orig_loaded):
-                base = np.array(orig_loaded[i])
+                base = np.asarray(orig_loaded[i], dtype=float).flatten()
             else:
                 # Fallback: derive baseline by subtracting offset from stored y (handles legacy sessions)
-                y_arr_full = np.array(y_loaded[i]) if i < len(y_loaded) else np.array([])
+                y_arr_full = np.asarray(y_loaded[i], dtype=float).flatten() if i < len(y_loaded) else np.array([], dtype=float)
                 base = y_arr_full - off
+            # Ensure x and y have matching lengths
+            if x_arr.size != base.size:
+                print(f"Warning: Curve {i+1} has mismatched x/y lengths ({x_arr.size} vs {base.size}). Trimming to match.")
+                min_len = min(x_arr.size, base.size)
+                x_arr = x_arr[:min_len]
+                base = base[:min_len]
             y_plot = base + off
             x_data_list.append(x_arr)
             orig_y.append(base)
@@ -1924,8 +2088,27 @@ def batplot_main() -> int:
             pass
         labels_list[:] = sess.get('labels', [f"Curve {i+1}" for i in range(len(y_data_list))])
         delta = sess.get('delta', 0.0)
+        # Apply tick state (labels visibility) BEFORE setting axis labels
+        try:
+            ax.tick_params(axis='x',
+                          bottom=tick_state.get('b_ticks', tick_state.get('bx', True)),
+                          labelbottom=tick_state.get('b_labels', tick_state.get('bx', True)),
+                          top=tick_state.get('t_ticks', tick_state.get('tx', False)),
+                          labeltop=tick_state.get('t_labels', tick_state.get('tx', False)))
+            ax.tick_params(axis='y',
+                          left=tick_state.get('l_ticks', tick_state.get('ly', True)),
+                          labelleft=tick_state.get('l_labels', tick_state.get('ly', True)),
+                          right=tick_state.get('r_ticks', tick_state.get('ry', False)),
+                          labelright=tick_state.get('r_labels', tick_state.get('ry', False)))
+        except Exception:
+            pass
         ax.set_xlabel(sess.get('axis', {}).get('xlabel', 'X'))
         ax.set_ylabel(sess.get('axis', {}).get('ylabel', 'Intensity'))
+        # Store tick_state on axes for interactive menu
+        try:
+            ax._saved_tick_state = dict(tick_state)
+        except Exception:
+            pass
         
         # Restore normalization ranges (if saved)
         axis_cfg = sess.get('axis', {})
@@ -2053,6 +2236,14 @@ def batplot_main() -> int:
                 fig._tick_lengths['minor'] = minor_len
         except Exception:
             pass
+        # Tick direction restore (t submenu)
+        try:
+            tick_direction = sess.get('tick_direction', 'out')
+            if tick_direction:
+                setattr(fig, '_tick_direction', tick_direction)
+                ax.tick_params(axis='both', which='both', direction=tick_direction)
+        except Exception:
+            pass
         
         # Restore WASD state (spine, ticks, labels, title visibility for all 4 sides)
         try:
@@ -2130,7 +2321,7 @@ def batplot_main() -> int:
         # Rebuild label texts
         for i, lab in enumerate(labels_list):
             txt = ax.text(1.0, 1.0, f"{i+1}: {lab}", ha='right', va='top', transform=ax.transAxes,
-                          fontsize=plt.rcParams.get('font.size', 12))
+                          fontsize=plt.rcParams.get('font.size', 16))
             label_text_objects.append(txt)
         # Restore curve names visibility
         try:
@@ -2144,6 +2335,10 @@ def batplot_main() -> int:
         try:
             stack_label_at_bottom = bool(sess.get('stack_label_at_bottom', False))
             fig._stack_label_at_bottom = stack_label_at_bottom
+        except Exception:
+            pass
+        try:
+            fig._label_anchor_left = bool(sess.get('label_anchor_left', False))
         except Exception:
             pass
         # Restore grid state
@@ -2161,8 +2356,24 @@ def batplot_main() -> int:
         cif_hkl_label_map = {k: dict(v) for k,v in sess.get('cif_hkl_label_map', {}).items()}
         cif_numbering_enabled = True
         cif_extend_suspended = False
-        show_cif_hkl = sess.get('show_cif_hkl', False)
-        show_cif_titles = sess.get('show_cif_titles', True)
+        # Restore CIF visibility flags - default to False for hkl (labels hidden by default)
+        # and True for titles (shown by default)
+        show_cif_hkl = bool(sess.get('show_cif_hkl', False))
+        show_cif_titles = bool(sess.get('show_cif_titles', True))
+        
+        # Store CIF state in __main__ module for interactive menu to access
+        # This ensures CIF commands (z, hkl, j) are available in the menu
+        try:
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and cif_tick_series:
+                setattr(_bp_module, 'cif_tick_series', list(cif_tick_series))
+                setattr(_bp_module, 'cif_hkl_map', cif_hkl_map)
+                setattr(_bp_module, 'cif_hkl_label_map', cif_hkl_label_map)
+                setattr(_bp_module, 'show_cif_hkl', bool(show_cif_hkl))
+                setattr(_bp_module, 'show_cif_titles', bool(show_cif_titles))
+                setattr(_bp_module, 'cif_extend_suspended', False)
+        except Exception:
+            pass
         # Provide minimal stubs to satisfy interactive menu dependencies
         # Axis mode restoration informs downstream toggles (e.g., CIF conversions, crosshair availability)
         axis_mode_restored = sess.get('axis_mode', 'unknown')
@@ -2221,18 +2432,24 @@ def batplot_main() -> int:
                 if not cif_tick_series:
                     return
                 try:
-                    # Preserve both x and y-axis limits to prevent movement when toggling
+                    # Preserve current limits before drawing - use actual current limits
+                    # to prevent any movement when toggling
                     prev_xlim = ax.get_xlim()
                     prev_ylim = ax.get_ylim()
-                    # Use preserved y-axis limits for calculations to prevent incremental movement
-                    orig_ylim = prev_ylim
-                    orig_yr = orig_ylim[1] - orig_ylim[0]
-                    if orig_yr <= 0: orig_yr = 1.0
+                    
+                    # Use current ylim as fixed reference to prevent incremental movement
+                    # This ensures that repeated 'z' commands don't cause drift
+                    # Store it only once on first call, then reuse
+                    if not hasattr(ax, '_cif_initial_ylim'):
+                        ax._cif_initial_ylim = tuple(prev_ylim)
+                    fixed_ylim = ax._cif_initial_ylim
+                    fixed_yr = fixed_ylim[1] - fixed_ylim[0]
+                    if fixed_yr <= 0: fixed_yr = 1.0
+                    
                     # Check visibility flag first
                     show_titles_local = bool(show_cif_titles)  # Use closure variable from outer scope
                     # Also check figure attribute and module attribute as fallback
                     try:
-                        import sys
                         # Check figure attribute first (from interactive menu)
                         if hasattr(fig, '_bp_show_cif_titles'):
                             show_titles_local = bool(getattr(fig, '_bp_show_cif_titles', show_titles_local))
@@ -2242,38 +2459,53 @@ def batplot_main() -> int:
                             show_titles_local = bool(getattr(_bp_module, 'show_cif_titles', show_titles_local))
                     except Exception:
                         pass
-                    # Calculate base and spacing based on original y-axis limits
+                    
+                    # Check hkl visibility - check __main__ module first (where interactive menu stores it)
+                    # then fall back to closure variable
+                    show_hkl_local = False
+                    try:
+                        _bp_module = sys.modules.get('__main__')
+                        if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                            show_hkl_local = bool(getattr(_bp_module, 'show_cif_hkl', False))
+                    except Exception:
+                        pass
+                    # Fall back to closure variable if not found in module
+                    if not show_hkl_local:
+                        try:
+                            show_hkl_local = bool(show_cif_hkl)
+                        except Exception:
+                            pass
+                    
+                    # Calculate base and spacing based on FIXED y-axis limits (not current)
+                    # This prevents incremental movement when toggling
                     if saved_stack or len(y_data_list) > 1:
-                        global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else orig_ylim[0]
-                        base = global_min - 0.08*orig_yr; spacing = 0.05*orig_yr
+                        global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
+                        base = global_min - 0.08*fixed_yr; spacing = 0.05*fixed_yr
                     else:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-                        base = global_min - 0.06*orig_yr; spacing = 0.04*orig_yr
+                        base = global_min - 0.06*fixed_yr; spacing = 0.04*fixed_yr
+                    
                     # Only adjust y-axis limits if titles are visible
-                    needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*orig_yr
+                    needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*fixed_yr
+                    if show_titles_local and needed_min < fixed_ylim[0]:
+                        # Expand y-axis only if needed, using fixed limits as reference
+                        ax.set_ylim(needed_min, fixed_ylim[1])
+                    else:
+                        # Restore to fixed limits if no expansion needed
+                        ax.set_ylim(fixed_ylim)
+                    
+                    # Get current limits for drawing (after potential expansion)
                     cur_ylim = ax.get_ylim()
                     yr = cur_ylim[1] - cur_ylim[0]
                     if yr <= 0: yr = 1.0
-                    if show_titles_local and needed_min < orig_ylim[0]:
-                        # Expand y-axis only if needed, using original limits as reference
-                        ax.set_ylim(needed_min, orig_ylim[1])
-                        cur_ylim = ax.get_ylim()
-                        yr = cur_ylim[1] - cur_ylim[0]
-                        if yr <= 0: yr = 1.0
-                        # Recalculate base with new limits if we expanded
-                        if saved_stack or len(y_data_list) > 1:
-                            global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else cur_ylim[0]
-                            base = global_min - 0.08*yr; spacing = 0.05*yr
-                        else:
-                            global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-                            base = global_min - 0.06*yr; spacing = 0.04*yr
+                    
                     # Clear previous artifacts
                     for art in getattr(ax, '_cif_tick_art', []):
                         try: art.remove()
                         except Exception: pass
                     new_art = []
-                    show_hkl_local = bool(show_cif_hkl)
                     wl_any = _session_ensure_wavelength()
+                    
                     # Draw each series
                     for i,(lab,fname,peaksQ,wl,qmax_sim,color) in enumerate(cif_tick_series):
                         y_line = base - i*spacing
@@ -2287,12 +2519,18 @@ def batplot_main() -> int:
                         xlow,xhigh = ax.get_xlim()
                         domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
                         # Build hkl label map (keys are Q values, not 2θ)
-                        label_map = cif_hkl_label_map.get(fname, {}) if show_hkl_local else {}
+                        # Only use label_map if hkl labels are enabled
+                        label_map = {}
+                        if show_hkl_local:
+                            label_map = cif_hkl_label_map.get(fname, {})
                         if show_hkl_local and len(domain_peaks) > 4000:
                             show_hkl_local = False  # safety
+                            label_map = {}  # Clear label map if too many peaks
                         for p in domain_peaks:
+                            # Use color from tuple (preserved from session)
                             ln, = ax.plot([p,p],[y_line, y_line+0.02*yr], color=color, lw=1.0, alpha=0.9, zorder=3)
                             new_art.append(ln)
+                            # Only show hkl labels if explicitly enabled
                             if show_hkl_local:
                                 # When axis is 2θ convert back to Q to look up hkl label
                                 if use_2th and (wl or wl_any):
@@ -2300,28 +2538,35 @@ def batplot_main() -> int:
                                     Qp = 4*np.pi*np.sin(theta)/(wl if wl is not None else wl_any)
                                 else:
                                     Qp = p
-                                lbl = label_map.get(round(Qp,6))
+                                Qp_rounded = round(Qp, 6)
+                                lbl = label_map.get(Qp_rounded)
                                 if lbl:
+                                    # Use same color as tick line
                                     t_hkl = ax.text(p, y_line+0.022*yr, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
                                     new_art.append(t_hkl)
-                        # Removed numbering prefix; keep one leading space for padding from axis
                         # Only add title label if show_cif_titles is True
                         if show_titles_local:
                             label_text = f" {lab}"
+                            # Use color from tuple (preserved from session)
                             txt = ax.text(prev_xlim[0], y_line+0.005*yr, label_text,
-                                          ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
+                                          ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',16))), color=color)
                             new_art.append(txt)
                     ax._cif_tick_art = new_art
-                    # Restore both x and y-axis limits to prevent movement
+                    # Restore x-axis limits
                     ax.set_xlim(prev_xlim)
                     # Restore y-axis: if titles are hidden, always restore; if titles are shown, only restore if we didn't need to expand
+                    # Use prev_ylim (current limits before drawing) to prevent any movement
                     if not show_titles_local:
                         # Titles hidden: always restore original limits
                         ax.set_ylim(prev_ylim)
                     elif needed_min >= prev_ylim[0]:
                         # Titles shown but no expansion needed: restore original limits
                         ax.set_ylim(prev_ylim)
-                    # Otherwise, keep the expanded limits (already set above)
+                    else:
+                        # Expansion needed: use the minimum of needed_min and prev_ylim[0] to prevent incremental growth
+                        # This ensures that repeated toggles don't cause drift
+                        new_ymin = min(needed_min, prev_ylim[0])
+                        ax.set_ylim(new_ymin, prev_ylim[1])
                     fig.canvas.draw_idle()
                 except Exception:
                     pass
@@ -2433,28 +2678,58 @@ def batplot_main() -> int:
             except Exception:
                 pass
     
+        # Prepare CIF globals for interactive menu (ensures CIF commands are available)
+        cif_globals_dict = None
+        if cif_tick_series:
+            cif_globals_dict = {
+                'cif_tick_series': list(cif_tick_series),
+                'cif_hkl_map': cif_hkl_map,
+                'cif_hkl_label_map': cif_hkl_label_map,
+                'show_cif_hkl': bool(show_cif_hkl),
+                'show_cif_titles': bool(show_cif_titles),
+                'cif_extend_suspended': False,
+                'keep_canvas_fixed': True,
+            }
+        
         interactive_menu(fig, ax, y_data_list, x_data_list, labels_list,
                          orig_y, label_text_objects, delta, x_label, args,
                          x_full_list, raw_y_full_list, offsets_list,
-                         use_Q, use_r, use_E, use_k, use_rft)
+                         use_Q, use_r, use_E, use_k, use_rft,
+                         cif_globals=cif_globals_dict)
         plt.show()
         exit()
 
     # ---------------- Handle conversion ----------------
     if args.convert:
-        if args.wl is None:
-            print("Error: --wl is required for --convert")
-       
+        if not args.files:
+            print("Error: --convert requires file(s) to convert")
             exit(1)
-        convert_to_qye(args.convert, args.wl)
+        from_param, to_param = args.convert
+        convert_xrd_data(args.files, from_param, to_param)
         exit()
 
     # ---------------- Plotting ----------------
     offset = 0.0
     direction = -1 if args.stack else 1  # stack downward
     if args.interactive:
+        # Interactive: keep a reasonably compact default size so the window
+        # fits well on most screens; margins are handled by the menu logic.
         plt.ion()
-    fig, ax = plt.subplots(figsize=(8, 6))
+        figsize = (8, 6)
+    else:
+        # Non-interactive (no --i): use a slightly larger canvas so that labels,
+        # titles, legends, and CIF ticks are not clipped even with long filenames.
+        # The size (9, 6.4) keeps a similar aspect ratio but with a bit more room
+        # than the interactive default while still fitting comfortably on screen.
+        figsize = (9.5, 6.4)
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Set consistent margins for all modes.
+    # This prevents labels/titles from being cut off at the edges.
+    try:
+        fig.subplots_adjust(left=0.125, right=0.9, top=0.88, bottom=0.11)
+    except Exception:
+        pass
 
     y_data_list = []
     x_data_list = []
@@ -2488,7 +2763,17 @@ def batplot_main() -> int:
         any_cif = any(f.lower().endswith(".cif") for f in args.files)
         non_cif_count = sum(0 if f.lower().endswith('.cif') else 1 for f in args.files)
         cif_only = any_cif and non_cif_count == 0
-        any_lambda = any(":" in f for f in args.files) or args.wl is not None
+        # Check for wavelength parameters (file:wl), but exclude Windows drive letters (C:\...)
+        def has_wavelength_param(f):
+            if ":" not in f:
+                return False
+            # Check if it's a Windows path (single letter followed by :\ or :/)
+            if len(f) >= 2 and f[1] == ':' and len(f[0]) == 1 and f[0].isalpha():
+                # This is a Windows drive letter, check after the drive path
+                # Look for additional colons beyond the drive letter
+                return ":" in f[2:]
+            return True
+        any_lambda = any(has_wavelength_param(f) for f in args.files) or args.wl is not None
 
         # Incompatibilities (no mixing of fundamentally different axis domains)
         if sum(bool(x) for x in (any_gr, any_nor, any_chik, any_chir, (any_qye or any_lambda or any_cif))) > 1:
@@ -2508,7 +2793,8 @@ def batplot_main() -> int:
         elif any_txt:
             # .txt is generic, require --xaxis
             if args.xaxis:
-                axis_mode = args.xaxis
+                # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
+                axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
             else:
                 raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
         elif any_lambda or any_cif:
@@ -2519,7 +2805,8 @@ def batplot_main() -> int:
                 # CIF files are in Q space
                 axis_mode = "Q"
         elif args.xaxis:
-            axis_mode = args.xaxis
+            # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
+            axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
         else:
             raise ValueError("Unknown file type. Use: batplot file.csv --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
 
@@ -2619,8 +2906,16 @@ def batplot_main() -> int:
     
     # Use data_files instead of args.files for processing
     for idx_file, file_entry in enumerate(data_files):
+        # Handle Windows paths (C:\...) vs wavelength parameters (file:wl)
+        # On Windows, check if first part is a single letter (drive letter)
         parts = file_entry.split(":")
-        fname = parts[0]
+        if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
+            # Windows drive letter detected (e.g., "C" from "C:\path")
+            # Rejoin the first two parts as the filename
+            fname = parts[0] + ":" + parts[1]
+            parts = [fname] + parts[2:]  # Reconstruct parts with full Windows path
+        else:
+            fname = parts[0]
         # Parse wavelength parameters: file:wl1 or file:wl1:wl2 or file.cif:wl
         wavelength_file = None
         original_wavelength = None  # First wavelength (for Q conversion)
@@ -2804,16 +3099,35 @@ def batplot_main() -> int:
             # Step 2: Convert Q back to 2theta using second wavelength
             # Q = 4π sin(θ) / λ => sin(θ) = Qλ / (4π) => θ = arcsin(Qλ / (4π))
             sin_theta = Q * conversion_wavelength / (4 * np.pi)
-            # Clamp to valid range [-1, 1]
-            sin_theta = np.clip(sin_theta, -1.0, 1.0)
+            # Check for physically impossible Q values (would require sin(θ) > 1)
+            valid_mask = np.abs(sin_theta) <= 1.0
+            if not np.all(valid_mask):
+                # Some Q values are too high for the target wavelength
+                n_invalid = np.sum(~valid_mask)
+                q_max_possible = 4 * np.pi / conversion_wavelength
+                print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={conversion_wavelength} Å")
+                print(f"         Truncating data to physically accessible range.")
+            # Truncate to valid range instead of clipping (which creates artificial data)
+            x = x[valid_mask]
+            y = y[valid_mask]
+            sin_theta = sin_theta[valid_mask]
             theta_new_rad = np.arcsin(sin_theta)
             x_plot = np.degrees(2 * theta_new_rad)
         elif use_2th and file_ext == ".qye" and wavelength_file:
             # Convert Q to 2theta for .qye files when wavelength is provided
             # Q = 4π sin(θ) / λ => sin(θ) = Qλ / (4π) => θ = arcsin(Qλ / (4π))
             sin_theta = x * wavelength_file / (4 * np.pi)
-            # Clamp to valid range [-1, 1]
-            sin_theta = np.clip(sin_theta, -1.0, 1.0)
+            # Check for physically impossible Q values
+            valid_mask = np.abs(sin_theta) <= 1.0
+            if not np.all(valid_mask):
+                n_invalid = np.sum(~valid_mask)
+                q_max_possible = 4 * np.pi / wavelength_file
+                print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={wavelength_file} Å")
+                print(f"         Truncating data to physically accessible range.")
+            # Truncate to valid range
+            x = x[valid_mask]
+            y = y[valid_mask]
+            sin_theta = sin_theta[valid_mask]
             theta_rad = np.arcsin(sin_theta)
             x_plot = np.degrees(2 * theta_rad)
         elif use_Q and file_ext not in (".qye", ".gr", ".nor"):
@@ -2833,6 +3147,19 @@ def batplot_main() -> int:
         # ---- Store full (converted) arrays BEFORE cropping ----
         x_full = x_plot.copy()
         y_full_raw = y.copy()
+        
+        # ---- Calculate first derivative if requested ----
+        if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
+            # Calculate dy/dx using numpy gradient
+            # numpy.gradient handles non-uniform spacing automatically
+            if len(y_full_raw) > 1:
+                dy_dx = np.gradient(y_full_raw, x_full)
+                y_full_raw = dy_dx
+            else:
+                # Single point or empty - cannot calculate derivative
+                print(f"Warning: Cannot calculate derivative for {fname}: insufficient data points")
+                continue
+        
         raw_y_full_list.append(y_full_raw)
         x_full_list.append(x_full)
 
@@ -2900,19 +3227,21 @@ def batplot_main() -> int:
             offset += increment
 
         # ---- Plot curve ----
-        # Swap x and y if --ro flag is set
+        # Swap x and y if --ro flag is set (and keep lists aligned once)
         if getattr(args, 'ro', False):
-            ax.plot(y_plot_offset, x_plot, "-", lw=1, alpha=0.8)
-            y_data_list.append(x_plot.copy())
-            x_data_list.append(y_plot_offset)
+            x_plotted = y_plot_offset    # goes on x-axis when rotated
+            y_plotted = x_plot           # goes on y-axis when rotated
         else:
+            x_plotted = x_plot
+            y_plotted = y_plot_offset
 
-            ax.plot(x_plot, y_plot_offset, "-", lw=1, alpha=0.8)
-        y_data_list.append(y_plot_offset.copy())
-        x_data_list.append(x_plot)
+        ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
+        x_data_list.append(x_plotted)
+        y_data_list.append(y_plotted.copy())
         labels_list.append(label)
         # Store current normalized (subset) (used by rearrange logic)
-        orig_y.append(y_norm.copy())
+        # Keep orig_y aligned with the plotted y data to avoid length mismatch on undo/relabel.
+        orig_y.append(y_plotted.copy())
 
     # ---------------- Force axis to fit all data before labels ----------------
     ax.relim()
@@ -2937,7 +3266,7 @@ def batplot_main() -> int:
     # ---------------- Initial label creation (REPLACED BLOCK) ----------------
     # Remove the old simple per-curve placement loop and use:
     label_text_objects = []
-    tick_fs = sample_tick.get_fontsize() if sample_tick else plt.rcParams.get('font.size', 12)
+    tick_fs = sample_tick.get_fontsize() if sample_tick else plt.rcParams.get('font.size', 16)
     # get_fontname() may not exist on some backends; use family from rcParams if missing
     try:
         tick_fn = sample_tick.get_fontname() if sample_tick else plt.rcParams.get('font.sans-serif', ['DejaVu Sans'])[0]
@@ -2977,6 +3306,7 @@ def batplot_main() -> int:
     fig._curve_names_visible = True
     # Initialize stack label position (default to top/max)
     fig._stack_label_at_bottom = False
+    fig._label_anchor_left = False
 
     # ---------------- CIF tick overlay (after labels placed) ----------------
     def _ensure_wavelength_for_2theta():
@@ -3063,17 +3393,23 @@ def batplot_main() -> int:
     def draw_cif_ticks():
         if not cif_tick_series:
             return
-        # Preserve both x and y-axis limits to prevent movement when toggling
+        # Preserve current limits before drawing - use actual current limits
+        # to prevent any movement when toggling
         prev_xlim = ax.get_xlim()
         prev_ylim = ax.get_ylim()
-        # Use preserved y-axis limits for calculations to prevent incremental movement
-        orig_ylim = prev_ylim
-        orig_yr = orig_ylim[1] - orig_ylim[0]
-        if orig_yr <= 0: orig_yr = 1.0
+        
+        # Store initial limits as fixed reference point to prevent incremental movement
+        # This ensures that repeated 'z' commands don't cause drift
+        # Only set once on first call, then reuse to prevent drift
+        if not hasattr(ax, '_cif_initial_ylim'):
+            ax._cif_initial_ylim = tuple(prev_ylim)
+        fixed_ylim = ax._cif_initial_ylim
+        fixed_yr = fixed_ylim[1] - fixed_ylim[0]
+        if fixed_yr <= 0: fixed_yr = 1.0
+        
         # Check visibility flag first to decide if we need to adjust y-axis
         show_titles = show_cif_titles  # Use closure variable
         try:
-            import sys
             # Check __main__ module first (for backward compatibility)
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_titles'):
@@ -3083,38 +3419,50 @@ def batplot_main() -> int:
                 show_titles = bool(getattr(fig, '_bp_show_cif_titles', True))
         except Exception:
             pass
-        # Calculate base and spacing based on original y-axis limits
+        
+        # Calculate base and spacing based on FIXED y-axis limits (not current)
+        # This prevents incremental movement when toggling
         if args.stack or len(y_data_list) > 1:
-            global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else orig_ylim[0]
-            base = global_min - 0.08*orig_yr; spacing = 0.05*orig_yr
+            global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
+            base = global_min - 0.08*fixed_yr; spacing = 0.05*fixed_yr
         else:
             global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-            base = global_min - 0.06*orig_yr; spacing = 0.04*orig_yr
+            base = global_min - 0.06*fixed_yr; spacing = 0.04*fixed_yr
+        
         # Only adjust y-axis limits if titles are visible
-        needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*orig_yr
+        needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*fixed_yr
+        if show_titles and needed_min < fixed_ylim[0]:
+            # Expand y-axis only if needed, using fixed limits as reference
+            ax.set_ylim(needed_min, fixed_ylim[1])
+        else:
+            # Restore to fixed limits if no expansion needed
+            ax.set_ylim(fixed_ylim)
+        
+        # Get current limits for drawing (after potential expansion)
         cur_ylim = ax.get_ylim()
         yr = cur_ylim[1] - cur_ylim[0]
         if yr <= 0: yr = 1.0
-        if show_titles and needed_min < orig_ylim[0]:
-            # Expand y-axis only if needed, using original limits as reference
-            ax.set_ylim(needed_min, orig_ylim[1])
-            cur_ylim = ax.get_ylim()
-            yr = cur_ylim[1] - cur_ylim[0]
-            if yr <= 0: yr = 1.0
-            # Recalculate base with new limits if we expanded
-            if args.stack or len(y_data_list) > 1:
-                global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else cur_ylim[0]
-                base = global_min - 0.08*yr; spacing = 0.05*yr
-            else:
-                global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-                base = global_min - 0.06*yr; spacing = 0.04*yr
         # Clear previous
         for art in getattr(ax, '_cif_tick_art', []):
             try: art.remove()
             except Exception: pass
         new_art = []
         mixed_mode = (not cif_only)  # cif_only variable defined earlier in script context
-        show_hkl = globals().get('show_cif_hkl', False)
+        # Check hkl visibility - check __main__ module first (where interactive menu stores it)
+        # then fall back to closure variable
+        show_hkl = False
+        try:
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                show_hkl = bool(getattr(_bp_module, 'show_cif_hkl', False))
+        except Exception:
+            pass
+        # Fall back to closure variable if not found in module
+        if not show_hkl:
+            try:
+                show_hkl = bool(globals().get('show_cif_hkl', False))
+            except Exception:
+                pass
         for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
             y_line = base - i*spacing
             if use_2th:
@@ -3136,14 +3484,12 @@ def batplot_main() -> int:
                                   ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
                     new_art.append(txt)
                 continue
-            # Build map for quick hkl lookup by Q
-            hkl_entries = cif_hkl_map.get(fname, [])
-            # dictionary keyed by Q value
-            hkl_by_q = {}
-            for qval,h,k,l in hkl_entries:
-                hkl_by_q.setdefault(qval, []).append((h,k,l))
-            label_map = cif_hkl_label_map.get(fname, {})
+            # Build map for quick hkl lookup by Q (only if hkl labels are enabled)
+            label_map = {}
+            if show_hkl:
+                label_map = cif_hkl_label_map.get(fname, {})
             # --- Optimized tick & hkl label drawing ---
+            # Check if we should show hkl labels: need show_hkl, peaks, AND a non-empty label_map
             if show_hkl and peaksQ and label_map:
                 # Guard against pathological large peak lists (can freeze UI)
                 if len(peaksQ) > 4000 or len(domain_peaks) > 4000:
@@ -3166,7 +3512,8 @@ def batplot_main() -> int:
                         Qp = 4*np.pi*np.sin(theta)/wl
                     else:
                         Qp = p
-                    lbl = label_map.get(round(Qp,6))
+                    Qp_rounded = round(Qp, 6)
+                    lbl = label_map.get(Qp_rounded)
                     if lbl:
                         t_hkl = ax.text(p, y_line+0.022*yr, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
                         new_art.append(t_hkl)
@@ -3192,7 +3539,11 @@ def batplot_main() -> int:
         elif needed_min >= prev_ylim[0]:
             # Titles shown but no expansion needed: restore original limits
             ax.set_ylim(prev_ylim)
-        # Otherwise, keep the expanded limits (already set above)
+        else:
+            # Expansion needed: use the minimum of needed_min and prev_ylim[0] to prevent incremental growth
+            # This ensures that repeated toggles don't cause drift
+            new_ymin = min(needed_min, prev_ylim[0])
+            ax.set_ylim(new_ymin, prev_ylim[1])
         # Store simplified metadata for hover: list of dicts with 'x','y','label'
         hover_meta = []
         show_hkl = globals().get('show_cif_hkl', False)
@@ -3273,19 +3624,36 @@ def batplot_main() -> int:
             ax._cif_hover_cid = cid
 
     if cif_tick_series:
-        # Auto-assign distinct colors if all are default 'k'
+        # Auto-assign distinct colors for CIF tick series.
+        # For multiple CIF series:
+        #   - If <= 10 files, use 'tab10' but in a re-ordered sequence to
+        #     maximize visual separation between adjacent colors.
+        #   - If > 10 files, use 'viridis' with evenly spaced samples.
+        #
+        # This overrides any previous per-series color so that the requested
+        # colormap behavior is always enforced.
         if len(cif_tick_series) > 1:
-            if all(c[-1] == 'k' for c in cif_tick_series):
-                try:
-                    cmap_name = 'tab10' if len(cif_tick_series) <= 10 else 'hsv'
-                    cmap = plt.get_cmap(cmap_name)
+            try:
+                n_cif = len(cif_tick_series)
+                if n_cif <= 10:
+                    tab10 = plt.get_cmap('tab10').colors
+                    # Reorder indices for more distinct neighboring colors
+                    order = [0, 3, 6, 1, 4, 7, 2, 5, 8, 9]
                     new_series = []
-                    for i,(lab,fname,peaksQ,wl,qmax_sim,col) in enumerate(cif_tick_series):
-                        color = cmap(i / max(1,(len(cif_tick_series)-1)))
-                        new_series.append((lab,fname,peaksQ,wl,qmax_sim,color))
-                    cif_tick_series[:] = new_series
-                except Exception:
-                    pass
+                    for i, (lab, fname, peaksQ, wl, qmax_sim, col) in enumerate(cif_tick_series):
+                        idx = order[i] if i < len(order) else i % len(tab10)
+                        color = tab10[idx]
+                        new_series.append((lab, fname, peaksQ, wl, qmax_sim, color))
+                else:
+                    cmap = plt.get_cmap('viridis')
+                    positions = np.linspace(0.0, 1.0, n_cif)
+                    new_series = []
+                    for (pos, (lab, fname, peaksQ, wl, qmax_sim, col)) in zip(positions, cif_tick_series):
+                        color = cmap(pos)
+                        new_series.append((lab, fname, peaksQ, wl, qmax_sim, color))
+                cif_tick_series[:] = new_series
+            except Exception:
+                pass
         if use_2th:
             _ensure_wavelength_for_2theta()
         draw_cif_ticks()
@@ -3425,6 +3793,12 @@ def batplot_main() -> int:
                 fig.set_tight_layout(False)
             except Exception:
                 pass
+
+        # Track whether data axes were swapped via --ro for this figure
+        try:
+            fig._ro_active = bool(getattr(args, "ro", False))
+        except Exception:
+            pass
         
         # Build CIF globals dict for explicit passing
         cif_globals = {

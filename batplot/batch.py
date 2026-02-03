@@ -157,6 +157,18 @@ def _apply_xy_style(fig, ax, cfg: dict):
                     except Exception:
                         pass
         
+        # Enforce compatibility between style/geom ro state and current figure ro state.
+        # Styles saved from a plot using --ro (swapped x/y) must not be applied to a non-ro plot, and vice versa.
+        file_ro = bool(cfg.get('ro_active', False))
+        current_ro = bool(getattr(fig, '_ro_active', False))
+        if file_ro != current_ro:
+            if file_ro:
+                print("Warning: XY style/geometry file was saved with --ro (swapped x/y axes); batch plot is not using --ro.")
+            else:
+                print("Warning: XY style/geometry file was saved without --ro; batch plot is treated as non-ro.")
+            print("Skipping style/geometry in batch mode to avoid corrupting axis orientation.")
+            return
+
         # Apply WASD state (tick visibility)
         wasd_cfg = cfg.get('wasd_state', {})
         if wasd_cfg:
@@ -223,6 +235,17 @@ def _apply_ec_style(fig, ax, cfg: dict):
         cfg: Style configuration dictionary
     """
     try:
+        # Enforce compatibility between style/geom ro state and current figure ro state.
+        file_ro = bool(cfg.get('ro_active', False))
+        current_ro = bool(getattr(fig, '_ro_active', False))
+        if file_ro != current_ro:
+            if file_ro:
+                print("Warning: EC style/geometry file was saved with --ro (swapped x/y axes); batch EC plot is not using --ro.")
+            else:
+                print("Warning: EC style/geometry file was saved without --ro; batch EC plot is treated as non-ro.")
+            print("Skipping EC style/geometry in batch mode to avoid corrupting axis orientation.")
+            return
+
         # Apply fonts
         font_cfg = cfg.get('font', {})
         if font_cfg:
@@ -622,6 +645,18 @@ def batch_process(directory: str, args):
                     x_plot = 4*np.pi*np.sin(theta_rad)/args.wl
             else:
                 x_plot = x
+
+            # Calculate first derivative if requested (after axis conversion)
+            if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
+                # Calculate dy/dx using numpy gradient
+                # numpy.gradient handles non-uniform spacing automatically
+                if len(y) > 1:
+                    dy_dx = np.gradient(y, x_plot)
+                    y = dy_dx
+                else:
+                    # Single point or empty - cannot calculate derivative
+                    print(f"Warning: Cannot calculate derivative for {fname}: insufficient data points")
+                    continue
 
             # Normalize if --norm flag is set
             if getattr(args, 'norm', False):

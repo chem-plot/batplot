@@ -1,0 +1,2 @@
+include README.md LICENSE USER_MANUAL.md
+recursive-include batplot/data *.md

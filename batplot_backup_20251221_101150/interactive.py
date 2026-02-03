@@ -1,0 +1,3894 @@
+"""Interactive menu for normal XY plots (moved from monolithic batplot.py).
+
+This module provides interactive_menu(fig, ax, ...). It mirrors the previous
+implementation but lives outside batplot.py to match the pattern used by other
+interactive modes (EC, Operando).
+"""
+
+from __future__ import annotations
+
+import os
+import json
+import random
+import sys
+from typing import List, Optional, Tuple, Dict, Any
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator
+from matplotlib import colors as mcolors
+
+from .plotting import update_labels
+from .utils import (
+    _confirm_overwrite,
+    normalize_label_text,
+    choose_save_path,
+    choose_style_file,
+    list_files_in_subdirectory,
+    convert_label_shortcuts,
+    get_organized_path,
+)
+import time
+from .session import dump_session as _bp_dump_session
+from .ui import (
+    apply_font_changes as _ui_apply_font_changes,
+    sync_fonts as _ui_sync_fonts,
+    position_top_xlabel as _ui_position_top_xlabel,
+    position_right_ylabel as _ui_position_right_ylabel,
+    position_bottom_xlabel as _ui_position_bottom_xlabel,
+    position_left_ylabel as _ui_position_left_ylabel,
+    update_tick_visibility as _ui_update_tick_visibility,
+    ensure_text_visibility as _ui_ensure_text_visibility,
+    resize_plot_frame as _ui_resize_plot_frame,
+    resize_canvas as _ui_resize_canvas,
+)
+from .style import (
+    print_style_info as _bp_print_style_info,
+    export_style_config as _bp_export_style_config,
+    apply_style_config as _bp_apply_style_config,
+)
+from .color_utils import (
+    color_block,
+    color_bar,
+    palette_preview,
+    manage_user_colors,
+    get_user_color_list,
+    resolve_color_token,
+    ensure_colormap,
+    _CUSTOM_CMAPS,
+)
+
+
+class _FilterIMKWarning:
+    """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Filter out the harmless macOS IMK warning
+        if 'IMKCFRunLoopWakeUpReliable' not in message:
+            self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+
+
+def _safe_input(prompt: str = "") -> str:
+    """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
+    
+    This is a harmless macOS system message that appears when using input() in terminals.
+    """
+    # Filter stderr to hide macOS IMK warnings while preserving other errors
+    original_stderr = sys.stderr
+    sys.stderr = _FilterIMKWarning(original_stderr)
+    try:
+        result = input(prompt)
+        return result
+    except (KeyboardInterrupt, EOFError):
+        raise
+    finally:
+        sys.stderr = original_stderr
+
+
+def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
+                     label_text_objects, delta, x_label, args,
+                     x_full_list, raw_y_full_list, offsets_list,
+                     use_Q, use_r, use_E, use_k, use_rft,
+                     cif_globals: Optional[Dict[str, Any]] = None):
+    """Interactive menu for XY plots.
+    
+    Args:
+        fig: matplotlib Figure
+        ax: matplotlib Axes
+        y_data_list: List of y-data arrays (with offsets applied)
+        x_data_list: List of x-data arrays (cropped to current view)
+        labels: List of curve labels
+        orig_y: List of baseline y-data (normalized, no offset)
+        label_text_objects: List of matplotlib Text objects for curve labels
+        delta: Current offset spacing value
+        x_label: X-axis label string
+        args: Argument namespace from CLI
+        x_full_list: List of full x-data arrays (uncropped)
+        raw_y_full_list: List of full raw y-data arrays
+        offsets_list: List of current offset values per curve
+        use_Q, use_r, use_E, use_k, use_rft: Boolean flags for axis mode
+        cif_globals: Optional dict containing CIF-related state:
+            - 'cif_tick_series': list of CIF tick data
+            - 'cif_hkl_map': dict mapping filenames to hkl reflections
+            - 'cif_hkl_label_map': dict mapping Q to hkl label strings
+            - 'show_cif_hkl': bool flag for hkl label visibility
+            - 'cif_extend_suspended': bool flag to prevent re-entrant extension
+            - 'keep_canvas_fixed': bool flag for canvas resize behavior
+    """
+    # Use the provided fig/ax as-is; do not close or switch figures to avoid spawning new windows
+    
+    # Handle CIF globals - prefer explicit parameter, fallback to __main__ for backward compatibility
+    if cif_globals is None:
+        # Legacy path: try to access __main__ module for CIF state
+        _bp = sys.modules.get('__main__')
+        if _bp is not None and hasattr(_bp, 'cif_tick_series'):
+            cif_globals = {
+                'cif_tick_series': getattr(_bp, 'cif_tick_series', None),
+                'cif_hkl_map': getattr(_bp, 'cif_hkl_map', None),
+                'cif_hkl_label_map': getattr(_bp, 'cif_hkl_label_map', None),
+                'show_cif_hkl': getattr(_bp, 'show_cif_hkl', False),
+                'show_cif_titles': getattr(_bp, 'show_cif_titles', True),
+                'cif_extend_suspended': getattr(_bp, 'cif_extend_suspended', False),
+                'keep_canvas_fixed': getattr(_bp, 'keep_canvas_fixed', False),
+            }
+        else:
+            cif_globals = {}
+    
+    # Provide a consistent interface for accessing CIF state
+    _bp = type('CIFState', (), cif_globals)() if cif_globals else None
+
+    try:
+        raw_source_paths = list(getattr(args, 'files', []) or [])
+    except Exception:
+        raw_source_paths = []
+    source_file_paths = []
+    seen_source_paths = set()
+    for _p in raw_source_paths:
+        if not _p:
+            continue
+        try:
+            abs_p = os.path.abspath(_p)
+        except Exception:
+            continue
+        if not os.path.isfile(abs_p):
+            continue
+        if abs_p in seen_source_paths:
+            continue
+        seen_source_paths.add(abs_p)
+        source_file_paths.append(abs_p)
+    try:
+        fig._bp_source_paths = list(source_file_paths)
+    except Exception:
+        pass
+
+    # Initialize rotation state (0, 90, 180, or 270 degrees)
+    if not hasattr(ax, '_rotation_angle'):
+        ax._rotation_angle = 0
+
+    # Initialize stack label position state (True = bottom, False = top/max)
+    if not hasattr(fig, '_stack_label_at_bottom'):
+        fig._stack_label_at_bottom = False
+    # Track horizontal anchor (False=right, True=left)
+    if not hasattr(fig, '_label_anchor_left'):
+        fig._label_anchor_left = False
+
+    # ANSI color codes for menu highlighting
+    def colorize_menu(text):
+        """Colorize menu items: command in cyan, colon in white, description in default."""
+        if ':' not in text:
+            return text
+        parts = text.split(':', 1)
+        cmd = parts[0].strip()
+        desc = parts[1].strip() if len(parts) > 1 else ''
+        return f"\033[96m{cmd}\033[0m: {desc}"  # Cyan for command, default for description
+    
+    def colorize_prompt(text):
+        """Colorize commands within input prompts. Handles formats like (s=size, f=family, q=return) or (y/n) or (q=cancel)."""
+        import re
+        # Pattern to match parenthesized command lists like (s=size, f=family, q=return) or (y/n) or (m/p/s/t/q) or (q=cancel)
+        pattern = r'\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)'
+        
+        def colorize_match(match):
+            content = match.group(1)
+            # Check if it's slash-separated (like y/n or m/p/s/t/q)
+            if '/' in content:
+                parts = content.split('/')
+                colored_parts = [f"\033[96m{p.strip()}\033[0m" for p in parts]
+                return f"({'/'.join(colored_parts)})"
+            # Otherwise it's equals-separated (like s=size, f=family or q=cancel)
+            else:
+                parts = content.split(',')
+                colored_parts = []
+                for part in parts:
+                    part = part.strip()
+                    if '=' in part:
+                        cmd, desc = part.split('=', 1)
+                        colored_parts.append(f"\033[96m{cmd.strip()}\033[0m={desc.strip()}")
+                    else:
+                        colored_parts.append(part)
+                return f"({', '.join(colored_parts)})"
+        
+        return re.sub(pattern, colorize_match, text)
+    
+    def format_file_timestamp(filepath: str) -> str:
+        """Format file modification time for display.
+        
+        Args:
+            filepath: Full path to the file
+            
+        Returns:
+            Formatted timestamp string (e.g., "2024-01-15 14:30") or empty string if error
+        """
+        try:
+            mtime = os.path.getmtime(filepath)
+            # Format as YYYY-MM-DD HH:MM
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+        except Exception:
+            return ""
+    
+    def colorize_inline_commands(text):
+        """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
+        import re
+        # Color quoted command examples (like 's2 w5 a4', 'w2 w5', or 'all magma_r')
+        text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
+        # Color specific known single-letter commands: q, i, l, when they appear as standalone commands
+        # Pattern: word boundary + (q|i|l|list|help|all) + space/equals/comma/end
+        text = re.sub(r'\b(q|i|l|list|help|all)\b(?=\s*[=,]|\s*$)', lambda m: f"\033[96m{m.group(1)}\033[0m", text)
+        return text
+    
+    # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
+    is_diffraction = use_Q or (not use_r and not use_E and not use_k and not use_rft)  # 2θ or Q
+    def print_main_menu():
+        has_cif = False
+        try:
+            # Check for CIF files in args.files (handle colon syntax like file.cif:0.25448)
+            has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+            # Also check if CIF tick series exists (more reliable)
+            if not has_cif and _bp is not None:
+                has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+        except Exception:
+            pass
+        col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend"]
+        if has_cif:
+            col1.append("z: hkl")
+            col1.append("j: CIF titles")
+        col2 = ["a: rearrange", "d: offset", "r: rename", "x: change X", "y: change Y"]
+        col3 = ["v: find peaks", "n: crosshair", "p: print(export) style/geom", "i: import style/geom", "e: export figure", "s: save project", "b: undo", "q: quit"]
+        
+        # Hide offset/y-range in stack mode
+        if args.stack:
+            col2 = [item for item in col2 if not item.startswith("d:") and not item.startswith("y:")]
+        
+        if not is_diffraction:
+            col3 = [item for item in col3 if not item.startswith("n:")]
+        # Dynamic widths for cleaner alignment across terminals (account for ANSI codes)
+        # Use plain text length for width calculations
+        w1 = max(len("(Styles)"), *(len(s) for s in col1), 16)
+        w2 = max(len("(Geometries)"), *(len(s) for s in col2), 16)
+        w3 = max(len("(Options)"), *(len(s) for s in col3), 16)
+        rows = max(len(col1), len(col2), len(col3))
+        print("\n\033[1mInteractive menu:\033[0m")  # Bold title
+        print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Geometries)':<{w2}}\033[0m \033[93m{'(Options)':<{w3}}\033[0m")  # Yellow headers
+        for i in range(rows):
+            p1 = colorize_menu(col1[i]) if i < len(col1) else ""
+            p2 = colorize_menu(col2[i]) if i < len(col2) else ""
+            p3 = colorize_menu(col3[i]) if i < len(col3) else ""
+            # Add padding to account for ANSI escape codes (9 chars per colorized item)
+            pad1 = w1 + (9 if i < len(col1) else 0)
+            pad2 = w2 + (9 if i < len(col2) else 0)
+            pad3 = w3 + (9 if i < len(col3) else 0)
+            print(f"  {p1:<{pad1}} {p2:<{pad2}} {p3:<{pad3}}")
+
+    # --- Helper for spine visibility ---
+    def set_spine_visible(which, visible):
+        if which in ax.spines:
+            ax.spines[which].set_visible(visible)
+            fig.canvas.draw_idle()
+
+    def get_spine_visible(which):
+        if which in ax.spines:
+            return ax.spines[which].get_visible()
+        return False
+    # Initial menu display REMOVED to avoid double print
+    ax.set_aspect('auto', adjustable='datalim')
+
+    def on_xlim_change(event_ax):
+        stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
+        update_labels(event_ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
+        # Extend CIF ticks if needed when user pans/zooms horizontally
+        try:
+            if (
+                _bp is not None
+                and (not getattr(_bp, 'cif_extend_suspended', False))
+                and hasattr(ax, '_cif_extend_func') and hasattr(ax, '_cif_draw_func') and callable(ax._cif_extend_func)
+            ):
+                current_xlim = ax.get_xlim()
+                xmax = current_xlim[1]
+                ax._cif_extend_func(xmax)
+        except Exception:
+            pass
+        fig.canvas.draw()
+    ax.callbacks.connect('xlim_changed', on_xlim_change)
+
+    # --------- UPDATED unified font update helper ----------
+    def apply_font_changes(new_size=None, new_family=None):
+        return _ui_apply_font_changes(ax, fig, label_text_objects, normalize_label_text, new_size, new_family)
+
+    # Generic font sync (even when size/family unchanged) so newly created labels/twin axes inherit the rcParams size
+    def sync_fonts():
+        return _ui_sync_fonts(ax, fig, label_text_objects)
+
+    # Adjust vertical position of duplicate top X label depending on top tick visibility
+    def position_top_xlabel():
+        return _ui_position_top_xlabel(ax, fig, tick_state)
+
+    def position_right_ylabel():
+        return _ui_position_right_ylabel(ax, fig, tick_state)
+    
+    def position_bottom_xlabel():
+        return _ui_position_bottom_xlabel(ax, fig, tick_state)
+    
+    def position_left_ylabel():
+        return _ui_position_left_ylabel(ax, fig, tick_state)
+    
+    def _current_label_position() -> str:
+        vertical = "bottom" if getattr(fig, '_stack_label_at_bottom', False) else "top"
+        horizontal = "left" if getattr(fig, '_label_anchor_left', False) else "right"
+        return f"{vertical}-{horizontal}"
+    
+    def _apply_legend_position(bottom: bool, left: bool) -> None:
+        fig._stack_label_at_bottom = bottom
+        fig._label_anchor_left = left
+        update_labels(ax, y_data_list, label_text_objects, args.stack, bottom)
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+    
+    def _title_offset_menu():
+        """Interactive nudging for duplicate top/right titles."""
+        def _dpi():
+            try:
+                return float(fig.dpi)
+            except Exception:
+                return 72.0
+
+        def _px_value(attr):
+            try:
+                pts = float(getattr(ax, attr, 0.0) or 0.0)
+            except Exception:
+                pts = 0.0
+            return pts * _dpi() / 72.0
+
+        def _set_attr(attr, pts):
+            try:
+                setattr(ax, attr, float(pts))
+            except Exception:
+                pass
+
+        def _nudge(attr, delta_px):
+            try:
+                current_pts = float(getattr(ax, attr, 0.0) or 0.0)
+            except Exception:
+                current_pts = 0.0
+            delta_pts = float(delta_px) * 72.0 / _dpi()
+            _set_attr(attr, current_pts + delta_pts)
+
+        snapshot_taken = False
+
+        def _ensure_snapshot():
+            nonlocal snapshot_taken
+            if not snapshot_taken:
+                push_state("title-offset")
+                snapshot_taken = True
+
+        def _top_menu():
+            if not getattr(ax, '_top_xlabel_on', False):
+                print("Top duplicate title is currently hidden (toggle with w5).")
+                return
+            while True:
+                current_y_px = _px_value('_top_xlabel_manual_offset_y_pts')
+                current_x_px = _px_value('_top_xlabel_manual_offset_x_pts')
+                print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
+                sub = _safe_input(colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_top_xlabel_manual_offset_y_pts', 0.0)
+                    _set_attr('_top_xlabel_manual_offset_x_pts', 0.0)
+                elif sub == 'w':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_y_pts', +1.0)
+                elif sub == 's':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_y_pts', -1.0)
+                elif sub == 'a':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_x_pts', -1.0)
+                elif sub == 'd':
+                    _ensure_snapshot()
+                    _nudge('_top_xlabel_manual_offset_x_pts', +1.0)
+                else:
+                    print("Unknown choice (use w/s/a/d/0/q).")
+                    continue
+                position_top_xlabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        def _right_menu():
+            if not getattr(ax, '_right_ylabel_on', False):
+                print("Right duplicate title is currently hidden (toggle with d5).")
+                return
+            while True:
+                current_x_px = _px_value('_right_ylabel_manual_offset_x_pts')
+                current_y_px = _px_value('_right_ylabel_manual_offset_y_pts')
+                print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
+                sub = _safe_input(colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_right_ylabel_manual_offset_x_pts', 0.0)
+                    _set_attr('_right_ylabel_manual_offset_y_pts', 0.0)
+                elif sub == 'd':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_x_pts', +1.0)
+                elif sub == 'a':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_x_pts', -1.0)
+                elif sub == 'w':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_y_pts', +1.0)
+                elif sub == 's':
+                    _ensure_snapshot()
+                    _nudge('_right_ylabel_manual_offset_y_pts', -1.0)
+                else:
+                    print("Unknown choice (use d/a/w/s/0/q).")
+                    continue
+                position_right_ylabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        def _bottom_menu():
+            if not ax.get_xlabel():
+                print("Bottom title is currently hidden.")
+                return
+            while True:
+                current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts')
+                print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
+                sub = _safe_input(colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_bottom_xlabel_manual_offset_y_pts', 0.0)
+                elif sub == 's':
+                    _ensure_snapshot()
+                    _nudge('_bottom_xlabel_manual_offset_y_pts', +1.0)
+                elif sub == 'w':
+                    _ensure_snapshot()
+                    _nudge('_bottom_xlabel_manual_offset_y_pts', -1.0)
+                else:
+                    print("Unknown choice (use s/w/0/q).")
+                    continue
+                position_bottom_xlabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        def _left_menu():
+            if not ax.get_ylabel():
+                print("Left title is currently hidden.")
+                return
+            while True:
+                current_x_px = _px_value('_left_ylabel_manual_offset_x_pts')
+                print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
+                sub = _safe_input(colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == '0':
+                    _ensure_snapshot()
+                    _set_attr('_left_ylabel_manual_offset_x_pts', 0.0)
+                elif sub == 'a':
+                    _ensure_snapshot()
+                    _nudge('_left_ylabel_manual_offset_x_pts', +1.0)
+                elif sub == 'd':
+                    _ensure_snapshot()
+                    _nudge('_left_ylabel_manual_offset_x_pts', -1.0)
+                else:
+                    print("Unknown choice (use a/d/0/q).")
+                    continue
+                position_left_ylabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+        while True:
+            print(colorize_inline_commands("Title offsets:"))
+            print("  " + colorize_menu('w : adjust top title (w=up, s=down, a=left, d=right)'))
+            print("  " + colorize_menu('s : adjust bottom title (s=down, w=up)'))
+            print("  " + colorize_menu('a : adjust left title (a=left, d=right)'))
+            print("  " + colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
+            print("  " + colorize_menu('r : reset all offsets'))
+            print("  " + colorize_menu('q : back to toggle menu'))
+            choice = _safe_input(colorize_prompt("p> ")).strip().lower()
+            if not choice:
+                continue
+            if choice == 'q':
+                break
+            if choice == 'w':
+                _top_menu()
+                continue
+            if choice == 's':
+                _bottom_menu()
+                continue
+            if choice == 'a':
+                _left_menu()
+                continue
+            if choice == 'd':
+                _right_menu()
+                continue
+            if choice == 'r':
+                _ensure_snapshot()
+                _set_attr('_top_xlabel_manual_offset_y_pts', 0.0)
+                _set_attr('_top_xlabel_manual_offset_x_pts', 0.0)
+                _set_attr('_bottom_xlabel_manual_offset_y_pts', 0.0)
+                _set_attr('_left_ylabel_manual_offset_x_pts', 0.0)
+                _set_attr('_right_ylabel_manual_offset_x_pts', 0.0)
+                _set_attr('_right_ylabel_manual_offset_y_pts', 0.0)
+                position_top_xlabel()
+                position_bottom_xlabel()
+                position_left_ylabel()
+                position_right_ylabel()
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+                print("Reset manual offsets for all titles.")
+                continue
+            print("Unknown option. Use w/s/a/d/r/q.")
+    
+    def play_jump_game():
+        """
+        Simple terminal 'jumping bird' (Flappy-style) game.
+        Controls: j = jump, Enter = let bird fall, q = quit game.
+        Avoid hitting '#' pillars. Score increases when you pass a pillar.
+        Difficulty lowered: bigger gaps, stronger jump, sparser pillars.
+        """
+        # Board/config
+        WIDTH = 32
+        HEIGHT = 12
+        BIRD_X = 5
+        GRAVITY = 1
+        JUMP_VEL = -3   # stronger jump for easier play
+        GAP_SIZE = 5    # larger gap for easier passage
+        MIN_OBS_SPACING = 12  # more spacing between obstacles
+
+        class Obstacle:
+            __slots__ = ("x", "gap_start", "scored")
+            def __init__(self, x):
+                self.x = x
+                self.gap_start = random.randint(1, max(1, HEIGHT - GAP_SIZE - 1))
+                self.scored = False
+
+        bird_y = HEIGHT // 2
+        vel = 0
+        tick = 0
+        score = 0
+        obstacles = [Obstacle(WIDTH - 1)]
+
+        def need_new():
+            if not obstacles:
+                return True
+            rightmost = max(o.x for o in obstacles)
+            return rightmost < WIDTH - MIN_OBS_SPACING
+
+        def new_obstacle():
+            obstacles.append(Obstacle(WIDTH - 1))
+
+        def collision():
+            # Out of bounds
+            if bird_y < 0 or bird_y >= HEIGHT:
+                return True
+            # Pillar collisions at or just before bird column unless within gap
+            for o in obstacles:
+                if o.x in (BIRD_X, BIRD_X - 1):
+                    if not (o.gap_start <= bird_y < o.gap_start + GAP_SIZE):
+                        return True
+            return False
+
+        def move_obstacles():
+            for o in obstacles:
+                o.x -= 1
+
+        def purge_obstacles():
+            while obstacles and obstacles[0].x < -1:
+                obstacles.pop(0)
+
+        def render():
+            border = "+" + ("-" * WIDTH) + "+"
+            print("\n" + border)
+            for y in range(HEIGHT):
+                row = []
+                for x in range(WIDTH):
+                    ch = " "
+                    if x == BIRD_X and y == bird_y:
+                        ch = "@"
+                    else:
+                        for o in obstacles:
+                            if x == o.x and not (o.gap_start <= y < o.gap_start + GAP_SIZE):
+                                ch = "#"
+                                break
+                    row.append(ch)
+                print("|" + "".join(row) + "|")
+            print(border)
+            print(f"Score: {score}   (j=jump, Enter=fall, q=quit)")
+
+        # One-time instructions
+        print("\nJumping Bird: pass through the gaps!")
+        print("Controls: j = jump, Enter = fall, q = quit\n")
+
+        while True:
+            render()
+            cmd = _safe_input("> ").strip().lower()
+            if cmd == 'q':
+                print("Exited game. Returning to interactive menu.\n")
+                break
+            if cmd == 'j':
+                vel = JUMP_VEL
+            else:
+                vel += GRAVITY
+
+            bird_y += vel
+
+            move_obstacles()
+            if need_new():
+                new_obstacle()
+            purge_obstacles()
+
+            # Scoring: mark a pillar once it moves left of bird
+            for o in obstacles:
+                if not o.scored and o.x < BIRD_X:
+                    o.scored = True
+                    score += 1
+
+            tick += 1
+            if collision():
+                render()
+                print(f"Game Over! Final score: {score}\n")
+                break
+
+    # -------------------------------------------------------
+
+    # --------- NEW: Resize only the plotting frame (axes), keep canvas (figure) size fixed ----------
+    def resize_plot_frame():
+        return _ui_resize_plot_frame(fig, ax, y_data_list, label_text_objects, args, update_labels)
+
+    def resize_canvas():
+        return _ui_resize_canvas(fig, ax)
+    # -------------------------------------------------
+
+    # ---- Tick / label visibility state ----
+    # New model: separate tick marks vs tick labels per side
+    # Keys:
+    #   b_ticks, b_labels, t_ticks, t_labels, l_ticks, l_labels, r_ticks, r_labels
+    # Minor ticks remain: mbx, mtx, mly, mry
+    # Back-compat: also maintain synthetic bx/tx/ly/ry (mapped to *_ticks) for helpers.
+    saved_ts = getattr(ax, '_saved_tick_state', None)
+    def _make_default_tick_state():
+        return {
+            # Major ticks vs labels (defaults: bottom/left on, top/right off)
+            'b_ticks': True,  'b_labels': True,
+            't_ticks': False, 't_labels': False,
+            'l_ticks': True,  'l_labels': True,
+            'r_ticks': False, 'r_labels': False,
+            # Minor ticks
+            'mbx': False, 'mtx': False, 'mly': False, 'mry': False,
+            # Legacy mirrors (filled by _sync_legacy_tick_keys)
+            'bx': True, 'tx': False, 'ly': True, 'ry': False,
+        }
+
+    def _from_legacy(legacy: dict):
+        ts = _make_default_tick_state()
+        bx = bool(legacy.get('bx', ts['bx']))
+        tx = bool(legacy.get('tx', ts['tx']))
+        ly = bool(legacy.get('ly', ts['ly']))
+        ry = bool(legacy.get('ry', ts['ry']))
+        ts.update({
+            'b_ticks': bx, 'b_labels': bx,
+            't_ticks': tx, 't_labels': tx,
+            'l_ticks': ly, 'l_labels': ly,
+            'r_ticks': ry, 'r_labels': ry,
+            'mbx': bool(legacy.get('mbx', False)),
+            'mtx': bool(legacy.get('mtx', False)),
+            'mly': bool(legacy.get('mly', False)),
+            'mry': bool(legacy.get('mry', False)),
+        })
+        return ts
+
+    def _sync_legacy_tick_keys():
+        # Mirror current *_ticks into legacy bx/tx/ly/ry keys for code that reads them
+        tick_state['bx'] = bool(tick_state.get('b_ticks', True))
+        tick_state['tx'] = bool(tick_state.get('t_ticks', False))
+        tick_state['ly'] = bool(tick_state.get('l_ticks', True))
+        tick_state['ry'] = bool(tick_state.get('r_ticks', False))
+
+    if isinstance(saved_ts, dict):
+        if any(k in saved_ts for k in ('b_ticks','t_ticks','l_ticks','r_ticks')):
+            # Already new-format; start from defaults then overlay
+            tick_state = _make_default_tick_state()
+            for k,v in saved_ts.items():
+                if k in tick_state:
+                    tick_state[k] = v
+        else:
+            tick_state = _from_legacy(saved_ts)
+    else:
+        tick_state = _make_default_tick_state()
+    _sync_legacy_tick_keys()
+
+    if hasattr(ax, '_saved_tick_state'):
+        try:
+            delattr(ax, '_saved_tick_state')
+        except Exception:
+            pass
+
+    # NEW: dynamic margin adjustment for top/right ticks
+    # Flag to preserve a manual/initial interactive top margin override
+    if not hasattr(fig, '_interactive_top_locked'):
+        fig._interactive_top_locked = False
+
+    def adjust_margins():
+        """Lightweight margin tweak based on tick visibility.
+
+        Unlike the old version this DOES NOT try to aggressively reallocate
+        space or change apparent plot size; it only adds a small padding on
+        sides that show ticks so labels have breathing room. Intended to be
+        idempotent and minimally invasive. Called during initial setup & some
+        style operations, but not on every tick toggle anymore.
+        """
+        sp = fig.subplotpars
+        # Start from current to avoid jumping
+        left, right, bottom, top = sp.left, sp.right, sp.bottom, sp.top
+        pad = 0.01  # modest expansion per active side
+        max_pad = 0.10
+        # Expand outward (shrinks axes) only if room
+        if tick_state['ly'] and left < 0.25:
+            left = min(left + pad, 0.40)
+        if tick_state['ry'] and (1 - right) < 0.25:
+            right = max(right - pad, 0.60)
+        if tick_state['bx'] and bottom < 0.25:
+            bottom = min(bottom + pad, 0.40)
+        if tick_state['tx'] and (1 - top) < 0.25:
+            top = max(top - pad, 0.60)
+
+        # Keep minimum plot span
+        if right - left < 0.25:
+            # Undo horizontal change proportionally
+            mid = (left + right) / 2
+            left = mid - 0.125
+            right = mid + 0.125
+        if top - bottom < 0.25:
+            mid = (bottom + top) / 2
+            bottom = mid - 0.125
+            top = mid + 0.125
+
+        fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+
+    def ensure_text_visibility(max_iterations=4, check_only=False):
+        return _ui_ensure_text_visibility(fig, ax, label_text_objects, max_iterations, check_only)
+
+    def update_tick_visibility():
+        # Apply major ticks and labels independently per side
+        ax.tick_params(axis='x',
+                       bottom=bool(tick_state['b_ticks']), labelbottom=bool(tick_state['b_labels']),
+                       top=bool(tick_state['t_ticks']),    labeltop=bool(tick_state['t_labels']))
+        ax.tick_params(axis='y',
+                       left=bool(tick_state['l_ticks']),  labelleft=bool(tick_state['l_labels']),
+                       right=bool(tick_state['r_ticks']), labelright=bool(tick_state['r_labels']))
+
+        if tick_state['mbx'] or tick_state['mtx']:
+            ax.xaxis.set_minor_locator(AutoMinorLocator())
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(axis='x', which='minor',
+                           bottom=tick_state['mbx'],
+                           top=tick_state['mtx'],
+                           labelbottom=False, labeltop=False)
+        else:
+            # Clear minor locator if no minor ticks are enabled
+            ax.xaxis.set_minor_locator(NullLocator())
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(axis='x', which='minor',
+                           bottom=False, top=False,
+                           labelbottom=False, labeltop=False)
+
+        if tick_state['mly'] or tick_state['mry']:
+            ax.yaxis.set_minor_locator(AutoMinorLocator())
+            ax.yaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(axis='y', which='minor',
+                           left=tick_state['mly'],
+                           right=tick_state['mry'],
+                           labelleft=False, labelright=False)
+        else:
+            # Clear minor locator if no minor ticks are enabled
+            ax.yaxis.set_minor_locator(NullLocator())
+            ax.yaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(axis='y', which='minor',
+                           left=False, right=False,
+                           labelleft=False, labelright=False)
+
+    # NOTE: We keep margins stable (no auto-adjust on every toggle)
+    if getattr(fig, '_skip_initial_text_visibility', False):
+        try:
+            delattr(fig, '_skip_initial_text_visibility')
+        except Exception:
+            pass
+    else:
+        ensure_text_visibility()
+    fig.canvas.draw_idle()
+
+    # NEW helper (was referenced in 'h' menu but not defined previously)
+    def print_tick_state():
+        def onoff(v):
+            return 'ON ' if bool(v) else 'off'
+        summary = []
+        sides = (
+            ('bottom',
+             get_spine_visible('bottom'),
+             tick_state.get('b_ticks', True),
+             tick_state.get('mbx', False),
+             tick_state.get('b_labels', True),
+             bool(ax.get_xlabel())),
+            ('top',
+             get_spine_visible('top'),
+             tick_state.get('t_ticks', False),
+             tick_state.get('mtx', False),
+             tick_state.get('t_labels', False),
+             bool(getattr(ax, '_top_xlabel_on', False))),
+            ('left',
+             get_spine_visible('left'),
+             tick_state.get('l_ticks', True),
+             tick_state.get('mly', False),
+             tick_state.get('l_labels', True),
+             bool(ax.get_ylabel())),
+            ('right',
+             get_spine_visible('right'),
+             tick_state.get('r_ticks', False),
+             tick_state.get('mry', False),
+             tick_state.get('r_labels', False),
+             bool(getattr(ax, '_right_ylabel_on', False))),
+        )
+        print(colorize_inline_commands("State (per side: spine, major, minor, labels, title):"))
+        for name, spine, mj, mn, lbl, title in sides:
+            print(colorize_inline_commands(f"  {name:<6}: spine={onoff(spine)} major={onoff(mj)} minor={onoff(mn)} labels={onoff(lbl)} title={onoff(title)}"))
+
+    # NEW: style / diagnostics printer (clean version)
+    def print_style_info():
+        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        show_hkl = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else None
+        return _bp_print_style_info(
+            fig, ax,
+            y_data_list, labels,
+            offsets_list,
+            x_full_list, raw_y_full_list,
+            args, delta,
+            label_text_objects,
+            tick_state,
+            cts,
+            show_hkl,
+        )
+
+    # NEW: export current style to .bpcfg
+    def export_style_config(filename, base_path=None, overwrite_path=None):
+        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
+        from .style import export_style_config as _export_style_config
+        return _export_style_config(
+            filename,
+            fig,
+            ax,
+            y_data_list,
+            labels,
+            delta,
+            args,
+            tick_state,
+            offsets_list,
+            cts,
+            label_text_objects,
+            base_path,
+            show_cif_titles=show_titles,
+            overwrite_path=overwrite_path,
+        )
+
+    # NEW: apply imported style config (restricted application)
+    def apply_style_config(filename):
+        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        hkl_map = getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None
+        res = _bp_apply_style_config(
+            filename,
+            fig,
+            ax,
+            x_data_list,
+            y_data_list,
+            orig_y,
+            offsets_list,
+            label_text_objects,
+            args,
+            tick_state,
+            labels,
+            update_labels,
+            cts,
+            hkl_map,
+            adjust_margins,
+        )
+        # Sync top/right tick label2 fonts with current rcParams after style import
+        try:
+            fam_chain = plt.rcParams.get('font.sans-serif')
+            fam0 = fam_chain[0] if isinstance(fam_chain, list) and fam_chain else None
+            size0 = plt.rcParams.get('font.size', None)
+            if fam0 or size0 is not None:
+                for t in ax.xaxis.get_major_ticks():
+                    if hasattr(t, 'label2'):
+                        if size0 is not None: t.label2.set_size(size0)
+                        if fam0: t.label2.set_family(fam0)
+                for t in ax.yaxis.get_major_ticks():
+                    if hasattr(t, 'label2'):
+                        if size0 is not None: t.label2.set_size(size0)
+                        if fam0: t.label2.set_family(fam0)
+        except Exception:
+            pass
+        return res
+
+    # Initialize with current defaults
+    update_tick_visibility()
+
+    # --- Crosshair state & toggle function (UPDATED) ---
+    # Get wavelength info from cif_globals if available
+    file_wavelength_info = cif_globals.get('file_wavelength_info', []) if cif_globals else []
+    
+    crosshair = {
+        'active': False,
+        'hline': None,
+        'vline': None,
+        'text': None,
+        'cid_motion': None,
+        'wavelength': None  # only used when axis is 2theta (fallback if no file info)
+    }
+
+    def toggle_crosshair():
+        if not crosshair['active']:
+            # Only ask for wavelength if it's diffraction data, not using Q, and no file wavelength info
+            if is_diffraction and not use_Q and not file_wavelength_info:
+                try:
+                    wl_in = _safe_input("Enter wavelength in Å for Q,d display (blank=skip, q=cancel): ").strip()
+                    if wl_in.lower() == 'q':
+                        print("Canceled.")
+                        return
+                    if wl_in:
+                        crosshair['wavelength'] = float(wl_in)
+                    else:
+                        crosshair['wavelength'] = None
+                except ValueError:
+                    print("Invalid wavelength. Skipping Q,d calculation.")
+                    crosshair['wavelength'] = None
+            vline = ax.axvline(x=ax.get_xlim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            hline = ax.axhline(y=ax.get_ylim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            txt = ax.text(1.0, 1.0, "",
+                          ha='right', va='bottom',
+                          transform=ax.transAxes,
+                          fontsize=max(9, int(0.6 * plt.rcParams.get('font.size', 16))),
+                          color='0.15',
+                          bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
+
+            def on_move(event):
+                if event.inaxes != ax or event.xdata is None or event.ydata is None:
+                    return
+                x = float(event.xdata)
+                y = float(event.ydata)
+                vline.set_xdata([x, x])
+                hline.set_ydata([y, y])
+
+                # For diffraction data, show Q/d calculations
+                if is_diffraction:
+                    if use_Q:
+                        Q = x
+                        if Q != 0:
+                            d = 2 * np.pi / Q
+                            txt.set_text(f"Q={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
+                        else:
+                            txt.set_text(f"Q={Q:.6g}\nd=∞\ny={y:.6g}")
+                    elif use_r:
+                        txt.set_text(f"r={x:.6g} Å\ny={y:.6g}")
+                    else:
+                        # 2θ mode
+                        # Check if we have file wavelength info (dual wavelength conversion)
+                        wl_info = file_wavelength_info[0] if file_wavelength_info else None
+                        if wl_info and wl_info.get('original_wl') is not None and wl_info.get('conversion_wl') is not None:
+                            # Dual wavelength: show original 2theta and current 2theta
+                            orig_wl = wl_info['original_wl']
+                            conv_wl = wl_info['conversion_wl']
+                            # Current 2theta is x
+                            # Calculate original 2theta: current 2theta -> Q -> original 2theta
+                            theta_rad = np.radians(x / 2.0)
+                            Q = 4 * np.pi * np.sin(theta_rad) / conv_wl
+                            # Convert Q back to original 2theta
+                            sin_theta_orig = Q * orig_wl / (4 * np.pi)
+                            sin_theta_orig = np.clip(sin_theta_orig, -1.0, 1.0)
+                            theta_orig_rad = np.arcsin(sin_theta_orig)
+                            orig_2theta = np.degrees(2 * theta_orig_rad)
+                            if Q != 0:
+                                d = 2 * np.pi / Q
+                                txt.set_text(f"2θ={x:.6g}° (λ₂={conv_wl:.5f})\n2θ₀={orig_2theta:.6g}° (λ₁={orig_wl:.5f})\nQ={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
+                            else:
+                                txt.set_text(f"2θ={x:.6g}° (λ₂={conv_wl:.5f})\n2θ₀={orig_2theta:.6g}° (λ₁={orig_wl:.5f})\nQ=0\nd=∞\ny={y:.6g}")
+                        elif crosshair['wavelength'] is not None:
+                            lam = crosshair['wavelength']
+                            theta_rad = np.radians(x / 2.0)
+                            Q = 4 * np.pi * np.sin(theta_rad) / lam
+                            if Q != 0:
+                                d = 2 * np.pi / Q
+                                txt.set_text(f"2θ={x:.6g}°\nQ={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
+                            else:
+                                txt.set_text(f"2θ={x:.6g}°\nQ=0\nd=∞\ny={y:.6g}")
+                        else:
+                            txt.set_text(f"2θ={x:.6g}°\ny={y:.6g}")
+                else:
+                    # For non-diffraction data, just show x and y values
+                    txt.set_text(f"x={x:.6g}\ny={y:.6g}")
+
+                fig.canvas.draw_idle()
+
+            cid = fig.canvas.mpl_connect('motion_notify_event', on_move)
+            crosshair.update({'active': True, 'hline': hline, 'vline': vline,
+                              'text': txt, 'cid_motion': cid})
+            print("Crosshair ON. Move mouse over axes. Press 'n' again to turn off.")
+        else:
+            if crosshair['cid_motion'] is not None:
+                fig.canvas.mpl_disconnect(crosshair['cid_motion'])
+            for k in ('hline', 'vline', 'text'):
+                art = crosshair[k]
+                if art is not None:
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+            crosshair.update({'active': False, 'hline': None, 'vline': None,
+                              'text': None, 'cid_motion': None})
+            fig.canvas.draw_idle()
+            print("Crosshair OFF.")
+    # --- End crosshair additions (UPDATED) ---
+
+    # -------- Session helper now provided by batplot.session (dump only here) --------
+
+    
+    # history management:
+    state_history = []
+
+    def push_state(note=""):
+        """Snapshot current editable state (before a modifying action)."""
+        try:
+            # Helper to capture a representative tick line width
+            def _tick_width(axis_obj, which):
+                try:
+                    tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+                    width = tick_kw.get('width')
+                    if width is None:
+                        axis_name = getattr(axis_obj, 'axis_name', 'x')
+                        rc_key = f"{axis_name}tick.{which}.width"
+                        width = plt.rcParams.get(rc_key)
+                    if width is not None:
+                        return float(width)
+                except Exception:
+                    return None
+                return None
+            snap = {
+                "note": note,
+                "xlim": ax.get_xlim(),
+                "ylim": ax.get_ylim(),
+                "tick_state": tick_state.copy(),
+                "font_size": plt.rcParams.get('font.size'),
+                "font_chain": list(plt.rcParams.get('font.sans-serif', [])),
+                "labels": list(labels),
+                "delta": delta,
+                "lines": [],
+                "fig_size": list(fig.get_size_inches()),
+                "fig_dpi": fig.dpi,
+                "axes_bbox": [float(v) for v in ax.get_position().bounds],  # x0,y0,w,h
+                "axis_labels": {"xlabel": ax.get_xlabel(), "ylabel": ax.get_ylabel()},
+                "axis_titles": {"top_x": bool(getattr(ax, '_top_xlabel_on', False)),
+                                 "right_y": bool(getattr(ax, '_right_ylabel_on', False))},
+                "title_offsets": {
+                    "top_y": float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    "top_x": float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                    "bottom_y": float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    "left_x": float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    "right_x": float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    "right_y": float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+                },
+                "spines": {name: {"lw": sp.get_linewidth(), "color": sp.get_edgecolor(), "visible": sp.get_visible()} for name, sp in ax.spines.items()},
+                "tick_widths": {
+                    "x_major": _tick_width(ax.xaxis, 'major'),
+                    "x_minor": _tick_width(ax.xaxis, 'minor'),
+                    "y_major": _tick_width(ax.yaxis, 'major'),
+                    "y_minor": _tick_width(ax.yaxis, 'minor')
+                },
+                "tick_lengths": dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
+                "tick_direction": getattr(fig, '_tick_direction', 'out'),
+                "cif_tick_series": (list(getattr(_bp, 'cif_tick_series')) if (_bp is not None and hasattr(_bp, 'cif_tick_series')) else None),
+                "show_cif_hkl": (bool(getattr(_bp, 'show_cif_hkl')) if _bp is not None and hasattr(_bp, 'show_cif_hkl') else False),
+                "show_cif_titles": (bool(getattr(_bp, 'show_cif_titles')) if _bp is not None and hasattr(_bp, 'show_cif_titles') else True),
+                "rotation_angle": getattr(ax, '_rotation_angle', 0),
+                "stack_label_at_bottom": getattr(fig, '_stack_label_at_bottom', False),
+                "label_anchor_left": getattr(fig, '_label_anchor_left', False),
+                "grid": ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
+            }
+            # Line + data arrays
+            for i, ln in enumerate(ax.lines):
+                snap["lines"].append({
+                    "index": i,
+                    "x": np.array(ln.get_xdata(), copy=True),
+                    "y": np.array(ln.get_ydata(), copy=True),
+                    "color": ln.get_color(),
+                    "lw": ln.get_linewidth(),
+                    "ls": ln.get_linestyle(),
+                    "marker": ln.get_marker(),
+                    "markersize": getattr(ln, 'get_markersize', lambda: None)(),
+                    "mfc": getattr(ln, 'get_markerfacecolor', lambda: None)(),
+                    "mec": getattr(ln, 'get_markeredgecolor', lambda: None)(),
+                    "alpha": ln.get_alpha()
+                })
+            # Data lists
+            snap["x_data_list"] = [np.array(a, copy=True) for a in x_data_list]
+            snap["y_data_list"] = [np.array(a, copy=True) for a in y_data_list]
+            snap["orig_y"]      = [np.array(a, copy=True) for a in orig_y]
+            snap["offsets"]     = list(offsets_list)
+            # Label text content
+            snap["label_texts"] = [t.get_text() for t in label_text_objects]
+            state_history.append(snap)
+            if len(state_history) > 40:
+                state_history.pop(0)
+        except Exception as e:
+            print(f"Warning: could not snapshot state: {e}")
+
+    def restore_state():
+        nonlocal delta
+        if not state_history:
+            print("No undo history.")
+            return
+        snap = state_history.pop()
+        try:
+            # Basic numeric state
+            ax.set_xlim(*snap["xlim"]) 
+            ax.set_ylim(*snap["ylim"]) 
+            # Tick state
+            snap_ts = snap.get("tick_state", {})
+            for k, v in snap_ts.items():
+                if k in tick_state:
+                    tick_state[k] = v
+            # If snapshot was legacy-only, map bx/tx/ly/ry into new keys
+            if not any(k in snap_ts for k in ('b_ticks','t_ticks','l_ticks','r_ticks')):
+                if 'bx' in snap_ts:
+                    tick_state['b_ticks'] = bool(snap_ts.get('bx', tick_state['bx']))
+                    tick_state['b_labels'] = bool(snap_ts.get('bx', tick_state['bx']))
+                if 'tx' in snap_ts:
+                    tick_state['t_ticks'] = bool(snap_ts.get('tx', tick_state['tx']))
+                    tick_state['t_labels'] = bool(snap_ts.get('tx', tick_state['tx']))
+                if 'ly' in snap_ts:
+                    tick_state['l_ticks'] = bool(snap_ts.get('ly', tick_state['ly']))
+                    tick_state['l_labels'] = bool(snap_ts.get('ly', tick_state['ly']))
+                if 'ry' in snap_ts:
+                    tick_state['r_ticks'] = bool(snap_ts.get('ry', tick_state['ry']))
+                    tick_state['r_labels'] = bool(snap_ts.get('ry', tick_state['ry']))
+            _sync_legacy_tick_keys()
+            update_tick_visibility()
+
+            # Fonts
+            if snap["font_chain"]:
+                plt.rcParams['font.family'] = 'sans-serif'
+                plt.rcParams['font.sans-serif'] = snap["font_chain"]
+            if snap["font_size"]:
+                try:
+                    plt.rcParams['font.size'] = snap["font_size"]
+                except Exception:
+                    pass
+
+            # Figure size & dpi
+            if snap.get("fig_size") and isinstance(snap["fig_size"], (list, tuple)) and len(snap["fig_size"])==2:
+                if not (getattr(_bp, 'keep_canvas_fixed', True) if _bp is not None else True):
+                    try:
+                        fig.set_size_inches(snap["fig_size"][0], snap["fig_size"][1], forward=True)
+                    except Exception:
+                        pass
+                else:
+                    print("(Canvas fixed) Ignoring undo figure size restore.")
+            # Don't restore DPI from undo - use system default to avoid display-dependent issues
+            
+            # Restore axes (plot frame) via stored bbox if present
+            if snap.get("axes_bbox") and isinstance(snap["axes_bbox"], (list, tuple)) and len(snap["axes_bbox"])==4:
+                try:
+                    x0,y0,w,h = snap["axes_bbox"]
+                    left = x0; bottom = y0; right = x0 + w; top = y0 + h
+                    if 0 < left < right <=1 and 0 < bottom < top <=1:
+                        fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+                except Exception:
+                    pass
+
+            # Axis labels (use low-level API to avoid layout recalculation)
+            axis_labels = snap.get("axis_labels", {})
+            if axis_labels.get("xlabel") is not None:
+                ax.xaxis.label.set_text(axis_labels["xlabel"])
+            if axis_labels.get("ylabel") is not None:
+                ax.yaxis.label.set_text(axis_labels["ylabel"])
+            # Manual offsets for all titles - support both old and new format
+            title_offsets = snap.get("title_offsets", {})
+            try:
+                if 'top_y' in title_offsets:
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'top' for y-offset
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top', 0.0) or 0.0)
+            except Exception:
+                ax._top_xlabel_manual_offset_y_pts = 0.0
+            try:
+                ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+            except Exception:
+                ax._top_xlabel_manual_offset_x_pts = 0.0
+            try:
+                ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+            except Exception:
+                ax._bottom_xlabel_manual_offset_y_pts = 0.0
+            try:
+                ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+            except Exception:
+                ax._left_ylabel_manual_offset_x_pts = 0.0
+            try:
+                if 'right_x' in title_offsets:
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'right' for x-offset
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right', 0.0) or 0.0)
+            except Exception:
+                ax._right_ylabel_manual_offset_x_pts = 0.0
+            try:
+                ax._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
+            except Exception:
+                ax._right_ylabel_manual_offset_y_pts = 0.0
+
+            # Axis title duplicates (top X / right Y)
+            at = snap.get("axis_titles", {})
+            # Top X
+            try:
+                ax._top_xlabel_on = bool(at.get('top_x', False))
+                position_top_xlabel()
+            except Exception:
+                pass
+            # Right Y
+            try:
+                ax._right_ylabel_on = bool(at.get('right_y', False))
+                position_right_ylabel()
+            except Exception:
+                pass
+            # Also reposition bottom/left titles to consume pending pads and match tick label visibility
+            try:
+                position_bottom_xlabel()
+            except Exception:
+                pass
+            try:
+                position_left_ylabel()
+            except Exception:
+                pass
+
+            # Spines (linewidth, color, visibility)
+            for name, spec in snap.get("spines", {}).items():
+                sp_obj = ax.spines.get(name)
+                if sp_obj is None:
+                    continue
+                try:
+                    if "lw" in spec:
+                        sp_obj.set_linewidth(spec["lw"])
+                    if "color" in spec and spec["color"] is not None:
+                        sp_obj.set_edgecolor(spec["color"])
+                        if name in ('top', 'bottom'):
+                            ax.tick_params(axis='x', which='both', colors=spec['color'])
+                            ax.xaxis.label.set_color(spec['color'])
+                        else:
+                            ax.tick_params(axis='y', which='both', colors=spec['color'])
+                            ax.yaxis.label.set_color(spec['color'])
+                    if "visible" in spec:
+                        try:
+                            sp_obj.set_visible(bool(spec["visible"]))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Tick widths
+            tw = snap.get("tick_widths", {})
+            try:
+                if tw.get("x_major") is not None:
+                    ax.tick_params(axis='x', which='major', width=tw["x_major"])
+                if tw.get("x_minor") is not None:
+                    ax.tick_params(axis='x', which='minor', width=tw["x_minor"]) 
+                if tw.get("y_major") is not None:
+                    ax.tick_params(axis='y', which='major', width=tw["y_major"]) 
+                if tw.get("y_minor") is not None:
+                    ax.tick_params(axis='y', which='minor', width=tw["y_minor"]) 
+            except Exception:
+                pass
+
+            # Tick lengths
+            tl = snap.get("tick_lengths", {})
+            try:
+                if tl.get("major") is not None:
+                    ax.tick_params(axis='both', which='major', length=tl["major"])
+                if tl.get("minor") is not None:
+                    ax.tick_params(axis='both', which='minor', length=tl["minor"])
+                if tl:
+                    fig._tick_lengths = dict(tl)
+            except Exception:
+                pass
+
+            # Tick direction
+            try:
+                tick_dir = snap.get("tick_direction", 'out')
+                ax.tick_params(axis='both', which='both', direction=tick_dir)
+                fig._tick_direction = tick_dir
+            except Exception:
+                pass
+
+            # Labels list
+            labels[:] = snap["labels"]
+
+            # Data & lines
+            if len(snap["lines"]) == len(ax.lines):
+                for item in snap["lines"]:
+                    i = item["index"]
+                    ln = ax.lines[i]
+                    ln.set_data(item["x"], item["y"])
+                    ln.set_color(item["color"]) 
+                    ln.set_linewidth(item["lw"]) 
+                    ln.set_linestyle(item["ls"]) 
+                    if item["marker"] is not None:
+                        ln.set_marker(item["marker"]) 
+                    if item.get("markersize") is not None:
+                        try: ln.set_markersize(item["markersize"]) 
+                        except Exception: pass
+                    if item.get("mfc") is not None:
+                        try: ln.set_markerfacecolor(item["mfc"]) 
+                        except Exception: pass
+                    if item.get("mec") is not None:
+                        try: ln.set_markeredgecolor(item["mec"]) 
+                        except Exception: pass
+                    if item["alpha"] is not None:
+                        ln.set_alpha(item["alpha"]) 
+
+            # Replace lists
+            x_data_list[:] = [np.array(a, copy=True) for a in snap["x_data_list"]]
+            y_data_list[:] = [np.array(a, copy=True) for a in snap["y_data_list"]]
+            orig_y[:]      = [np.array(a, copy=True) for a in snap["orig_y"]]
+            offsets_list[:] = list(snap["offsets"]) 
+            delta = snap.get("delta", delta)
+            
+            # Recalculate y_data_list from orig_y and offsets_list to ensure consistency
+            for i in range(len(orig_y)):
+                if i < len(offsets_list):
+                    y_data_list[i] = orig_y[i] + offsets_list[i]
+                else:
+                    y_data_list[i] = orig_y[i].copy()
+            
+            # Update line data with restored values
+            for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
+                try:
+                    ax.lines[i].set_data(x_data_list[i], y_data_list[i])
+                except Exception:
+                    pass
+
+            # Restore rotation angle
+            if 'rotation_angle' in snap:
+                ax._rotation_angle = snap['rotation_angle']
+
+            # Restore legend position (stack_label_at_bottom)
+            if 'stack_label_at_bottom' in snap:
+                fig._stack_label_at_bottom = bool(snap['stack_label_at_bottom'])
+            if 'label_anchor_left' in snap:
+                fig._label_anchor_left = bool(snap['label_anchor_left'])
+
+            # Restore grid state
+            if 'grid' in snap:
+                try:
+                    if snap['grid']:
+                        ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+                    else:
+                        ax.grid(False)
+                except Exception:
+                    pass
+
+            # CIF tick sets & label visibility (write back to batplot module globals)
+            if _bp is not None and snap.get("cif_tick_series") is not None and hasattr(_bp, 'cif_tick_series'):
+                try:
+                    _bp.cif_tick_series[:] = [tuple(t) for t in snap["cif_tick_series"]]
+                except Exception:
+                    pass
+            if _bp is not None and 'show_cif_hkl' in snap:
+                try:
+                    setattr(_bp, 'show_cif_hkl', bool(snap['show_cif_hkl']))
+                except Exception:
+                    pass
+            if _bp is not None and 'show_cif_titles' in snap:
+                try:
+                    new_state = bool(snap['show_cif_titles'])
+                    setattr(_bp, 'show_cif_titles', new_state)
+                    # Also update figure attribute and __main__ module
+                    fig._bp_show_cif_titles = new_state
+                    try:
+                        _bp_module = sys.modules.get('__main__')
+                        if _bp_module is not None:
+                            setattr(_bp_module, 'show_cif_titles', new_state)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            # Redraw CIF ticks after restoration if available
+            if hasattr(ax, '_cif_draw_func'):
+                try:
+                    ax._cif_draw_func()
+                except Exception:
+                    pass
+
+            # Restore label texts (keep numbering style)
+            for i, txt in enumerate(label_text_objects):
+                base = labels[i] if i < len(labels) else ""
+                txt.set_text(f"{i+1}: {base}")
+
+            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+            try:
+                globals()['tick_state'] = tick_state
+            except Exception:
+                pass
+            try:
+                fig.canvas.draw()
+            except Exception:
+                try: fig.canvas.draw_idle()
+                except Exception: pass
+            print("Undo: restored previous state.")
+        except Exception as e:
+            print(f"Error restoring state: {e}")
+
+
+    while True:
+        try:
+            print_main_menu()
+            key = _safe_input("Press a key: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nExiting interactive menu...")
+            break
+        
+        if not key:
+            continue
+
+        # NEW: disable 'y' and 'd' in stack mode
+        if args.stack and key in ('y', 'd'):
+            print("Option disabled in --stack mode.")
+            continue
+
+        if key == 'q':
+            try:
+                confirm = _safe_input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting interactive menu...")
+                break
+            if confirm == 'y':
+                break
+            else:
+                continue
+        elif key == 'z':  # toggle hkl labels on CIF ticks (non-blocking)
+            # Check if CIF files exist before allowing this command
+            has_cif = False
+            try:
+                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                if not has_cif and _bp is not None:
+                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+            except Exception:
+                pass
+            if not has_cif:
+                print("Unknown option.")
+                continue
+            try:
+                # Flip visibility flag in batplot module
+                cur = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
+                if _bp is not None:
+                    setattr(_bp, 'show_cif_hkl', not cur)
+                # Avoid re-entrant extension while redrawing
+                prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
+                if _bp is not None:
+                    setattr(_bp, 'cif_extend_suspended', True)
+                if hasattr(ax, '_cif_draw_func'):
+                    ax._cif_draw_func()
+                if _bp is not None:
+                    setattr(_bp, 'cif_extend_suspended', prev_ext)
+                # Count visible labels
+                n_labels = 0
+                if bool(getattr(_bp, 'show_cif_hkl', False)) and hasattr(ax, '_cif_tick_art'):
+                    for art in getattr(ax, '_cif_tick_art'):
+                        try:
+                            if hasattr(art, 'get_text') and '(' in art.get_text():
+                                n_labels += 1
+                        except Exception:
+                            pass
+                print(f"CIF hkl labels {'ON' if bool(getattr(_bp,'show_cif_hkl', False)) else 'OFF'} (visible labels: {n_labels}).")
+            except Exception as e:
+                print(f"Error toggling hkl labels: {e}")
+            continue
+        elif key == 'h':  # legend submenu
+            try:
+                while True:
+                    print("\n\033[1mLegend submenu:\033[0m")
+                    print(f"  {colorize_menu('v: show/hide curve names')}")
+                    current_pos = _current_label_position()
+                    print(f"  {colorize_menu(f's: legend position (current: {current_pos})')}")
+                    print(f"  {colorize_menu('q: back to main menu')}")
+                    sub_key = _safe_input("Choose: ").strip().lower()
+                    
+                    if sub_key == 'q':
+                        break
+                    elif sub_key == 'v':
+                        # Toggle curve name labels visibility
+                        push_state("legend-visibility")
+                        first_visible = label_text_objects[0].get_visible() if label_text_objects else True
+                        new_state = not first_visible
+                        for lbl in label_text_objects:
+                            lbl.set_visible(new_state)
+                        fig._curve_names_visible = new_state
+                        stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
+                        fig.canvas.draw_idle()
+                        print(f"Curve name labels {'ON' if new_state else 'OFF'}.")
+                    elif sub_key == 's':
+                        print("\nChoose legend position:")
+                        print("  1: top-right")
+                        print("  2: top-left")
+                        print("  3: bottom-right")
+                        print("  4: bottom-left")
+                        choice = _safe_input("Position (1-4, q=cancel): ").strip().lower()
+                        options = {
+                            '1': (False, False),
+                            '2': (False, True),
+                            '3': (True, False),
+                            '4': (True, True),
+                        }
+                        if not choice or choice == 'q':
+                            continue
+                        if choice in options:
+                            push_state("legend-position")
+                            bottom, left = options[choice]
+                            _apply_legend_position(bottom, left)
+                            new_pos = f"{'bottom' if bottom else 'top'}-{'left' if left else 'right'}"
+                            print(f"Legend position changed to {new_pos}.")
+                        else:
+                            print("Unknown option.")
+                    else:
+                        print("Unknown option.")
+            except Exception as e:
+                print(f"Error in legend submenu: {e}")
+            continue
+        elif key == 'j':  # toggle CIF title labels (filename labels)
+            # Check if CIF files exist before allowing this command
+            has_cif = False
+            try:
+                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                if not has_cif and _bp is not None:
+                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+            except Exception:
+                pass
+            if not has_cif:
+                print("Unknown option.")
+                continue
+            try:
+                # Preserve both x and y-axis limits to prevent movement
+                prev_xlim = ax.get_xlim()
+                prev_ylim = ax.get_ylim()
+                # Flip visibility flag for CIF titles
+                cur = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
+                new_state = not cur
+                if _bp is not None:
+                    setattr(_bp, 'show_cif_titles', new_state)
+                # Also store on figure for draw_cif_ticks to access
+                fig._bp_show_cif_titles = new_state
+                # Also update __main__ module for backward compatibility
+                try:
+                    _bp_module = sys.modules.get('__main__')
+                    if _bp_module is not None:
+                        setattr(_bp_module, 'show_cif_titles', new_state)
+                except Exception:
+                    pass
+                # Avoid re-entrant extension while redrawing
+                prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
+                if _bp is not None:
+                    setattr(_bp, 'cif_extend_suspended', True)
+                if hasattr(ax, '_cif_draw_func'):
+                    ax._cif_draw_func()
+                if _bp is not None:
+                    setattr(_bp, 'cif_extend_suspended', prev_ext)
+                print(f"CIF title labels {'ON' if new_state else 'OFF'}.")
+                # Push state for undo
+                push_state("toggle-cif-titles")
+            except Exception as e:
+                print(f"Error toggling CIF titles: {e}")
+            continue
+        elif key == 'b':  # <-- UNDO
+            restore_state()
+            continue
+        elif key == 'n':
+            try:
+                toggle_crosshair()
+            except Exception as e:
+                print(f"Error toggling crosshair: {e}")
+            continue
+        elif key == 's':
+            # Save current interactive session with numbered overwrite picker
+            try:
+                folder = choose_save_path(source_file_paths, purpose="project save")
+                if not folder:
+                    print("Save canceled.")
+                    continue
+                print(f"\nChosen path: {folder}")
+                files = []
+                try:
+                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
+                except Exception:
+                    files = []
+                if files:
+                    print("Existing .pkl files:")
+                    for i, f in enumerate(files, 1):
+                        filepath = os.path.join(folder, f)
+                        timestamp = format_file_timestamp(filepath)
+                        if timestamp:
+                            print(f"  {i}: {f}  ({timestamp})")
+                        else:
+                            print(f"  {i}: {f}")
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if last_session_path:
+                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
+                else:
+                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+                choice = _safe_input(prompt).strip()
+                if not choice or choice.lower() == 'q':
+                    print("Canceled.")
+                    continue
+                if choice.lower() == 'o':
+                    # Overwrite last saved session
+                    if not last_session_path:
+                        print("No previous save found.")
+                        continue
+                    if not os.path.exists(last_session_path):
+                        print(f"Previous save file not found: {last_session_path}")
+                        continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        continue
+                    _bp_dump_session(
+                        last_session_path,
+                        fig=fig,
+                        ax=ax,
+                        x_data_list=x_data_list,
+                        y_data_list=y_data_list,
+                        orig_y=orig_y,
+                        offsets_list=offsets_list,
+                        labels=labels,
+                        delta=delta,
+                        args=args,
+                        tick_state=tick_state,
+                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                        cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                        show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                        show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                        skip_confirm=True,
+                    )
+                    print(f"Overwritten session to {last_session_path}")
+                    continue
+                target_path = None
+                # Overwrite by number
+                if choice.isdigit() and files:
+                    idx = int(choice)
+                    if 1 <= idx <= len(files):
+                        name = files[idx-1]
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            print("Canceled.")
+                            continue
+                        target_path = os.path.join(folder, name)
+                        skip_confirm = True  # Already confirmed above
+                        _bp_dump_session(
+                            target_path,
+                            fig=fig,
+                            ax=ax,
+                            x_data_list=x_data_list,
+                            y_data_list=y_data_list,
+                            orig_y=orig_y,
+                            offsets_list=offsets_list,
+                            labels=labels,
+                            delta=delta,
+                            args=args,
+                            tick_state=tick_state,
+                            cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                            cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                            cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                            show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                            show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                            skip_confirm=skip_confirm,
+                        )
+                        print(f"Saved session to {target_path}")
+                        fig._last_session_save_path = target_path
+                        continue
+                    else:
+                        print("Invalid number.")
+                        continue
+                if choice.lower() != 'o':
+                    # New name, allow relative or absolute
+                    name = choice
+                    root, ext = os.path.splitext(name)
+                    if ext == '':
+                        name = name + '.pkl'
+                    target_path = name if os.path.isabs(name) else os.path.join(folder, name)
+                    skip_confirm = False  # Let dump_session ask
+                    if os.path.exists(target_path):
+                        yn = _safe_input(f"'{os.path.basename(target_path)}' exists. Overwrite? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            print("Canceled.")
+                            continue
+                        skip_confirm = True  # Already confirmed
+                    # Delegate to session dumper
+                    _bp_dump_session(
+                        target_path,
+                        fig=fig,
+                        ax=ax,
+                        x_data_list=x_data_list,
+                        y_data_list=y_data_list,
+                        orig_y=orig_y,
+                        offsets_list=offsets_list,
+                        labels=labels,
+                        delta=delta,
+                        args=args,
+                        tick_state=tick_state,
+                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                        cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                        show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                        show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                        skip_confirm=skip_confirm,
+                    )
+                    print(f"Saved session to {target_path}")
+                    fig._last_session_save_path = target_path
+            except Exception as e:
+                print(f"Error saving session: {e}")
+            continue
+        elif key == 'w':  # hidden game remains on 'i'
+            play_jump_game(); continue
+        elif key == 'c':
+            try:
+                has_cif = False
+                try:
+                    # Check for CIF files in args.files (handle colon syntax like file.cif:0.25448)
+                    has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                    # Also check if CIF tick series exists (more reliable)
+                    if not has_cif and _bp is not None:
+                        has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+                except Exception:
+                    pass
+                while True:
+                    print("\033[1mColor menu:\033[0m")
+                    print(f"  {colorize_menu('m : set curve colors (e.g., 1 red 2:u3 or 1:red 2:#00B006)')}")
+                    print(f"  {colorize_menu('p : apply colormap palette to a range (e.g., 1-3 viridis)')}")
+                    print(f"  {colorize_menu('s : spine/tick colors (e.g., w red a u3 or w:red a:#4561F7)')}")
+                    if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
+                        print(f"  {colorize_menu('t : change CIF tick set color (e.g., 1:red 2:#888888)')}")
+                    print(f"  {colorize_menu('u : manage saved colors (use in m/p via number or u#)')}")
+                    print(f"  {colorize_menu('q : return to main menu')}")
+                    sub = _safe_input(colorize_prompt("Choose (m/p/s/t/u/q): ")).strip().lower()
+                    if sub == 'q':
+                        break
+                    if sub == '':
+                        continue
+                    if sub == 'm':
+                        print("Current curves (q to cancel):")
+                        for idx, label in enumerate(labels):
+                            try:
+                                current_color = ax.lines[idx].get_color()
+                            except Exception:
+                                current_color = None
+                            print(f"{idx+1}: {color_block(current_color)} {label} ({current_color})")
+                        user_colors = get_user_color_list(fig)
+                        if user_colors:
+                            print("\nSaved colors (refer as number or u#):")
+                            for idx, color in enumerate(user_colors, 1):
+                                print(f"  {idx}: {color_block(color)} {color}")
+                        color_input = _safe_input("Enter curve+color pairs (e.g., 1 red 2:u3) or q: ").strip()
+                        if not color_input or color_input.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            push_state("color-manual")
+                            entries = color_input.split()
+                            def _apply_manual_entries(tokens):
+                                idx_color_pairs = []
+                                i = 0
+                                while i < len(tokens):
+                                    tok = tokens[i]
+                                    if ':' in tok:
+                                        idx_str, color = tok.split(':', 1)
+                                    else:
+                                        if i + 1 >= len(tokens):
+                                            print(f"Skip incomplete entry: {tok}")
+                                            break
+                                        idx_str = tok
+                                        color = tokens[i + 1]
+                                        i += 1
+                                    idx_color_pairs.append((idx_str, color))
+                                    i += 1
+                                for idx_str, color in idx_color_pairs:
+                                    try:
+                                        line_idx = int(idx_str) - 1
+                                    except ValueError:
+                                        print(f"Bad index: {idx_str}")
+                                        continue
+                                    if not (0 <= line_idx < len(ax.lines)):
+                                        print(f"Index out of range: {idx_str}")
+                                        continue
+                                    resolved = resolve_color_token(color, fig)
+                                    ax.lines[line_idx].set_color(resolved)
+                            _apply_manual_entries(entries)
+                            # Update label colors to match new curve colors
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            # Manual edits override any palette history
+                            try:
+                                fig._curve_palette_history = []
+                            except Exception:
+                                pass
+                        fig.canvas.draw()
+                    elif sub == 'u':
+                        manage_user_colors(fig)
+                        continue
+                    elif sub == 's':
+                        print("Set spine/tick colors (w=top, a=left, s=bottom, d=right).")
+                        print(colorize_inline_commands("Example: w red a u3  OR  w:red a:#4561F7"))
+                        user_colors = get_user_color_list(fig)
+                        if user_colors:
+                            print("\nSaved colors (enter number or u# in place of a color):")
+                            for idx, color in enumerate(user_colors, 1):
+                                print(f"  {idx}: {color_block(color)} {color}")
+                            print("Type 'u' to edit saved colors.")
+                        line = _safe_input("Enter mappings (e.g., w red a u3) or q: ").strip()
+                        if line.lower() == 'u':
+                            manage_user_colors(fig)
+                            continue
+                        if not line or line.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            push_state("color-spine")
+                            key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
+                            tokens = line.split()
+                            pairs = []
+                            i = 0
+                            while i < len(tokens):
+                                tok = tokens[i]
+                                if ':' in tok:
+                                    key_part, color = tok.split(':', 1)
+                                else:
+                                    if i + 1 >= len(tokens):
+                                        print(f"Skip incomplete entry: {tok}")
+                                        break
+                                    key_part = tok
+                                    color = tokens[i + 1]
+                                    i += 1
+                                pairs.append((key_part.lower(), color))
+                                i += 1
+                            for key_part, color in pairs:
+                                key_part = key_part.lower()
+                                if key_part not in key_to_spine:
+                                    print(f"Unknown key: {key_part} (use w/a/s/d)")
+                                    continue
+                                spine_name = key_to_spine[key_part]
+                                if spine_name not in ax.spines:
+                                    print(f"Spine '{spine_name}' not found.")
+                                    continue
+                                try:
+                                    resolved = resolve_color_token(color, fig)
+                                    ax.spines[spine_name].set_edgecolor(resolved)
+                                    if spine_name in ('top', 'bottom'):
+                                        ax.tick_params(axis='x', which='both', colors=resolved)
+                                        ax.xaxis.label.set_color(resolved)
+                                    else:
+                                        ax.tick_params(axis='y', which='both', colors=resolved)
+                                        ax.yaxis.label.set_color(resolved)
+                                    print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                                    if spine_name == 'top':
+                                        position_top_xlabel()
+                                    elif spine_name == 'right':
+                                        position_right_ylabel()
+                                except Exception as e:
+                                    print(f"Error setting {spine_name} color: {e}")
+                        fig.canvas.draw()
+                    elif sub == 't' and has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
+                        cts = getattr(_bp, 'cif_tick_series', [])
+                        print("Current CIF tick sets:")
+                        for i,(lab, fname, *_rest) in enumerate(cts):
+                            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
+                        line = _safe_input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
+                        if not line or line.lower()=='q':
+                            print("Canceled.")
+                        else:
+                            mappings = line.split()
+                            for token in mappings:
+                                if ':' not in token:
+                                    print(f"Skip malformed token: {token}")
+                                    continue
+                                idx_s, col = token.split(':',1)
+                                try:
+                                    idx_i = int(idx_s)-1
+                                    if 0 <= idx_i < len(cts):
+                                        lab,fname,peaksQ,wl,qmax_sim,_c = cts[idx_i]
+                                        cts[idx_i] = (lab,fname,peaksQ,wl,qmax_sim,col)
+                                    else:
+                                        print(f"Index out of range: {idx_s}")
+                                except ValueError:
+                                    print(f"Bad index: {idx_s}")
+                            setattr(_bp, 'cif_tick_series', cts)
+                            if hasattr(ax,'_cif_draw_func'):
+                                ax._cif_draw_func()
+                        fig.canvas.draw()
+                    elif sub == 'p':
+                        # Show current palette if one is applied
+                        history = getattr(fig, '_curve_palette_history', [])
+                        current_palette = history[-1]['palette'] if history else None
+                        if current_palette:
+                            print(f"Current palette: {current_palette}")
+                        base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
+                        extras = []
+                        def _palette_available(name: str) -> bool:
+                            if name in plt.colormaps():
+                                return True
+                            lower = name.lower()
+                            if lower.startswith('batlow'):
+                                return ensure_colormap(name)
+                            return False
+                        if 'turbo' in plt.colormaps():
+                            extras.append('turbo')
+                        for extra in ('batlowK', 'batlowW'):
+                            if _palette_available(extra):
+                                extras.append(extra)
+                        palette_options = base_palettes + extras[:3]
+                        desc_map = {
+                            'viridis': 'Perceptually uniform (blue→yellow)',
+                            'cividis': 'Perceptually uniform (blue→olive)',
+                            'plasma': 'Perceptually uniform (purple→yellow)',
+                            'inferno': 'High-contrast (dark→bright)',
+                            'magma': 'Soft dark-to-light purple',
+                            'batlow': 'Colorblind-friendly sequential',
+                            'turbo': 'Vibrant rainbow (Google Turbo)',
+                            'batlowK': 'Dark-to-light variant of batlow',
+                            'batlowW': 'Warm variant of batlow',
+                        }
+                        palette_index = {str(i): name for i, name in enumerate(palette_options, 1)}
+                        print("Common perceptually uniform palettes (numbers optional):")
+                        for idx, name in enumerate(palette_options, 1):
+                            bar = palette_preview(name)
+                            desc = desc_map.get(name, '')
+                            extra = f" - {desc}" if desc else ''
+                            print(f"  {idx}. {name}{extra}")
+                            if bar:
+                                print(f"      {bar}")
+                        print(colorize_inline_commands("Example: 1-4 viridis   or: all magma_r   or: 1-3,5 plasma, _r for reverse"))
+                        line = _safe_input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
+                        if not line or line.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            parts = line.split()
+                            if len(parts) < 2:
+                                print("Need range(s) and palette.")
+                            else:
+                                palette_name = parts[-1]
+                                def _resolve_palette_token(token: str) -> str:
+                                    suffix = ''
+                                    base = token
+                                    if token.lower().endswith('_r'):
+                                        suffix = '_r'
+                                        base = token[:-2]
+                                    if base in palette_index:
+                                        return palette_index[base] + suffix
+                                    return token
+                                palette_name = _resolve_palette_token(palette_name)
+                                range_part = " ".join(parts[:-1]).replace(" ", "")
+                                def parse_ranges(spec, total):
+                                    spec = spec.lower()
+                                    if spec == 'all':
+                                        return list(range(total))
+                                    result = set()
+                                    tokens = spec.split(',')
+                                    for tok in tokens:
+                                        if not tok:
+                                            continue
+                                        if '-' in tok:
+                                            try:
+                                                a, b = tok.split('-', 1)
+                                                start = int(a) - 1
+                                                end = int(b) - 1
+                                                if start > end:
+                                                    start, end = end, start
+                                                for i in range(start, end + 1):
+                                                    if 0 <= i < total:
+                                                        result.add(i)
+                                            except ValueError:
+                                                print(f"Bad range token: {tok}")
+                                        else:
+                                            try:
+                                                i = int(tok) - 1
+                                                if 0 <= i < total:
+                                                    result.add(i)
+                                                else:
+                                                    print(f"Index out of range: {tok}")
+                                            except ValueError:
+                                                print(f"Bad index token: {tok}")
+                                    return sorted(result)
+                                indices = parse_ranges(range_part, len(ax.lines))
+                                if not indices:
+                                    print("No valid indices parsed.")
+                                else:
+                                    # ====================================================================
+                                    # APPLY COLOR PALETTE TO MULTIPLE CURVES
+                                    # ====================================================================
+                                    # This section applies a colormap (like 'viridis') to selected curves,
+                                    # assigning each curve a different color that smoothly transitions
+                                    # across the colormap.
+                                    #
+                                    # HOW IT WORKS:
+                                    # 1. Get the continuous colormap (e.g., 'viridis')
+                                    # 2. Sample colors at evenly spaced positions along the colormap
+                                    # 3. Assign each sampled color to a different curve
+                                    #
+                                    # Example with 5 curves and 'viridis':
+                                    #   Curve 1 → position 0.08 → dark purple
+                                    #   Curve 2 → position 0.27 → blue-purple
+                                    #   Curve 3 → position 0.46 → green
+                                    #   Curve 4 → position 0.65 → yellow-green
+                                    #   Curve 5 → position 0.85 → bright yellow
+                                    #
+                                    # WHY CLIP THE RANGE (0.08 to 0.85)?
+                                    # The very start (0.0) and end (1.0) of colormaps are often too dark
+                                    # or too bright. Clipping to 0.08-0.85 gives better visual contrast
+                                    # and ensures all colors are visible.
+                                    # ====================================================================
+                                    
+                                    # Ensure colormap is registered (makes it available for use)
+                                    ensure_colormap(palette_name)
+                                    cmap = None
+                                    
+                                    # STEP 1: Try to get colormap from matplotlib's built-in colormaps
+                                    # This handles standard colormaps like 'viridis', 'plasma', 'inferno', etc.
+                                    try:
+                                        import matplotlib.cm as cm
+                                        # Get the continuous colormap (without specifying N)
+                                        # This allows us to sample directly from the continuous colormap
+                                        # without quantization issues
+                                        cmap = cm.get_cmap(palette_name)
+                                    except (ValueError, Exception):
+                                        pass
+                                    
+                                    # STEP 2: Fallback - try cmcrameri package for scientific colormaps
+                                    # cmcrameri provides colorblind-friendly colormaps like 'batlow', 'batlowk', etc.
+                                    if cmap is None and palette_name.lower().startswith("batlow"):
+                                        try:
+                                            import importlib
+                                            cmc = importlib.import_module('cmcrameri.cm')
+                                            attr = palette_name.lower()
+                                            if hasattr(cmc, attr):
+                                                cmap = getattr(cmc, attr)
+                                            elif hasattr(cmc, 'batlow'):
+                                                cmap = getattr(cmc, 'batlow')
+                                        except Exception:
+                                            pass
+                                    
+                                    # STEP 3: Final fallback - create from custom colormaps defined in color_utils
+                                    if cmap is None:
+                                        base_name = palette_name.lower()
+                                        # Handle reversed colormaps (remove '_r' suffix)
+                                        if base_name.endswith('_r'):
+                                            base_name = base_name[:-2]
+                                        custom_colors = _CUSTOM_CMAPS.get(base_name)
+                                        if custom_colors:
+                                            from matplotlib.colors import LinearSegmentedColormap
+                                            # Create a continuous colormap by interpolating between custom colors
+                                            # N=256 means create 256 intermediate colors for smooth gradient
+                                            cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
+                                            # If user requested reversed version, reverse it now
+                                            if palette_name.lower().endswith('_r'):
+                                                cmap = cmap.reversed()
+                                    
+                                    # Check if we successfully got a colormap
+                                    if cmap is None:
+                                        print(f"Unknown colormap '{palette_name}'.")
+                                    else:
+                                        # Save current state for undo functionality
+                                        push_state("color-palette")
+                                        
+                                        # Get number of selected curves
+                                        nsel = len(indices)
+                                        
+                                        # Define color sampling range (clipped to avoid too dark/bright extremes)
+                                        low_clip = 0.08   # Start sampling at 8% into colormap (avoids very dark colors)
+                                        high_clip = 0.85  # End sampling at 85% into colormap (avoids very bright colors)
+                                        
+                                        # STEP 4: Sample colors from colormap at evenly spaced positions
+                                        if nsel == 1:
+                                            # Single curve: use middle of colormap (good visibility)
+                                            colors = [cmap(0.55)]
+                                        elif nsel == 2:
+                                            # Two curves: use clipped range endpoints (maximum contrast)
+                                            colors = [cmap(low_clip), cmap(high_clip)]
+                                        else:
+                                            # Multiple curves: sample evenly across clipped range
+                                            # np.linspace creates evenly spaced positions from low_clip to high_clip
+                                            # Example with 5 curves: [0.08, 0.27, 0.46, 0.65, 0.85]
+                                            positions = np.linspace(low_clip, high_clip, nsel)
+                                            # Sample color at each position
+                                            # cmap(position) returns an RGBA color tuple for that position
+                                            colors = [cmap(p) for p in positions]
+                                        
+                                        # STEP 5: Apply colors to the selected curves
+                                        # Loop through selected curve indices and assign corresponding color
+                                        for c_idx, line_idx in enumerate(indices):
+                                            # c_idx = index in colors array (0, 1, 2, ...)
+                                            # line_idx = index of line in ax.lines (the actual matplotlib line object)
+                                            ax.lines[line_idx].set_color(colors[c_idx])
+                                        # Update label colors to match new curve colors
+                                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                                        fig.canvas.draw()
+                                        try:
+                                            applied_preview = color_bar([mcolors.to_hex(c) for c in colors])
+                                        except Exception:
+                                            applied_preview = ""
+                                        print(f"Applied '{palette_name}' to curves: " +
+                                              ", ".join(str(i+1) for i in indices))
+                                        if applied_preview:
+                                            print(f"  {applied_preview}")
+                                        # Record palette usage for style export
+                                        try:
+                                            history = list(getattr(fig, '_curve_palette_history', []))
+                                        except Exception:
+                                            history = []
+                                        entry = {
+                                            'palette': palette_name,
+                                            'indices': [i + 1 for i in indices],
+                                            'low_clip': low_clip,
+                                            'high_clip': high_clip,
+                                        }
+                                        history.append(entry)
+                                        fig._curve_palette_history = history
+                    else:
+                        print("Unknown color submenu option.")
+            except Exception as e:
+                print(f"Error in color menu: {e}")
+        elif key == 'r':
+            try:
+                has_cif = False
+                try:
+                    # Check for CIF files in args.files (handle colon syntax like file.cif:0.25448)
+                    has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                    # Also check if CIF tick series exists (more reliable)
+                    if not has_cif and _bp is not None:
+                        has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+                except Exception:
+                    pass
+                while True:
+                    rename_opts = "c=curve"
+                    if has_cif:
+                        rename_opts += ", t=cif tick label"
+                    rename_opts += ", x=x-axis, y=y-axis, q=return"
+                    mode = _safe_input(f"Rename ({rename_opts}): ").strip().lower()
+                    if mode == 'q':
+                        break
+                    if mode == '':
+                        continue
+                    if mode == 'c':
+                        print("Tip: Use LaTeX/mathtext for special characters:")
+                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
+                        print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        idx_in = _safe_input("Curve number to rename (q=cancel): ").strip()
+                        if not idx_in or idx_in.lower() == 'q':
+                            print("Canceled.")
+                            continue
+                        try:
+                            idx = int(idx_in) - 1
+                        except ValueError:
+                            print("Invalid index.")
+                            continue
+                        if not (0 <= idx < len(labels)):
+                            print("Invalid index.")
+                            continue
+                        new_label = _safe_input("New curve label (q=cancel): ")
+                        if not new_label or new_label.lower() == 'q':
+                            print("Canceled.")
+                            continue
+                        new_label = convert_label_shortcuts(new_label)
+                        push_state("rename-curve")
+                        labels[idx] = new_label
+                        label_text_objects[idx].set_text(f"{idx+1}: {new_label}")
+                        fig.canvas.draw()
+                    elif mode == 't':
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets to rename.")
+                            continue
+                        for i,(lab, fname, *_rest) in enumerate(cts):
+                            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
+                        s = _safe_input("CIF tick number to rename (q=cancel): ").strip()
+                        if not s or s.lower()=='q':
+                            print("Canceled."); continue
+                        try:
+                            idx = int(s)-1
+                            if not (0 <= idx < len(cts)):
+                                print("Index out of range."); continue
+                        except ValueError:
+                            print("Bad index."); continue
+                        print("Tip: Use LaTeX/mathtext for special characters:")
+                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
+                        print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        new_name = _safe_input("New CIF tick label (q=cancel): ")
+                        if not new_name or new_name.lower()=='q':
+                            print("Canceled."); continue
+                        new_name = convert_label_shortcuts(new_name)
+                        lab,fname,peaksQ,wl,qmax_sim,color = cts[idx]
+                        # Suspend extension while updating label
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', True)
+                        if hasattr(ax, '_cif_tick_art'):
+                            try:
+                                for art in list(getattr(ax, '_cif_tick_art', [])):
+                                    try:
+                                        art.remove()
+                                    except Exception:
+                                        pass
+                                ax._cif_tick_art = []
+                            except Exception:
+                                pass
+                        cts[idx] = (new_name, fname, peaksQ, wl, qmax_sim, color)
+                        setattr(_bp, 'cif_tick_series', cts)
+                        if hasattr(ax,'_cif_draw_func'): ax._cif_draw_func()
+                        fig.canvas.draw()
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', False)
+                    elif mode in ('x','y'):
+                        print("Enter new axis label (q=cancel).")
+                        print("Tip: Use LaTeX/mathtext for special characters:")
+                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
+                        print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        new_axis = _safe_input("New axis label: ")
+                        if not new_axis or new_axis.lower() == 'q':
+                            print("Canceled.")
+                            continue
+                        new_axis = convert_label_shortcuts(new_axis)
+                        new_axis = normalize_label_text(new_axis)
+                        push_state("rename-axis")
+                        # Freeze layout and preserve current pad via one-shot pending to avoid drift
+                        try:
+                            fig.set_layout_engine('none')
+                        except Exception:
+                            try:
+                                fig.set_tight_layout(False)
+                            except Exception:
+                                pass
+                        try:
+                            fig.set_constrained_layout(False)
+                        except Exception:
+                            pass
+                        if mode == 'x':
+                            # Preserve current pad exactly once after rename
+                            try:
+                                ax._pending_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
+                            except Exception:
+                                pass
+                            ax.xaxis.label.set_text(new_axis)
+                            position_top_xlabel()
+                            position_bottom_xlabel()
+                        else:
+                            try:
+                                ax._pending_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
+                            except Exception:
+                                pass
+                            ax.yaxis.label.set_text(new_axis)
+                            position_right_ylabel()
+                            position_left_ylabel()
+                        sync_fonts()
+                        fig.canvas.draw()
+                    else:
+                        print("Invalid choice.")
+                    # loop continues until q
+            except Exception as e:
+                print(f"Error: {e}")
+        elif key == 'a':
+            try:
+                if not args.stack:
+                    print('Be careful, changing the arrangement may lead to a mess! If you want to rearrange the curves, use "--stack".')
+                print("Current curve order:")
+                for idx, label in enumerate(labels):
+                    print(f"{idx+1}: {label}")
+                new_order_str = _safe_input("Enter new order (space-separated indices, q=cancel): ").strip()
+                if not new_order_str or new_order_str.lower() == 'q':
+                    print("Canceled.")
+                    continue
+                new_order = [int(i)-1 for i in new_order_str.strip().split()]
+                if len(new_order) != len(labels):
+                    print("Error: Number of indices does not match number of curves.")
+                    continue
+                if any(i < 0 or i >= len(labels) for i in new_order):
+                    print("Error: Invalid index in order list.")
+                    continue
+
+                push_state("rearrange")
+
+                original_styles = []
+                for ln in ax.lines:
+                    original_styles.append({
+                        "color": ln.get_color(),
+                        "linewidth": ln.get_linewidth(),
+                        "linestyle": ln.get_linestyle(),
+                        "alpha": ln.get_alpha(),
+                        "marker": ln.get_marker(),
+                        "markersize": ln.get_markersize(),
+                        "markerfacecolor": ln.get_markerfacecolor(),
+                        "markeredgecolor": ln.get_markeredgecolor()
+                    })
+                reordered_styles = [original_styles[i] for i in new_order]
+                xlim_current = ax.get_xlim()
+
+                x_data_list[:]      = [x_data_list[i] for i in new_order]
+                orig_y[:]           = [orig_y[i] for i in new_order]
+                y_data_list[:]      = [y_data_list[i] for i in new_order]
+                labels[:]           = [labels[i] for i in new_order]
+                label_text_objects[:] = [label_text_objects[i] for i in new_order]
+                x_full_list[:]      = [x_full_list[i] for i in new_order]
+                raw_y_full_list[:]  = [raw_y_full_list[i] for i in new_order]
+                offsets_list[:]     = [offsets_list[i] for i in new_order]
+
+                if args.stack:
+                    offset_local = 0.0
+                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
+                        y_plot_offset = y_norm + offset_local
+                        y_data_list[i] = y_plot_offset
+                        offsets_list[i] = offset_local
+                        ln = ax.lines[i]
+                        ln.set_data(x_plot, y_plot_offset)
+                        ln.set_color(style["color"]) 
+                        ln.set_linewidth(style["linewidth"]) 
+                        ln.set_linestyle(style["linestyle"]) 
+                        ln.set_alpha(style["alpha"]) 
+                        ln.set_marker(style["marker"]) 
+                        ln.set_markersize(style["markersize"]) 
+                        ln.set_markerfacecolor(style["markerfacecolor"]) 
+                        ln.set_markeredgecolor(style["markeredgecolor"]) 
+                        y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
+                        gap = y_range + (delta * (y_range if args.autoscale else 1.0))
+                        offset_local -= gap
+                else:
+                    offset_local = 0.0
+                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
+                        y_plot_offset = y_norm + offset_local
+                        y_data_list[i] = y_plot_offset
+                        offsets_list[i] = offset_local
+                        ln = ax.lines[i]
+                        ln.set_data(x_plot, y_plot_offset)
+                        ln.set_color(style["color"]) 
+                        ln.set_linewidth(style["linewidth"]) 
+                        ln.set_linestyle(style["linestyle"]) 
+                        ln.set_alpha(style["alpha"]) 
+                        ln.set_marker(style["marker"]) 
+                        ln.set_markersize(style["markersize"]) 
+                        ln.set_markerfacecolor(style["markerfacecolor"]) 
+                        ln.set_markeredgecolor(style["markeredgecolor"]) 
+                        increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
+                        offset_local += increment
+
+                for i, (txt, lab) in enumerate(zip(label_text_objects, labels)):
+                    txt.set_text(f"{i+1}: {lab}")
+                # Preserve current axis titles (respect 't' menu toggles like bt/lt)
+                ax.set_xlim(xlim_current)
+                # Do not reset xlabel/ylabel here; rearrange should not change title visibility
+                update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                fig.canvas.draw()
+            except Exception as e:
+                print(f"Error rearranging curves: {e}")
+        elif key == 'x':
+            while True:
+                try:
+                    current_xlim = ax.get_xlim()
+                    print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
+                    rng = _safe_input("Enter new X range (min max), w=upper only, s=lower only, 'full', or 'a'=auto (restore original) (q=back): ").strip()
+                    if not rng or rng.lower() == 'q':
+                        break
+                    if rng.lower() == 'w':
+                        # Upper only: change upper limit, fix lower - stay in loop
+                        while True:
+                            current_xlim = ax.get_xlim()
+                            print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
+                            val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                new_upper = float(val)
+                            except (ValueError, KeyboardInterrupt):
+                                print("Invalid value, ignored.")
+                                continue
+                            push_state("xrange")
+                            ax.set_xlim(current_xlim[0], new_upper)
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            try:
+                                if hasattr(ax, '_cif_extend_func'):
+                                    ax._cif_extend_func(ax.get_xlim()[1])
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(ax, '_cif_draw_func'):
+                                    ax._cif_draw_func()
+                            except Exception:
+                                pass
+                            fig.canvas.draw()
+                            print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        continue
+                    if rng.lower() == 's':
+                        # Lower only: change lower limit, fix upper - stay in loop
+                        while True:
+                            current_xlim = ax.get_xlim()
+                            print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
+                            val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                new_lower = float(val)
+                            except (ValueError, KeyboardInterrupt):
+                                print("Invalid value, ignored.")
+                                continue
+                            push_state("xrange")
+                            ax.set_xlim(new_lower, current_xlim[1])
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            try:
+                                if hasattr(ax, '_cif_extend_func'):
+                                    ax._cif_extend_func(ax.get_xlim()[1])
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(ax, '_cif_draw_func'):
+                                    ax._cif_draw_func()
+                            except Exception:
+                                pass
+                            fig.canvas.draw()
+                            print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        continue
+                    if rng.lower() == 'a':
+                        # Auto: restore original range from x_full_list
+                        push_state("xrange-auto")
+                        if x_full_list:
+                            new_min = min(xf.min() for xf in x_full_list if xf.size)
+                            new_max = max(xf.max() for xf in x_full_list if xf.size)
+                        else:
+                            print("No original data available.")
+                            continue
+                        # Restore all data
+                        for i in range(len(labels)):
+                            xf = x_full_list[i]; yf_raw = raw_y_full_list[i]
+                            mask = (xf>=new_min) & (xf<=new_max)
+                            x_sub = xf[mask]; y_sub_raw = yf_raw[mask]
+                            if x_sub.size == 0:
+                                ax.lines[i].set_data([], [])
+                                y_data_list[i] = np.array([]); orig_y[i] = np.array([]); continue
+                            should_normalize = args.stack or getattr(args, 'norm', False)
+                            if should_normalize:
+                                if y_sub_raw.size:
+                                    y_min = float(y_sub_raw.min())
+                                    y_max = float(y_sub_raw.max())
+                                    span = y_max - y_min
+                                    if span > 0:
+                                        y_sub_norm = (y_sub_raw - y_min) / span
+                                    else:
+                                        y_sub_norm = np.zeros_like(y_sub_raw)
+                                else:
+                                    y_sub_norm = y_sub_raw
+                            else:
+                                y_sub_norm = y_sub_raw
+                            offset_val = offsets_list[i]
+                            y_with_offset = y_sub_norm + offset_val
+                            ax.lines[i].set_data(x_sub, y_with_offset)
+                            x_data_list[i] = x_sub
+                            y_data_list[i] = y_with_offset
+                            orig_y[i] = y_sub_norm
+                        ax.set_xlim(new_min, new_max)
+                        ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        try:
+                            if hasattr(ax, '_cif_extend_func'):
+                                ax._cif_extend_func(ax.get_xlim()[1])
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(ax, '_cif_draw_func'):
+                                ax._cif_draw_func()
+                        except Exception:
+                            pass
+                        fig.canvas.draw()
+                        print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        continue
+                    push_state("xrange")
+                    if rng.lower() == 'full':
+                        new_min = min(xf.min() for xf in x_full_list if xf.size)
+                        new_max = max(xf.max() for xf in x_full_list if xf.size)
+                    else:
+                        new_min, new_max = map(float, rng.split())
+                    ax.set_xlim(new_min, new_max)
+                    for i in range(len(labels)):
+                        xf = x_full_list[i]; yf_raw = raw_y_full_list[i]
+                        mask = (xf>=new_min) & (xf<=new_max)
+                        x_sub = xf[mask]; y_sub_raw = yf_raw[mask]
+                        if x_sub.size == 0:
+                            ax.lines[i].set_data([], [])
+                            y_data_list[i] = np.array([]); orig_y[i] = np.array([]); continue
+                        # Auto-normalize for --stack mode, or explicit --norm flag
+                        should_normalize = args.stack or getattr(args, 'norm', False)
+                        if should_normalize:
+                            if y_sub_raw.size:
+                                y_min = float(y_sub_raw.min())
+                                y_max = float(y_sub_raw.max())
+                                span = y_max - y_min
+                                if span > 0:
+                                    y_sub_norm = (y_sub_raw - y_min) / span
+                                else:
+                                    y_sub_norm = np.zeros_like(y_sub_raw)
+                            else:
+                                y_sub_norm = y_sub_raw
+                        else:
+                            y_sub_norm = y_sub_raw
+                        offset_val = offsets_list[i]
+                        y_with_offset = y_sub_norm + offset_val
+                        ax.lines[i].set_data(x_sub, y_with_offset)
+                        x_data_list[i] = x_sub
+                        y_data_list[i] = y_with_offset
+                        orig_y[i] = y_sub_norm
+                    ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
+                    update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    # Extend CIF ticks after x-range change
+                    try:
+                        if hasattr(ax, '_cif_extend_func'):
+                            ax._cif_extend_func(ax.get_xlim()[1])
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(ax, '_cif_draw_func'):
+                            ax._cif_draw_func()
+                    except Exception:
+                        pass
+                    fig.canvas.draw()
+                except Exception as e:
+                    print(f"Error setting X-axis range: {e}")
+        elif key == 'y':  # <-- Y-RANGE HANDLER (now only reachable if not args.stack)
+            while True:
+                try:
+                    current_ylim = ax.get_ylim()
+                    print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                    rng = _safe_input("Enter new Y range (min max), w=upper only, s=lower only, 'auto', 'a'=auto (restore original), or 'full' (q=back): ").strip().lower()
+                    if not rng or rng == 'q':
+                        break
+                    if rng == 'w':
+                        # Upper only: change upper limit, fix lower - stay in loop
+                        while True:
+                            current_ylim = ax.get_ylim()
+                            print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                            val = _safe_input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                new_upper = float(val)
+                            except (ValueError, KeyboardInterrupt):
+                                print("Invalid value, ignored.")
+                                continue
+                            push_state("yrange")
+                            ax.set_ylim(current_ylim[0], new_upper)
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            fig.canvas.draw_idle()
+                            print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    if rng == 'w':
+                        continue
+                    if rng == 's':
+                        # Lower only: change lower limit, fix upper - stay in loop
+                        while True:
+                            current_ylim = ax.get_ylim()
+                            print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                            val = _safe_input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                new_lower = float(val)
+                            except (ValueError, KeyboardInterrupt):
+                                print("Invalid value, ignored.")
+                                continue
+                            push_state("yrange")
+                            ax.set_ylim(new_lower, current_ylim[1])
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            fig.canvas.draw_idle()
+                            print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    if rng == 's':
+                        continue
+                    if rng == 'a':
+                        # Auto: restore original range from y_data_list
+                        push_state("yrange-auto")
+                        if y_data_list:
+                            all_min = None
+                            all_max = None
+                            for arr in y_data_list:
+                                if arr.size:
+                                    mn = float(arr.min())
+                                    mx = float(arr.max())
+                                    all_min = mn if all_min is None else min(all_min, mn)
+                                    all_max = mx if all_max is None else max(all_max, mx)
+                            if all_min is None or all_max is None:
+                                print("No original data available.")
+                                continue
+                            ax.set_ylim(all_min, all_max)
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            fig.canvas.draw_idle()
+                            print(f"Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                        else:
+                            print("No original data available.")
+                        continue
+                    push_state("yrange")
+                    if rng == 'auto':
+                        ax.relim()
+                        ax.autoscale_view(scalex=False, scaley=True)
+                    else:
+                        if rng == 'full':
+                            all_min = None
+                            all_max = None
+                            for arr in y_data_list:
+                                if arr.size:
+                                    mn = float(arr.min())
+                                    mx = float(arr.max())
+                                    all_min = mn if all_min is None else min(all_min, mn)
+                                    all_max = mx if all_max is None else max(all_max, mx)
+                            if all_min is None or all_max is None:
+                                print("No data to compute full Y range.")
+                                continue
+                            y_min, y_max = all_min, all_max
+                        else:
+                            parts = rng.split()
+                            if len(parts) != 2:
+                                print("Need exactly two numbers for Y range.")
+                                continue
+                            y_min, y_max = map(float, parts)
+                            if y_min == y_max:
+                                print("Warning: min == max; expanding slightly.")
+                                eps = abs(y_min)*1e-6 if y_min != 0 else 1e-6
+                                y_min -= eps
+                                y_max += eps
+                        ax.set_ylim(y_min, y_max)
+                    update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    fig.canvas.draw_idle()
+                    print(f"Y range set to {ax.get_ylim()}")
+                except Exception as e:
+                    print(f"Error setting Y-axis range: {e}")
+        elif key == 'd':  # <-- DELTA / OFFSET HANDLER (now only reachable if not args.stack)
+            print("\n\033[1mOffset adjustment menu:\033[0m")
+            print(f"  {colorize_menu('1-{}: adjust individual curve offset'.format(len(labels)))}")
+            print(f"  {colorize_menu('a: set spacing between curves')}")
+            print(f"  {colorize_menu('r: reset all offsets to 0')}")
+            print(f"  {colorize_menu('d: change delta spacing (original behavior)')}")
+            print(f"  {colorize_menu('q: back to main menu')}")
+            
+            while True:
+                offset_cmd = _safe_input("Offset> ").strip().lower()
+                
+                if offset_cmd == 'q' or offset_cmd == '':
+                    break
+                    
+                elif offset_cmd == 'r':
+                    # Reset all offsets to 0
+                    try:
+                        push_state("reset-offsets")
+                        for i in range(len(labels)):
+                            if i >= len(ax.lines):
+                                continue
+                            # Get current x-data from the line
+                            current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                            # Reset to normalized data without any offset
+                            y_norm = orig_y[i]
+                            y_data_list[i] = y_norm.copy()
+                            offsets_list[i] = 0.0
+                            # Update x_data_list to match current line data
+                            x_data_list[i] = current_x.copy()
+                            ax.lines[i].set_data(current_x, y_norm)
+                        
+                        ax.relim()
+                        ax.autoscale_view(scalex=False, scaley=True)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        fig.canvas.draw()
+                        print("All offsets reset to 0")
+                    except Exception as e:
+                        print(f"Error resetting offsets: {e}")
+                    
+                elif offset_cmd == 'a':
+                    # Set spacing between curves (separates all curves)
+                    try:
+                        if len(labels) <= 1:
+                            print("Warning: Only one curve loaded; spacing cannot be applied.")
+                            continue
+                        
+                        # Calculate current spacing (average difference between consecutive offsets)
+                        current_spacing = 0.0
+                        if len(offsets_list) > 1:
+                            spacing_diffs = []
+                            sorted_indices = sorted(range(len(offsets_list)), key=lambda i: offsets_list[i] if i < len(offsets_list) else 0.0)
+                            for j in range(len(sorted_indices) - 1):
+                                idx1, idx2 = sorted_indices[j], sorted_indices[j + 1]
+                                off1 = offsets_list[idx1] if idx1 < len(offsets_list) else 0.0
+                                off2 = offsets_list[idx2] if idx2 < len(offsets_list) else 0.0
+                                spacing_diffs.append(abs(off2 - off1))
+                            if spacing_diffs:
+                                current_spacing = sum(spacing_diffs) / len(spacing_diffs)
+                        
+                        spacing_input = _safe_input("Enter spacing value between curves (current avg: {:.4g}): ".format(current_spacing)).strip()
+                        if not spacing_input:
+                            print("Canceled.")
+                            continue
+                        
+                        spacing_value = float(spacing_input)
+                        push_state("curve-spacing")
+                        
+                        # Apply spacing to separate all curves
+                        # Find the minimum current offset to use as baseline
+                        min_offset = min(offsets_list) if offsets_list else 0.0
+                        
+                        # Sort curves by their current offset to maintain order
+                        curve_order = sorted(range(len(labels)), key=lambda i: offsets_list[i] if i < len(offsets_list) else 0.0)
+                        
+                        # Apply cumulative spacing starting from the minimum offset
+                        current_offset = min_offset
+                        for i, curve_idx in enumerate(curve_order):
+                            if curve_idx >= len(ax.lines):
+                                continue
+                            # Get current x-data from the line
+                            current_x = np.asarray(ax.lines[curve_idx].get_xdata(), dtype=float)
+                            y_norm = orig_y[curve_idx]
+                            
+                            # Set new offset with spacing
+                            offsets_list[curve_idx] = current_offset
+                            y_with_offset = y_norm + current_offset
+                            y_data_list[curve_idx] = y_with_offset
+                            x_data_list[curve_idx] = current_x.copy()
+                            ax.lines[curve_idx].set_data(current_x, y_with_offset)
+                            
+                            # Calculate spacing for next curve based on current curve's range
+                            if i < len(curve_order) - 1:  # Not the last curve
+                                y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
+                                if args.stack:
+                                    # In stack mode, spacing is relative to curve range
+                                    gap = y_range + (spacing_value * (y_range if args.autoscale else 1.0))
+                                    current_offset -= gap
+                                else:
+                                    # In normal mode, spacing is absolute or relative
+                                    increment = (y_range * spacing_value) if (args.autoscale and y_norm.size) else spacing_value
+                                    current_offset += increment
+                        
+                        ax.relim()
+                        ax.autoscale_view(scalex=False, scaley=True)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        fig.canvas.draw()
+                        print("Spacing of {:.4g} applied to separate all curves".format(spacing_value))
+                        
+                    except ValueError:
+                        print("Invalid spacing value")
+                    except Exception as e:
+                        print(f"Error applying spacing: {e}")
+                        
+                elif offset_cmd == 'd':
+                    # Original delta spacing behavior
+                    if len(labels) <= 1:
+                        print("Warning: Only one curve loaded; applying an offset is not recommended.")
+                    try:
+                        new_delta_str = _safe_input(f"Enter new offset spacing (current={delta}): ").strip()
+                        if not new_delta_str:
+                            print("Canceled.")
+                            continue
+                        new_delta = float(new_delta_str)
+                        push_state("delta-spacing")
+                        delta = new_delta
+                        offsets_list[:] = []
+                        if args.stack:
+                            current_offset = 0.0
+                            for i, y_norm in enumerate(orig_y):
+                                if i >= len(ax.lines):
+                                    continue
+                                # Get current x-data from the line
+                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                                y_with_offset = y_norm + current_offset
+                                y_data_list[i] = y_with_offset
+                                offsets_list.append(current_offset)
+                                # Update x_data_list to match current line data
+                                x_data_list[i] = current_x.copy()
+                                ax.lines[i].set_data(current_x, y_with_offset)
+                                y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
+                                gap = y_range + (delta * (y_range if args.autoscale else 1.0))
+                                current_offset -= gap
+                        else:
+                            current_offset = 0.0
+                            for i, y_norm in enumerate(orig_y):
+                                if i >= len(ax.lines):
+                                    continue
+                                # Get current x-data from the line
+                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                                y_with_offset = y_norm + current_offset
+                                y_data_list[i] = y_with_offset
+                                offsets_list.append(current_offset)
+                                # Update x_data_list to match current line data
+                                x_data_list[i] = current_x.copy()
+                                ax.lines[i].set_data(current_x, y_with_offset)
+                                increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
+                                current_offset += increment
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
+                        fig.canvas.draw()
+                        print(f"Offsets updated with delta={delta}")
+                    except ValueError:
+                        print("Invalid delta value")
+                    except Exception as e:
+                        print(f"Error updating offsets: {e}")
+                        
+                elif offset_cmd.isdigit():
+                    # Adjust individual curve offset
+                    try:
+                        curve_num = int(offset_cmd)
+                        if curve_num < 1 or curve_num > len(labels):
+                            print("Invalid curve number (1-{})".format(len(labels)))
+                            continue
+                        
+                        idx = curve_num - 1
+                        if idx >= len(ax.lines):
+                            print("Invalid curve number.")
+                            continue
+                        
+                        current_offset = offsets_list[idx] if idx < len(offsets_list) else 0.0
+                        
+                        individual_offset_input = _safe_input("Enter offset for curve {} (current: {:.4g}): ".format(
+                            curve_num, current_offset)).strip()
+                        if not individual_offset_input:
+                            print("Canceled.")
+                            continue
+                        
+                        individual_offset = float(individual_offset_input)
+                        push_state("curve-{}-offset".format(curve_num))
+                        
+                        # Get current x-data from the line to ensure we're working with actual displayed data
+                        current_x = np.asarray(ax.lines[idx].get_xdata(), dtype=float)
+                        # Apply individual offset to this curve
+                        y_norm = orig_y[idx]
+                        offsets_list[idx] = individual_offset
+                        y_with_offset = y_norm + individual_offset
+                        y_data_list[idx] = y_with_offset
+                        # Update x_data_list to match current line data
+                        x_data_list[idx] = current_x.copy()
+                        ax.lines[idx].set_data(current_x, y_with_offset)
+                        
+                        ax.relim()
+                        ax.autoscale_view(scalex=False, scaley=True)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        fig.canvas.draw()
+                        print("Curve {} offset set to: {:.4g}".format(curve_num, individual_offset))
+                        
+                    except ValueError:
+                        print("Invalid offset value")
+                    except Exception as e:
+                        print(f"Error setting curve offset: {e}")
+                else:
+                    print("Unknown command. Use 1-{}, a, r, d, or q".format(len(labels)))
+        elif key == 'l':
+            try:
+                def _select_lines(ax_obj, prompt_text):
+                    total = len(ax_obj.lines)
+                    if total == 0:
+                        print("No curves to modify.")
+                        return []
+                    print(f"Total curves available: {total}")
+                    raw = _safe_input(prompt_text + " ").strip().lower()
+                    if not raw or raw in ('all', '*'):
+                        return list(range(total))
+                    import re as _re
+                    tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
+                    selected = []
+                    for tok in tokens:
+                        try:
+                            idx = int(tok) - 1
+                            if 0 <= idx < total:
+                                if idx not in selected:
+                                    selected.append(idx)
+                            else:
+                                print(f"Index out of range: {tok}")
+                        except ValueError:
+                            print(f"Skipping invalid token: {tok}")
+                    return selected
+
+                def _prompt_float(prompt_text):
+                    raw = _safe_input(prompt_text).strip()
+                    if not raw:
+                        return None
+                    if raw.lower() == 'q':
+                        return None
+                    try:
+                        return float(raw)
+                    except ValueError:
+                        print("Invalid number, using default.")
+                        return None
+
+                def _prompt_dash_pattern(kind='dash'):
+                    if kind == 'dashdot':
+                        raw = _safe_input("Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=cancel): ").strip().lower()
+                        default = (6.0, 3.0, 1.0, 3.0)
+                    else:
+                        raw = _safe_input("Dash pattern 'length gap' (blank=6 3, q=cancel): ").strip().lower()
+                        default = (6.0, 3.0)
+                    if not raw:
+                        return default
+                    if raw == 'q':
+                        print("Canceled.")
+                        return None
+                    import re as _re
+                    tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
+                    try:
+                        if kind == 'dashdot':
+                            if len(tokens) == 2:
+                                dash = float(tokens[0]); gap = float(tokens[1])
+                                dot = min(dash * 0.2, 2.0)
+                                return (dash, gap, dot, gap)
+                            elif len(tokens) >= 4:
+                                return tuple(float(tokens[i]) for i in range(4))
+                        else:
+                            if len(tokens) == 1:
+                                val = float(tokens[0])
+                                return (val, val)
+                            elif len(tokens) >= 2:
+                                return (float(tokens[0]), float(tokens[1]))
+                    except ValueError:
+                        print("Invalid dash pattern.")
+                        return None
+                    print("Invalid dash pattern.")
+                    return None
+
+                while True:
+                    print("\033[1mLine submenu:\033[0m")
+                    print(f"  {colorize_menu('c  : change curve line widths')}")
+                    print(f"  {colorize_menu('f  : change frame (axes spines) and tick widths')}")
+                    print(f"  {colorize_menu('g  : toggle grid lines')}")
+                    print(f"  {colorize_menu('l  : show only lines (no markers) for selected curves')}")
+                    print(f"  {colorize_menu('ld : show line and dots for selected curves')}")
+                    print(f"  {colorize_menu('d  : show only dots for selected curves')}")
+                    print(f"  {colorize_menu('da : dashed line for selected curves')}")
+                    print(f"  {colorize_menu('dd : dashed line + dots for selected curves')}")
+                    print(f"  {colorize_menu('q  : return')}")
+                    sub = _safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
+                    if sub == 'q':
+                        break
+                    if sub == '':
+                        continue
+                    if sub == 'c':
+                        spec = _safe_input("Curve widths (single value OR mappings like '1:1.2 3:2', q=cancel): ").strip()
+                        if not spec or spec.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            push_state("linewidth")
+                            if ":" in spec:
+                                parts = spec.split()
+                                for p in parts:
+                                    if ":" not in p:
+                                        print(f"Skip malformed token: {p}")
+                                        continue
+                                    idx_str, lw_str = p.split(":", 1)
+                                    try:
+                                        idx = int(idx_str) - 1
+                                        lw = float(lw_str)
+                                        if 0 <= idx < len(ax.lines):
+                                            ax.lines[idx].set_linewidth(lw)
+                                        else:
+                                            print(f"Index out of range: {idx+1}")
+                                    except ValueError:
+                                        print(f"Bad token: {p}")
+                            else:
+                                try:
+                                    lw = float(spec)
+                                    for ln in ax.lines:
+                                        ln.set_linewidth(lw)
+                                except ValueError:
+                                    print("Invalid width value.")
+                            fig.canvas.draw()
+                    elif sub == 'f':
+                        fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
+                        if not fw_in or fw_in.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            push_state("framewidth")
+                            parts = fw_in.split()
+                            try:
+                                if len(parts) == 1:
+                                    frame_w = float(parts[0])
+                                    tick_major = frame_w
+                                    tick_minor = frame_w * 0.6
+                                else:
+                                    frame_w = float(parts[0])
+                                    tick_major = float(parts[1])
+                                    tick_minor = float(tick_major) * 0.7
+                                for sp in ax.spines.values():
+                                    sp.set_linewidth(frame_w)
+                                ax.tick_params(which='major', width=tick_major)
+                                ax.tick_params(which='minor', width=tick_minor)
+                                fig.canvas.draw()
+                                print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
+                            except ValueError:
+                                print("Invalid numeric value(s).")
+                    elif sub == 'g':
+                        push_state("grid")
+                        # Toggle grid state - check if any gridlines are visible
+                        current_grid = False
+                        try:
+                            # Check if grid is currently on by looking at gridline visibility
+                            for line in ax.get_xgridlines() + ax.get_ygridlines():
+                                if line.get_visible():
+                                    current_grid = True
+                                    break
+                        except Exception:
+                            current_grid = ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
+                        
+                        new_grid_state = not current_grid
+                        if new_grid_state:
+                            # Enable grid with light styling
+                            ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+                        else:
+                            # Disable grid (no style parameters when disabling)
+                            ax.grid(False)
+                        fig.canvas.draw()
+                        print(f"Grid {'enabled' if new_grid_state else 'disabled'}.")
+                    elif sub == 'l':
+                        targets = _select_lines(ax, "line-only targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        push_state("line-only")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            ln.set_linestyle('-')
+                            ln.set_marker('None')
+                        fig.canvas.draw()
+                        print(f"Applied line-only style to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'ld':
+                        targets = _select_lines(ax, "line+dots targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        push_state("line+dots")
+                        custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            lw = ln.get_linewidth() or 1.0
+                            ln.set_linestyle('-')
+                            ln.set_marker('o')
+                            msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
+                            ln.set_markersize(msize)
+                            col = ln.get_color()
+                            try:
+                                ln.set_markerfacecolor(col)
+                                ln.set_markeredgecolor(col)
+                            except Exception:
+                                pass
+                        fig.canvas.draw()
+                        print(f"Applied line+dots style to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'd':
+                        targets = _select_lines(ax, "dots-only targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        push_state("dots-only")
+                        custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            lw = ln.get_linewidth() or 1.0
+                            ln.set_linestyle('None')
+                            ln.set_marker('o')
+                            msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
+                            ln.set_markersize(msize)
+                            col = ln.get_color()
+                            try:
+                                ln.set_markerfacecolor(col)
+                                ln.set_markeredgecolor(col)
+                            except Exception:
+                                pass
+                        fig.canvas.draw()
+                        print(f"Applied dots-only style to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'da':
+                        targets = _select_lines(ax, "dashed-line targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        dash_vals = _prompt_dash_pattern()
+                        if dash_vals is None:
+                            continue
+                        dash_len, gap_len = dash_vals
+                        push_state("dashed-line")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            ln.set_marker('None')
+                            ln.set_linestyle((0, (dash_len, gap_len)))
+                        fig.canvas.draw()
+                        print(f"Applied dashed lines to curves: {', '.join(str(i+1) for i in targets)}")
+                    elif sub == 'dd':
+                        targets = _select_lines(ax, "dash-dot targets (numbers or 'all'):")
+                        if not targets:
+                            continue
+                        dash_vals = _prompt_dash_pattern(kind='dashdot')
+                        if dash_vals is None:
+                            continue
+                        push_state("dash-dot")
+                        for idx in targets:
+                            ln = ax.lines[idx]
+                            ln.set_marker('None')
+                            ln.set_linestyle((0, dash_vals))
+                        fig.canvas.draw()
+                        print(f"Applied dash-dot style to curves: {', '.join(str(i+1) for i in targets)}")
+                    else:
+                        print("Unknown submenu option.")
+            except Exception as e:
+                print(f"Error setting widths: {e}")
+        elif key == 'f':
+            cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
+            cur_size = plt.rcParams.get('font.size', None)
+            while True:
+                subkey = _safe_input(colorize_prompt(f"Font submenu (current: family='{cur_family}', size={cur_size}) - s=size, f=family, q=return: ")).strip().lower()
+                if subkey == 'q':
+                    break
+                if subkey == '':
+                    continue
+                if subkey == 's':
+                    try:
+                        cur_size = plt.rcParams.get('font.size', None)
+                        fs = _safe_input(f"Enter new font size (current: {cur_size}, q=cancel): ").strip()
+                        if not fs or fs.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            push_state("font-change")
+                            fs_val = float(fs)
+                            apply_font_changes(new_size=fs_val)
+                            # Reposition top/right labels to match new tick label sizes
+                            position_top_xlabel()
+                            position_right_ylabel()
+                            fig.canvas.draw()
+                    except Exception as e:
+                        print(f"Error changing font size: {e}")
+                elif subkey == 'f':
+                    try:
+                        cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
+                        print("Common publication fonts:")
+                        print("  1) Arial")
+                        print("  2) Helvetica")
+                        print("  3) Times New Roman")
+                        print("  4) STIXGeneral")
+                        print("  5) DejaVu Sans")
+                        ft_raw = _safe_input(f"Enter font number or family name (current: '{cur_family}', q=cancel): ").strip()
+                        if not ft_raw or ft_raw.lower() == 'q':
+                            print("Canceled.")
+                        else:
+                            font_map = {
+                                '1': 'Arial',
+                                '2': 'Helvetica',
+                                '3': 'Times New Roman',
+                                '4': 'STIXGeneral',
+                                '5': 'DejaVu Sans'
+                            }
+                            ft = font_map.get(ft_raw, ft_raw)
+                            push_state("font-change")
+                            print(f"Setting font family to: {ft}")
+                            apply_font_changes(new_family=ft)
+                            # Reposition top/right labels to match new tick label sizes
+                            position_top_xlabel()
+                            position_right_ylabel()
+                            fig.canvas.draw()
+                    except Exception as e:
+                        print(f"Error changing font family: {e}")
+                else:
+                    print("Invalid font submenu option.")
+        elif key == 'g':
+            try:
+                while True:
+                    choice = _safe_input(colorize_prompt("Resize submenu: (p=plot frame, c=canvas, q=cancel): ")).strip().lower()
+                    if not choice:
+                        continue
+                    if choice == 'q':
+                        break
+                    if choice == 'p':
+                        push_state("resize-frame")
+                        resize_plot_frame()
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    elif choice == 'c':
+                        push_state("resize-canvas")
+                        resize_canvas()
+                    else:
+                        print("Unknown option.")
+            except Exception as e:
+                print(f"Error in resize submenu: {e}")
+        elif key == 'h':
+            # Legend submenu
+            try:
+                while True:
+                    print("\nLegend submenu:")
+                    print("  v: show/hide curve names")
+                    current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
+                    print(f"  s: legend position (current: {current_pos})")
+                    print("  q: back to main menu")
+                    sub_key = _safe_input("Choose: ").strip().lower()
+                    
+                    if sub_key == 'q':
+                        break
+                    elif sub_key == 'v':
+                        push_state("curve-names")
+                        # Check current visibility from first label
+                        current_visible = True
+                        if label_text_objects and len(label_text_objects) > 0:
+                            try:
+                                current_visible = label_text_objects[0].get_visible()
+                            except Exception:
+                                current_visible = True
+                        
+                        # Toggle all labels
+                        new_visible = not current_visible
+                        for txt in label_text_objects:
+                            try:
+                                txt.set_visible(new_visible)
+                            except Exception:
+                                pass
+                        
+                        # Store state on figure for persistence
+                        fig._curve_names_visible = new_visible
+                        
+                        status = "shown" if new_visible else "hidden"
+                        print(f"Curve names {status}")
+                        stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
+                        try:
+                            fig.canvas.draw()
+                        except Exception:
+                            fig.canvas.draw_idle()
+                    elif sub_key == 's':
+                        push_state("label-position")
+                        # Toggle label position between top-right and bottom-right
+                        current_bottom = getattr(fig, '_stack_label_at_bottom', False)
+                        fig._stack_label_at_bottom = not current_bottom
+                        new_pos = "bottom-right" if fig._stack_label_at_bottom else "top-right"
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, fig._stack_label_at_bottom)
+                        print(f"Legend position changed to {new_pos}.")
+                        try:
+                            fig.canvas.draw()
+                        except Exception:
+                            fig.canvas.draw_idle()
+                    else:
+                        print("Unknown option.")
+            except Exception as e:
+                print(f"Error in legend submenu: {e}")
+        elif key == 't':
+            try:
+                while True:
+                    print("\033[1mToggle help:\033[0m")
+                    print(colorize_inline_commands("  wasd choose side: w=top, a=left, s=bottom, d=right"))
+                    print(colorize_inline_commands("  1..5 choose what: 1=spine line, 2=major ticks, 3=minor ticks, 4=labels, 5=axis title"))
+                    print(colorize_inline_commands("  Combine letter+number to toggle, e.g. 's2 w5 a4' (case-insensitive)"))
+                    print(colorize_inline_commands("  i = invert tick direction, l = change tick length, list = show state, q = return"))
+                    print(colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
+                    cmd = _safe_input(colorize_prompt("Enter code(s): ")).strip().lower()
+                    if not cmd:
+                        continue
+                    if cmd == 'q':
+                        break
+                    if cmd == 'i':
+                        # Invert tick direction (toggle between 'out' and 'in')
+                        push_state("tick-direction")
+                        current_dir = getattr(fig, '_tick_direction', 'out')
+                        new_dir = 'in' if current_dir == 'out' else 'out'
+                        setattr(fig, '_tick_direction', new_dir)
+                        ax.tick_params(axis='both', which='both', direction=new_dir)
+                        print(f"Tick direction: {new_dir}")
+                        try:
+                            fig.canvas.draw()
+                        except Exception:
+                            fig.canvas.draw_idle()
+                        continue
+                    if cmd == 'p':
+                        _title_offset_menu()
+                        continue
+                    if cmd == 'l':
+                        # Change tick length (major and minor automatically set to 70%)
+                        try:
+                            # Get current major tick length from axes
+                            current_major = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 4.0
+                            print(f"Current major tick length: {current_major}")
+                            new_length_str = _safe_input("Enter new major tick length (e.g., 6.0): ").strip()
+                            if not new_length_str:
+                                continue
+                            new_major = float(new_length_str)
+                            if new_major <= 0:
+                                print("Length must be positive.")
+                                continue
+                            new_minor = new_major * 0.7  # Auto-set minor to 70%
+                            push_state("tick-length")
+                            # Apply to all four axes
+                            ax.tick_params(axis='both', which='major', length=new_major)
+                            ax.tick_params(axis='both', which='minor', length=new_minor)
+                            # Store for persistence
+                            if not hasattr(fig, '_tick_lengths'):
+                                fig._tick_lengths = {}
+                            fig._tick_lengths.update({'major': new_major, 'minor': new_minor})
+                            print(f"Set major tick length: {new_major}, minor: {new_minor:.2f}")
+                            try:
+                                fig.canvas.draw()
+                            except Exception:
+                                fig.canvas.draw_idle()
+                        except ValueError:
+                            print("Invalid number.")
+                        except Exception as e:
+                            print(f"Error setting tick length: {e}")
+                        continue
+                    parts = cmd.split()
+                    if parts == ['list']:
+                        print_tick_state()
+                        continue
+                    push_state("tick-toggle")
+                    # Track which sides need re-positioning of axis titles
+                    need_pos = {
+                        'bottom': False,  # bottom X title spacing
+                        'top': False,     # top X duplicate title
+                        'left': False,    # left Y title spacing
+                        'right': False,   # right Y duplicate title
+                    }
+                    # New key aliases -> legacy/internal codes
+                    alias_map = {
+                        # Spines
+                        's1':'bl', 'w1':'tl', 'a1':'ll', 'd1':'rl',
+                        # Major tick marks
+                        's2':'btcs', 'w2':'ttcs', 'a2':'ltcs', 'd2':'rtcs',
+                        # Minor ticks
+                        's3':'mbx', 'w3':'mtx', 'a3':'mly', 'd3':'mry',
+                        # Labels
+                        's4':'blb', 'w4':'tlb', 'a4':'llb', 'd4':'rlb',
+                        # Axis titles
+                        's5':'bt', 'w5':'tt', 'a5':'lt', 'd5':'rt',
+                        # Small typo tolerance
+                        'tics':'ttcs',
+                    }
+                    for p in parts:
+                        if p in alias_map:
+                            p = alias_map[p]
+                        # Axis title toggles
+                        if p in ('bt','tt','lt','rt'):
+                            if p == 'bt':
+                                # Use visibility toggle to avoid layout recalculation
+                                label_obj = ax.xaxis.label
+                                if label_obj.get_visible():
+                                    # Store text before hiding
+                                    if not hasattr(ax, '_stored_xlabel'):
+                                        ax._stored_xlabel = label_obj.get_text()
+                                    # Store current labelpad to restore later
+                                    try:
+                                        ax._stored_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
+                                    except Exception:
+                                        pass
+                                    label_obj.set_visible(False)
+                                    print("Hid bottom X axis title")
+                                else:
+                                    # Restore text if needed before showing
+                                    if hasattr(ax, '_stored_xlabel') and ax._stored_xlabel:
+                                        label_obj.set_text(ax._stored_xlabel)
+                                    label_obj.set_visible(True)
+                                    # Freeze any automatic layout to prevent margin reflow on toggle
+                                    try:
+                                        fig.set_layout_engine('none')
+                                    except Exception:
+                                        try:
+                                            fig.set_tight_layout(False)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        # On some MPL versions this exists; harmless otherwise
+                                        fig.set_constrained_layout(False)
+                                    except Exception:
+                                        pass
+                                    # Reapply a deterministic pad based on current bottom label visibility
+                                    try:
+                                        # Prefer exact stored pad if available; else compute from tick visibility
+                                        if hasattr(ax, '_stored_xlabelpad') and ax._stored_xlabelpad is not None:
+                                            desired_pad = ax._stored_xlabelpad
+                                            # Set a one-shot pending pad for ui.position_bottom_xlabel to consume
+                                            ax._pending_xlabelpad = desired_pad
+                                        else:
+                                            desired_pad = 14 if bool(tick_state.get('b_labels', tick_state.get('bx', False))) else 6
+                                        ax.xaxis.labelpad = desired_pad
+                                    except Exception:
+                                        pass
+                                    print("Shown bottom X axis title")
+                                need_pos['bottom'] = True
+                            elif p == 'tt':
+                                vis = getattr(ax, '_top_xlabel_on', False)
+                                if not vis:
+                                    # Just set the flag and let position_top_xlabel() create/update the artist
+                                    ax._top_xlabel_on = True
+                                    need_pos['top'] = True
+                                    print("Shown duplicate top X axis title")
+                                else:
+                                    if hasattr(ax,'_top_xlabel_artist') and ax._top_xlabel_artist is not None:
+                                        ax._top_xlabel_artist.set_visible(False)
+                                    ax._top_xlabel_on = False
+                                    need_pos['top'] = True
+                                    print("Hid top X axis title duplicate")
+                            elif p == 'lt':
+                                # Use visibility toggle to avoid layout recalculation
+                                label_obj = ax.yaxis.label
+                                if label_obj.get_visible():
+                                    # Store text before hiding
+                                    if not hasattr(ax, '_stored_ylabel'):
+                                        ax._stored_ylabel = label_obj.get_text()
+                                    # Store current labelpad to restore later
+                                    try:
+                                        ax._stored_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
+                                    except Exception:
+                                        pass
+                                    label_obj.set_visible(False)
+                                    print("Hid left Y axis title")
+                                else:
+                                    # Restore text if needed before showing
+                                    if hasattr(ax, '_stored_ylabel') and ax._stored_ylabel:
+                                        label_obj.set_text(ax._stored_ylabel)
+                                    label_obj.set_visible(True)
+                                    # Freeze auto layout and restore exact pad if available
+                                    try:
+                                        fig.set_layout_engine('none')
+                                    except Exception:
+                                        try:
+                                            fig.set_tight_layout(False)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        fig.set_constrained_layout(False)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(ax, '_stored_ylabelpad') and ax._stored_ylabelpad is not None:
+                                            ax.yaxis.labelpad = ax._stored_ylabelpad
+                                            # Set a one-shot pending pad for ui.position_left_ylabel to consume
+                                            ax._pending_ylabelpad = ax._stored_ylabelpad
+                                        else:
+                                            desired_pad = 14 if bool(tick_state.get('l_labels', tick_state.get('ly', False))) else 6
+                                            ax.yaxis.labelpad = desired_pad
+                                    except Exception:
+                                        pass
+                                    print("Shown left Y axis title")
+                                need_pos['left'] = True
+                            elif p == 'rt':
+                                vis = getattr(ax, '_right_ylabel_on', False)
+                                if not vis:
+                                    # Just set the flag and let position_right_ylabel() create/update the artist
+                                    ax._right_ylabel_on = True
+                                    need_pos['right'] = True
+                                    print("Shown duplicate right Y axis title")
+                                else:
+                                    if hasattr(ax,'_right_ylabel_artist') and ax._right_ylabel_artist is not None:
+                                        try:
+                                            ax._right_ylabel_artist.set_visible(False)
+                                        except Exception:
+                                            pass
+                                    ax._right_ylabel_on = False
+                                    need_pos['right'] = True
+                                    print("Hid right Y axis title")
+                            continue
+                        # Plot frame (spine) toggles
+                        if p in ('bl','tl','ll','rl'):
+                            spine_map = {'bl':'bottom','tl':'top','ll':'left','rl':'right'}
+                            spine = spine_map[p]
+                            vis = get_spine_visible(spine)
+                            set_spine_visible(spine, not vis)
+                            print(f"Toggled {spine} spine -> {'ON' if not vis else 'off'}")
+                            continue
+                        # New granular tick/label toggles
+                        if p in ('btcs','blb','ttcs','tlb','ltcs','llb','rtcs','rlb'):
+                            if p == 'btcs':
+                                tick_state['b_ticks'] = not tick_state['b_ticks']
+                                print(f"Toggled bottom ticks -> {'ON' if tick_state['b_ticks'] else 'off'}")
+                            elif p == 'blb':
+                                tick_state['b_labels'] = not tick_state['b_labels']
+                                print(f"Toggled bottom labels -> {'ON' if tick_state['b_labels'] else 'off'}")
+                                need_pos['bottom'] = True
+                            elif p == 'ttcs':
+                                tick_state['t_ticks'] = not tick_state['t_ticks']
+                                print(f"Toggled top ticks -> {'ON' if tick_state['t_ticks'] else 'off'}")
+                            elif p == 'tlb':
+                                tick_state['t_labels'] = not tick_state['t_labels']
+                                print(f"Toggled top labels -> {'ON' if tick_state['t_labels'] else 'off'}")
+                                need_pos['top'] = True
+                            elif p == 'ltcs':
+                                tick_state['l_ticks'] = not tick_state['l_ticks']
+                                print(f"Toggled left ticks -> {'ON' if tick_state['l_ticks'] else 'off'}")
+                            elif p == 'llb':
+                                tick_state['l_labels'] = not tick_state['l_labels']
+                                print(f"Toggled left labels -> {'ON' if tick_state['l_labels'] else 'off'}")
+                                need_pos['left'] = True
+                            elif p == 'rtcs':
+                                tick_state['r_ticks'] = not tick_state['r_ticks']
+                                print(f"Toggled right ticks -> {'ON' if tick_state['r_ticks'] else 'off'}")
+                            elif p == 'rlb':
+                                tick_state['r_labels'] = not tick_state['r_labels']
+                                print(f"Toggled right labels -> {'ON' if tick_state['r_labels'] else 'off'}")
+                                need_pos['right'] = True
+                            _sync_legacy_tick_keys()
+                            continue
+                        # Minor tick toggles
+                        if p in ('mbx','mtx','mly','mry'):
+                            tick_state[p] = not tick_state[p]
+                            print(f"Toggled {p} -> {'ON' if tick_state[p] else 'off'}")
+                            continue
+                        # Legacy combined toggles
+                        if p in ('bx','tx','ly','ry'):
+                            if p == 'bx':
+                                newv = not (tick_state['b_ticks'] or tick_state['b_labels'])
+                                tick_state['b_ticks'] = newv; tick_state['b_labels'] = newv
+                                print(f"Toggled bottom (ticks+labels) -> {'ON' if newv else 'off'}")
+                                need_pos['bottom'] = True
+                            elif p == 'tx':
+                                newv = not (tick_state['t_ticks'] or tick_state['t_labels'])
+                                tick_state['t_ticks'] = newv; tick_state['t_labels'] = newv
+                                print(f"Toggled top (ticks+labels) -> {'ON' if newv else 'off'}")
+                                need_pos['top'] = True
+                            elif p == 'ly':
+                                newv = not (tick_state['l_ticks'] or tick_state['l_labels'])
+                                tick_state['l_ticks'] = newv; tick_state['l_labels'] = newv
+                                print(f"Toggled left (ticks+labels) -> {'ON' if newv else 'off'}")
+                                need_pos['left'] = True
+                            elif p == 'ry':
+                                newv = not (tick_state['r_ticks'] or tick_state['r_labels'])
+                                tick_state['r_ticks'] = newv; tick_state['r_labels'] = newv
+                                print(f"Toggled right (ticks+labels) -> {'ON' if newv else 'off'}")
+                                need_pos['right'] = True
+                            _sync_legacy_tick_keys()
+                            continue
+                        # Unknown code
+                        print(f"Unknown code: {p}")
+                    # After tick toggles, update visibility and reposition ALL axis labels for independence
+                    update_tick_visibility()
+                    update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    sync_fonts()
+                    # Only reposition sides that were actually affected by the toggles
+                    if need_pos['bottom']:
+                        position_bottom_xlabel()
+                    if need_pos['left']:
+                        position_left_ylabel()
+                    if need_pos['top']:
+                        position_top_xlabel()
+                    if need_pos['right']:
+                        position_right_ylabel()
+                    # Single draw at the end after all positioning is complete
+                    fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"Error in tick visibility menu: {e}")
+        elif key == 'p':
+            try:
+                style_menu_active = True
+                while style_menu_active:
+                    print_style_info()
+                    # List available style files (.bps, .bpsg, .bpcfg) in Styles/ subdirectory
+                    style_file_list = list_files_in_subdirectory(('.bps', '.bpsg', '.bpcfg'), 'style')
+                    _bpcfg_files = [f[0] for f in style_file_list]
+                    if _bpcfg_files:
+                        print("Existing style files in Styles/ (.bps/.bpsg):")
+                        for _i, (fname, fpath) in enumerate(style_file_list, 1):
+                            timestamp = format_file_timestamp(fpath)
+                            if timestamp:
+                                print(f"  {_i}: {fname}  ({timestamp})")
+                            else:
+                                print(f"  {_i}: {fname}")
+                    last_style_path = getattr(fig, '_last_style_export_path', None)
+                    if last_style_path:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ")).strip().lower()
+                    else:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
+                    if sub == 'q':
+                        break
+                    if sub == 'r' or sub == '':
+                        continue
+                    if sub == 'o':
+                        # Overwrite last exported style file
+                        if not last_style_path:
+                            print("No previous export found.")
+                            continue
+                        if not os.path.exists(last_style_path):
+                            print(f"Previous export file not found: {last_style_path}")
+                            continue
+                        yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            continue
+                        # Call export_style_config with overwrite_path to skip dialog
+                        exported_path = export_style_config(None, base_path=None, overwrite_path=last_style_path)
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
+                        style_menu_active = False
+                        break
+                    if sub == 'e':
+                        save_base = choose_save_path(source_file_paths, purpose="style export")
+                        if not save_base:
+                            print("Style export canceled.")
+                            continue
+                        print(f"\nChosen path: {save_base}")
+                        # Call export_style_config which handles the entire export dialog
+                        exported_path = export_style_config(None, base_path=save_base)  # filename parameter ignored
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
+                        style_menu_active = False  # Exit style submenu and return to main menu
+                        break
+                    else:
+                        print("Unknown choice.")
+            except Exception as e:
+                print(f"Error in style submenu: {e}")
+        elif key == 'i':
+            try:
+                fname = choose_style_file(source_file_paths, purpose="style import")
+                if not fname:
+                    print("Style import canceled.")
+                    continue
+                push_state("style-import")
+                apply_style_config(fname)
+            except Exception as e:
+                print(f"Error importing style: {e}")
+        elif key == 'e':
+            try:
+                base_path = choose_save_path(source_file_paths, purpose="figure export")
+                if not base_path:
+                    print("Export canceled.")
+                    continue
+                print(f"\nChosen path: {base_path}")
+                # List existing figure files in Figures/ subdirectory
+                fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
+                file_list = list_files_in_subdirectory(fig_extensions, 'figure', base_path=base_path)
+                files = [f[0] for f in file_list]
+                if files:
+                    figures_dir = os.path.join(base_path, 'Figures')
+                    print(f"Existing figure files in {figures_dir}:")
+                    for i, (fname, fpath) in enumerate(file_list, 1):
+                        timestamp = format_file_timestamp(fpath)
+                        if timestamp:
+                            print(f"  {i}: {fname}  ({timestamp})")
+                        else:
+                            print(f"  {i}: {fname}")
+                
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if last_figure_path:
+                    filename = _safe_input("Enter filename (default SVG if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                else:
+                    filename = _safe_input("Enter filename (default SVG if no extension) or number to overwrite (q=cancel): ").strip()
+                if not filename or filename.lower() == 'q':
+                    print("Canceled.")
+                    continue
+                
+                already_confirmed = False  # Initialize for new filename case
+                # Check for 'o' option
+                if filename.lower() == 'o':
+                    if not last_figure_path:
+                        print("No previous export found.")
+                        continue
+                    if not os.path.exists(last_figure_path):
+                        print(f"Previous export file not found: {last_figure_path}")
+                        continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print("Canceled.")
+                        continue
+                    export_target = last_figure_path
+                    already_confirmed = True
+                # Check if user selected a number
+                elif filename.isdigit() and files:
+                    already_confirmed = False
+                    idx = int(filename)
+                    if 1 <= idx <= len(files):
+                        name = files[idx-1]
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            print("Canceled.")
+                            continue
+                        export_target = file_list[idx-1][1]  # Full path from list
+                        already_confirmed = True
+                    else:
+                        print("Invalid number.")
+                        continue
+                else:
+                    if not os.path.splitext(filename)[1]:
+                        filename += ".svg"
+                    # Use organized path unless it's an absolute path
+                    if os.path.isabs(filename):
+                        export_target = filename
+                    else:
+                        export_target = get_organized_path(filename, 'figure', base_path=base_path)
+                
+                # Confirm overwrite if file exists (and not already confirmed by number selection)
+                if not already_confirmed:
+                    if os.path.exists(export_target):
+                        export_target = _confirm_overwrite(export_target)
+                
+                if not export_target:
+                    print("Export canceled.")
+                else:
+                        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                        from .utils import ensure_exact_case_filename
+                        export_target = ensure_exact_case_filename(export_target)
+                        
+                        # Temporarily remove numbering for export
+                        for i, txt in enumerate(label_text_objects):
+                            txt.set_text(labels[i])
+                        # Transparent background for SVG exports
+                        _, _ext = os.path.splitext(export_target)
+                        if _ext.lower() == '.svg':
+                            try:
+                                _fig_fc = fig.get_facecolor()
+                            except Exception:
+                                _fig_fc = None
+                            try:
+                                _ax_fc = ax.get_facecolor()
+                            except Exception:
+                                _ax_fc = None
+                            try:
+                                if getattr(fig, 'patch', None) is not None:
+                                    fig.patch.set_alpha(0.0); fig.patch.set_facecolor('none')
+                                if getattr(ax, 'patch', None) is not None:
+                                    ax.patch.set_alpha(0.0); ax.patch.set_facecolor('none')
+                            except Exception:
+                                pass
+                            try:
+                                fig.savefig(export_target, dpi=300, transparent=True, facecolor='none', edgecolor='none')
+                            finally:
+                                try:
+                                    if _fig_fc is not None and getattr(fig, 'patch', None) is not None:
+                                        fig.patch.set_alpha(1.0); fig.patch.set_facecolor(_fig_fc)
+                                except Exception:
+                                    pass
+                                try:
+                                    if _ax_fc is not None and getattr(ax, 'patch', None) is not None:
+                                        ax.patch.set_alpha(1.0); ax.patch.set_facecolor(_ax_fc)
+                                except Exception:
+                                    pass
+                        else:
+                            fig.savefig(export_target, dpi=300)
+                        print(f"Figure saved to {export_target}")
+                        fig._last_figure_export_path = export_target
+                        for i, txt in enumerate(label_text_objects):
+                            txt.set_text(f"{i+1}: {labels[i]}")
+                        fig.canvas.draw()
+            except Exception as e:
+                print(f"Error saving figure: {e}")
+        elif key == 'v':
+            while True:
+                try:
+                    rng_in = _safe_input("Peak X range (min max, 'current' for axes limits, q=back): ").strip().lower()
+                    if not rng_in or rng_in == 'q':
+                        break
+                    if rng_in == 'current':
+                        x_min, x_max = ax.get_xlim()
+                    else:
+                        parts = rng_in.split()
+                        if len(parts) != 2:
+                            print("Need exactly two numbers or 'current'.")
+                            continue
+                        x_min, x_max = map(float, parts)
+                        if x_min > x_max:
+                            x_min, x_max = x_max, x_min
+
+                    frac_in = _safe_input("Min relative peak height (0–1, default 0.1): ").strip()
+                    min_frac = float(frac_in) if frac_in else 0.1
+                    if min_frac < 0: min_frac = 0.0
+                    if min_frac > 1: min_frac = 1.0
+
+                    swin = _safe_input("Smoothing window (odd int >=3, blank=none): ").strip()
+                    if swin:
+                        try:
+                            win = int(swin)
+                            if win < 3 or win % 2 == 0:
+                                print("Invalid window; disabling smoothing.")
+                                win = 0
+                            else:
+                                print(f"Using moving-average smoothing (window={win}).")
+                        except ValueError:
+                            print("Bad window value; no smoothing.")
+                            win = 0
+                    else:
+                        win = 0
+
+                    print("\n--- Peak Report ---")
+                    print(f"X range used: {x_min} .. {x_max}  (relative height threshold={min_frac})")
+                    for i, (x_arr, y_off) in enumerate(zip(x_data_list, y_data_list)):
+                        # Recover original curve (remove vertical offset)
+                        if i < len(offsets_list):
+                            y_arr = y_off - offsets_list[i]
+                        else:
+                            y_arr = y_off.copy()
+
+                        # Restrict to selected window
+                        mask = (x_arr >= x_min) & (x_arr <= x_max)
+                        x_sel = x_arr[mask]
+                        y_sel = y_arr[mask]
+
+                        label = labels[i] if i < len(labels) else f"Curve {i+1}"
+                        print(f"\nCurve {i+1}: {label}")
+                        if x_sel.size < 3:
+                            print("  (Insufficient points)")
+                            continue
+
+                        # Optional smoothing
+                        if win >= 3 and x_sel.size >= win:
+                            kernel = np.ones(win, dtype=float) / win
+                            y_sm = np.convolve(y_sel, kernel, mode='same')
+                        else:
+                            y_sm = y_sel
+
+                        # Determine threshold
+                        ymax = float(np.max(y_sm))
+                        if ymax <= 0:
+                            print("  (Non-positive data)")
+                            continue
+                        min_height = ymax * min_frac
+
+                        # Simple local maxima detection
+                        y_prev = y_sm[:-2]
+                        y_mid  = y_sm[1:-1]
+                        y_next = y_sm[2:]
+                        core_mask = (y_mid > y_prev) & (y_mid >= y_next) & (y_mid >= min_height)
+                        if not np.any(core_mask):
+                            print("  (No peaks)")
+                            continue
+                        peak_indices = np.where(core_mask)[0] + 1  # shift because we looked at 1..n-2
+
+                        # Optional refine: keep only distinct peaks (skip adjacent equal plateau)
+                        peaks = []
+                        last_idx = -10
+                        for pi in peak_indices:
+                            if pi - last_idx == 1 and y_sm[pi] == y_sm[last_idx]:
+                                # same plateau, keep first
+                                continue
+                            peaks.append(pi)
+                            last_idx = pi
+
+                        print("  Peaks (x, y):")
+                        for pi in peaks:
+                            print(f"    x={x_sel[pi]:.6g}, y={y_sel[pi]:.6g}")
+                    print("\n--- End Peak Report ---\n")
+                except Exception as e:
+                    print(f"Error finding peaks: {e}")
+
+__all__ = ["interactive_menu"]

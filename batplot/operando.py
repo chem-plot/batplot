@@ -11,11 +11,6 @@ An operando plot is a 2D visualization where:
 - Y-axis: Time/scan number (which file/measurement in sequence)
 - Color/Z-axis: Intensity (how bright the diffraction signal is)
 
-Think of it like a "heat map" where:
-- Each row is one diffraction pattern (one file)
-- Each column is one angle/Q value
-- Color intensity shows how strong the diffraction signal is
-
 Example use cases:
 - Watching a material transform during heating (phase transitions)
 - Monitoring battery electrode changes during cycling
@@ -24,12 +19,12 @@ Example use cases:
 
 HOW IT WORKS:
 ------------
-1. Scan folder for diffraction data files (.xy, .xye, .qye, .dat)
+1. Scan folder for XRD/PDF/XAS or other data files
 2. Load each file as one "scan" (one row in the contour)
 3. Create a common X-axis grid (interpolate all scans to same grid)
 4. Stack all scans vertically to form a 2D array
 5. Display as intensity contour (color map)
-6. Optionally add electrochemistry data as side panel (if .mpt file present)
+6. Optionally add electrochemistry/temperature/other data as side panel (if .mpt file present)
 
 AXIS MODE DETECTION:
 -------------------
@@ -37,14 +32,7 @@ The X-axis type is determined automatically:
 - If --xaxis Q specified → Use Q-space
 - If files are .qye → Use Q-space (already in Q)
 - If --wl specified → Convert 2θ to Q using wavelength
-- Otherwise → Use 2θ (degrees)
-
-NO NORMALIZATION:
----------------
-Unlike some other modes, operando plots don't normalize intensity.
-The color scale spans from minimum to maximum intensity across ALL scans.
-This preserves the absolute intensity information, which is important for
-comparing different time points.
+- Other operando data (such as PDF/XAS or others) → Plot the first two columns as X and Y
 """
 from __future__ import annotations
 
@@ -308,6 +296,28 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     # Result shape: (n_scans, n_x_points)
     # Example: 50 scans × 1000 points = (50, 1000) array
     Z = np.vstack(stack)  # shape (n_scans, n_x)
+    
+    # STEP 5.5: Apply first derivative if --1d or --2d flag is set
+    # This calculates dy/dx for each scan using np.gradient
+    if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
+        print("[operando] Applying first derivative (dy/dx) to each scan...")
+        Z_deriv = np.zeros_like(Z)
+        for i in range(Z.shape[0]):
+            row = Z[i, :]
+            # Calculate derivative using gradient (handles NaN gracefully in numpy 1.20+)
+            # Use the grid spacing for proper derivative calculation
+            dx = grid_x[1] - grid_x[0] if len(grid_x) > 1 else 1.0
+            # Replace NaN with interpolated values for gradient, then mask back
+            valid_mask = ~np.isnan(row)
+            if np.sum(valid_mask) > 1:
+                # For valid regions, calculate gradient
+                deriv = np.gradient(row, dx)
+                # Keep NaN where original was NaN
+                deriv[~valid_mask] = np.nan
+                Z_deriv[i, :] = deriv
+            else:
+                Z_deriv[i, :] = np.nan
+        Z = Z_deriv
 
     # Detect an electrochemistry .mpt file in the same folder (if any)
     # Filter out macOS resource fork files (starting with ._)
@@ -327,6 +337,8 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     extent = (grid_x.min(), grid_x.max(), 0, Zm.shape[0]-1)
     # Bottom-to-top visual order (scan 0 at bottom) to match EC time progression -> origin='lower'
     im = ax.imshow(Zm, aspect='auto', origin='lower', extent=extent, cmap='viridis', interpolation='nearest')
+    # Store the colormap name explicitly so it can be retrieved reliably when saving
+    setattr(im, '_operando_cmap_name', 'viridis')
     # Create custom colorbar axes on the left (will be positioned by layout function)
     # Create a dummy axes that will be replaced by the custom colorbar in interactive menu
     cbar_ax = fig.add_axes([0.0, 0.0, 0.01, 0.01])  # Temporary position, will be repositioned
@@ -398,7 +410,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
                     x_data, y_data, current_mA, x_label, y_label = result
                     # For EC-Lab files: x_label='Time (h)', y_label='Voltage (V)'
                     # For simple files: x_label could be 'Time(h)', 'time', etc.
-                    # EC-Lab returns time in seconds, needs conversion to hours
+                    # EC-Lab files: read_mpt_file already converts time from seconds to hours
                     # operando plots with voltage on X-axis and time on Y-axis
                     
                     # Check if labels indicate time/voltage data (flexible matching)
@@ -412,8 +424,8 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
                     is_time_voltage = (has_time_in_x or has_time_in_y) and (has_voltage_in_x or has_voltage_in_y)
                     
                     if x_label == 'Time (h)' and y_label == 'Voltage (V)':
-                        # EC-Lab file: convert time to hours and swap axes
-                        time_h = np.asarray(x_data, float) / 3600.0
+                        # EC-Lab file: time is already in hours from read_mpt_file, just swap axes
+                        time_h = np.asarray(x_data, float)  # Already in hours, no conversion needed
                         voltage_v = np.asarray(y_data, float)
                         x_data = voltage_v
                         y_data = time_h

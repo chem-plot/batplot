@@ -53,6 +53,54 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+# ====================================================================================
+# UPDATE INFO CONFIGURATION
+# ====================================================================================
+# Edit this section to customize update notification messages and add update info.
+# 
+# HOW TO USE:
+# ----------
+# When releasing a new version, edit the UPDATE_INFO dictionary below to include
+# information about what's new or important in the update. This information will
+# be displayed to users when they run batplot and a newer version is available.
+#
+# EXAMPLE:
+# --------
+# UPDATE_INFO = {
+#     'custom_message': "This update includes important bug fixes and new features.",
+#     'update_notes': [
+#         "- Fixed colormap preservation issue in session files",
+#         "- Improved legend positioning when toggling visibility",
+#         "- Added superscript/subscript shortcuts for labels",
+#         "- Enhanced version check notifications"
+#     ],
+#     'show_update_notes': True,
+# }
+#
+# To disable custom messages, set 'custom_message' to None.
+# To disable update notes, set 'update_notes' to None or an empty list [].
+# ====================================================================================
+
+UPDATE_INFO = {
+    # Custom message to include in update notification
+    # Set to None or empty string to disable
+    # This will be displayed as an additional line in the update message box
+    'custom_message': "This update includes important bug fixes",  # Example: "This update includes important bug fixes."
+    
+    # Additional notes about the update (list of strings)
+    # Set to None or empty list [] to disable
+    # Each item in the list will be displayed as a separate line
+    'update_notes': None,  # Example: ["- Fixed colormap preservation issue", "- Improved legend positioning"]
+    
+    # Whether to show update notes if provided
+    # Set to False to hide update notes even if they are defined
+    'show_update_notes': True,
+}
+
+# ====================================================================================
+# END OF UPDATE INFO CONFIGURATION
+# ====================================================================================
+
 
 def get_cache_file() -> Path:
     """Get the path to the version check cache file."""
@@ -160,12 +208,43 @@ def _print_update_message(current: str, latest: str) -> None:
         current: Current version
         latest: Latest available version
     """
-    print(f"\n\033[93m╭{'─' * 68}╮\033[0m")
-    print(f"\033[93m│\033[0m  \033[1mA new version of batplot is available!\033[0m" + " " * 31 + "\033[93m│\033[0m")
-    print(f"\033[93m│\033[0m  Current: \033[91m{current}\033[0m → Latest: \033[92m{latest}\033[0m" + " " * (42 - len(current) - len(latest)) + "\033[93m│\033[0m")
-    print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * 20 + "\033[93m│\033[0m")
-    print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * 7 + "\033[93m│\033[0m")
-    print(f"\033[93m╰{'─' * 68}╯\033[0m\n")
+    # Calculate box width (minimum 68, expand if needed for longer messages)
+    box_width = 68
+    custom_msg = UPDATE_INFO.get('Fixed some bugs')
+    update_notes = UPDATE_INFO.get('update_notes')
+    show_notes = UPDATE_INFO.get('show_update_notes', True)
+    
+    # Calculate required width based on content
+    max_line_len = 68  # Default minimum width
+    if custom_msg:
+        max_line_len = max(max_line_len, len(custom_msg) + 4)
+    if update_notes and show_notes:
+        for note in update_notes:
+            max_line_len = max(max_line_len, len(note) + 4)
+    # Ensure box width is at least the calculated width
+    box_width = max(68, min(max_line_len, 100))  # Cap at 100 for readability
+    
+    print(f"\n\033[93m╭{'─' * box_width}╮\033[0m")
+    print(f"\033[93m│\033[0m  \033[1mA new version of batplot is available!\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
+    print(f"\033[93m│\033[0m  Current: \033[91m{current}\033[0m → Latest: \033[92m{latest}\033[0m" + " " * max(0, box_width - 20 - len(current) - len(latest)) + "\033[93m│\033[0m")
+    
+    # Add custom message if provided
+    if custom_msg and custom_msg.strip():
+        # Truncate if too long to fit in box
+        msg = custom_msg[:box_width - 6] if len(custom_msg) > box_width - 6 else custom_msg
+        print(f"\033[93m│\033[0m  {msg}" + " " * max(0, box_width - len(msg) - 4) + "\033[93m│\033[0m")
+    
+    # Add update notes if provided
+    if update_notes and show_notes and isinstance(update_notes, list):
+        for note in update_notes:
+            if note and note.strip():
+                # Truncate if too long to fit in box
+                note_text = note[:box_width - 6] if len(note) > box_width - 6 else note
+                print(f"\033[93m│\033[0m  {note_text}" + " " * max(0, box_width - len(note_text) - 4) + "\033[93m│\033[0m")
+    
+    print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
+    print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * max(0, box_width - 45) + "\033[93m│\033[0m")
+    print(f"\033[93m╰{'─' * box_width}╯\033[0m\n")
 
 
 if __name__ == '__main__':

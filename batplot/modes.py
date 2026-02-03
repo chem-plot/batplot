@@ -151,7 +151,8 @@ def handle_cv_mode(args) -> int:
         # Configure fonts to match other modes (consistent across batplot)
         plt.rcParams.update({
             'font.family': 'sans-serif',
-            'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
+            # Prefer DejaVu Sans first for full Unicode coverage (subscripts, etc.)
+            'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
             'mathtext.fontset': 'dejavusans',
             'font.size': 16
         })
@@ -280,8 +281,8 @@ def handle_cv_mode(args) -> int:
             ax.set_xlabel('Current (mA)', labelpad=8.0)
             ax.set_ylabel('Voltage (V)', labelpad=8.0)
         else:
-        ax.set_xlabel('Voltage (V)', labelpad=8.0)
-        ax.set_ylabel('Current (mA)', labelpad=8.0)
+            ax.set_xlabel('Voltage (V)', labelpad=8.0)
+            ax.set_ylabel('Current (mA)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
         # Adjust margins to prevent label clipping
@@ -642,8 +643,8 @@ def handle_gc_mode(args) -> int:
                         ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                         linewidth=2.0, label=str(cyc), alpha=0.8)
                     else:
-                    ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=str(cyc), alpha=0.8)
+                        ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                                        linewidth=2.0, label=str(cyc), alpha=0.8)
                 else:
                     ln_c = None
                 mask_d = (cyc_int == cyc) & discharge_mask
@@ -656,8 +657,8 @@ def handle_gc_mode(args) -> int:
                         ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                         linewidth=2.0, label=lbl, alpha=0.8)
                     else:
-                    ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=lbl, alpha=0.8)
+                        ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                                        linewidth=2.0, label=lbl, alpha=0.8)
                 else:
                     ln_d = None
                 cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
@@ -690,8 +691,8 @@ def handle_gc_mode(args) -> int:
                         ln_d, = ax.plot(yd_b, xd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
                                         linewidth=2.0, label=lbl, alpha=0.8)
                     else:
-                    ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=lbl, alpha=0.8)
+                        ln_d, = ax.plot(xd_b, yd_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                                        linewidth=2.0, label=lbl, alpha=0.8)
                 cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
                 
         # Swap x and y if --ro flag is set
@@ -699,8 +700,8 @@ def handle_gc_mode(args) -> int:
             ax.set_xlabel('Voltage (V)', labelpad=8.0)
             ax.set_ylabel(x_label_gc, labelpad=8.0)
         else:
-        ax.set_xlabel(x_label_gc, labelpad=8.0)
-        ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            ax.set_xlabel(x_label_gc, labelpad=8.0)
+            ax.set_ylabel('Voltage (V)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
         fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)

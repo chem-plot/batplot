@@ -1,0 +1,1441 @@
+"""Style helpers for batplot: print diagnostics, export/import style configs.
+
+These utilities keep batplot.py slimmer by centralizing style logic.
+"""
+
+from __future__ import annotations
+
+from typing import List, Dict, Any, Callable, Optional
+import json
+import importlib
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+from .utils import _confirm_overwrite
+from .color_utils import color_block
+from .ui import (
+    ensure_text_visibility as _ui_ensure_text_visibility,
+    update_tick_visibility as _ui_update_tick_visibility,
+    position_top_xlabel as _ui_position_top_xlabel,
+    position_right_ylabel as _ui_position_right_ylabel,
+    position_bottom_xlabel as _ui_position_bottom_xlabel,
+    position_left_ylabel as _ui_position_left_ylabel,
+)
+
+
+def _color_to_hex(value):
+    """
+    Convert any color representation to hexadecimal format (e.g., '#FF0000').
+    
+    HOW IT WORKS:
+    ------------
+    Colors can be represented in many ways:
+    - Named colors: 'red', 'blue', 'green'
+    - Hex codes: '#FF0000', '#00FF00'
+    - RGB tuples: (1.0, 0.0, 0.0) or (255, 0, 0)
+    - RGBA tuples: (1.0, 0.0, 0.0, 1.0)
+    
+    This function normalizes all of these to hex format for consistent storage.
+    
+    WHY HEX FORMAT?
+    --------------
+    Hex format (#RRGGBB) is:
+    - Human-readable (easy to see what color it is)
+    - Standard format (works in CSS, HTML, etc.)
+    - Compact (6 characters for any color)
+    - Easy to store in JSON files
+    
+    Args:
+        value: Color in any format (string, tuple, matplotlib color object, etc.)
+    
+    Returns:
+        Hex color string (e.g., '#FF0000'), or original value if conversion fails
+    """
+    # None values stay None (no conversion needed)
+    if value is None:
+        return None
+    
+    # Handle special string values that shouldn't be converted
+    if isinstance(value, str):
+        low = value.lower()
+        if low in ('none', 'auto'):
+            # 'none' and 'auto' are special matplotlib values - keep as-is
+            return value
+    
+    # Try direct conversion (works for most matplotlib color formats)
+    try:
+        return mcolors.to_hex(value)
+    except Exception:
+        # Direct conversion failed, try alternative methods
+        if isinstance(value, str):
+            # Already a string - might be hex or named color, return as-is
+            return value
+        try:
+            # Try converting to RGBA first, then to hex
+            # This handles RGB tuples like (1.0, 0.0, 0.0)
+            return mcolors.to_hex(mcolors.to_rgba(value))
+        except Exception:
+            # All conversion methods failed - convert to string as last resort
+            return str(value)
+
+
+def _get_primary_axis_text(ax, axis: str) -> str:
+    if axis == 'x':
+        label = ax.xaxis.label
+        stored_attr = '_stored_xlabel'
+    else:
+        label = ax.yaxis.label
+        stored_attr = '_stored_ylabel'
+    text = ''
+    try:
+        text = label.get_text()
+    except Exception:
+        text = ''
+    if not text and hasattr(ax, stored_attr):
+        try:
+            stored = getattr(ax, stored_attr)
+            if stored:
+                text = stored
+        except Exception:
+            text = ''
+    return text or ''
+
+
+def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
+    override_attr = '_top_xlabel_text_override' if 'top' in artist_attr else '_right_ylabel_text_override'
+    if hasattr(ax, override_attr):
+        try:
+            override_val = getattr(ax, override_attr)
+            if override_val:
+                return override_val
+        except Exception:
+            pass
+    art = getattr(ax, artist_attr, None)
+    if art is not None and hasattr(art, 'get_text'):
+        try:
+            txt = art.get_text()
+            if txt:
+                return txt
+        except Exception:
+            pass
+    return fallback or ''
+
+
+def _resolve_palette_cmap(palette_name: str):
+    """
+    Resolve a palette name to a matplotlib colormap object.
+    
+    HOW IT WORKS:
+    ------------
+    This function tries multiple sources to find a colormap:
+    
+    1. **Matplotlib built-in**: Try plt.get_cmap() first (fastest)
+       - Examples: 'viridis', 'plasma', 'tab10'
+    
+    2. **cmcrameri package**: Try to load from cmcrameri.cm module
+       - cmcrameri is an optional package with scientific colormaps
+       - Examples: 'batlow', 'batlowk', 'batloww'
+       - Only tried if palette name starts with 'batlow'
+    
+    3. **Custom colormaps**: Try to create from _CUSTOM_CMAPS dictionary
+       - Fallback if cmcrameri not installed
+       - Creates colormap from hardcoded color lists
+    
+    REVERSED COLORMAPS:
+    ------------------
+    Colormaps can be reversed by adding '_r' suffix:
+    - 'viridis' → normal (dark to bright)
+    - 'viridis_r' → reversed (bright to dark)
+    
+    The function handles this by:
+    1. Removing '_r' suffix to get base name
+    2. Getting the base colormap
+    3. Calling .reversed() if '_r' was present
+    
+    Args:
+        palette_name: Name of colormap (e.g., 'viridis', 'batlow', 'viridis_r')
+    
+    Returns:
+        Matplotlib colormap object, or None if not found
+    """
+    # Empty name - return None
+    if not palette_name:
+        return None
+    
+    # METHOD 1: Try matplotlib's built-in colormaps (most common case)
+    try:
+        return plt.get_cmap(palette_name)
+    except ValueError:
+        # Not a built-in colormap, try other sources
+        pass
+    
+    # Normalize name to lowercase for case-insensitive matching
+    name_lower = palette_name.lower()
+    # Extract base name (remove '_r' suffix if present)
+    # Example: 'viridis_r' → base_name = 'viridis'
+    base_name = name_lower[:-2] if name_lower.endswith('_r') else name_lower
+    
+    # METHOD 2: Try cmcrameri package (for 'batlow' variants)
+    if name_lower.startswith('batlow'):
+        try:
+            # Try to import cmcrameri package (optional dependency)
+            cmc = importlib.import_module('cmcrameri.cm')
+            # Check if exact name exists (e.g., 'batlow', 'batlowk')
+            if hasattr(cmc, name_lower):
+                cmap = getattr(cmc, name_lower)
+                # Reverse if '_r' suffix was present
+                if name_lower.endswith('_r'):
+                    cmap = cmap.reversed()
+                return cmap
+            # Fallback: try generic 'batlow' if specific variant not found
+            if hasattr(cmc, 'batlow'):
+                cmap = getattr(cmc, 'batlow')
+                if name_lower.endswith('_r'):
+                    cmap = cmap.reversed()
+                return cmap
+        except Exception:
+            # cmcrameri not installed or colormap not found, continue to next method
+            pass
+        
+        # METHOD 3: Fallback to custom colormaps defined in this package
+        try:
+            from .color_utils import _CUSTOM_CMAPS
+            custom_colors = _CUSTOM_CMAPS.get(base_name)
+            if custom_colors:
+                from matplotlib.colors import LinearSegmentedColormap
+                # Create colormap from list of colors
+                # N=256 means create 256 intermediate colors by interpolation
+                cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
+                # Reverse if '_r' suffix was present
+                if name_lower.endswith('_r'):
+                    cmap = cmap.reversed()
+                return cmap
+        except Exception:
+            # Custom colormap creation failed
+            pass
+    
+    # All methods failed - colormap not found
+    return None
+
+
+def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
+    """
+    Apply a color palette to curves when loading a saved style/session file.
+    
+    HOW IT WORKS:
+    ------------
+    This function is called when you load a style file (p i s command) that contains
+    palette information. It restores the exact same colors that were used when the
+    style was saved.
+    
+    The style file stores:
+    - palette_name: Which colormap was used (e.g., 'viridis')
+    - indices: Which curves were colored (e.g., [1, 2, 3, 4, 5])
+    - low_clip, high_clip: The sampling range used (e.g., 0.08 to 0.85)
+    
+    This function:
+    1. Gets the same colormap that was used originally
+    2. Samples colors at the same positions (using stored low_clip/high_clip)
+    3. Applies colors to the same curves (using stored indices)
+    
+    This ensures that when you reload a style, the colors look exactly the same
+    as when you saved it.
+    
+    Args:
+        ax: Matplotlib axes object containing the plot lines
+        record: Dictionary from style file containing:
+            - 'palette': Colormap name (e.g., 'viridis')
+            - 'indices': List of curve indices (1-indexed, e.g., [1, 2, 3])
+            - 'low_clip': Lower bound for color sampling (default 0.08)
+            - 'high_clip': Upper bound for color sampling (default 0.85)
+    
+    Returns:
+        True if palette was successfully applied, False otherwise
+    """
+    # Extract palette information from style record
+    palette_name = record.get('palette')
+    indices = record.get('indices')
+    
+    # Validate that we have the required information
+    if not palette_name or not indices:
+        return False
+    
+    # Get the colormap (same one used when style was saved)
+    cmap = _resolve_palette_cmap(palette_name)
+    if cmap is None:
+        print(f"Warning: Unknown palette '{palette_name}' in style file.")
+        return False
+    
+    # Convert 1-indexed curve numbers to 0-indexed array indices
+    # Style files store curves as 1, 2, 3, ... (user-friendly)
+    # But matplotlib uses 0, 1, 2, ... (programmer-friendly)
+    try:
+        zero_based = [int(i) - 1 for i in indices]
+    except Exception:
+        zero_based = []
+    
+    # Filter out invalid indices (curves that don't exist)
+    zero_based = [i for i in zero_based if 0 <= i < len(ax.lines)]
+    if not zero_based:
+        return False
+    
+    # Get the color sampling range from style file (or use defaults)
+    # These values determine which part of the colormap to sample from
+    low_clip = float(record.get('low_clip', 0.08))   # Default: start at 8% into colormap
+    high_clip = float(record.get('high_clip', 0.85))  # Default: end at 85% into colormap
+    
+    # Get number of curves to color
+    nsel = len(zero_based)
+    
+    # Sample colors from colormap at evenly spaced positions
+    # This recreates the exact same color assignment as when the style was saved
+    if nsel == 1:
+        # Single curve: use middle of colormap
+        colors = [cmap(0.55)]
+    elif nsel == 2:
+        # Two curves: use clipped range endpoints for maximum contrast
+        colors = [cmap(low_clip), cmap(high_clip)]
+    else:
+        # Multiple curves: sample evenly across the stored range
+        # np.linspace creates the same positions that were used originally
+        positions = np.linspace(low_clip, high_clip, nsel)
+        # Sample color at each position
+        colors = [cmap(p) for p in positions]
+    
+    # Apply colors to the curves
+    # Loop through curve indices and assign corresponding color
+    for idx, color in zip(zero_based, colors):
+        try:
+            ax.lines[idx].set_color(color)
+        except Exception:
+            # Skip if curve doesn't exist (shouldn't happen due to filtering above)
+            pass
+    
+    return True
+
+
+def print_style_info(
+    fig,
+    ax,
+    y_data_list: List[np.ndarray],
+    labels: List[str],
+    offsets_list: List[float],
+    x_full_list: List[np.ndarray],
+    raw_y_full_list: List[np.ndarray],
+    args,
+    delta: float,
+    label_text_objects: List,
+    tick_state: Dict[str, bool],
+    cif_tick_series: Optional[List[tuple]] = None,
+    show_cif_hkl: Optional[bool] = None,
+) -> None:
+    print("\n--- Style / Diagnostics ---")
+    fw, fh = fig.get_size_inches()
+    print(f"Figure size (inches): {fw:.3f} x {fh:.3f}")
+    # DPI omitted from compact style print
+    bbox = ax.get_position()
+    print(
+        f"Axes position (figure fraction): x0={bbox.x0:.3f}, y0={bbox.y0:.3f}, w={bbox.width:.3f}, h={bbox.height:.3f}"
+    )
+    frame_w_in = bbox.width * fw
+    frame_h_in = bbox.height * fh
+    print(f"Plot frame size (inches):  {frame_w_in:.3f} x {frame_h_in:.3f}")
+    sp = fig.subplotpars
+    print(
+        f"Margins (subplot fractions): left={sp.left:.3f}, right={sp.right:.3f}, bottom={sp.bottom:.3f}, top={sp.top:.3f}"
+    )
+    # Omit ranges and axis labels from style print
+    # Font info
+    if label_text_objects:
+        fs_any = label_text_objects[0].get_fontsize()
+        ff_any = label_text_objects[0].get_fontfamily()
+    else:
+        fs_any = plt.rcParams.get("font.size")
+        ff_any = plt.rcParams.get("font.family")
+    print(f"Effective font size (labels/ticks): {fs_any}")
+    print(f"Font family chain (rcParams['font.sans-serif']): {plt.rcParams.get('font.sans-serif')}")
+    print(f"Mathtext fontset: {plt.rcParams.get('mathtext.fontset')}")
+
+    # Rotation angle
+    rotation_angle = getattr(ax, '_rotation_angle', 0)
+    if rotation_angle != 0:
+        print(f"Rotation angle (ro): {rotation_angle}°")
+
+    # Per-side matrix summary (spine, major, minor, labels, title)
+    def _onoff(v):
+        return 'ON ' if bool(v) else 'off'
+    def _label_visible(axis_obj, primary: bool) -> bool:
+        try:
+            if primary:
+                return bool(axis_obj.label.get_visible())
+            return bool(axis_obj)
+        except Exception:
+            return bool(axis_obj)
+
+    sides = (
+        ('bottom',
+         ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else False,
+         tick_state.get('b_ticks', tick_state.get('bx', True)),
+         tick_state.get('mbx', False),
+         tick_state.get('b_labels', tick_state.get('bx', True)),
+         bool(ax.xaxis.label.get_visible())),
+        ('top',
+         ax.spines.get('top').get_visible() if ax.spines.get('top') else False,
+         tick_state.get('t_ticks', tick_state.get('tx', False)),
+         tick_state.get('mtx', False),
+         tick_state.get('t_labels', tick_state.get('tx', False)),
+         bool(getattr(ax, '_top_xlabel_on', False))),
+        ('left',
+         ax.spines.get('left').get_visible() if ax.spines.get('left') else False,
+         tick_state.get('l_ticks', tick_state.get('ly', True)),
+         tick_state.get('mly', False),
+         tick_state.get('l_labels', tick_state.get('ly', True)),
+         bool(ax.yaxis.label.get_visible())),
+        ('right',
+         ax.spines.get('right').get_visible() if ax.spines.get('right') else False,
+         tick_state.get('r_ticks', tick_state.get('ry', False)),
+         tick_state.get('mry', False),
+         tick_state.get('r_labels', tick_state.get('ry', False)),
+         bool(getattr(ax, '_right_ylabel_on', False))),
+    )
+    print("Per-side: spine, major, minor, labels, title")
+    for name, spine, mj, mn, lbl, title in sides:
+        print(f"  {name:<6}: spine={_onoff(spine)} major={_onoff(mj)} minor={_onoff(mn)} labels={_onoff(lbl)} title={_onoff(title)}")
+
+    # Tick widths helper
+    def axis_tick_width(axis, which):
+        ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
+        for t in ticks:
+            line = t.tick1line
+            if line.get_visible():
+                return line.get_linewidth()
+        return None
+
+    x_major_w = axis_tick_width(ax.xaxis, "major")
+    x_minor_w = axis_tick_width(ax.xaxis, "minor")
+    y_major_w = axis_tick_width(ax.yaxis, "major")
+    y_minor_w = axis_tick_width(ax.yaxis, "minor")
+    print(
+        f"Tick widths (major/minor): X=({x_major_w}, {x_minor_w})  Y=({y_major_w}, {y_minor_w})"
+    )
+
+    # Spines
+    print("Spines:")
+    for name, spn in ax.spines.items():
+        print(
+            f"  {name:<5} lw={spn.get_linewidth()} color={spn.get_edgecolor()} visible={spn.get_visible()}"
+        )
+    
+    # Tick colors
+    try:
+        x_color = ax.xaxis.get_tick_params()['color'] if ax.xaxis.get_tick_params() else 'black'
+        y_color = ax.yaxis.get_tick_params()['color'] if ax.yaxis.get_tick_params() else 'black'
+        print(f"Tick colors: X={x_color} Y={y_color}")
+    except Exception:
+        pass
+    
+    # Axis label colors
+    try:
+        x_label_color = ax.xaxis.label.get_color()
+        y_label_color = ax.yaxis.label.get_color()
+        print(f"Axis label colors: X={x_label_color} Y={y_label_color}")
+    except Exception:
+        pass
+
+    # Omit CIF/HKL details from compact style print
+
+    # Omit non-style global flags (mode/raw/autoscale/delta)
+
+    # Curve names visibility
+    names_visible = True
+    if label_text_objects and len(label_text_objects) > 0:
+        try:
+            names_visible = bool(label_text_objects[0].get_visible())
+        except Exception:
+            names_visible = True
+    print(f"Curve names (h): {'shown' if names_visible else 'hidden'}")
+    
+    # Legend/label anchor summary
+    stack_label_at_bottom = getattr(fig, '_stack_label_at_bottom', False)
+    label_anchor_left = getattr(fig, '_label_anchor_left', False)
+    legend_pos = f"{'bottom' if stack_label_at_bottom else 'top'}-{'left' if label_anchor_left else 'right'}"
+    print(f"Curve label anchor: {legend_pos} (stack mode={getattr(args, 'stack', False)})")
+
+    # Curves
+    print("Lines (style):")
+    for i, ln in enumerate(ax.lines):
+        col_val = ln.get_color()
+        col_hex = _color_to_hex(col_val)
+        col_disp = f"{color_block(col_hex)} {col_hex}" if col_hex else str(col_val)
+        lw = ln.get_linewidth(); ls = ln.get_linestyle()
+        mk = ln.get_marker(); ms = ln.get_markersize(); a = ln.get_alpha()
+        base_label = labels[i] if i < len(labels) else ""
+        offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
+        offset_str = f" offset={offset_val:.4g}" if offset_val != 0.0 else ""
+        print(f"  {i+1:02d}: label='{base_label}' color={col_disp} lw={lw} ls={ls} marker={mk} ms={ms} alpha={a}{offset_str}")
+    palette_hist = getattr(fig, '_curve_palette_history', None)
+    if palette_hist:
+        print("Palette history:")
+        for entry in palette_hist:
+            palette_name = entry.get('palette', '')
+            idxs = entry.get('indices', [])
+            idx_str = ", ".join(str(i) for i in idxs)
+            print(f"  {palette_name or 'unknown'} -> [{idx_str}]")
+    print("--- End diagnostics ---\n")
+
+
+def export_style_config(
+    filename: str,
+    fig,
+    ax,
+    y_data_list: List[np.ndarray],
+    labels: List[str],
+    delta: float,
+    args,
+    tick_state: Dict[str, bool],
+    offsets_list: List[float],
+    cif_tick_series: Optional[List[tuple]] = None,
+    label_text_objects: Optional[List] = None,
+    base_path: Optional[str] = None,
+    show_cif_titles: Optional[bool] = None,
+    overwrite_path: Optional[str] = None,
+) -> Optional[str]:
+    """Export style configuration after displaying a summary and prompting the user.
+    
+    This function now matches the EC menu workflow: display summary, then prompt for export.
+    """
+    try:
+        fw, fh = fig.get_size_inches()
+        sp = fig.subplotpars
+
+        def axis_tick_width(axis, which):
+            ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
+            for t in ticks:
+                line = t.tick1line
+                if line.get_visible():
+                    return line.get_linewidth()
+            return None
+
+        spine_vis = {name: spn.get_visible() for name, spn in ax.spines.items()}
+
+        bbox = ax.get_position()
+        frame_w_in = bbox.width * fw
+        frame_h_in = bbox.height * fh
+        
+        # Build WASD state (20 parameters: 4 sides × 5 properties each)
+        def _get_spine_visible(which: str) -> bool:
+            sp = ax.spines.get(which)
+            try:
+                return bool(sp.get_visible()) if sp is not None else False
+            except Exception:
+                return False
+        
+        wasd_state = {
+            'top':    {
+                'spine': _get_spine_visible('top'),
+                'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))),
+                'minor': bool(tick_state.get('mtx', False)),
+                'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))),
+                'title': bool(getattr(ax, '_top_xlabel_on', False))
+            },
+            'bottom': {
+                'spine': _get_spine_visible('bottom'),
+                'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))),
+                'minor': bool(tick_state.get('mbx', False)),
+                'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))),
+                'title': bool(ax.xaxis.label.get_visible())
+            },
+            'left':   {
+                'spine': _get_spine_visible('left'),
+                'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))),
+                'minor': bool(tick_state.get('mly', False)),
+                'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))),
+                'title': bool(ax.yaxis.label.get_visible())
+            },
+            'right':  {
+                'spine': _get_spine_visible('right'),
+                'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', False))),
+                'minor': bool(tick_state.get('mry', False)),
+                'labels': bool(tick_state.get('r_labels', tick_state.get('ry', False))),
+                'title': bool(getattr(ax, '_right_ylabel_on', False))
+            },
+        }
+        
+        cfg = {
+            "figure": {
+                "size": [fw, fh],
+                "dpi": fig.dpi,
+                "frame_size": [frame_w_in, frame_h_in],
+                "axes_fraction": [bbox.x0, bbox.y0, bbox.width, bbox.height],
+            },
+            "margins": {
+                "left": sp.left,
+                "right": sp.right,
+                "bottom": sp.bottom,
+                "top": sp.top,
+            },
+            "font": {
+                "size": plt.rcParams.get("font.size"),
+                "family_chain": plt.rcParams.get("font.sans-serif"),
+            },
+            "ticks": {
+                "x_major_width": axis_tick_width(ax.xaxis, "major"),
+                "x_minor_width": axis_tick_width(ax.xaxis, "minor"),
+                "y_major_width": axis_tick_width(ax.yaxis, "major"),
+                "y_minor_width": axis_tick_width(ax.yaxis, "minor"),
+            },
+            "wasd_state": wasd_state,
+            "spines": {
+                name: {
+                    "linewidth": spn.get_linewidth(),
+                    "color": spn.get_edgecolor(),
+                    "visible": spine_vis.get(name, True),
+                }
+                for name, spn in ax.spines.items()
+            },
+            "tick_colors": {
+                "x": _color_to_hex((ax.xaxis.get_tick_params() or {}).get('color', 'black')),
+                "y": _color_to_hex((ax.yaxis.get_tick_params() or {}).get('color', 'black')),
+            },
+            "axis_label_colors": {
+                "x": _color_to_hex(ax.xaxis.label.get_color()),
+                "y": _color_to_hex(ax.yaxis.label.get_color()),
+            },
+            "grid": ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False,
+            "lines": [
+                {
+                    "index": i,
+                    # label text is not a style item (handled by 'r'), don't export it
+                    "color": _color_to_hex(ln.get_color()),
+                    "linewidth": ln.get_linewidth(),
+                    "linestyle": ln.get_linestyle(),
+                    "marker": ln.get_marker(),
+                    "markersize": ln.get_markersize(),
+                    "markerfacecolor": _color_to_hex(ln.get_markerfacecolor()),
+                    "markeredgecolor": _color_to_hex(ln.get_markeredgecolor()),
+                    "alpha": ln.get_alpha(),
+                    "offset": offsets_list[i] if i < len(offsets_list) else 0.0,
+                }
+                for i, ln in enumerate(ax.lines)
+            ],
+            }
+        bottom_label_text = _get_primary_axis_text(ax, 'x')
+        left_label_text = _get_primary_axis_text(ax, 'y')
+        axis_title_texts = {
+            "top_x": _get_duplicate_axis_text(ax, '_top_xlabel_artist', bottom_label_text),
+            "bottom_x": bottom_label_text,
+            "left_y": left_label_text,
+            "right_y": _get_duplicate_axis_text(ax, '_right_ylabel_artist', left_label_text),
+        }
+        cfg["axis_titles"] = {
+            "top_x": bool(getattr(ax, "_top_xlabel_on", False)),
+            "right_y": bool(getattr(ax, "_right_ylabel_on", False)),
+            "has_bottom_x": bool(ax.xaxis.label.get_visible()),
+            "has_left_y": bool(ax.yaxis.label.get_visible()),
+        }
+        cfg["axis_title_texts"] = axis_title_texts
+        cfg["title_offsets"] = {
+            "top_y": float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            "top_x": float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            "bottom_y": float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            "left_x": float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            "right_x": float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            "right_y": float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
+        # Save rotation angle
+        cfg["rotation_angle"] = getattr(ax, '_rotation_angle', 0)
+        
+        # Save curve names visibility
+        cfg["curve_names_visible"] = True  # Default to visible
+        if label_text_objects and len(label_text_objects) > 0:
+            try:
+                cfg["curve_names_visible"] = bool(label_text_objects[0].get_visible())
+            except Exception:
+                pass
+        
+        # Save stack/legend anchor preferences
+        cfg["stack_label_at_bottom"] = getattr(fig, '_stack_label_at_bottom', False)
+        cfg["label_anchor_left"] = getattr(fig, '_label_anchor_left', False)
+        # Save CIF title visibility
+        if show_cif_titles is not None:
+            cfg["show_cif_titles"] = bool(show_cif_titles)
+        if cif_tick_series:
+            cfg["cif_ticks"] = [
+                {"index": i, "color": color}
+                for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series)
+            ]
+        palette_history = getattr(fig, '_curve_palette_history', None)
+        if palette_history:
+            serialized_palettes = []
+            for entry in palette_history:
+                palette_name = entry.get('palette')
+                indices = entry.get('indices', [])
+                if not palette_name or not indices:
+                    continue
+                serialized_palettes.append({
+                    'palette': palette_name,
+                    'indices': list(indices),
+                    'low_clip': float(entry.get('low_clip', 0.08)),
+                    'high_clip': float(entry.get('high_clip', 0.85)),
+                })
+            if serialized_palettes:
+                cfg['curve_palettes'] = serialized_palettes
+        
+        # If overwrite_path is provided, determine export type from existing file
+        if overwrite_path:
+            try:
+                with open(overwrite_path, 'r', encoding='utf-8') as f:
+                    old_cfg = json.load(f)
+                old_kind = old_cfg.get('kind', '')
+                if old_kind == 'xy_style_geom':
+                    exp_choice = 'psg'
+                else:
+                    exp_choice = 'ps'
+            except Exception:
+                exp_choice = 'ps'  # Default to style-only if can't read
+        else:
+            # Ask user for style-only or style+geometry
+            print("\nExport options:")
+            print("  ps  = style only (.bps)")
+            print("  psg = style + geometry (.bpsg)")
+            exp_choice = input("Export choice (ps/psg, q=cancel): ").strip().lower()
+            if not exp_choice or exp_choice == 'q':
+                print("Style export canceled.")
+                return None
+        
+        # Determine file extension and add geometry if requested
+        if exp_choice == 'ps':
+            cfg['kind'] = 'xy_style'
+            default_ext = '.bps'
+        elif exp_choice == 'psg':
+            cfg['kind'] = 'xy_style_geom'
+            # Add geometry information
+            cfg['geometry'] = {
+                'xlabel': ax.get_xlabel() or '',
+                'ylabel': ax.get_ylabel() or '',
+                'xlim': list(ax.get_xlim()),
+                'ylim': list(ax.get_ylim()),
+                # Store the x/y ranges that the current data was normalized to
+                'norm_xlim': list(getattr(ax, '_norm_xlim', ax.get_xlim())),
+                'norm_ylim': list(getattr(ax, '_norm_ylim', ax.get_ylim())),
+            }
+            default_ext = '.bpsg'
+        else:
+            print(f"Unknown option: {exp_choice}")
+            return
+        
+        # If overwrite_path is provided, use it directly
+        if overwrite_path:
+            target_path = overwrite_path
+        else:
+            # List existing files for user convenience (from Styles subdirectory)
+            import os
+            from .utils import list_files_in_subdirectory, get_organized_path
+            
+            if base_path:
+                print(f"\nChosen path: {base_path}")
+            file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
+            style_files = [f[0] for f in file_list]
+
+            if style_files:
+                styles_root = base_path if base_path else os.getcwd()
+                styles_dir = os.path.join(styles_root, 'Styles')
+                print(f"\nExisting {default_ext} files in {styles_dir}:")
+                for i, f in enumerate(style_files, 1):
+                    print(f"  {i}: {f}")
+
+            last_style_path = getattr(fig, '_last_style_export_path', None)
+            if last_style_path:
+                choice = input("Export to file? Enter filename, number to overwrite, or o to overwrite last (q=cancel): ").strip()
+            else:
+                choice = input("Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
+            if not choice or choice.lower() == 'q':
+                print("Style export canceled.")
+                return None
+            if choice.lower() == 'o':
+                # Overwrite last exported style file - handled by caller
+                if not last_style_path:
+                    print("No previous export found.")
+                    return None
+                if not os.path.exists(last_style_path):
+                    print(f"Previous export file not found: {last_style_path}")
+                    return None
+                target_path = last_style_path
+            else:
+                # Determine the target path
+                if choice.isdigit() and style_files and 1 <= int(choice) <= len(style_files):
+                    target_path = file_list[int(choice) - 1][1]  # Full path from list
+                else:
+                    # Add default extension if no extension provided
+                    if not any(choice.lower().endswith(ext) for ext in ['.bps', '.bpsg', '.bpcfg']):
+                        filename_with_ext = f"{choice}{default_ext}"
+                    else:
+                        filename_with_ext = choice
+                    
+                    # Use organized path unless it's an absolute path
+                    if os.path.isabs(filename_with_ext):
+                        target_path = filename_with_ext
+                    else:
+                        target_path = get_organized_path(filename_with_ext, 'style', base_path=base_path)
+
+                # Only prompt ONCE for overwrite if the file exists
+                if os.path.exists(target_path):
+                    yn = input(f"Overwrite '{os.path.basename(target_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print("Style export canceled.")
+                        return None
+
+        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+        from .utils import ensure_exact_case_filename
+        target_path = ensure_exact_case_filename(target_path)
+        
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        print(f"Exported style to {target_path}")
+        return target_path
+    except Exception as e:
+        print(f"Error exporting style: {e}")
+        return None
+
+
+def apply_style_config(
+    filename: str,
+    fig,
+    ax,
+    x_data_list: List[np.ndarray] | None,
+    y_data_list: List[np.ndarray],
+    orig_y: List[np.ndarray] | None,
+    offsets_list: List[float] | None,
+    label_text_objects: List,
+    args,
+    tick_state: Dict[str, bool],
+    labels: List[str],
+    update_labels_func: Callable[[Any, List[np.ndarray], List, bool], None],
+    cif_tick_series: Optional[List[tuple]] = None,
+    cif_hkl_label_map: Optional[Dict[str, Dict[float, str]]] = None,
+    adjust_margins_cb: Optional[Callable[[], None]] = None,
+    keep_canvas_fixed: bool = False,
+) -> None:
+    def _apply_spine_color(spine_name: str, color) -> None:
+        if color is None:
+            return
+        try:
+            if spine_name in ('top', 'bottom'):
+                ax.tick_params(axis='x', which='both', colors=color)
+                ax.xaxis.label.set_color(color)
+                ax._stored_xlabel_color = color
+                if spine_name == 'top':
+                    ax._stored_top_xlabel_color = color
+                    artist = getattr(ax, '_top_xlabel_artist', None)
+                    if artist is not None:
+                        artist.set_color(color)
+                else:
+                    ax._stored_xlabel = ax.get_xlabel()
+            else:
+                ax.tick_params(axis='y', which='both', colors=color)
+                ax.yaxis.label.set_color(color)
+                ax._stored_ylabel_color = color
+                if spine_name == 'right':
+                    ax._stored_right_ylabel_color = color
+                    artist = getattr(ax, '_right_ylabel_artist', None)
+                    if artist is not None:
+                        artist.set_color(color)
+                else:
+                    ax._stored_ylabel = ax.get_ylabel()
+        except Exception:
+            pass
+
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception as e:
+        print(f"Could not read config: {e}")
+        return
+    # Save current labelpad values BEFORE any style changes
+    saved_xlabelpad = None
+    saved_ylabelpad = None
+    try:
+        saved_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
+    except Exception:
+        pass
+    try:
+        saved_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
+    except Exception:
+        pass
+    try:
+        figure_cfg = cfg.get("figure", {})
+        # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
+        axes_frac = figure_cfg.get("axes_fraction")
+        frame_size = figure_cfg.get("frame_size")
+        
+        sz = figure_cfg.get("canvas_size") or figure_cfg.get("size")
+        if isinstance(sz, (list, tuple)) and len(sz) == 2:
+            try:
+                fw = float(sz[0])
+                fh = float(sz[1])
+                if not keep_canvas_fixed:
+                    # Use forward=False to prevent automatic subplot adjustment that can shift the plot
+                    fig.set_size_inches(fw, fh, forward=False)
+                else:
+                    print("(Canvas fixed) Ignoring style figure size request.")
+            except Exception as e:
+                print(f"Warning: could not parse figure size: {e}")
+        try:
+            if axes_frac and isinstance(axes_frac, (list, tuple)) and len(axes_frac) == 4:
+                x0, y0, w, h = axes_frac
+                left = float(x0)
+                bottom = float(y0)
+                right = left + float(w)
+                top = bottom + float(h)
+                if 0 < left < right <= 1 and 0 < bottom < top <= 1:
+                    fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+            elif frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+                cur_fw, cur_fh = fig.get_size_inches()
+                des_w, des_h = float(frame_size[0]), float(frame_size[1])
+                min_margin = 0.05
+                w_frac = min(des_w / cur_fw, 1 - 2 * min_margin)
+                h_frac = min(des_h / cur_fh, 1 - 2 * min_margin)
+                left = (1 - w_frac) / 2
+                bottom = (1 - h_frac) / 2
+                fig.subplots_adjust(left=left, right=left + w_frac, bottom=bottom, top=bottom + h_frac)
+        except Exception as e:
+            print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
+        # Don't restore DPI from style - use system default to avoid display-dependent issues
+        # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
+
+        # Font
+        font_cfg = cfg.get("font", {})
+        fam_chain = font_cfg.get("family_chain")
+        if not fam_chain:
+            # Accept legacy/simple form: { "family": "Arial" }
+            fam = font_cfg.get("family")
+            if isinstance(fam, str) and fam.strip():
+                fam_chain = [fam.strip(), 'DejaVu Sans', 'Arial', 'Helvetica']
+        size_val = font_cfg.get("size")
+        if fam_chain:
+            plt.rcParams["font.family"] = "sans-serif"
+            plt.rcParams["font.sans-serif"] = fam_chain
+        numeric_size = None
+        if size_val is not None:
+            try:
+                numeric_size = float(size_val)
+                plt.rcParams["font.size"] = numeric_size
+            except Exception as e:
+                print(f"[DEBUG] Exception parsing font size: {e}")
+                numeric_size = None
+
+    # Do not change axis labels or limits in Styles import
+
+        # Apply font changes to existing text objects
+        if fam_chain or numeric_size is not None:
+            for txt in label_text_objects:
+                if numeric_size is not None:
+                    txt.set_fontsize(numeric_size)
+                if fam_chain:
+                    txt.set_fontfamily(fam_chain[0])
+            for axis_label in (ax.xaxis.label, ax.yaxis.label):
+                if numeric_size is not None:
+                    axis_label.set_fontsize(numeric_size)
+                if fam_chain:
+                    axis_label.set_fontfamily(fam_chain[0])
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                if numeric_size is not None:
+                    lbl.set_fontsize(numeric_size)
+                if fam_chain:
+                    lbl.set_fontfamily(fam_chain[0])
+            # Also update top/right tick labels (label2)
+            try:
+                for t in ax.xaxis.get_major_ticks():
+                    if hasattr(t, 'label2'):
+                        if numeric_size is not None:
+                            t.label2.set_fontsize(numeric_size)
+                        if fam_chain:
+                            t.label2.set_fontfamily(fam_chain[0])
+                for t in ax.yaxis.get_major_ticks():
+                    if hasattr(t, 'label2'):
+                        if numeric_size is not None:
+                            t.label2.set_fontsize(numeric_size)
+                        if fam_chain:
+                            t.label2.set_fontfamily(fam_chain[0])
+            except Exception:
+                pass
+            # Also update duplicate top/right artists if they exist
+            try:
+                art = getattr(ax, '_top_xlabel_artist', None)
+                if art is not None:
+                    if numeric_size is not None:
+                        art.set_fontsize(numeric_size)
+                    if fam_chain:
+                        art.set_fontfamily(fam_chain[0])
+            except Exception:
+                pass
+            try:
+                art = getattr(ax, '_right_ylabel_artist', None)
+                if art is not None:
+                    if numeric_size is not None:
+                        art.set_fontsize(numeric_size)
+                    if fam_chain:
+                        art.set_fontfamily(fam_chain[0])
+            except Exception:
+                pass
+
+        # Tick visibility + widths
+        ticks_cfg = cfg.get("ticks", {})
+        
+        # Try wasd_state first (version 2), fall back to visibility dict (version 1)
+        wasd = cfg.get("wasd_state", {})
+        if wasd:
+            # Apply WASD state (20 parameters)
+            try:
+                # Apply spines from wasd
+                for side in ('top', 'bottom', 'left', 'right'):
+                    side_cfg = wasd.get(side, {})
+                    if 'spine' in side_cfg and side in ax.spines:
+                        ax.spines[side].set_visible(bool(side_cfg['spine']))
+                
+                # Apply ticks and labels
+                top_cfg = wasd.get('top', {})
+                bot_cfg = wasd.get('bottom', {})
+                left_cfg = wasd.get('left', {})
+                right_cfg = wasd.get('right', {})
+                
+                ax.tick_params(axis='x',
+                              top=bool(top_cfg.get('ticks', False)),
+                              bottom=bool(bot_cfg.get('ticks', True)),
+                              labeltop=bool(top_cfg.get('labels', False)),
+                              labelbottom=bool(bot_cfg.get('labels', True)))
+                ax.tick_params(axis='y',
+                              left=bool(left_cfg.get('ticks', True)),
+                              right=bool(right_cfg.get('ticks', False)),
+                              labelleft=bool(left_cfg.get('labels', True)),
+                              labelright=bool(right_cfg.get('labels', False)))
+                
+                # Apply minor ticks
+                if top_cfg.get('minor') or bot_cfg.get('minor'):
+                    from matplotlib.ticker import AutoMinorLocator, NullFormatter
+                    ax.xaxis.set_minor_locator(AutoMinorLocator())
+                    ax.xaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='x', which='minor',
+                              top=bool(top_cfg.get('minor', False)),
+                              bottom=bool(bot_cfg.get('minor', False)),
+                              labeltop=False, labelbottom=False)
+                
+                if left_cfg.get('minor') or right_cfg.get('minor'):
+                    from matplotlib.ticker import AutoMinorLocator, NullFormatter
+                    ax.yaxis.set_minor_locator(AutoMinorLocator())
+                    ax.yaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='y', which='minor',
+                              left=bool(left_cfg.get('minor', False)),
+                              right=bool(right_cfg.get('minor', False)),
+                              labelleft=False, labelright=False)
+                
+                # Apply titles
+                ax._top_xlabel_on = bool(top_cfg.get('title', False))
+                ax._right_ylabel_on = bool(right_cfg.get('title', False))
+                
+                # Update tick_state for consistency
+                tick_state['t_ticks'] = bool(top_cfg.get('ticks', False))
+                tick_state['t_labels'] = bool(top_cfg.get('labels', False))
+                tick_state['b_ticks'] = bool(bot_cfg.get('ticks', True))
+                tick_state['b_labels'] = bool(bot_cfg.get('labels', True))
+                tick_state['l_ticks'] = bool(left_cfg.get('ticks', True))
+                tick_state['l_labels'] = bool(left_cfg.get('labels', True))
+                tick_state['r_ticks'] = bool(right_cfg.get('ticks', False))
+                tick_state['r_labels'] = bool(right_cfg.get('labels', False))
+                tick_state['mtx'] = bool(top_cfg.get('minor', False))
+                tick_state['mbx'] = bool(bot_cfg.get('minor', False))
+                tick_state['mly'] = bool(left_cfg.get('minor', False))
+                tick_state['mry'] = bool(right_cfg.get('minor', False))
+                
+            except Exception as e:
+                print(f"Warning: Could not apply WASD tick visibility: {e}")
+        else:
+            # Fall back to old visibility dict
+            vis_cfg = ticks_cfg.get("visibility", {})
+            changed_visibility = False
+            for k, v in vis_cfg.items():
+                if k in tick_state and isinstance(v, bool):
+                    tick_state[k] = v
+                    changed_visibility = True
+            if changed_visibility:
+                try:
+                    _ui_update_tick_visibility(ax, tick_state)
+                except Exception as e:
+                    print(f"[DEBUG] Exception updating tick visibility: {e}")
+
+
+        xmaj = ticks_cfg.get("x_major_width")
+        xminr = ticks_cfg.get("x_minor_width")
+        ymaj = ticks_cfg.get("y_major_width")
+        yminr = ticks_cfg.get("y_minor_width")
+        if any(v is not None for v in (xmaj, xminr, ymaj, yminr)):
+            try:
+                if xmaj is not None:
+                    ax.tick_params(axis="x", which="major", width=xmaj)
+                if xminr is not None:
+                    ax.tick_params(axis="x", which="minor", width=xminr)
+                if ymaj is not None:
+                    ax.tick_params(axis="y", which="major", width=ymaj)
+                if yminr is not None:
+                    ax.tick_params(axis="y", which="minor", width=yminr)
+            except Exception as e:
+                print(f"[DEBUG] Exception setting tick widths: {e}")
+
+    # Spines
+        for name, sp_dict in cfg.get("spines", {}).items():
+            if name in ax.spines:
+                if "linewidth" in sp_dict:
+                    ax.spines[name].set_linewidth(sp_dict["linewidth"])
+                if "color" in sp_dict:
+                    try:
+                        ax.spines[name].set_edgecolor(sp_dict["color"])
+                    except Exception:
+                        pass
+                    _apply_spine_color(name, sp_dict.get("color"))
+                if "visible" in sp_dict:
+                    ax.spines[name].set_visible(sp_dict["visible"])
+
+    # Tick colors
+        tick_colors = cfg.get("tick_colors", {})
+        if tick_colors:
+            try:
+                if "x" in tick_colors:
+                    ax.tick_params(axis='x', which='both', colors=tick_colors["x"])
+                if "y" in tick_colors:
+                    ax.tick_params(axis='y', which='both', colors=tick_colors["y"])
+            except Exception as e:
+                print(f"[DEBUG] Exception setting tick colors: {e}")
+
+    # Axis label colors
+        axis_label_colors = cfg.get("axis_label_colors", {})
+        if axis_label_colors:
+            try:
+                if "x" in axis_label_colors:
+                    ax.xaxis.label.set_color(axis_label_colors["x"])
+                if "y" in axis_label_colors:
+                    ax.yaxis.label.set_color(axis_label_colors["y"])
+            except Exception as e:
+                print(f"[DEBUG] Exception setting axis label colors: {e}")
+
+    # Lines
+        for entry in cfg.get("lines", []):
+            idx = entry.get("index")
+            if idx is None or not (0 <= idx < len(ax.lines)):
+                continue
+            ln = ax.lines[idx]
+            if "color" in entry and entry["color"] is not None:
+                ln.set_color(entry["color"])
+            if "linewidth" in entry:
+                ln.set_linewidth(entry["linewidth"])
+            if "linestyle" in entry:
+                try:
+                    ln.set_linestyle(entry["linestyle"])
+                except Exception:
+                    pass
+            if "marker" in entry:
+                try:
+                    ln.set_marker(entry["marker"])
+                except Exception:
+                    pass
+            if "markersize" in entry:
+                try:
+                    ln.set_markersize(entry["markersize"])
+                except Exception:
+                    pass
+            if "markerfacecolor" in entry and entry["markerfacecolor"] is not None:
+                try:
+                    ln.set_markerfacecolor(entry["markerfacecolor"])
+                except Exception:
+                    pass
+            if "markeredgecolor" in entry and entry["markeredgecolor"] is not None:
+                try:
+                    ln.set_markeredgecolor(entry["markeredgecolor"])
+                except Exception:
+                    pass
+            if "alpha" in entry and entry["alpha"] is not None:
+                try:
+                    ln.set_alpha(entry["alpha"])
+                except Exception:
+                    pass
+            # Restore offset if available
+            if "offset" in entry and offsets_list is not None and orig_y is not None and x_data_list is not None:
+                try:
+                    offset_val = float(entry["offset"])
+                    if idx < len(offsets_list):
+                        offsets_list[idx] = offset_val
+                        # Reapply offset to the curve
+                        if idx < len(orig_y) and idx < len(y_data_list) and idx < len(x_data_list):
+                            y_norm = orig_y[idx]
+                            y_with_offset = y_norm + offset_val
+                            y_data_list[idx] = y_with_offset
+                            ln.set_data(x_data_list[idx], y_with_offset)
+                except Exception as e:
+                    print(f"Warning: Could not restore offset for curve {idx+1}: {e}")
+        palette_cfg = cfg.get("curve_palettes", [])
+        if palette_cfg:
+            sanitized_history = []
+            for rec in palette_cfg:
+                if _apply_curve_palette(ax, rec):
+                    sanitized_history.append({
+                        'palette': rec.get('palette'),
+                        'indices': list(rec.get('indices', [])),
+                        'low_clip': float(rec.get('low_clip', 0.08)),
+                        'high_clip': float(rec.get('high_clip', 0.85)),
+                    })
+            if sanitized_history:
+                fig._curve_palette_history = sanitized_history
+            elif hasattr(fig, '_curve_palette_history'):
+                delattr(fig, '_curve_palette_history')
+        else:
+            if hasattr(fig, '_curve_palette_history'):
+                delattr(fig, '_curve_palette_history')
+        # CIF tick sets (labels & colors)
+        cif_cfg = cfg.get("cif_ticks", [])
+        if cif_cfg and cif_tick_series is not None:
+            for entry in cif_cfg:
+                idx = entry.get("index")
+                if idx is None:
+                    continue
+                if 0 <= idx < len(cif_tick_series):
+                    lab, fname, peaksQ, wl, qmax_sim, color_old = cif_tick_series[idx]
+                    lab_new = entry.get("label", lab)
+                    color_new = entry.get("color", color_old)
+                    cif_tick_series[idx] = (lab_new, fname, peaksQ, wl, qmax_sim, color_new)
+        # Restore CIF title visibility
+        if "show_cif_titles" in cfg:
+            try:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None:
+                    setattr(_bp_module, 'show_cif_titles', bool(cfg["show_cif_titles"]))
+            except Exception:
+                pass
+        # Redraw CIF ticks after applying changes
+        if (cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg:
+            if hasattr(ax, "_cif_draw_func"):
+                try:
+                    ax._cif_draw_func()
+                except Exception:
+                    pass
+
+        # Restore curve names visibility
+        if "curve_names_visible" in cfg:
+            try:
+                visible = bool(cfg["curve_names_visible"])
+                for txt in label_text_objects:
+                    txt.set_visible(visible)
+                # Store on figure for persistence
+                fig._curve_names_visible = visible
+            except Exception as e:
+                print(f"Warning: Could not restore curve names visibility: {e}")
+
+        # Restore stack/legend anchor preferences
+        if "stack_label_at_bottom" in cfg:
+            try:
+                fig._stack_label_at_bottom = bool(cfg["stack_label_at_bottom"])
+            except Exception as e:
+                print(f"Warning: Could not restore stack label position: {e}")
+        if "label_anchor_left" in cfg:
+            try:
+                fig._label_anchor_left = bool(cfg["label_anchor_left"])
+            except Exception as e:
+                print(f"Warning: Could not restore legend horizontal anchor: {e}")
+
+        # Restore rotation angle
+        if "rotation_angle" in cfg:
+            try:
+                ax._rotation_angle = int(cfg["rotation_angle"])
+            except Exception as e:
+                print(f"Warning: Could not restore rotation angle: {e}")
+
+        # Restore title offsets BEFORE positioning titles
+        title_offsets = cfg.get("title_offsets", {})
+        if title_offsets:
+            try:
+                if 'top_y' in title_offsets:
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'top' for y-offset
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top', 0.0) or 0.0)
+                ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+                ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+                ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+                if 'right_x' in title_offsets:
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'right' for x-offset
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right', 0.0) or 0.0)
+                ax._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
+            except Exception as e:
+                print(f"Warning: Could not restore title offsets: {e}")
+
+        # Restore grid state
+        if "grid" in cfg:
+            try:
+                if bool(cfg["grid"]):
+                    ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+                else:
+                    ax.grid(False)
+            except Exception as e:
+                print(f"Warning: Could not restore grid state: {e}")
+
+        # Re-run label placement with current mode (no mode changes via Styles)
+        stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
+        update_labels_func(ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
+
+        # Margin / overflow handling
+        try:
+            overflow = _ui_ensure_text_visibility(fig, ax, label_text_objects, check_only=True)
+        except Exception:
+            overflow = False
+        if overflow and adjust_margins_cb is not None:
+            try:
+                adjust_margins_cb()
+            except Exception as e:
+                print(f"[DEBUG] Exception in adjust_margins callback: {e}")
+            try:
+                _ui_ensure_text_visibility(fig, ax, label_text_objects)
+            except Exception as e:
+                print(f"[DEBUG] Exception in ensure_text_visibility: {e}")
+
+        # Apply geometry if present (for .bpsg files)
+        kind = cfg.get('kind', '')
+        if kind == 'xy_style_geom' and 'geometry' in cfg:
+            try:
+                geom = cfg.get('geometry', {})
+                if 'xlabel' in geom and geom['xlabel']:
+                    ax.set_xlabel(geom['xlabel'])
+                if 'ylabel' in geom and geom['ylabel']:
+                    ax.set_ylabel(geom['ylabel'])
+                
+                # Restore normalization ranges (if saved)
+                if 'norm_xlim' in geom and isinstance(geom['norm_xlim'], list) and len(geom['norm_xlim']) == 2:
+                    ax._norm_xlim = tuple(geom['norm_xlim'])
+                if 'norm_ylim' in geom and isinstance(geom['norm_ylim'], list) and len(geom['norm_ylim']) == 2:
+                    ax._norm_ylim = tuple(geom['norm_ylim'])
+                
+                # Restore display limits
+                if 'xlim' in geom and isinstance(geom['xlim'], list) and len(geom['xlim']) == 2:
+                    ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
+                if 'ylim' in geom and isinstance(geom['ylim'], list) and len(geom['ylim']) == 2:
+                    ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
+                print("Applied geometry (labels and limits)")
+            except Exception as e:
+                print(f"Warning: Could not apply geometry: {e}")
+        
+        try:
+            fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"[DEBUG] Exception in fig.canvas.draw_idle: {e}")
+        print(f"Applied style from {filename}")
+
+    # Axis title toggle state
+        try:
+            # Preserve current pads to avoid drift when toggling presence via styles
+            # Use saved values from before style changes, or current if not saved
+            try:
+                if saved_xlabelpad is not None:
+                    ax._pending_xlabelpad = saved_xlabelpad
+                else:
+                    ax._pending_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
+            except Exception:
+                pass
+            try:
+                if saved_ylabelpad is not None:
+                    ax._pending_ylabelpad = saved_ylabelpad
+                else:
+                    ax._pending_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
+            except Exception:
+                pass
+            at_cfg = cfg.get("axis_titles", {})
+            title_texts = cfg.get("axis_title_texts", {})
+            bottom_text = title_texts.get("bottom_x")
+            left_text = title_texts.get("left_y")
+            top_text = title_texts.get("top_x")
+            right_text = title_texts.get("right_y")
+            if bottom_text is not None:
+                ax._stored_xlabel = bottom_text
+            if left_text is not None:
+                ax._stored_ylabel = left_text
+            if top_text is not None:
+                if top_text:
+                    ax._top_xlabel_text_override = top_text
+                elif hasattr(ax, '_top_xlabel_text_override'):
+                    delattr(ax, '_top_xlabel_text_override')
+            if right_text is not None:
+                if right_text:
+                    ax._right_ylabel_text_override = right_text
+                elif hasattr(ax, '_right_ylabel_text_override'):
+                    delattr(ax, '_right_ylabel_text_override')
+            # Top X duplicate via artist
+            ax._top_xlabel_on = bool(at_cfg.get("top_x", False))
+            try:
+                _ui_position_top_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            # Bottom X presence
+            if not at_cfg.get("has_bottom_x", True):
+                ax.xaxis.label.set_visible(False)
+            else:
+                ax.xaxis.label.set_visible(True)
+                if bottom_text is not None:
+                    ax.set_xlabel(bottom_text)
+                elif not ax.get_xlabel() and hasattr(ax, "_stored_xlabel"):
+                    ax.set_xlabel(ax._stored_xlabel)
+            # Always re-position bottom xlabel to consume pending pad or set deterministic pad
+            try:
+                _ui_position_bottom_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            # Right Y duplicate via artist
+            ax._right_ylabel_on = bool(at_cfg.get("right_y", False))
+            try:
+                _ui_position_right_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            # Left Y presence
+            if not at_cfg.get("has_left_y", True):
+                ax.yaxis.label.set_visible(False)
+            else:
+                ax.yaxis.label.set_visible(True)
+                if left_text is not None:
+                    ax.set_ylabel(left_text)
+                elif not ax.get_ylabel() and hasattr(ax, "_stored_ylabel"):
+                    ax.set_ylabel(ax._stored_ylabel)
+            # Always re-position left ylabel to consume pending pad or set deterministic pad
+            try:
+                _ui_position_left_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            # After positioning, ensure duplicate top/right title artists adopt imported font
+            try:
+                if numeric_size is not None:
+                    art = getattr(ax, '_top_xlabel_artist', None)
+                    if art is not None:
+                        art.set_fontsize(numeric_size)
+                    art = getattr(ax, '_right_ylabel_artist', None)
+                    if art is not None:
+                        art.set_fontsize(numeric_size)
+                if fam_chain:
+                    fam0 = fam_chain[0]
+                    art = getattr(ax, '_top_xlabel_artist', None)
+                    if art is not None:
+                        art.set_fontfamily(fam0)
+                    art = getattr(ax, '_right_ylabel_artist', None)
+                    if art is not None:
+                        art.set_fontfamily(fam0)
+            except Exception:
+                pass
+            fig.canvas.draw_idle()
+        except Exception as e:
+            print(f"[DEBUG] Exception in axis title toggle: {e}")
+    except Exception as e:
+        print(f"Error applying config: {e}")
+
+
+__all__ = [
+    "print_style_info",
+    "export_style_config",
+    "apply_style_config",
+]

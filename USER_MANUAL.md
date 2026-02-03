@@ -57,10 +57,10 @@ Batplot supports three main figure types:
 
 | Command | What it does | Interactive? | Output |
 |---------|--------------|--------------|--------|
-| `batplot file1.xy file2.xy` | Plot specific files together | ✅ Yes | Single figure |
-| `batplot allfiles` | Plot all XY files together | ✅ Yes | Single figure |
-| `batplot allxyfiles` | Plot only `.xy` files together | ✅ Yes | Single figure |
-| `batplot --all` | Export each file separately | ❌ No | Multiple SVG files |
+| `batplot file1.xy file2.xy` | Plot specific files together | Yes | Single figure |
+| `batplot allfiles` | Plot all XY files together | Yes | Single figure |
+| `batplot allxyfiles` | Plot only `.xy` files together | Yes | Single figure |
+| `batplot --all` | Export each file separately | No | Multiple SVG files |
 
 ### Example Usage
 
@@ -131,7 +131,28 @@ batplot file1.xy file2.xye style.bps --out output.svg
 
 batplot file1.xy file2.xye ./Style/style.bps --out output.svg
 # Normal mode: apply style from relative path to multiple files
+
+batplot file1.xy file2.xy --1d --stack --i
+# Plot the first derivative (dy/dx) of file1 and file2 with interactive menu
 ```
+
+### Derivative Plotting
+
+The `--1d` and `--2d` flags (both equivalent) allow you to plot the first derivative (dy/dx) of your datasets. This is useful for identifying peaks, inflection points, and analyzing the rate of change in your data.
+
+**Examples:**
+```bash
+batplot file1.xy file2.xy --1d --stack --i
+# Plot 1st derivatives of file1 and file2, stacked with interactive menu
+
+batplot allfiles --1d --interactive
+# Plot 1st derivatives of all XY files with interactive menu
+
+batplot file1.xy --1d --xrange 10 80
+# Plot 1st derivative with custom X-axis range
+```
+
+**Note:** The derivative is calculated using numpy's gradient function, which automatically handles non-uniform spacing in your X-axis data. The derivative calculation is applied after data loading and axis conversion, but before any transformations (EXAFS k-weighting, normalization, etc.).
 
 ### Wavelength Specification
 
@@ -220,7 +241,7 @@ Batplot supports **cycle-level summary files** for CPC plotting in both **CSV** 
 
 **Supported formats:**
 - **CSV**: Standard comma-separated values
-- **Excel (`.xlsx`)**: Landt/Lanhe (蓝电/蓝河) battery tester files with Chinese headers
+- **Excel (`.xlsx`)**: Landt/Lanhe (often labeled "Lan Dian / Lan He" in English) battery tester files with Chinese headers
 
 **Expected structure for CSV:**
 - **Row 1**: Column headers (English)
@@ -232,10 +253,10 @@ Batplot supports **cycle-level summary files** for CPC plotting in both **CSV** 
 - **Row 3 onwards**: Cycle data (one row per cycle)
 
 **Required columns for summary format:**
-- `Cycle Index` (or 循环序号) - Cycle number
-- `Chg. Spec. Cap.(mAh/g)` (or 充电比容量/mAh/g) - Charge specific capacity
-- `DChg. Spec. Cap.(mAh/g)` (or 放电比容量/mAh/g) - Discharge specific capacity
-- **Optional**: Efficiency column (`Chg.-DChg. Eff(%)` or 效率/%)
+- `Cycle Index` (or the Chinese header typically transliterated as "Xunhuan Xuhao") - Cycle number
+- `Chg. Spec. Cap.(mAh/g)` (or "Chongdian Bi Rongliang/mAh/g") - Charge specific capacity
+- `DChg. Spec. Cap.(mAh/g)` (or "Fangdian Bi Rongliang/mAh/g") - Discharge specific capacity
+- **Optional**: Efficiency column (`Chg.-DChg. Eff(%)` or "Xiaolv/%")
 
 **Note:** Voltage and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
 
@@ -456,8 +477,8 @@ If no `.mpt` file is present, operando mode displays only the contour plot. The 
 
 For questions, bug reports, or feature requests:
 
-- **GitHub**: https://github.com/tiandai-chem/batplot
+Tian Dai
 - **Email**: tianda@uio.no
 - **Mailing List**: Subscribe to batplot-lab@kjemi.uio.no for updates, feature announcements, and community discussions
 
-Feel free to open an issue on GitHub or reach out via email!
+Feel free to reach out via email!

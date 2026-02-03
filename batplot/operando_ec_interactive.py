@@ -18,6 +18,7 @@ from typing import Tuple, Dict, Optional, Any
 import json
 import os
 import time
+import sys
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -38,7 +39,38 @@ from .color_utils import (
     resolve_color_token,
     manage_user_colors,
 )
-from .utils import choose_style_file
+from .utils import choose_style_file, convert_label_shortcuts
+
+
+class _FilterIMKWarning:
+    """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Filter out the harmless macOS IMK warning
+        if 'IMKCFRunLoopWakeUpReliable' not in message:
+            self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+
+
+def _safe_input(prompt: str = "") -> str:
+    """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
+    
+    This is a harmless macOS system message that appears when using input() in terminals.
+    """
+    # Filter stderr to hide macOS IMK warnings while preserving other errors
+    original_stderr = sys.stderr
+    sys.stderr = _FilterIMKWarning(original_stderr)
+    try:
+        result = input(prompt)
+        return result
+    except (KeyboardInterrupt, EOFError):
+        raise
+    finally:
+        sys.stderr = original_stderr
 
 
 def _axis_tick_width(axis_obj, which: str = 'major'):
@@ -344,6 +376,159 @@ def _update_custom_colorbar(cbar_ax, im=None, label=None, label_mode=None):
     _draw_custom_colorbar(cbar_ax, im, label, label_mode)
 
 
+def _safe_set_clim(im, vmin, vmax):
+    """Safely set color limits without triggering matplotlib colorbar callbacks.
+    
+    This wrapper around im.set_clim() prevents the NotImplementedError: cannot remove artist
+    error when using custom colorbars. The issue occurs because matplotlib's callback system
+    tries to update the colorbar when set_clim() is called, but our custom colorbar drawing
+    has already cleared the axes, causing the update to fail.
+    
+    This function suppresses the callback traceback by redirecting stderr to a null device
+    during the set_clim() call, preventing matplotlib's callback system from printing
+    tracebacks to the terminal.
+    
+    Args:
+        im: AxesImage object
+        vmin: Minimum value for color scale
+        vmax: Maximum value for color scale
+    """
+    import sys
+    import os
+    from io import StringIO
+    
+    # Create a null device for stderr redirection
+    class NullDevice:
+        def write(self, s):
+            pass
+        def flush(self):
+            pass
+        def close(self):
+            pass
+    
+    # Suppress matplotlib's exception printing by redirecting stderr AND excepthook
+    old_stderr = sys.stderr
+    old_excepthook = sys.excepthook
+    null_dev = NullDevice()
+    
+    # Create a no-op excepthook that suppresses all exceptions
+    def suppress_excepthook(exc_type, exc_value, exc_traceback):
+        # Only suppress if it's the specific error we're looking for
+        if exc_type == NotImplementedError and 'cannot remove artist' in str(exc_value).lower():
+            return  # Suppress this specific exception
+        # For any other exception, use the original handler
+        old_excepthook(exc_type, exc_value, exc_traceback)
+    
+    sys.stderr = null_dev
+    sys.excepthook = suppress_excepthook
+    
+    try:
+        # Set the color limits - matplotlib's callback will try to print traceback
+        # but both stderr and excepthook are suppressed
+        im.set_clim(vmin, vmax)
+        # The operation succeeds; any tracebacks are suppressed
+    except NotImplementedError:
+        # Suppress the specific error - color limits were still updated successfully
+        pass
+    except Exception:
+        # For any other unexpected error, restore handlers and re-raise
+        sys.stderr = old_stderr
+        sys.excepthook = old_excepthook
+        raise
+    finally:
+        # Always restore both stderr and excepthook
+        sys.stderr = old_stderr
+        sys.excepthook = old_excepthook
+
+
+def _detach_mpl_colorbar_callbacks(cbar, im) -> None:
+    """Detach a Matplotlib Colorbar from its mappable callbacks.
+
+    Why this exists:
+    - In this interactive menu we draw a *custom* colorbar by clearing/redrawing `cbar.ax`.
+    - If `cbar` is a real `matplotlib.colorbar.Colorbar` (e.g., loaded from a session),
+      it remains connected to `im` via `im.callbacksSM`. Subsequent `im.set_clim()` /
+      `im.set_cmap()` triggers `Colorbar.update_normal()`, which can crash after we
+      cleared/redrew the axes (observed as: NotImplementedError: cannot remove artist).
+    - We therefore disconnect that callback once and always update the custom colorbar
+      via `_update_custom_colorbar(...)`.
+    """
+    try:
+        if cbar is None or im is None:
+            return
+        cax = getattr(cbar, 'ax', None)
+        if cax is not None and getattr(cax, '_bp_detached_mpl_colorbar', False):
+            return
+
+        # APPROACH 1: Try to find and disconnect the callback ID
+        cid = None
+        for attr in ('_cid', '_cid_colorbar', 'cid'):
+            try:
+                v = getattr(cbar, attr, None)
+                if isinstance(v, int):
+                    cid = v
+                    break
+            except Exception:
+                pass
+
+        if cid is not None:
+            try:
+                cbreg = getattr(im, 'callbacksSM', None)
+                if cbreg is not None and hasattr(cbreg, 'disconnect'):
+                    cbreg.disconnect(cid)
+            except Exception:
+                pass
+
+        # APPROACH 2: Disconnect ALL callbacks from the image (nuclear option)
+        try:
+            cbreg = getattr(im, 'callbacksSM', None)
+            if cbreg is not None:
+                # Try to clear all callbacks
+                if hasattr(cbreg, 'callbacks'):
+                    try:
+                        cbreg.callbacks.clear()
+                    except Exception:
+                        pass
+                # Also try the _signals dict if it exists
+                if hasattr(cbreg, '_signals'):
+                    try:
+                        for signal_dict in cbreg._signals.values():
+                            if hasattr(signal_dict, 'clear'):
+                                signal_dict.clear()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # APPROACH 3: Monkey-patch the update_normal method to be a no-op
+        # This is the most reliable approach for preventing the callback
+        try:
+            if hasattr(cbar, 'update_normal'):
+                def _noop_update(*args, **kwargs):
+                    pass
+                cbar.update_normal = _noop_update
+        except Exception:
+            pass
+
+        # APPROACH 4: Prevent future built-in updates by nulling internal state
+        try:
+            if hasattr(cbar, 'mappable'):
+                cbar.mappable = None
+        except Exception:
+            pass
+        try:
+            if hasattr(cbar, 'solids'):
+                cbar.solids = None
+        except Exception:
+            pass
+
+        if cax is not None:
+            setattr(cax, '_bp_detached_mpl_colorbar', True)
+    except Exception:
+        # Never let detaching break the interactive menu.
+        return
+
+
 def _ensure_fixed_params(fig, ax, cbar_ax, ec_ax):
     """Initialize and return fixed geometry parameters in inches.
     
@@ -540,6 +725,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
     # Normalize file path list for downstream helpers
     file_paths = list(file_paths) if file_paths else []
 
+    # If we were given a real Matplotlib Colorbar (e.g. from session load),
+    # detach it from `im` immediately. This must happen before any function
+    # that may clear/redraw `cbar.ax` (custom colorbar) is called.
+    _detach_mpl_colorbar_callbacks(cbar, im)
+
     def _renormalize_to_visible():
         """Adjust color scale to match the intensity range of the currently visible region.
         
@@ -612,7 +802,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 
                 if intensity_max > intensity_min:
                     # Update color limits
-                    im.set_clim(intensity_min, intensity_max)
+                    _safe_set_clim(im, intensity_min, intensity_max)
                     
                     # Update colorbar if available
                     try:
@@ -642,7 +832,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "ox: X range",
                 "oy: Y range",
                 "oz: intensity range",
-                "or: rename"
+                "or: rename",
+                "pk: peak search"
             ]
             col3 = [
                 "et: time range",
@@ -659,6 +850,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "b: undo",
                 "q: quit",
             ]
+            # Conditional overwrite shortcuts under (Options)
+            last_session = getattr(fig, "_last_session_save_path", None)
+            last_style = getattr(fig, "_last_style_export_path", None)
+            last_figure = getattr(fig, "_last_figure_export_path", None)
+            if last_session:
+                col4.append("os: overwrite session")
+            if last_style:
+                col4.append("ops: overwrite style")
+                col4.append("opsg: overwrite style+geom")
+            if last_figure:
+                col4.append("oe: overwrite figure")
             # Dynamic column widths
             w1 = max(len("(Styles)"), *(len(s) for s in col1), 12)
             w2 = max(len("(Operando)"), *(len(s) for s in col2), 14)
@@ -695,7 +897,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "ox: X range",
                 "oy: Y range",
                 "oz: intensity range",
-                "or: rename"
+                "or: rename",
+                "pk: peak search"
             ]
             col3 = [
                 "n: crosshair",
@@ -706,6 +909,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "b: undo",
                 "q: quit",
             ]
+            # Conditional overwrite shortcuts under (Options)
+            last_session = getattr(fig, "_last_session_save_path", None)
+            last_style = getattr(fig, "_last_style_export_path", None)
+            last_figure = getattr(fig, "_last_figure_export_path", None)
+            if last_session:
+                col3.append("os: overwrite session")
+            if last_style:
+                col3.append("ops: overwrite style")
+                col3.append("opsg: overwrite style+geom")
+            if last_figure:
+                col3.append("oe: overwrite figure")
             w1 = max(len("(Styles)"), *(len(s) for s in col1), 12)
             w2 = max(len("(Operando)"), *(len(s) for s in col2), 14)
             w3 = max(len("(Options)"), *(len(s) for s in col3), 16)
@@ -904,6 +1118,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
     # Initialize custom colorbar (replaces matplotlib's colorbar)
     cbar_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
     cbar_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+    # If we were given a real Matplotlib Colorbar (e.g. from session load),
+    # detach it from `im` before we clear/redraw the axes for the custom colorbar.
+    _detach_mpl_colorbar_callbacks(cbar, im)
     _draw_custom_colorbar(cbar.ax, im, cbar_label, cbar_label_mode)
     # Decrease distance between operando and EC plots once per session
     if not getattr(ec_ax, '_ec_gap_adjusted', False):
@@ -983,7 +1200,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 clim = im.get_clim()
             except Exception:
                 clim = None
-            cmap_name = getattr(im.get_cmap(), 'name', None)
+            # Get colormap name: first check if we stored it explicitly, otherwise try to get from colormap object
+            cmap_name = getattr(im, '_operando_cmap_name', None)
+            if cmap_name is None:
+                cmap_name = getattr(im.get_cmap(), 'name', None)
             # EC mode and caches (only if ec_ax exists)
             if ec_ax is not None:
                 mode = getattr(ec_ax, '_ec_y_mode', 'time')
@@ -1024,6 +1244,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             }
             # EC WASD state (only if ec_ax exists)
             if ec_ax is not None:
+                # For EC, check if ylabel is currently visible (not hidden by user via d5)
+                # EC uses the actual ylabel positioned on right, not a duplicate artist
+                ec_ylabel_visible = bool(ec_ax.get_ylabel())  # Empty string = hidden
                 ec_wasd = {
                     'top':    {'spine': _get_spine_visible(ec_ax, 'top'), 'ticks': ec_ax.xaxis._major_tick_kw.get('tick1On', True), 
                                'minor': bool(ec_ax.xaxis._minor_tick_kw.get('tick1On', False)), 
@@ -1036,11 +1259,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     'left':   {'spine': _get_spine_visible(ec_ax, 'left'), 'ticks': ec_ax.yaxis._major_tick_kw.get('tick1On', False), 
                                'minor': bool(ec_ax.yaxis._minor_tick_kw.get('tick1On', False)), 
                                'labels': ec_ax.yaxis._major_tick_kw.get('label1On', False), 
-                               'title': bool(ec_ax.get_ylabel())},
+                               'title': False},  # EC ylabel is on right, not left
                     'right':  {'spine': _get_spine_visible(ec_ax, 'right'), 'ticks': ec_ax.yaxis._major_tick_kw.get('tick2On', True), 
                                'minor': bool(ec_ax.yaxis._minor_tick_kw.get('tick2On', False)), 
                                'labels': ec_ax.yaxis._major_tick_kw.get('label2On', True), 
-                               'title': bool(ec_ax.get_ylabel())},
+                               'title': ec_ylabel_visible},  # True if ylabel is not empty
                 }
             else:
                 ec_wasd = None
@@ -1050,6 +1273,15 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # Horizontal offsets (relative to canvas center, in inches)
             cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
             ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0) if ec_ax is not None else None
+            # Colorbar tick/label positions (left/right)
+            cb_ticks_left = True
+            cb_label_left = True
+            try:
+                cb_ticks_left = any(getattr(tick, 'tick1line', None) and tick.tick1line.get_visible() for tick in cbar.ax.yaxis.get_major_ticks())
+                # label position is stored on axis; capture current setting
+                cb_label_left = (cbar.ax.yaxis.get_label_position() == 'left')
+            except Exception:
+                pass
             # Label pads (save current labelpad values to restore later)
             op_labelpads = {
                 'x': getattr(ax.xaxis, 'labelpad', None),
@@ -1061,6 +1293,47 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     'x': getattr(ec_ax.xaxis, 'labelpad', None),
                     'y': getattr(ec_ax.yaxis, 'labelpad', None),
                 }
+            # Spine and tick widths (l command) for undo
+            op_spines_snap = {}
+            for name in ('bottom', 'top', 'left', 'right'):
+                sp = ax.spines.get(name)
+                if sp:
+                    op_spines_snap[name] = float(sp.get_linewidth())
+            op_ticks_snap = {
+                'x_major': _axis_tick_width(ax.xaxis, 'major'),
+                'x_minor': _axis_tick_width(ax.xaxis, 'minor'),
+                'y_major': _axis_tick_width(ax.yaxis, 'major'),
+                'y_minor': _axis_tick_width(ax.yaxis, 'minor'),
+            }
+            ec_spines_snap = None
+            ec_ticks_snap = None
+            ec_line_style = None
+            if ec_ax is not None:
+                ec_spines_snap = {}
+                for name in ('bottom', 'top', 'left', 'right'):
+                    sp = ec_ax.spines.get(name)
+                    if sp:
+                        ec_spines_snap[name] = float(sp.get_linewidth())
+                ec_ticks_snap = {
+                    'x_major': _axis_tick_width(ec_ax.xaxis, 'major'),
+                    'x_minor': _axis_tick_width(ec_ax.xaxis, 'minor'),
+                    'y_major': _axis_tick_width(ec_ax.yaxis, 'major'),
+                    'y_minor': _axis_tick_width(ec_ax.yaxis, 'minor'),
+                }
+                ln = getattr(ec_ax, '_ec_line', None)
+                if ln is None and ec_ax.lines:
+                    try:
+                        ln = ec_ax.lines[0]
+                    except Exception:
+                        ln = None
+                if ln is not None:
+                    try:
+                        ec_line_style = {
+                            'color': ln.get_color(),
+                            'linewidth': float(ln.get_linewidth() or 1.0),
+                        }
+                    except Exception:
+                        pass
             state_history.append({
                 'note': note,
                 'fig_size': (fig_w, fig_h),
@@ -1084,6 +1357,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 'ec_visible': ec_visible,
                 'cb_h_offset': float(cb_h_offset),
                 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None,
+                'cb_ticks_left': cb_ticks_left,
+                'cb_label_left': cb_label_left,
                 'op_labelpads': dict(op_labelpads),
                 'ec_labelpads': dict(ec_labelpads) if ec_labelpads is not None else None,
                 'op_title_offsets': {
@@ -1102,6 +1377,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     'right_x': float(getattr(ec_ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0) if ec_ax is not None else 0.0,
                     'right_y': float(getattr(ec_ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0) if ec_ax is not None else 0.0,
                 } if ec_ax is not None else None,
+                'op_spines': op_spines_snap,
+                'op_ticks': op_ticks_snap,
+                'ec_spines': ec_spines_snap,
+                'ec_ticks': ec_ticks_snap,
+                'ec_line_style': ec_line_style,
             })
             if len(state_history) > 40:
                 state_history.pop(0)
@@ -1138,6 +1418,14 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_i, ax_h_i, cb_w_i, cb_gap_i, ec_gap_i, ec_w_i)
             except Exception:
                 pass
+            # Colorbar tick/label side
+            try:
+                cb_ticks_left = snap.get('cb_ticks_left', True)
+                cb_label_left = snap.get('cb_label_left', True)
+                cbar.ax.yaxis.set_ticks_position('left' if cb_ticks_left else 'right')
+                cbar.ax.yaxis.set_label_position('left' if cb_label_left else 'right')
+            except Exception:
+                pass
             # Labels
             try:
                 op_l = snap.get('op_labels', {})
@@ -1170,14 +1458,34 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 pass
             try:
                 if snap.get('clim') is not None:
-                    lo, hi = snap['clim']; im.set_clim(float(lo), float(hi))
+                    # Detach built-in colorbar update to avoid artist removal errors; we redraw custom below.
+                    try:
+                        if hasattr(cbar, 'mappable'):
+                            cbar.mappable = None
+                        if hasattr(cbar, 'solids'):
+                            cbar.solids = None
+                    except Exception:
+                        pass
+                    lo, hi = snap['clim']; _safe_set_clim(im, float(lo), float(hi))
             except Exception:
                 pass
             try:
                 if snap.get('cmap'):
-                    im.set_cmap(snap['cmap'])
+                    cmap_name = snap['cmap']
+                    im.set_cmap(cmap_name)
+                    # Store the colormap name explicitly so it can be retrieved reliably when saving
+                    setattr(im, '_operando_cmap_name', cmap_name)
                     if cbar is not None:
-                        cbar.update_normal(im)
+                        _update_custom_colorbar(cbar.ax, im)
+            except Exception:
+                pass
+            # Restore colorbar side (ticks/label) and redraw custom colorbar to keep position
+            try:
+                cb_ticks_left = snap.get('cb_ticks_left', True)
+                cb_label_left = snap.get('cb_label_left', True)
+                cbar.ax.yaxis.set_ticks_position('left' if cb_ticks_left else 'right')
+                cbar.ax.yaxis.set_label_position('left' if cb_label_left else 'right')
+                _update_custom_colorbar(cbar.ax, im)
             except Exception:
                 pass
             # EC axes
@@ -1311,24 +1619,31 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 ec_ax.tick_params(axis='x', which='minor', **{tick_key: bool(st['minor'])})
                             if 'labels' in st:
                                 ec_ax.tick_params(axis='x', which='major', **{label_key: bool(st['labels'])})
-                        elif side == 'right':  # d - only EC controls
+                        elif side == 'right':  # d - only EC controls (EC y-axis is on right by default)
                             if 'ticks' in st:
                                 ec_ax.tick_params(axis='y', which='major', left=False, right=bool(st['ticks']))
                             if 'minor' in st:
                                 ec_ax.tick_params(axis='y', which='minor', left=False, right=bool(st['minor']))
                             if 'labels' in st:
                                 ec_ax.tick_params(axis='y', which='major', labelleft=False, labelright=bool(st['labels']))
+                            print(f"[DEBUG UNDO] EC right restored: ticks={st.get('ticks')}, labels={st.get('labels')}")
                         # Title restoration
                         if side == 'top' and 'title' in st:
                             setattr(ec_ax, '_top_xlabel_on', bool(st['title']))
                         elif side == 'right' and 'title' in st:
                             # EC right title is actual ylabel, not duplicate
+                            print(f"[DEBUG UNDO] EC right title state: {st['title']}, current ylabel: '{ec_ax.get_ylabel()}'")
                             if bool(st['title']):
-                                # Keep existing ylabel or restore from ec_labels
-                                pass  # ylabel already restored above
+                                # Ylabel should be visible - restore from _stored_ylabel if it's currently empty
+                                if not ec_ax.get_ylabel() and hasattr(ec_ax, '_stored_ylabel'):
+                                    ec_ax.set_ylabel(ec_ax._stored_ylabel)
+                                    print(f"[DEBUG UNDO] Restored EC ylabel from _stored_ylabel: '{ec_ax._stored_ylabel}'")
                             else:
                                 # Hide ylabel
+                                if not hasattr(ec_ax, '_stored_ylabel'):
+                                    ec_ax._stored_ylabel = ec_ax.get_ylabel()
                                 ec_ax.set_ylabel('')
+                                print(f"[DEBUG UNDO] Hid EC ylabel, stored: '{ec_ax._stored_ylabel}'")
                 # Re-position titles using UI module functions
                 try:
                     # Build current tick state dict for UI functions
@@ -1360,11 +1675,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 ec_tick_state['b_ticks'] = st.get('ticks', True)
                                 ec_tick_state['b_labels'] = st.get('labels', True)
                             elif side == 'left':
-                                ec_tick_state['l_ticks'] = st.get('ticks', False)
-                                ec_tick_state['l_labels'] = st.get('labels', False)
+                                ec_tick_state['l_ticks'] = st.get('ticks', False)  # EC: left is off by default
+                                ec_tick_state['l_labels'] = st.get('labels', False)  # EC: left labels off
                             elif side == 'right':
-                                ec_tick_state['r_ticks'] = st.get('ticks', True)
-                                ec_tick_state['r_labels'] = st.get('labels', True)
+                                ec_tick_state['r_ticks'] = st.get('ticks', True)  # EC: right ticks ON by default
+                                ec_tick_state['r_labels'] = st.get('labels', True)  # EC: right labels ON by default
+                        print(f"[DEBUG UNDO] EC tick_state: r_ticks={ec_tick_state.get('r_ticks')}, r_labels={ec_tick_state.get('r_labels')}")
                     # Position titles
                     _ui_position_top_xlabel(ax, fig, op_tick_state)
                     _ui_position_bottom_xlabel(ax, fig, op_tick_state)
@@ -1427,10 +1743,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     minor = tick_lengths.get('minor')
                     if major is not None:
                         ax.tick_params(axis='both', which='major', length=major)
-                        ec_ax.tick_params(axis='both', which='major', length=major)
+                        if ec_ax is not None:
+                            ec_ax.tick_params(axis='both', which='major', length=major)
                     if minor is not None:
                         ax.tick_params(axis='both', which='minor', length=minor)
-                        ec_ax.tick_params(axis='both', which='minor', length=minor)
+                        if ec_ax is not None:
+                            ec_ax.tick_params(axis='both', which='minor', length=minor)
                     fig._tick_lengths = tick_lengths
             except Exception:
                 pass
@@ -1438,8 +1756,66 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 tick_dir = snap.get('tick_direction', 'out')
                 ax.tick_params(axis='both', which='both', direction=tick_dir)
-                ec_ax.tick_params(axis='both', which='both', direction=tick_dir)
+                if ec_ax is not None:
+                    ec_ax.tick_params(axis='both', which='both', direction=tick_dir)
                 fig._tick_direction = tick_dir
+            except Exception:
+                pass
+            # Restore spine linewidths and tick widths (l command)
+            try:
+                op_sp = snap.get('op_spines', {})
+                if op_sp:
+                    for name, lw in op_sp.items():
+                        sp = ax.spines.get(name)
+                        if sp is not None and lw is not None:
+                            sp.set_linewidth(float(lw))
+                op_tw = snap.get('op_ticks', {})
+                if op_tw:
+                    if op_tw.get('x_major') is not None:
+                        ax.tick_params(axis='x', which='major', width=op_tw['x_major'])
+                    if op_tw.get('x_minor') is not None:
+                        ax.tick_params(axis='x', which='minor', width=op_tw['x_minor'])
+                    if op_tw.get('y_major') is not None:
+                        ax.tick_params(axis='y', which='major', width=op_tw['y_major'])
+                    if op_tw.get('y_minor') is not None:
+                        ax.tick_params(axis='y', which='minor', width=op_tw['y_minor'])
+            except Exception:
+                pass
+            try:
+                if ec_ax is not None:
+                    ec_sp = snap.get('ec_spines', {})
+                    if ec_sp:
+                        for name, lw in ec_sp.items():
+                            sp = ec_ax.spines.get(name)
+                            if sp is not None and lw is not None:
+                                sp.set_linewidth(float(lw))
+                    ec_tw = snap.get('ec_ticks', {})
+                    if ec_tw:
+                        if ec_tw.get('x_major') is not None:
+                            ec_ax.tick_params(axis='x', which='major', width=ec_tw['x_major'])
+                        if ec_tw.get('x_minor') is not None:
+                            ec_ax.tick_params(axis='x', which='minor', width=ec_tw['x_minor'])
+                        if ec_tw.get('y_major') is not None:
+                            ec_ax.tick_params(axis='y', which='major', width=ec_tw['y_major'])
+                        if ec_tw.get('y_minor') is not None:
+                            ec_ax.tick_params(axis='y', which='minor', width=ec_tw['y_minor'])
+            except Exception:
+                pass
+            # Restore EC line style (el command)
+            try:
+                ec_line_style = snap.get('ec_line_style')
+                if ec_line_style and ec_ax is not None:
+                    ln = getattr(ec_ax, '_ec_line', None)
+                    if ln is None and ec_ax.lines:
+                        try:
+                            ln = ec_ax.lines[0]
+                        except Exception:
+                            ln = None
+                    if ln is not None:
+                        if ec_line_style.get('color') is not None:
+                            ln.set_color(ec_line_style['color'])
+                        if ec_line_style.get('linewidth') is not None:
+                            ln.set_linewidth(float(ec_line_style['linewidth']))
             except Exception:
                 pass
             # Restore visibility states
@@ -1517,7 +1893,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 # Create text annotations for coordinates
                 coord_text = fig.text(0.02, 0.98, '', transform=fig.transFigure, 
                                      verticalalignment='top', 
-                                     fontsize=max(9, int(0.6 * mpl_plt.rcParams.get('font.size', 12))),
+                                     fontsize=max(9, int(0.6 * mpl_plt.rcParams.get('font.size', 16))),
                                      color='0.15',
                                      bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
             except Exception as e:
@@ -1631,7 +2007,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print("Crosshair OFF.")
     while True:
         try:
-            cmd = input("Press a key: ").strip().lower()
+            cmd = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1639,7 +2015,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             continue
         if cmd == 'q':
             try:
-                ans = input("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ").strip().lower()
+                ans = _safe_input("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ").strip().lower()
             except Exception:
                 ans = 'y'
             if ans == 'y':
@@ -1680,17 +2056,35 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         else:
                             print(f"  {i}: {fname}")
                 
-                fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if last_figure_path:
+                    fname = _safe_input("Export filename (default .svg if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                else:
+                    fname = _safe_input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
                     print_menu(); continue
                 
+                already_confirmed = False  # Initialize for new filename case
+                # Check for 'o' option
+                if fname.lower() == 'o':
+                    if not last_figure_path:
+                        print("No previous export found.")
+                        print_menu(); continue
+                    if not os.path.exists(last_figure_path):
+                        print(f"Previous export file not found: {last_figure_path}")
+                        print_menu(); continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print_menu(); continue
+                    target = last_figure_path
+                    already_confirmed = True
                 # Check if user selected a number
-                already_confirmed = False
-                if fname.isdigit() and files:
+                elif fname.isdigit() and files:
+                    already_confirmed = False
                     idx = int(fname)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             print_menu(); continue
                         target = file_list[idx-1][1]  # Full path from list
@@ -1711,6 +2105,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     target = _co(target)
                 if not target:
                     print_menu(); continue
+                # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                from .utils import ensure_exact_case_filename
+                target = ensure_exact_case_filename(target)
+                
                 _, ext = os.path.splitext(target)
                 if ext.lower() == '.svg':
                     try:
@@ -1746,6 +2144,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 else:
                     fig.savefig(target, dpi=300)
                 print(f"Exported figure to {target}")
+                fig._last_figure_export_path = target
             except Exception as e:
                 print(f"Export failed: {e}")
             print_menu(); continue
@@ -1764,7 +2163,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0)
                     print(f"Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\", ec:{ec_h_offset:.3f}\"), q=cancel")
-                    choice = input("v> ").strip().lower()
+                    choice = _safe_input("v> ").strip().lower()
                     if choice == '1':
                         # Toggle colorbar
                         cb_vis = cbar.ax.get_visible()
@@ -1798,7 +2197,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         # Change colorbar label text
                         current_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
                         print(f"Current colorbar label: {current_label}")
-                        new_label = input("New colorbar label (blank to keep): ").strip()
+                        new_label = _safe_input("New colorbar label (blank to keep): ").strip()
                         if new_label:
                             cbar.ax._colorbar_label = new_label
                             try:
@@ -1819,12 +2218,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             if ec_ax is not None:
                                 print(f"  EC panel offset: {ec_h_offset:.3f}\" (positive=right, negative=left)")
                             print("Commands: c=colorbar, e=EC panel, q=back")
-                            sub = input("m> ").strip().lower()
+                            sub = _safe_input("m> ").strip().lower()
                             if not sub or sub == 'q':
                                 break
                             if sub == 'c':
                                 try:
-                                    new_offset = input(f"Enter colorbar horizontal offset in inches (current: {cb_h_offset:.3f}\"): ").strip()
+                                    new_offset = _safe_input(f"Enter colorbar horizontal offset in inches (current: {cb_h_offset:.3f}\"): ").strip()
                                     if new_offset:
                                         cb_h_offset = float(new_offset)
                                         setattr(cbar.ax, '_cb_h_offset_in', cb_h_offset)
@@ -1832,16 +2231,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                         _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)
                                         fig.canvas.draw_idle()
                                         print(f"Colorbar horizontal offset set to {cb_h_offset:.3f}\"")
+                                    # Continue in loop to show menu again
+                                    continue
                                 except ValueError:
                                     print("Invalid input. Enter a number.")
+                                    continue
                                 except Exception as e:
                                     print(f"Error: {e}")
+                                    continue
                             elif sub == 'e':
                                 if ec_ax is None:
                                     print("EC panel not available.")
                                     continue
                                 try:
-                                    new_offset = input(f"Enter EC panel horizontal offset in inches (current: {ec_h_offset:.3f}\"): ").strip()
+                                    new_offset = _safe_input(f"Enter EC panel horizontal offset in inches (current: {ec_h_offset:.3f}\"): ").strip()
                                     if new_offset:
                                         ec_h_offset = float(new_offset)
                                         setattr(ec_ax, '_ec_h_offset_in', ec_h_offset)
@@ -1849,19 +2252,24 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                         _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)
                                         fig.canvas.draw_idle()
                                         print(f"EC panel horizontal offset set to {ec_h_offset:.3f}\"")
+                                    # Continue in loop to show menu again
+                                    continue
                                 except ValueError:
                                     print("Invalid input. Enter a number.")
+                                    continue
                                 except Exception as e:
                                     print(f"Error: {e}")
+                                    continue
                             else:
                                 print("Invalid choice.")
+                                continue
                     elif choice != 'q':
                         print("Invalid choice")
                 else:
                     # Operando-only mode: toggle colorbar or change label mode
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     print(f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=cancel")
-                    choice = input("v> ").strip().lower()
+                    choice = _safe_input("v> ").strip().lower()
                     if choice == '1':
                         cb_vis = cbar.ax.get_visible()
                         cbar.ax.set_visible(not cb_vis)
@@ -1881,7 +2289,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         # Change colorbar label text
                         current_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
                         print(f"Current colorbar label: {current_label}")
-                        new_label = input("New colorbar label (blank to keep): ").strip()
+                        new_label = _safe_input("New colorbar label (blank to keep): ").strip()
                         if new_label:
                             cbar.ax._colorbar_label = new_label
                             try:
@@ -1899,12 +2307,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"\nHorizontal position (relative to canvas center):")
                             print(f"  Colorbar offset: {cb_h_offset:.3f}\" (positive=right, negative=left)")
                             print("Commands: c=colorbar, q=back")
-                            sub = input("m> ").strip().lower()
+                            sub = _safe_input("m> ").strip().lower()
                             if not sub or sub == 'q':
                                 break
                             if sub == 'c':
                                 try:
-                                    new_offset = input(f"Enter colorbar horizontal offset in inches (current: {cb_h_offset:.3f}\"): ").strip()
+                                    new_offset = _safe_input(f"Enter colorbar horizontal offset in inches (current: {cb_h_offset:.3f}\"): ").strip()
                                     if new_offset:
                                         cb_h_offset = float(new_offset)
                                         setattr(cbar.ax, '_cb_h_offset_in', cb_h_offset)
@@ -1912,12 +2320,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                         _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)
                                         fig.canvas.draw_idle()
                                         print(f"Colorbar horizontal offset set to {cb_h_offset:.3f}\"")
+                                    # Continue in loop to show menu again
+                                    continue
                                 except ValueError:
                                     print("Invalid input. Enter a number.")
+                                    continue
                                 except Exception as e:
                                     print(f"Error: {e}")
+                                    continue
                             else:
                                 print("Invalid choice.")
+                                continue
                     elif choice != 'q':
                         print("Invalid choice")
                 fig.canvas.draw_idle()
@@ -1949,40 +2362,303 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"  {i}: {f}  ({timestamp})")
                         else:
                             print(f"  {i}: {f}")
-                prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
-                choice = input(prompt).strip()
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if last_session_path:
+                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
+                else:
+                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+                choice = _safe_input(prompt).strip()
                 if not choice or choice.lower() == 'q':
+                    print_menu(); continue
+                if choice.lower() == 'o':
+                    # Overwrite last saved session
+                    if not last_session_path:
+                        print("No previous save found.")
+                        print_menu(); continue
+                    if not os.path.exists(last_session_path):
+                        print(f"Previous save file not found: {last_session_path}")
+                        print_menu(); continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print_menu(); continue
+                    dump_operando_session(last_session_path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                    print(f"Overwritten session to {last_session_path}")
                     print_menu(); continue
                 if choice.isdigit() and files:
                     idx = int(choice)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             print_menu(); continue
                         target = os.path.join(folder, name)
+                        dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                        fig._last_session_save_path = target
+                        print_menu(); continue
                     else:
                         print("Invalid number.")
                         print_menu(); continue
-                else:
+                if choice.lower() != 'o':
                     name = choice
                     root, ext = os.path.splitext(name)
                     if ext == '':
                         name = name + '.pkl'
                     target = name if os.path.isabs(name) else os.path.join(folder, name)
                     if os.path.exists(target):
-                        yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
                             print_menu(); continue
-                dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                    dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                    fig._last_session_save_path = target
+                    # Show the actual filename that was saved (in case of case differences on macOS)
+                    actual_name = os.path.basename(target)
+                    if os.path.exists(target):
+                        # Get the actual filename as stored on disk (for case-sensitive display)
+                        try:
+                            dir_files = os.listdir(folder)
+                            for f in dir_files:
+                                if f.lower() == actual_name.lower():
+                                    actual_name = f
+                                    break
+                        except Exception:
+                            pass
+                    print(f"Operando session saved to {os.path.join(folder, actual_name)}")
             except Exception as e:
                 print(f"Save failed: {e}")
+            print_menu(); continue
+        if cmd == 'pk':
+            try:
+                import os
+                from .utils import choose_save_path
+                try:
+                    from scipy.signal import find_peaks
+                except ImportError:
+                    print("Error: scipy is required for peak finding. Install with: pip install scipy")
+                    print_menu(); continue
+                
+                # Get operando data
+                data_array = np.asarray(im.get_array(), dtype=float)
+                if data_array.ndim != 2 or data_array.size == 0:
+                    print("Error: No operando data available.")
+                    print_menu(); continue
+                
+                extent = im.get_extent()  # (left, right, bottom, top)
+                x0, x1, y0, y1 = extent
+                x_min, x_max = (x0, x1) if x0 <= x1 else (x1, x0)
+                y_min, y_max = (y0, y1) if y0 <= y1 else (y1, y0)
+                
+                n_scans, n_x_points = data_array.shape
+                
+                # Create x-axis array
+                x_axis = np.linspace(x_min, x_max, n_x_points)
+                
+                print("\nPeak Search Menu:")
+                print("  1: Find peaks in X range")
+                print("  e: Explanation of peak searching")
+                print("  q: Back to main menu")
+                sub = _safe_input("Choose option: ").strip().lower()
+                
+                if sub == 'e':
+                    print("\n" + "="*70)
+                    print("PEAK SEARCHING EXPLANATION")
+                    print("="*70)
+                    print("\nPeak searching identifies local maxima in diffraction patterns.")
+                    print("This is useful for tracking how peak positions change over time")
+                    print("(or scan number) in operando experiments.\n")
+                    print("HOW IT WORKS:")
+                    print("1. Select X range: Choose the region where you want to find peaks")
+                    print("2. For each scan (file):")
+                    print("   - Extract intensity profile in the selected X range")
+                    print("   - Find local maxima (peaks) using scipy.signal.find_peaks")
+                    print("   - Refine peak positions using quadratic interpolation")
+                    print("3. Export results: Peak positions vs file number saved to .txt file\n")
+                    print("PARAMETERS:")
+                    print("- Prominence: Minimum height of peak relative to surrounding baseline")
+                    print("  (Higher = fewer, stronger peaks)")
+                    print("- Distance: Minimum separation between peaks (in data points)")
+                    print("  (Larger = peaks must be further apart)")
+                    print("- Width: Minimum width of peak at half maximum")
+                    print("  (Larger = broader peaks only)\n")
+                    print("OUTPUT FORMAT:")
+                    print("The exported .txt file contains:")
+                    print("  Column 1: File number (scan index, 0-based)")
+                    print("  Column 2: Peak position (X-axis value)")
+                    print("  Column 3: Peak intensity (optional, if enabled)\n")
+                    print("="*70 + "\n")
+                    print_menu(); continue
+                
+                if sub == 'q':
+                    print_menu(); continue
+                
+                if sub == '1' or sub == '':
+                    # Get X range
+                    print(f"\nCurrent X range: {x_min:.6g} to {x_max:.6g}")
+                    print("Enter X range for peak search (min max), or press Enter to use full range:")
+                    x_range_input = _safe_input("X range: ").strip()
+                    
+                    if x_range_input:
+                        try:
+                            parts = x_range_input.split()
+                            if len(parts) >= 2:
+                                x_range_min = float(parts[0])
+                                x_range_max = float(parts[1])
+                            else:
+                                print("Invalid format. Use: min max")
+                                print_menu(); continue
+                        except ValueError:
+                            print("Invalid number format.")
+                            print_menu(); continue
+                    else:
+                        x_range_min = x_min
+                        x_range_max = x_max
+                    
+                    # Clamp to valid range
+                    x_range_min = max(x_min, min(x_max, x_range_min))
+                    x_range_max = max(x_min, min(x_max, x_range_max))
+                    if x_range_min >= x_range_max:
+                        print("Invalid range: min must be < max")
+                        print_menu(); continue
+                    
+                    # Find column indices for X range
+                    col_min = int(np.argmin(np.abs(x_axis - x_range_min)))
+                    col_max = int(np.argmin(np.abs(x_axis - x_range_max)))
+                    if col_min > col_max:
+                        col_min, col_max = col_max, col_min
+                    col_max = min(col_max + 1, n_x_points)  # Include endpoint
+                    
+                    # Get parameters for peak finding
+                    print("\nPeak finding parameters:")
+                    prominence_input = _safe_input("Prominence (relative to max, default 0.1): ").strip()
+                    prominence = float(prominence_input) if prominence_input else 0.1
+                    
+                    distance_input = _safe_input("Minimum distance between peaks (data points, default 5): ").strip()
+                    distance = int(distance_input) if distance_input else 5
+                    
+                    width_input = _safe_input("Minimum peak width (data points, default 1, 0=disabled): ").strip()
+                    width = int(width_input) if width_input else 1
+                    
+                    include_intensity = _safe_input("Include peak intensity in output? (y/n, default n): ").strip().lower() == 'y'
+                    
+                    # Find peaks for each scan
+                    print(f"\nFinding peaks in X range [{x_range_min:.6g}, {x_range_max:.6g}]...")
+                    results = []
+                    
+                    for scan_idx in range(n_scans):
+                        # Extract intensity profile for this scan in X range
+                        intensity_profile = data_array[scan_idx, col_min:col_max]
+                        x_profile = x_axis[col_min:col_max]
+                        
+                        if len(intensity_profile) < 3:
+                            continue
+                        
+                        # Find peaks
+                        try:
+                            # Calculate prominence threshold
+                            max_intensity = np.max(intensity_profile)
+                            min_intensity = np.min(intensity_profile)
+                            prominence_abs = (max_intensity - min_intensity) * prominence
+                            
+                            peak_kwargs = {
+                                'prominence': prominence_abs if prominence_abs > 0 else None,
+                                'distance': max(1, distance),
+                            }
+                            if width > 0:
+                                peak_kwargs['width'] = width
+                            
+                            # Remove None values
+                            peak_kwargs = {k: v for k, v in peak_kwargs.items() if v is not None}
+                            
+                            peak_indices, peak_properties = find_peaks(intensity_profile, **peak_kwargs)
+                            
+                            # Refine peak positions using quadratic interpolation
+                            for peak_idx in peak_indices:
+                                if peak_idx == 0 or peak_idx == len(intensity_profile) - 1:
+                                    peak_x = x_profile[peak_idx]
+                                    peak_intensity = intensity_profile[peak_idx]
+                                else:
+                                    # Quadratic interpolation for sub-pixel accuracy
+                                    y1 = intensity_profile[peak_idx - 1]
+                                    y2 = intensity_profile[peak_idx]
+                                    y3 = intensity_profile[peak_idx + 1]
+                                    x1 = x_profile[peak_idx - 1]
+                                    x2 = x_profile[peak_idx]
+                                    x3 = x_profile[peak_idx + 1]
+                                    
+                                    denom = (y1 - 2*y2 + y3)
+                                    if abs(denom) > 1e-12:
+                                        dx = 0.5 * (y1 - y3) / denom
+                                        if -0.6 < dx < 0.6:
+                                            peak_x = x2 + dx * (x3 - x1) / 2.0
+                                            peak_intensity = y2 + 0.5 * dx * (y3 - y1)
+                                        else:
+                                            peak_x = x2
+                                            peak_intensity = y2
+                                    else:
+                                        peak_x = x2
+                                        peak_intensity = y2
+                                
+                                if include_intensity:
+                                    results.append((scan_idx, peak_x, peak_intensity))
+                                else:
+                                    results.append((scan_idx, peak_x))
+                        except Exception as e:
+                            # Skip this scan if peak finding fails
+                            continue
+                    
+                    if not results:
+                        print("No peaks found in the selected X range.")
+                        print_menu(); continue
+                    
+                    # Save results
+                    folder = choose_save_path(file_paths, purpose="peak search export")
+                    if not folder:
+                        print_menu(); continue
+                    
+                    print(f"\nChosen path: {folder}")
+                    fname = _safe_input("Export filename (default: peaks.txt): ").strip()
+                    if not fname:
+                        fname = "peaks.txt"
+                    if not fname.endswith('.txt'):
+                        fname += '.txt'
+                    
+                    target = fname if os.path.isabs(fname) else os.path.join(folder, fname)
+                    if os.path.exists(target):
+                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            print_menu(); continue
+                    
+                    # Write results
+                    try:
+                        with open(target, 'w') as f:
+                            if include_intensity:
+                                f.write("# File number\tPeak position\tPeak intensity\n")
+                                for scan_idx, peak_x, peak_intensity in results:
+                                    f.write(f"{scan_idx}\t{peak_x:.6f}\t{peak_intensity:.6f}\n")
+                            else:
+                                f.write("# File number\tPeak position\n")
+                                for result in results:
+                                    if len(result) == 2:
+                                        scan_idx, peak_x = result
+                                        f.write(f"{scan_idx}\t{peak_x:.6f}\n")
+                                    else:
+                                        scan_idx, peak_x, _ = result
+                                        f.write(f"{scan_idx}\t{peak_x:.6f}\n")
+                        print(f"Peak positions exported to {target}")
+                        print(f"Found {len(results)} peaks across {len(set(r[0] for r in results))} scans")
+                    except Exception as e:
+                        print(f"Error saving file: {e}")
+                else:
+                    print("Invalid option.")
+            except Exception as e:
+                print(f"Error in peak search: {e}")
+                import traceback
+                traceback.print_exc()
             print_menu(); continue
         if cmd == 'h':
             # Always read fresh value from attribute to avoid stale cached value
             ax_h_in = getattr(ax, '_fixed_ax_h_in', ax_h_in)
             print(f"Current height: {ax_h_in:.2f} in")
-            val = input("New height (inches): ").strip()
+            val = _safe_input("New height (inches): ").strip()
             if val:
                 _snapshot("height")
                 try:
@@ -2000,19 +2676,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 ax.set_ylim(y1, y0)
             except Exception as e:
                 print(f"Operando reverse failed: {e}")
-            try:
-                ey0, ey1 = ec_ax.get_ylim()
-                ec_ax.set_ylim(ey1, ey0)
-                # If we have a stored time ylim for restoration later, invert it too
-                if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
-                    lo, hi = ec_ax._saved_time_ylim
-                    try:
-                        ec_ax._saved_time_ylim = (hi, lo)
-                    except Exception:
-                        pass
-                fig.canvas.draw_idle()
-            except Exception as e:
-                print(f"EC reverse failed: {e}")
+            if ec_ax is not None:
+                try:
+                    ey0, ey1 = ec_ax.get_ylim()
+                    ec_ax.set_ylim(ey1, ey0)
+                    # If we have a stored time ylim for restoration later, invert it too
+                    if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
+                        lo, hi = ec_ax._saved_time_ylim
+                        try:
+                            ec_ax._saved_time_ylim = (hi, lo)
+                        except Exception:
+                            pass
+                    fig.canvas.draw_idle()
+                except Exception as e:
+                    print(f"EC reverse failed: {e}")
             print_menu()
         elif cmd == 'f':
             # Font submenu with numbered options
@@ -2021,7 +2698,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print(f"\nFont submenu (current: family='{cur_family}', size={cur_size})")
             print("  f: change family  |  s: change size  |  q: back")
             while True:
-                sub = input("Font> ").strip().lower()
+                sub = _safe_input("Font> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -2034,7 +2711,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     for i, font in enumerate(fonts, 1):
                         print(f"  {i}: {font}")
                     print("Or enter custom font name directly.")
-                    choice = input("Font family (number or name): ").strip()
+                    choice = _safe_input("Font family (number or name): ").strip()
                     if not choice:
                         continue
                     _snapshot("font-family")
@@ -2054,7 +2731,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 elif sub == 's':
                     # Show current size and accept direct input
                     cur_size = plt.rcParams.get('font.size', None)
-                    choice = input(f"Font size (current: {cur_size}): ").strip()
+                    choice = _safe_input(f"Font size (current: {cur_size}): ").strip()
                     if not choice:
                         continue
                     _snapshot("font-size")
@@ -2077,7 +2754,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print(_colorize_inline_commands("  1.5 2.5  - set frame=1.5, ticks=2.5"))
             print(_colorize_inline_commands("  q        - cancel"))
             
-            inp = input("Line widths> ").strip().lower()
+            inp = _safe_input("Line widths> ").strip().lower()
             if not inp or inp == 'q':
                 print_menu()
                 continue
@@ -2104,11 +2781,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 ax.tick_params(axis='both', which='major', width=tick_w)
                 ax.tick_params(axis='both', which='minor', width=tick_w)
                 
-                # Apply to EC pane (ec_ax)
-                for spine in ec_ax.spines.values():
-                    spine.set_linewidth(frame_w)
-                ec_ax.tick_params(axis='both', which='major', width=tick_w)
-                ec_ax.tick_params(axis='both', which='minor', width=tick_w)
+                # Apply to EC pane (ec_ax) if present
+                if ec_ax is not None:
+                    for spine in ec_ax.spines.values():
+                        spine.set_linewidth(frame_w)
+                    ec_ax.tick_params(axis='both', which='major', width=tick_w)
+                    ec_ax.tick_params(axis='both', which='minor', width=tick_w)
                 
                 # Also apply to colorbar if present
                 if cbar is not None:
@@ -2125,7 +2803,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 except Exception:
                     fig.canvas.draw_idle()
                 
-                print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando, EC, and colorbar")
+                if ec_ax is not None:
+                    print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando, EC, and colorbar")
+                else:
+                    print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando and colorbar")
             except ValueError:
                 print("Invalid number format.")
             except Exception as e:
@@ -2136,6 +2817,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # Unified WASD ticks/labels/spines submenu for either pane
             # Import here to avoid scoping issues with nested functions
             from matplotlib.ticker import AutoMinorLocator, NullFormatter, MaxNLocator, NullLocator
+            # Import UI positioning functions locally to ensure they're accessible in nested functions
+            from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
             
             def _get_tick_state(a):
                 # Unified keys with fallbacks for legacy combined flags
@@ -2221,7 +2904,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print(_colorize_inline_commands("Choose pane: o=operando, e=ec, q=back"))
                 else:
                     print(_colorize_inline_commands("Choose pane: o=operando, q=back"))
-                pane = input("ot> ").strip().lower()
+                pane = _safe_input("ot> ").strip().lower()
                 if not pane:
                     continue
                 if pane == 'q':
@@ -2410,6 +3093,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 try: axis._stored_ylabel = axis.get_ylabel()
                                 except Exception: axis._stored_ylabel = ''
                             axis.set_ylabel("")
+                        # Set flag for right title state (used by save/export)
+                        axis._right_ylabel_on = bool(wasd_state['right']['title'])
                         # Left ylabel is disabled for EC (hide any duplicate artist)
                         # Note: EC uses the actual ylabel which is already on the right side
                     else:
@@ -2433,14 +3118,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     if 'left' in changed_sides:
                         _ui_position_left_ylabel(axis, fig, current_tick_state)
                     if 'right' in changed_sides:
-                        _ui_position_right_ylabel(axis, fig, current_tick_state)
+                        # EC axes use actual ylabel on right, not duplicate artist
+                        # Skip _ui_position_right_ylabel for EC to avoid creating unwanted duplicate
+                        if not is_ec:
+                            _ui_position_right_ylabel(axis, fig, current_tick_state)
                 
                 print(_colorize_inline_commands("WASD toggles: direction (w/a/s/d) x action (1..5)"))
                 print(_colorize_inline_commands("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title"))
                 print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' for state, 'q' to return."))
                 print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
                 while True:
-                    cmd2 = input(_colorize_prompt("Toggle> ")).strip().lower()
+                    cmd2 = _safe_input(_colorize_prompt("Toggle> ")).strip().lower()
                     if not cmd2:
                         continue
                     if cmd2 == 'q':
@@ -2465,7 +3153,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             # Get current major tick length from axes
                             current_major = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 4.0
                             print(f"Current major tick length: {current_major}")
-                            new_length_str = input("Enter new major tick length (e.g., 6.0): ").strip()
+                            new_length_str = _safe_input("Enter new major tick length (e.g., 6.0): ").strip()
                             if not new_length_str:
                                 continue
                             new_major = float(new_length_str)
@@ -2558,7 +3246,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 current_y_px = _px_value('_top_xlabel_manual_offset_y_pts', target)
                                 current_x_px = _px_value('_top_xlabel_manual_offset_x_pts', target)
                                 print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
-                                sub = input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2595,7 +3283,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             while True:
                                 current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts', target)
                                 print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
-                                sub = input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2625,7 +3313,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             while True:
                                 current_x_px = _px_value('_left_ylabel_manual_offset_x_pts', target)
                                 print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
-                                sub = input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2662,7 +3350,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 current_x_px = _px_value('_right_ylabel_manual_offset_x_pts', target)
                                 current_y_px = _px_value('_right_ylabel_manual_offset_y_pts', target)
                                 print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
-                                sub = input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2701,7 +3389,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
                             print("  " + _colorize_menu('r : reset all offsets'))
                             print("  " + _colorize_menu('q : return'))
-                            choice = input(_colorize_prompt("p> ")).strip().lower()
+                            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
                             if not choice:
                                 continue
                             if choice == 'q':
@@ -2817,7 +3505,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'ox':
             while True:
                 cur = ax.get_xlim(); print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -2825,7 +3513,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_xlim()
                         print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -2835,15 +3523,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-xrange")
                         ax.set_xlim(cur[0], new_upper)
-                        _renormalize_to_visible()
                         fig.canvas.draw_idle()
                         print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
+                if line.lower() == 'w':
+                    continue
                 if line.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
                         cur = ax.get_xlim()
                         print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -2853,9 +3542,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-xrange")
                         ax.set_xlim(new_lower, cur[1])
-                        _renormalize_to_visible()
                         fig.canvas.draw_idle()
                         print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
+                if line.lower() == 's':
+                    continue
                 if line.lower() == 'a':
                     # Auto: restore original range from image data
                     _snapshot("operando-xrange-auto")
@@ -2868,7 +3558,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 orig_min = min(extent[0], extent[1])
                                 orig_max = max(extent[0], extent[1])
                                 ax.set_xlim(orig_min, orig_max)
-                                _renormalize_to_visible()
                                 fig.canvas.draw_idle()
                                 print(f"Operando X range restored to original: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
                             else:
@@ -2882,8 +3571,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 try:
                     lo, hi = map(float, line.split())
                     ax.set_xlim(lo, hi)
-                    # Re-normalize intensity to visible region
-                    _renormalize_to_visible()
                     fig.canvas.draw_idle()
                 except Exception as e:
                     print(f"Invalid range: {e}")
@@ -2891,7 +3578,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'oy':
             while True:
                 cur = ax.get_ylim(); print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -2899,7 +3586,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_ylim()
                         print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper Y limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper Y limit (current lower: {cur[0]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -2909,15 +3596,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-yrange")
                         ax.set_ylim(cur[0], new_upper)
-                        _renormalize_to_visible()
                         fig.canvas.draw_idle()
                         print(f"Operando Y range updated: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
+                if line.lower() == 'w':
+                    continue
                 if line.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
                         cur = ax.get_ylim()
                         print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower Y limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower Y limit (current upper: {cur[1]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -2927,9 +3615,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-yrange")
                         ax.set_ylim(new_lower, cur[1])
-                        _renormalize_to_visible()
                         fig.canvas.draw_idle()
                         print(f"Operando Y range updated: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
+                if line.lower() == 's':
+                    continue
                 if line.lower() == 'a':
                     # Auto: restore original range from image data
                     _snapshot("operando-yrange-auto")
@@ -2942,7 +3631,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 orig_min = min(extent[2], extent[3])
                                 orig_max = max(extent[2], extent[3])
                                 ax.set_ylim(orig_min, orig_max)
-                                _renormalize_to_visible()
                                 fig.canvas.draw_idle()
                                 print(f"Operando Y range restored to original: {ax.get_ylim()[0]:.4g} {ax.get_ylim()[1]:.4g}")
                             else:
@@ -2956,8 +3644,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 try:
                     lo, hi = map(float, line.split())
                     ax.set_ylim(lo, hi)
-                    # Re-normalize intensity to visible region
-                    _renormalize_to_visible()
                     fig.canvas.draw_idle()
                 except Exception as e:
                     print(f"Invalid range: {e}")
@@ -3022,9 +3708,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     auto_available = False
                 
                 if auto_available:
-                    line = input("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ").strip()
+                    line = _safe_input("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ").strip()
                 else:
-                    line = input("New intensity range (min max, w=upper only, s=lower only, q=back): ").strip()
+                    line = _safe_input("New intensity range (min max, w=upper only, s=lower only, q=back): ").strip()
                 
                 if not line or line.lower() == 'q':
                     break
@@ -3038,7 +3724,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception:
                             print("Could not retrieve current color scale range")
                             break
-                        val = input(f"Enter new upper intensity limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper intensity limit (current lower: {cur[0]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3047,7 +3733,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("Invalid value, ignored.")
                             continue
                         _snapshot("operando-intensity-range")
-                        im.set_clim(cur[0], new_upper)
+                        _safe_set_clim(im, cur[0], new_upper)
                         try:
                             if cbar is not None:
                                 _update_custom_colorbar(cbar.ax, im)
@@ -3064,7 +3750,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception:
                             print("Could not retrieve current color scale range")
                             break
-                        val = input(f"Enter new lower intensity limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower intensity limit (current upper: {cur[1]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3073,7 +3759,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("Invalid value, ignored.")
                             continue
                         _snapshot("operando-intensity-range")
-                        im.set_clim(new_lower, cur[1])
+                        _safe_set_clim(im, new_lower, cur[1])
                         try:
                             if cbar is not None:
                                 _update_custom_colorbar(cbar.ax, im)
@@ -3087,7 +3773,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     if line.lower() == 'a':
                         # Apply auto-normalization to visible data
                         if auto_available:
-                            im.set_clim(auto_lo, auto_hi)
+                            _safe_set_clim(im, auto_lo, auto_hi)
                             try:
                                 if cbar is not None:
                                     _update_custom_colorbar(cbar.ax, im)
@@ -3099,7 +3785,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("Auto-fit unavailable: no finite data in visible area")
                     else:
                         lo, hi = map(float, line.split())
-                        im.set_clim(lo, hi)
+                        _safe_set_clim(im, lo, hi)
                         try:
                             if cbar is not None:
                                 _update_custom_colorbar(cbar.ax, im)
@@ -3115,7 +3801,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ax_w_in = getattr(ax, '_fixed_ax_w_in', ax_w_in)
                 print(f"Current operando width: {ax_w_in:.2f} in")
-                val = input("New width (inches, q=back): ").strip()
+                val = _safe_input("New width (inches, q=back): ").strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("operando-width")
@@ -3135,7 +3821,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ec_w_in = getattr(ec_ax, '_fixed_ec_w_in', ec_w_in)
                 print(f"Current EC width: {ec_w_in:.2f} in")
-                val = input("New EC width (inches, q=back): ").strip()
+                val = _safe_input("New EC width (inches, q=back): ").strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("ec-width")
@@ -3148,6 +3834,15 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu()
         elif cmd == 'oc':
             # Change operando colormap (perceptually uniform suggestions)
+            # Show current colormap if one is applied
+            try:
+                current_cmap = getattr(im, '_operando_cmap_name', None)
+                if current_cmap is None:
+                    current_cmap = getattr(im.get_cmap(), 'name', None)
+                if current_cmap:
+                    print(f"Current operando colormap: {current_cmap}")
+            except Exception:
+                pass
             def _refresh_available():
                 return set(name.lower() for name in plt.colormaps())
             available = _refresh_available()
@@ -3178,7 +3873,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             if optional:
                 print("\nOther available: " + ", ".join(optional))
             print(_colorize_inline_commands("Append _r to reverse (e.g., viridis_r or 1_r). Blank to cancel."))
-            choice = input(f"Palette name or number (1-{len(rec_palettes)}): ").strip()
+            choice = _safe_input(f"Palette name or number (1-{len(rec_palettes)}): ").strip()
             if not choice:
                 print_menu(); continue
             try:
@@ -3220,6 +3915,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     if reversed_choice:
                         palette_obj = palette_obj.reversed()
                     im.set_cmap(palette_obj)
+                # Store the colormap name explicitly so it can be retrieved reliably when saving
+                setattr(im, '_operando_cmap_name', choice)
                 try:
                     # Update custom colorbar with new colormap
                     if cbar is not None:
@@ -3256,7 +3953,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     cb_w_in, cb_gap_in, ec_gap_in, ec_w_in, ax_w_in, ax_h_in = _ensure_fixed_params(fig, ax, cbar.ax, ec_ax)
                     fam = plt.rcParams.get('font.sans-serif', [''])[0]
                     fsize = plt.rcParams.get('font.size', None)
-                    cmap_name = getattr(im.get_cmap(), 'name', None)
+                    # Get colormap name: first check if we stored it explicitly, otherwise try to get from colormap object
+                    cmap_name = getattr(im, '_operando_cmap_name', None)
+                    if cmap_name is None:
+                        cmap_name = getattr(im.get_cmap(), 'name', None)
                     cb_vis = bool(cbar.ax.get_visible())
                     ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
                     cb_label_text = str(getattr(cbar.ax, '_colorbar_label', cbar.ax.get_ylabel() or 'Intensity'))
@@ -3424,9 +4124,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             else:
                                 print(f"  {_i}: {fname}")
                     
+                    last_style_path = getattr(fig, '_last_style_export_path', None)
                     if ec_ax is None:
                         print("\nNote: Style export (.bps/.bpsg) is only available in dual-pane mode (with EC file).")
-                        sub = input("Style submenu: (q=return, r=refresh): ").strip().lower()
+                        sub = _safe_input("Style submenu: (q=return, r=refresh): ").strip().lower()
                         if sub == 'q':
                             break
                         if sub == 'r' or sub == '':
@@ -3435,17 +4136,44 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("Unknown choice.")
                             continue
                     else:
-                        sub = input("Style submenu: (e=export, q=return, r=refresh): ").strip().lower()
+                        if last_style_path:
+                            sub = _safe_input("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ").strip().lower()
+                        else:
+                            sub = _safe_input("Style submenu: (e=export, q=return, r=refresh): ").strip().lower()
                         if sub == 'q':
                             break
                         if sub == 'r' or sub == '':
                             continue
+                        if sub == 'o':
+                            # Overwrite last exported style file
+                            if not last_style_path:
+                                print("No previous export found.")
+                                continue
+                            if not os.path.exists(last_style_path):
+                                print(f"Previous export file not found: {last_style_path}")
+                                continue
+                            yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                            if yn != 'y':
+                                continue
+                            # Determine export type from existing file and rebuild config
+                            try:
+                                with open(last_style_path, 'r', encoding='utf-8') as f:
+                                    old_cfg = json.load(f)
+                                old_kind = old_cfg.get('kind', '')
+                                # Need to rebuild the full config - this requires the same logic as 'e' command
+                                # For simplicity, redirect user to use 'e' for now, or we could duplicate the config building code
+                                print("To overwrite with current style, please use 'e' to export fresh.")
+                                print("The 'o' option will be enhanced in a future update to rebuild config automatically.")
+                                continue
+                            except Exception as e:
+                                print(f"Error reading previous export: {e}")
+                                continue
                         if sub == 'e':
                             # Ask for ps or psg
                             print("Export options:")
                             print("  ps  = style only (.bps)")
                             print("  psg = style + geometry (.bpsg)")
-                            exp_choice = input("Export choice (ps/psg, q=cancel): ").strip().lower()
+                            exp_choice = _safe_input("Export choice (ps/psg, q=cancel): ").strip().lower()
                             if not exp_choice or exp_choice == 'q':
                                 print("Style export canceled.")
                                 continue
@@ -3559,6 +4287,23 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 'x': getattr(ec_ax.xaxis, 'labelpad', None),
                                 'y': getattr(ec_ax.yaxis, 'labelpad', None),
                             }
+                            # Capture title offsets
+                            op_title_offsets = {
+                                'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                                'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                                'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+                            }
+                            ec_title_offsets = {
+                                'top_y': float(getattr(ec_ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                                'top_x': float(getattr(ec_ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'bottom_y': float(getattr(ec_ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                                'left_x': float(getattr(ec_ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'right_x': float(getattr(ec_ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                                'right_y': float(getattr(ec_ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+                            }
                             
                             if exp_choice == 'ps':
                                 cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
@@ -3568,8 +4313,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                     'version': 2,
                                     'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_visible, 'cb_label_mode': cb_label_mode},
                                     'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
-                                    'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads},
-                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads},
+                                    'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
+                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
                                     'font': {'family': fam, 'size': fsize},
                                     'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
                                 }
@@ -3582,8 +4327,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                     'version': 2,
                                     'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_visible, 'cb_label_mode': cb_label_mode},
                                     'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
-                                    'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads},
-                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads},
+                                    'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
+                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
                                     'font': {'family': fam, 'size': fsize},
                                     'axes_geometry': _get_geometry_snapshot(ax, ec_ax),
                                     'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
@@ -3622,7 +4367,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             else:
                                 print(f"  {_i}: {fname}")
                     
-                    choice_name = input("Enter new filename or number to overwrite (q=cancel): ").strip()
+                    choice_name = _safe_input("Enter new filename or number to overwrite (q=cancel): ").strip()
                     if not choice_name or choice_name.lower() == 'q':
                         print("Style export canceled.")
                         continue
@@ -3631,7 +4376,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         _idx = int(choice_name)
                         if 1 <= _idx <= len(_style_files):
                             name = _style_files[_idx-1]
-                            yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                            yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                             if yn == 'y':
                                 target = file_list[_idx-1][1]  # Full path from list
                         else:
@@ -3648,10 +4393,14 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         else:
                             target = get_organized_path(name, 'style', base_path=save_base)
                         if os.path.exists(target):
-                            yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                            yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                             if yn != 'y':
                                 target = None
                     if target:
+                        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                        from .utils import ensure_exact_case_filename
+                        target = ensure_exact_case_filename(target)
+                        
                         with open(target, 'w', encoding='utf-8') as f:
                             json.dump(cfg, f, indent=2)
                         print(f"Exported style to {target}")
@@ -3664,7 +4413,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu()
         elif cmd == 'i':
             # Load a .bps/.bpsg/.bpcfg style and apply
-            # Applies style properties from commands: oc, ow, ew, h, el, t, l, f, g, r
+            # Applies: oc, ow, ew, h, el, t, l, f, g, r, v; .bpsg also applies ox, oy, oz, or, et, ex, ey, er (axes_geometry + ec y_mode)
             try:
                 path = choose_style_file(file_paths, purpose="style import")
                 if not path:
@@ -3774,8 +4523,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 if cmap:
                     try:
                         im.set_cmap(cmap)
+                        # Store the colormap name explicitly so it can be retrieved reliably when saving
+                        setattr(im, '_operando_cmap_name', cmap)
                         if cbar is not None:
-                            cbar.update_normal(im)
+                            _update_custom_colorbar(cbar.ax, im)
                     except Exception:
                         pass
                 
@@ -4019,34 +4770,35 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     except Exception as e:
                         print(f"Warning: Could not apply operando reverse: {e}")
                     
-                    try:
-                        # EC Y-axis reverse
-                        ec_cfg = cfg.get('ec', {})
-                        ec_y_reversed = ec_cfg.get('y_reversed', False)
-                        if ec_y_reversed:
-                            ey0, ey1 = ec_ax.get_ylim()
-                            if ey0 < ey1:  # Only reverse if not already reversed
-                                ec_ax.set_ylim(ey1, ey0)
-                                # Also update stored time ylim if present
-                                if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
-                                    lo, hi = ec_ax._saved_time_ylim
-                                    ec_ax._saved_time_ylim = (hi, lo)
-                        else:
-                            ey0, ey1 = ec_ax.get_ylim()
-                            if ey0 > ey1:  # Un-reverse if currently reversed
-                                ec_ax.set_ylim(ey1, ey0)
-                                # Also update stored time ylim if present
-                                if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
-                                    lo, hi = ec_ax._saved_time_ylim
-                                    ec_ax._saved_time_ylim = (hi, lo)
-                    except Exception as e:
-                        print(f"Warning: Could not apply EC reverse: {e}")
+                    if ec_ax is not None:
+                        try:
+                            # EC Y-axis reverse
+                            ec_cfg = cfg.get('ec', {})
+                            ec_y_reversed = ec_cfg.get('y_reversed', False)
+                            if ec_y_reversed:
+                                ey0, ey1 = ec_ax.get_ylim()
+                                if ey0 < ey1:  # Only reverse if not already reversed
+                                    ec_ax.set_ylim(ey1, ey0)
+                                    # Also update stored time ylim if present
+                                    if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
+                                        lo, hi = ec_ax._saved_time_ylim
+                                        ec_ax._saved_time_ylim = (hi, lo)
+                            else:
+                                ey0, ey1 = ec_ax.get_ylim()
+                                if ey0 > ey1:  # Un-reverse if currently reversed
+                                    ec_ax.set_ylim(ey1, ey0)
+                                    # Also update stored time ylim if present
+                                    if hasattr(ec_ax, '_saved_time_ylim') and isinstance(ec_ax._saved_time_ylim, (tuple, list)) and len(ec_ax._saved_time_ylim)==2:
+                                        lo, hi = ec_ax._saved_time_ylim
+                                        ec_ax._saved_time_ylim = (hi, lo)
+                        except Exception as e:
+                            print(f"Warning: Could not apply EC reverse: {e}")
                     
                     # Apply intensity range (oz command)
                     try:
                         intensity_range = op.get('intensity_range')
                         if intensity_range and isinstance(intensity_range, (list, tuple)) and len(intensity_range) == 2:
-                            im.set_clim(float(intensity_range[0]), float(intensity_range[1]))
+                            _safe_set_clim(im, float(intensity_range[0]), float(intensity_range[1]))
                             print(f"Applied intensity range: {intensity_range[0]:.4g} to {intensity_range[1]:.4g}")
                     except Exception as e:
                         print(f"Warning: Could not apply intensity range: {e}")
@@ -4183,6 +4935,33 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     except Exception:
                         pass
                 
+                # Restore title offsets BEFORE applying labelpads
+                if version >= 2:
+                    try:
+                        op_offsets = op.get('title_offsets', {})
+                        if op_offsets:
+                            ax._top_xlabel_manual_offset_y_pts = float(op_offsets.get('top_y', 0.0) or 0.0)
+                            ax._top_xlabel_manual_offset_x_pts = float(op_offsets.get('top_x', 0.0) or 0.0)
+                            ax._bottom_xlabel_manual_offset_y_pts = float(op_offsets.get('bottom_y', 0.0) or 0.0)
+                            ax._left_ylabel_manual_offset_x_pts = float(op_offsets.get('left_x', 0.0) or 0.0)
+                            ax._right_ylabel_manual_offset_x_pts = float(op_offsets.get('right_x', 0.0) or 0.0)
+                            ax._right_ylabel_manual_offset_y_pts = float(op_offsets.get('right_y', 0.0) or 0.0)
+                    except Exception as e:
+                        print(f"Warning: Could not apply operando title offsets: {e}")
+                    
+                    try:
+                        ec_cfg = cfg.get('ec', {})
+                        ec_offsets = ec_cfg.get('title_offsets', {})
+                        if ec_offsets and ec_ax is not None:
+                            ec_ax._top_xlabel_manual_offset_y_pts = float(ec_offsets.get('top_y', 0.0) or 0.0)
+                            ec_ax._top_xlabel_manual_offset_x_pts = float(ec_offsets.get('top_x', 0.0) or 0.0)
+                            ec_ax._bottom_xlabel_manual_offset_y_pts = float(ec_offsets.get('bottom_y', 0.0) or 0.0)
+                            ec_ax._left_ylabel_manual_offset_x_pts = float(ec_offsets.get('left_x', 0.0) or 0.0)
+                            ec_ax._right_ylabel_manual_offset_x_pts = float(ec_offsets.get('right_x', 0.0) or 0.0)
+                            ec_ax._right_ylabel_manual_offset_y_pts = float(ec_offsets.get('right_y', 0.0) or 0.0)
+                    except Exception as e:
+                        print(f"Warning: Could not apply EC title offsets: {e}")
+                
                 # Apply labelpads (title positioning) - preserve current if not in config
                 if version >= 2:
                     try:
@@ -4225,6 +5004,44 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 ec_ax.yaxis.labelpad = saved_ec_ylabelpad
                     except Exception as e:
                         print(f"Warning: Could not apply EC labelpads: {e}")
+                
+                # Reposition titles to apply offsets (after labelpads are set)
+                try:
+                    from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
+                    # Build tick_state for operando pane
+                    op_ts = getattr(ax, '_saved_tick_state', {})
+                    op_tick_state = {
+                        't_ticks': bool(op_ts.get('t_ticks', op_ts.get('tx', False))),
+                        't_labels': bool(op_ts.get('t_labels', op_ts.get('tx', False))),
+                        'b_ticks': bool(op_ts.get('b_ticks', op_ts.get('bx', True))),
+                        'b_labels': bool(op_ts.get('b_labels', op_ts.get('bx', True))),
+                        'l_ticks': bool(op_ts.get('l_ticks', op_ts.get('ly', True))),
+                        'l_labels': bool(op_ts.get('l_labels', op_ts.get('ly', True))),
+                        'r_ticks': bool(op_ts.get('r_ticks', op_ts.get('ry', False))),
+                        'r_labels': bool(op_ts.get('r_labels', op_ts.get('ry', False))),
+                    }
+                    _ui_position_top_xlabel(ax, fig, op_tick_state)
+                    _ui_position_bottom_xlabel(ax, fig, op_tick_state)
+                    _ui_position_left_ylabel(ax, fig, op_tick_state)
+                    _ui_position_right_ylabel(ax, fig, op_tick_state)
+                    if ec_ax is not None:
+                        ec_ts = getattr(ec_ax, '_saved_tick_state', {})
+                        ec_tick_state = {
+                            't_ticks': bool(ec_ts.get('t_ticks', ec_ts.get('tx', False))),
+                            't_labels': bool(ec_ts.get('t_labels', ec_ts.get('tx', False))),
+                            'b_ticks': bool(ec_ts.get('b_ticks', ec_ts.get('bx', True))),
+                            'b_labels': bool(ec_ts.get('b_labels', ec_ts.get('bx', True))),
+                            'l_ticks': bool(ec_ts.get('l_ticks', ec_ts.get('ly', True))),
+                            'l_labels': bool(ec_ts.get('l_labels', ec_ts.get('ly', True))),
+                            'r_ticks': bool(ec_ts.get('r_ticks', ec_ts.get('ry', False))),
+                            'r_labels': bool(ec_ts.get('r_labels', ec_ts.get('ry', False))),
+                        }
+                        _ui_position_top_xlabel(ec_ax, fig, ec_tick_state)
+                        _ui_position_bottom_xlabel(ec_ax, fig, ec_tick_state)
+                        _ui_position_left_ylabel(ec_ax, fig, ec_tick_state)
+                        _ui_position_right_ylabel(ec_ax, fig, ec_tick_state)
+                except Exception as e:
+                    print(f"Warning: Could not reposition titles: {e}")
                 
                 # Final redraw
                 try:
@@ -4274,17 +5091,19 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 print("Rename Operando Axes: x=rename X label, y=rename Y label, q=back")
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
                 while True:
-                    sub = input("or> ").strip().lower()
+                    sub = _safe_input("or> ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub == 'x':
                         cur = ax.get_xlabel() or ''
-                        lab = input(f"New operando X label (blank=cancel, current='{cur}'): ")
+                        lab = _safe_input(f"New operando X label (blank=cancel, current='{cur}'): ")
                         if lab:
+                            lab = convert_label_shortcuts(lab)
                             _snapshot("rename-op-x")
                             try:
                                 ax.set_xlabel(lab)
@@ -4296,8 +5115,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 pass
                     elif sub == 'y':
                         cur = ax.get_ylabel() or ''
-                        lab = input(f"New operando Y label (blank=cancel, current='{cur}'): ")
+                        lab = _safe_input(f"New operando Y label (blank=cancel, current='{cur}'): ")
                         if lab:
+                            lab = convert_label_shortcuts(lab)
                             _snapshot("rename-op-y")
                             try:
                                 ax.set_ylabel(lab)
@@ -4327,16 +5147,18 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
                 while True:
-                    sub = input("er> ").strip().lower()
+                    sub = _safe_input("er> ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub == 'x':
                         cur = ec_ax.get_xlabel() or ''
-                        lab = input(f"New EC X label (blank=cancel, current='{cur}'): ")
+                        lab = _safe_input(f"New EC X label (blank=cancel, current='{cur}'): ")
                         if lab:
+                            lab = convert_label_shortcuts(lab)
                             _snapshot("rename-ec-x")
                             try:
                                 ec_ax.set_xlabel(lab)
@@ -4347,8 +5169,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 pass
                     elif sub == 'y':
                         cur = ec_ax.get_ylabel() or ''
-                        lab = input(f"New EC Y label (blank=cancel, current='{cur}'): ")
+                        lab = _safe_input(f"New EC Y label (blank=cancel, current='{cur}'): ")
                         if lab:
+                            lab = convert_label_shortcuts(lab)
                             _snapshot("rename-ec-y")
                             try:
                                 ec_ax.set_ylabel(lab)
@@ -4385,7 +5208,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print_menu(); continue
                 print("EC line submenu: c=color, l=linewidth, q=back")
                 while True:
-                    sub = input("el> ").strip().lower()
+                    sub = _safe_input("el> ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -4401,7 +5224,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         else:
                             print("\nNo saved colors. Type 'u' to manage saved colors.")
                         print("  (Enter color name/hex, saved color number, or 'u' to manage)")
-                        val = input(f"Color (current={cur}, blank=cancel): ").strip()
+                        val = _safe_input(f"Color (current={cur}, blank=cancel): ").strip()
                         if not val:
                             continue
                         if val.lower() == 'u':
@@ -4418,7 +5241,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"Invalid color: {e}")
                     elif sub == 'l':
                         cur = ln.get_linewidth()
-                        val = input(f"Line width (current={cur}, blank=cancel): ").strip()
+                        val = _safe_input(f"Line width (current={cur}, blank=cancel): ").strip()
                         if not val:
                             continue
                         _snapshot("ec-line-width")
@@ -4443,7 +5266,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 continue
             while True:
                 cur = ec_ax.get_ylim(); print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -4451,7 +5274,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_ylim()
                         print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper time limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper time limit (current lower: {cur[0]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4469,7 +5292,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_ylim()
                         print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower time limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower time limit (current upper: {cur[1]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4583,7 +5406,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print("The .mpt file must contain the '<I>/mA' column to use this feature.")
                     print_menu(); continue
                 while True:
-                    sub = input("ey submenu: n=ions, t=time, q=back: ").strip().lower()
+                    sub = _safe_input("ey submenu: n=ions, t=time, q=back: ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -4600,7 +5423,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             prompt = "Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=cancel: "
                         else:
                             prompt = f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=cancel): "
-                        s = input(prompt).strip()
+                        s = _safe_input(prompt).strip()
                         if not s:
                             if need_input:
                                 continue
@@ -4886,7 +5709,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 cur = ec_ax.get_xlim()
                 print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                line = input("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -4894,7 +5717,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_xlim()
                         print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new upper EC X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper EC X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4913,7 +5736,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_xlim()
                         print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = input(f"Enter new lower EC X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower EC X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4975,7 +5798,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             cur_w, cur_h = _get_fig_size(fig)
             print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
             print("Canvas: only figure size will change; panel widths/gaps are not altered.")
-            line = input("New canvas size 'W H' (blank=cancel): ").strip()
+            line = _safe_input("New canvas size 'W H' (blank=cancel): ").strip()
             if line:
                 _snapshot("canvas-size")
                 try:

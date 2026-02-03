@@ -36,10 +36,44 @@ from __future__ import annotations
 from typing import Dict, Optional
 import json
 import os
+import sys
+import contextlib
+from io import StringIO
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator
 import random as _random
+
+
+class _FilterIMKWarning:
+    """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Filter out the harmless macOS IMK warning
+        if 'IMKCFRunLoopWakeUpReliable' not in message:
+            self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+
+
+def _safe_input(prompt: str = "") -> str:
+    """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
+    
+    This is a harmless macOS system message that appears when using input() in terminals.
+    """
+    # Filter stderr to hide macOS IMK warnings while preserving other errors
+    original_stderr = sys.stderr
+    sys.stderr = _FilterIMKWarning(original_stderr)
+    try:
+        result = input(prompt)
+        return result
+    except (KeyboardInterrupt, EOFError):
+        raise
+    finally:
+        sys.stderr = original_stderr
 
 from .ui import (
     resize_plot_frame, resize_canvas,
@@ -52,15 +86,26 @@ from .ui import (
 from .utils import (
     _confirm_overwrite,
     choose_save_path,
+    convert_label_shortcuts,
     choose_style_file,
     list_files_in_subdirectory,
     get_organized_path,
 )
 import time
-from .color_utils import resolve_color_token
+from .color_utils import resolve_color_token, color_block, palette_preview, manage_user_colors, get_user_color_list, ensure_colormap
 
 
 def _legend_no_frame(ax, *args, **kwargs):
+    # Compact legend defaults
+    kwargs.setdefault('frameon', False)
+    kwargs.setdefault('handlelength', 1.0)
+    kwargs.setdefault('handletextpad', 0.35)
+    kwargs.setdefault('labelspacing', 0.25)
+    kwargs.setdefault('borderaxespad', 0.5)
+    kwargs.setdefault('borderpad', 0.3)
+    kwargs.setdefault('columnspacing', 0.6)
+    # Don't use labelcolor='linecolor' by default as it causes issues 
+    # with scatter plots that have facecolor='none' (hollow markers)
     leg = ax.legend(*args, **kwargs)
     if leg is not None:
         try:
@@ -68,6 +113,27 @@ def _legend_no_frame(ax, *args, **kwargs):
         except Exception:
             pass
     return leg
+
+
+def _visible_handles_labels(ax, ax2):
+    """Return handles/labels for visible artists only."""
+    try:
+        h1, l1 = ax.get_legend_handles_labels()
+    except Exception:
+        h1, l1 = [], []
+    try:
+        h2, l2 = ax2.get_legend_handles_labels()
+    except Exception:
+        h2, l2 = [], []
+    H, L = [], []
+    for h, l in list(zip(h1, l1)) + list(zip(h2, l2)):
+        try:
+            if hasattr(h, 'get_visible') and not h.get_visible():
+                continue
+        except Exception:
+            pass
+        H.append(h); L.append(l)
+    return H, L
 
 def _colorize_menu(text):
     """Colorize menu items: command in cyan, colon in white, description in default."""
@@ -77,6 +143,46 @@ def _colorize_menu(text):
     cmd = parts[0].strip()
     desc = parts[1].strip() if len(parts) > 1 else ''
     return f"\033[96m{cmd}\033[0m: {desc}"  # Cyan for command, default for description
+
+
+def _color_of(artist):
+    """Return a representative color for a Line2D/PathCollection."""
+    try:
+        if artist is None:
+            return None
+        if hasattr(artist, 'get_color'):
+            c = artist.get_color()
+            if isinstance(c, (list, tuple)) and c and not isinstance(c, str):
+                return c[0]
+            return c
+        if hasattr(artist, 'get_facecolors'):
+            arr = artist.get_facecolors()
+            if arr is not None and len(arr):
+                from matplotlib.colors import to_hex
+                return to_hex(arr[0])
+    except Exception:
+        return None
+    return None
+
+
+def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
+    """Fetch stored legend title, falling back to current legend text or None."""
+    try:
+        title = getattr(fig, '_cpc_legend_title', None)
+        if isinstance(title, str) and title:
+            return title
+    except Exception:
+        pass
+    try:
+        for ax in getattr(fig, 'axes', []):
+            leg = ax.get_legend()
+            if leg is not None:
+                t = leg.get_title().get_text()
+                if t:
+                    return t
+    except Exception:
+        pass
+    return default
 
 
 def _colorize_prompt(text):
@@ -161,7 +267,7 @@ def _generate_similar_color(base_color):
             return base_color
 
 
-def _print_menu():
+def _print_menu(fig=None):
     col1 = [
         " f: font",
         " l: line",
@@ -175,9 +281,10 @@ def _print_menu():
         " v: show/hide files",
     ]
     col2 = [
-        "r: rename titles",
+        "r: rename",
         "x: x range",
         "y: y ranges",
+        "ie: invert efficiency",
     ]
     col3 = [
         "p: print(export) style/geom",
@@ -187,6 +294,30 @@ def _print_menu():
         "b: undo",
         "q: quit",
     ]
+
+    # Conditional shortcuts that depend on figure state
+    # 1) Hide multi-file-only commands (v) when we know we're in single-file mode
+    if fig is not None:
+        try:
+            is_multi = bool(getattr(fig, '_cpc_is_multi_file', False))
+        except Exception:
+            is_multi = True
+        if not is_multi:
+            # Remove "v: show/hide files" in single-file mode
+            col1 = [item for item in col1 if not item.strip().startswith("v:")]
+
+    # 2) Conditional overwrite shortcuts under (Options) if figure is available
+    if fig is not None:
+        last_session = getattr(fig, "_last_session_save_path", None)
+        last_style = getattr(fig, "_last_style_export_path", None)
+        last_figure = getattr(fig, "_last_figure_export_path", None)
+        if last_session:
+            col3.append("os: overwrite session")
+        if last_style:
+            col3.append("ops: overwrite style")
+            col3.append("opsg: overwrite style+geom")
+        if last_figure:
+            col3.append("oe: overwrite figure")
     w1 = max(18, *(len(s) for s in col1))
     w2 = max(18, *(len(s) for s in col2))
     w3 = max(12, *(len(s) for s in col3))
@@ -222,9 +353,45 @@ def _print_file_list(file_data, current_idx):
     print()
 
 
-def _rebuild_legend(ax, ax2, file_data):
-    """Rebuild legend from all visible files."""
+def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
+    """Rebuild legend from all visible files.
+    
+    Args:
+        preserve_position: If True, preserve legend position after rebuilding.
+    """
     try:
+        fig = ax.figure
+        # Get stored position before rebuilding. If none is stored yet, try to
+        # capture the current on-canvas position once so subsequent rebuilds
+        # (e.g., after renaming) do not jump to a new "best" location.
+        xy_in = None
+        if preserve_position:
+            try:
+                xy_in = getattr(fig, '_cpc_legend_xy_in', None)
+            except Exception:
+                xy_in = None
+            if xy_in is None:
+                try:
+                    leg0 = ax.get_legend()
+                    if leg0 is not None and leg0.get_visible():
+                        try:
+                            renderer = fig.canvas.get_renderer()
+                        except Exception:
+                            fig.canvas.draw()
+                            renderer = fig.canvas.get_renderer()
+                        bb = leg0.get_window_extent(renderer=renderer)
+                        cx = 0.5 * (bb.x0 + bb.x1)
+                        cy = 0.5 * (bb.y0 + bb.y1)
+                        fx, fy = fig.transFigure.inverted().transform((cx, cy))
+                        fw, fh = fig.get_size_inches()
+                        offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                        offset = _sanitize_legend_offset(offset)
+                        if offset is not None:
+                            fig._cpc_legend_xy_in = offset
+                            xy_in = offset
+                except Exception:
+                    pass
+        
         h1, l1 = ax.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
         # Filter to only visible items
@@ -233,8 +400,22 @@ def _rebuild_legend(ax, ax2, file_data):
             if h.get_visible():
                 h_all.append(h)
                 l_all.append(l)
+        
         if h_all:
-            _legend_no_frame(ax, h_all, l_all, loc='best', borderaxespad=1.0)
+            # Get legend title (None if not set, to avoid showing "Legend")
+            leg_title = _get_legend_title(fig, default=None)
+            
+            if xy_in is not None and preserve_position:
+                # Use stored position
+                try:
+                    fw, fh = fig.get_size_inches()
+                    fx = 0.5 + float(xy_in[0]) / float(fw)
+                    fy = 0.5 + float(xy_in[1]) / float(fh)
+                    _legend_no_frame(ax, h_all, l_all, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0, title=leg_title)
+                except Exception:
+                    _legend_no_frame(ax, h_all, l_all, loc='best', borderaxespad=1.0, title=leg_title)
+            else:
+                _legend_no_frame(ax, h_all, l_all, loc='best', borderaxespad=1.0, title=leg_title)
         else:
             leg = ax.get_legend()
             if leg:
@@ -257,6 +438,21 @@ def _get_geometry_snapshot(ax, ax2) -> Dict:
     return geom
 
 
+def _is_hollow_marker(artist) -> bool:
+    """Check if a scatter artist has hollow markers (facecolor='none' or transparent)."""
+    try:
+        if hasattr(artist, 'get_facecolors'):
+            face_arr = artist.get_facecolors()
+            if face_arr is not None and len(face_arr):
+                # Check if facecolor is fully transparent (alpha == 0)
+                fc = face_arr[0]
+                if len(fc) >= 4 and fc[3] == 0:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None) -> Dict:
     try:
         fig_w, fig_h = map(float, fig.get_size_inches())
@@ -264,18 +460,37 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         fig_w = fig_h = None
 
     def _color_of(artist) -> Optional[str]:
+        """Return a representative color for a scatter/artist.
+        
+        For hollow markers (facecolor='none'), fall back to edgecolor so that
+        style snapshots still capture the intended color.
+        """
         try:
+            # Prefer explicit color if available
             if hasattr(artist, 'get_color'):
                 c = artist.get_color()
-                # scatter returns array sometimes; pick first
                 if isinstance(c, (list, tuple)) and c and not isinstance(c, str):
                     return c[0]
                 return c
+            # Fall back to facecolors / edgecolors for scatter
+            face_arr = None
+            edge_arr = None
             if hasattr(artist, 'get_facecolors'):
-                arr = artist.get_facecolors()
-                if arr is not None and len(arr):
-                    from matplotlib.colors import to_hex
-                    return to_hex(arr[0])
+                face_arr = artist.get_facecolors()
+            if hasattr(artist, 'get_edgecolors'):
+                edge_arr = artist.get_edgecolors()
+            from matplotlib.colors import to_hex
+            # If facecolor is 'none' or empty, use edgecolor instead
+            if face_arr is not None and len(face_arr):
+                # Some backends use fully transparent facecolor for 'none'
+                fc = face_arr[0]
+                try:
+                    if fc[3] > 0:
+                        return to_hex(fc)
+                except Exception:
+                    return to_hex(fc)
+            if edge_arr is not None and len(edge_arr):
+                return to_hex(edge_arr[0])
         except Exception:
             pass
         return None
@@ -298,24 +513,35 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             return None
         return None
 
-    # Current tick visibility (best-effort from axes)
+    def _label_visible(lbl):
+        try:
+            return bool(lbl.get_visible()) and bool(lbl.get_text())
+        except Exception:
+            return bool(lbl.get_text()) if hasattr(lbl, 'get_text') else False
+
+    # Current tick visibility (prefer persisted WASD state when available)
     tick_vis = {
-        'bx': True,
-        'tx': False,
-        'ly': True,
-        'ry': True,
-        'mbx': False,
-        'mtx': False,
-        'mly': False,
-        'mry': False,
+        'bx': True, 'tx': False, 'ly': True, 'ry': True,
+        'mbx': False, 'mtx': False, 'mly': False, 'mry': False,
     }
     try:
-        # Infer from current axes state
-        import matplotlib as _mpl
-        tick_vis['bx'] = any(lbl.get_visible() for lbl in ax.get_xticklabels())
-        tick_vis['tx'] = False  # CPC doesn't duplicate top labels by default
-        tick_vis['ly'] = any(lbl.get_visible() for lbl in ax.get_yticklabels())
-        tick_vis['ry'] = any(lbl.get_visible() for lbl in ax2.get_yticklabels())
+        wasd_from_fig = getattr(fig, '_cpc_wasd_state', None)
+        if isinstance(wasd_from_fig, dict) and wasd_from_fig:
+            # Use stored state (authoritative)
+            tick_vis['bx'] = bool(wasd_from_fig.get('bottom', {}).get('labels', True))
+            tick_vis['tx'] = bool(wasd_from_fig.get('top', {}).get('labels', False))
+            tick_vis['ly'] = bool(wasd_from_fig.get('left', {}).get('labels', True))
+            tick_vis['ry'] = bool(wasd_from_fig.get('right', {}).get('labels', True))
+            tick_vis['mbx'] = bool(wasd_from_fig.get('bottom', {}).get('minor', False))
+            tick_vis['mtx'] = bool(wasd_from_fig.get('top', {}).get('minor', False))
+            tick_vis['mly'] = bool(wasd_from_fig.get('left', {}).get('minor', False))
+            tick_vis['mry'] = bool(wasd_from_fig.get('right', {}).get('minor', False))
+        else:
+            # Infer from current axes state
+            tick_vis['bx'] = any(lbl.get_visible() for lbl in ax.get_xticklabels())
+            tick_vis['tx'] = False  # CPC doesn't duplicate top labels by default
+            tick_vis['ly'] = any(lbl.get_visible() for lbl in ax.get_yticklabels())
+            tick_vis['ry'] = any(lbl.get_visible() for lbl in ax2.get_yticklabels())
     except Exception:
         pass
 
@@ -333,36 +559,38 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         except Exception:
             return False
     
-    wasd_state = {
-        'bottom': {
-            'spine': _get_spine_visible(ax, 'bottom'),
-            'ticks': bool(tick_vis.get('bx', True)),
-            'minor': bool(tick_vis.get('mbx', False)),
-            'labels': bool(tick_vis.get('bx', True)),  # bottom x labels
-            'title': bool(ax.get_xlabel())  # bottom x title
-        },
-        'top': {
-            'spine': _get_spine_visible(ax, 'top'),
-            'ticks': bool(tick_vis.get('tx', False)),
-            'minor': bool(tick_vis.get('mtx', False)),
-            'labels': bool(tick_vis.get('tx', False)),
-            'title': bool(getattr(ax, '_top_xlabel_text', None) and getattr(ax._top_xlabel_text, 'get_visible', lambda: False)())
-        },
-        'left': {
-            'spine': _get_spine_visible(ax, 'left'),
-            'ticks': bool(tick_vis.get('ly', True)),
-            'minor': bool(tick_vis.get('mly', False)),
-            'labels': bool(tick_vis.get('ly', True)),  # left y labels (capacity)
-            'title': bool(ax.get_ylabel())  # left y title
-        },
-        'right': {
-            'spine': _get_spine_visible(ax2, 'right'),
-            'ticks': bool(tick_vis.get('ry', True)),
-            'minor': bool(tick_vis.get('mry', False)),
-            'labels': bool(tick_vis.get('ry', True)),  # right y labels (efficiency)
-            'title': bool(ax2.get_ylabel())  # right y title
-        },
-    }
+    wasd_state = getattr(fig, '_cpc_wasd_state', None)
+    if not isinstance(wasd_state, dict) or not wasd_state:
+        wasd_state = {
+            'bottom': {
+                'spine': _get_spine_visible(ax, 'bottom'),
+                'ticks': bool(tick_vis.get('bx', True)),
+                'minor': bool(tick_vis.get('mbx', False)),
+                'labels': bool(tick_vis.get('bx', True)),  # bottom x labels
+                'title': bool(ax.get_xlabel())  # bottom x title
+            },
+            'top': {
+                'spine': _get_spine_visible(ax, 'top'),
+                'ticks': bool(tick_vis.get('tx', False)),
+                'minor': bool(tick_vis.get('mtx', False)),
+                'labels': bool(tick_vis.get('tx', False)),
+                'title': bool(getattr(ax, '_top_xlabel_text', None) and getattr(ax._top_xlabel_text, 'get_visible', lambda: False)())
+            },
+            'left': {
+                'spine': _get_spine_visible(ax, 'left'),
+                'ticks': bool(tick_vis.get('ly', True)),
+                'minor': bool(tick_vis.get('mly', False)),
+                'labels': bool(tick_vis.get('ly', True)),  # left y labels (capacity)
+                'title': _label_visible(ax.yaxis.label)  # left y title
+            },
+            'right': {
+                'spine': _get_spine_visible(ax2, 'right'),
+                'ticks': bool(tick_vis.get('ry', True)),
+                'minor': bool(tick_vis.get('mry', False)),
+                'labels': bool(tick_vis.get('ry', True)),  # right y labels (efficiency)
+                'title': _label_visible(ax2.yaxis.label)  # right y title respects visibility
+            },
+        }
 
     # Capture legend state
     legend_visible = False
@@ -395,10 +623,13 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             'frame_size': [frame_w_in, frame_h_in],
             'axes_fraction': [ax_bbox.x0, ax_bbox.y0, ax_bbox.width, ax_bbox.height]
         },
+        # Track whether data axes were swapped via --ro when this style was saved
+        'ro_active': bool(getattr(fig, '_ro_active', False)),
         'font': {'family': fam0, 'size': fsize},
         'legend': {
             'visible': legend_visible,
-            'position_inches': legend_xy_in  # [x, y] offset from canvas center in inches
+            'position_inches': legend_xy_in,  # [x, y] offset from canvas center in inches
+            'title': _get_legend_title(fig),
         },
         'ticks': {
             'widths': {
@@ -428,6 +659,8 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                        'visible': ax2.spines.get('right').get_visible() if ax2.spines.get('right') else None,
                        'color': ax2.spines.get('right').get_edgecolor() if ax2.spines.get('right') else None},
         },
+        'spine_colors_auto': getattr(fig, '_cpc_spine_auto', False),
+        'spine_colors': dict(getattr(fig, '_cpc_spine_colors', {})),
         'labelpads': {
             'x': getattr(ax.xaxis, 'labelpad', None),
             'ly': getattr(ax.yaxis, 'labelpad', None),  # left y-axis (capacity)
@@ -444,19 +677,25 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         'series': {
             'charge': {
                 'color': _color_of(sc_charge),
+                'marker': getattr(sc_charge, 'get_marker', lambda: 'o')(),
                 'markersize': float(getattr(sc_charge, 'get_sizes', lambda: [32])()[0]) if hasattr(sc_charge, 'get_sizes') else 32.0,
                 'alpha': float(sc_charge.get_alpha()) if sc_charge.get_alpha() is not None else 1.0,
+                'hollow': _is_hollow_marker(sc_charge),
             },
             'discharge': {
                 'color': _color_of(sc_discharge),
+                'marker': getattr(sc_discharge, 'get_marker', lambda: 's')(),
                 'markersize': float(getattr(sc_discharge, 'get_sizes', lambda: [32])()[0]) if hasattr(sc_discharge, 'get_sizes') else 32.0,
                 'alpha': float(sc_discharge.get_alpha()) if sc_discharge.get_alpha() is not None else 1.0,
+                'hollow': _is_hollow_marker(sc_discharge),
             },
             'efficiency': {
                 'color': (sc_eff.get_facecolors()[0].tolist() if hasattr(sc_eff, 'get_facecolors') and len(sc_eff.get_facecolors()) else '#2ca02c'),
+                'marker': getattr(sc_eff, 'get_marker', lambda: '^')(),
                 'markersize': float(getattr(sc_eff, 'get_sizes', lambda: [40])()[0]) if hasattr(sc_eff, 'get_sizes') else 40.0,
                 'alpha': float(sc_eff.get_alpha()) if sc_eff.get_alpha() is not None else 1.0,
                 'visible': bool(getattr(sc_eff, 'get_visible', lambda: True)()),
+                'hollow': _is_hollow_marker(sc_eff),
             }
         }
     }
@@ -465,15 +704,45 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     if file_data and isinstance(file_data, list) and len(file_data) > 0:
         multi_files = []
         for f in file_data:
+            sc_chg = f.get('sc_charge')
+            sc_dchg = f.get('sc_discharge')
+            sc_eff = f.get('sc_eff')
             file_info = {
                 'filename': f.get('filename', 'unknown'),
                 'visible': f.get('visible', True),
-                'charge_color': _color_of(f.get('sc_charge')),
-                'discharge_color': _color_of(f.get('sc_discharge')),
-                'efficiency_color': _color_of(f.get('sc_eff')),
+                'charge_color': _color_of(sc_chg),
+                'charge_marker': getattr(sc_chg, 'get_marker', lambda: 'o')() if sc_chg else 'o',
+                'charge_hollow': _is_hollow_marker(sc_chg) if sc_chg else False,
+                'discharge_color': _color_of(sc_dchg),
+                'discharge_marker': getattr(sc_dchg, 'get_marker', lambda: 's')() if sc_dchg else 's',
+                'discharge_hollow': _is_hollow_marker(sc_dchg) if sc_dchg else False,
+                'efficiency_color': _color_of(sc_eff),
+                'efficiency_marker': getattr(sc_eff, 'get_marker', lambda: '^')() if sc_eff else '^',
+                'efficiency_hollow': _is_hollow_marker(sc_eff) if sc_eff else False,
             }
+            # Save legend labels
+            try:
+                sc_chg = f.get('sc_charge')
+                sc_dchg = f.get('sc_discharge')
+                sc_eff = f.get('sc_eff')
+                if sc_chg and hasattr(sc_chg, 'get_label'):
+                    file_info['charge_label'] = sc_chg.get_label() or ''
+                if sc_dchg and hasattr(sc_dchg, 'get_label'):
+                    file_info['discharge_label'] = sc_dchg.get_label() or ''
+                if sc_eff and hasattr(sc_eff, 'get_label'):
+                    file_info['efficiency_label'] = sc_eff.get_label() or ''
+            except Exception:
+                pass
             multi_files.append(file_info)
         cfg['multi_files'] = multi_files
+    else:
+        # Single file mode: save legend labels
+        try:
+            cfg['series']['charge']['label'] = sc_charge.get_label() if hasattr(sc_charge, 'get_label') else ''
+            cfg['series']['discharge']['label'] = sc_discharge.get_label() if hasattr(sc_discharge, 'get_label') else ''
+            cfg['series']['efficiency']['label'] = sc_eff.get_label() if hasattr(sc_eff, 'get_label') else ''
+        except Exception:
+            pass
     
     return cfg
 
@@ -488,6 +757,11 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         file_data: Optional list of file dicts for multi-file mode
     """
     is_multi_file = file_data is not None and len(file_data) > 1
+    # Store multi-file flag on figure so the menu can hide/show multi-file commands correctly
+    try:
+        fig._cpc_is_multi_file = bool(is_multi_file)
+    except Exception:
+        pass
     
     # Save current labelpad values BEFORE any style changes
     saved_xlabelpad = None
@@ -601,6 +875,13 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         # Apply marker sizes and alpha globally to all files in multi-file mode
         if is_multi_file:
             for f in file_data:
+                # Marker types (global)
+                if ch.get('marker') is not None and hasattr(f['sc_charge'], 'set_marker'):
+                    f['sc_charge'].set_marker(ch['marker'])
+                if dh.get('marker') is not None and hasattr(f['sc_discharge'], 'set_marker'):
+                    f['sc_discharge'].set_marker(dh['marker'])
+                if ef.get('marker') is not None and hasattr(f['sc_eff'], 'set_marker'):
+                    f['sc_eff'].set_marker(ef['marker'])
                 # Marker sizes (global)
                 if ch.get('markersize') is not None and hasattr(f['sc_charge'], 'set_sizes'):
                     f['sc_charge'].set_sizes([float(ch['markersize'])])
@@ -633,14 +914,28 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             # Single file mode: apply to provided artists only
             if ch:
                 if ch.get('color') is not None:
-                    sc_charge.set_color(ch['color'])
+                    # Apply color respecting hollow marker style
+                    if ch.get('hollow', False):
+                        sc_charge.set_facecolors('none')
+                        sc_charge.set_edgecolors(ch['color'])
+                    else:
+                        sc_charge.set_color(ch['color'])
+                if ch.get('marker') is not None and hasattr(sc_charge, 'set_marker'):
+                    sc_charge.set_marker(ch['marker'])
                 if ch.get('markersize') is not None and hasattr(sc_charge, 'set_sizes'):
                     sc_charge.set_sizes([float(ch['markersize'])])
                 if ch.get('alpha') is not None:
                     sc_charge.set_alpha(float(ch['alpha']))
             if dh:
                 if dh.get('color') is not None:
-                    sc_discharge.set_color(dh['color'])
+                    # Apply color respecting hollow marker style
+                    if dh.get('hollow', False):
+                        sc_discharge.set_facecolors('none')
+                        sc_discharge.set_edgecolors(dh['color'])
+                    else:
+                        sc_discharge.set_color(dh['color'])
+                if dh.get('marker') is not None and hasattr(sc_discharge, 'set_marker'):
+                    sc_discharge.set_marker(dh['marker'])
                 if dh.get('markersize') is not None and hasattr(sc_discharge, 'set_sizes'):
                     sc_discharge.set_sizes([float(dh['markersize'])])
                 if dh.get('alpha') is not None:
@@ -648,9 +943,16 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             if ef:
                 if ef.get('color') is not None:
                     try:
-                        sc_eff.set_color(ef['color'])
+                        # Apply color respecting hollow marker style
+                        if ef.get('hollow', False):
+                            sc_eff.set_facecolors('none')
+                            sc_eff.set_edgecolors(ef['color'])
+                        else:
+                            sc_eff.set_color(ef['color'])
                     except Exception:
                         pass
+                if ef.get('marker') is not None and hasattr(sc_eff, 'set_marker'):
+                    sc_eff.set_marker(ef['marker'])
                 if ef.get('markersize') is not None and hasattr(sc_eff, 'set_sizes'):
                     sc_eff.set_sizes([float(ef['markersize'])])
                 if ef.get('alpha') is not None:
@@ -661,6 +963,16 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
                         ax2.yaxis.label.set_visible(bool(ef['visible']))
                     except Exception:
                         pass
+            # Restore legend labels for single-file mode
+            try:
+                if 'label' in ch and hasattr(sc_charge, 'set_label'):
+                    sc_charge.set_label(ch['label'])
+                if 'label' in dh and hasattr(sc_discharge, 'set_label'):
+                    sc_discharge.set_label(dh['label'])
+                if 'label' in ef and hasattr(sc_eff, 'set_label'):
+                    sc_eff.set_label(ef['label'])
+            except Exception:
+                pass
     except Exception:
         pass
     # Apply legend state (h command)
@@ -669,6 +981,8 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         if leg_cfg:
             leg_visible = leg_cfg.get('visible', True)
             leg_xy_in = leg_cfg.get('position_inches')
+            if 'title' in leg_cfg:
+                fig._cpc_legend_title = leg_cfg.get('title') or _get_legend_title(fig)
             if leg_xy_in is not None:
                 fig._cpc_legend_xy_in = _sanitize_legend_offset(tuple(leg_xy_in))
             leg = ax.get_legend()
@@ -676,6 +990,27 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
                 leg.set_visible(leg_visible)
             if leg_visible:
                 _apply_legend_position()
+                # Re-apply legend label colors to match handles after position/visibility changes
+                try:
+                    leg = ax.get_legend()
+                    if leg is not None:
+                        handles = list(getattr(leg, "legendHandles", []))
+                        for h, txt in zip(handles, leg.get_texts()):
+                            col = _color_of(h)
+                            if col is None and hasattr(h, 'get_edgecolor'):
+                                col = h.get_edgecolor()
+                            if isinstance(col, (list, tuple)) and len(col) and not isinstance(col, str):
+                                col = col[0]
+                            try:
+                                import numpy as _np
+                                if hasattr(col, "__len__") and not isinstance(col, str):
+                                    col = tuple(_np.array(col).ravel().tolist())
+                            except Exception:
+                                pass
+                            if col is not None:
+                                txt.set_color(col)
+                except Exception:
+                    pass
     except Exception:
         pass
     # Apply tick visibility/widths and spines
@@ -683,6 +1018,11 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         tk = cfg.get('ticks', {})
         # Try wasd_state first (version 2), fall back to visibility dict (version 1)
         wasd = cfg.get('wasd_state', {})
+        if isinstance(wasd, dict) and wasd:
+            try:
+                setattr(fig, '_cpc_wasd_state', wasd)
+            except Exception:
+                pass
         if wasd:
             # Use WASD state (20 parameters)
             bx = bool(wasd.get('bottom', {}).get('labels', True))
@@ -709,6 +1049,12 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             ax.tick_params(axis='x', bottom=bx, labelbottom=bx, top=tx, labeltop=tx)
             ax.tick_params(axis='y', left=ly, labelleft=ly)
             ax2.tick_params(axis='y', right=ry, labelright=ry)
+            try:
+                ax.xaxis.label.set_visible(bool(wasd.get('bottom', {}).get('title', True)) if wasd else bx)
+                ax.yaxis.label.set_visible(bool(wasd.get('left', {}).get('title', True)) if wasd else ly)
+                ax2.yaxis.label.set_visible(bool(wasd.get('right', {}).get('title', True)) if wasd else ry)
+            except Exception:
+                pass
             # Minor ticks
             from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator, NullLocator
             if mbx or mtx:
@@ -806,6 +1152,24 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
                         pass
                 if spec.get('color') is not None:
                     _set_spine_color('right', spec['color'])
+        # Restore spine colors from stored dict
+        spine_colors = cfg.get('spine_colors', {})
+        if spine_colors:
+            for spine_name, color in spine_colors.items():
+                _set_spine_color(spine_name, color)
+        # Restore auto setting
+        spine_auto = cfg.get('spine_colors_auto', False)
+        if spine_auto is not None:
+            fig._cpc_spine_auto = bool(spine_auto)
+            # If auto is enabled, apply colors immediately
+            if fig._cpc_spine_auto and not (file_data and len(file_data) > 1):
+                try:
+                    charge_col = _color_of(sc_charge)
+                    eff_col = _color_of(sc_eff)
+                    _set_spine_color('left', charge_col)
+                    _set_spine_color('right', eff_col)
+                except Exception:
+                    pass
     except Exception:
         pass
     # Restore labelpads (preserve current if not in config)
@@ -884,6 +1248,94 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         _ui_position_bottom_xlabel(ax, fig, tick_state)
         _ui_position_left_ylabel(ax, fig, tick_state)
         _ui_position_right_ylabel(ax2, fig, tick_state)
+    except Exception:
+        pass
+    # Restore legend labels
+    try:
+        if is_multi_file and file_data:
+            multi_files = cfg.get('multi_files', [])
+            if multi_files and len(multi_files) == len(file_data):
+                for i, f_info in enumerate(multi_files):
+                    if i < len(file_data):
+                        f = file_data[i]
+                        # Restore colors FIRST (before labels), respecting hollow marker style
+                        if 'charge_color' in f_info and f.get('sc_charge'):
+                            try:
+                                col = f_info['charge_color']
+                                is_hollow = f_info.get('charge_hollow', False)
+                                if is_hollow:
+                                    f['sc_charge'].set_facecolors('none')
+                                    f['sc_charge'].set_edgecolors(col)
+                                else:
+                                    f['sc_charge'].set_color(col)
+                                f['color'] = col
+                            except Exception:
+                                pass
+                        if 'discharge_color' in f_info and f.get('sc_discharge'):
+                            try:
+                                col = f_info['discharge_color']
+                                is_hollow = f_info.get('discharge_hollow', False)
+                                if is_hollow:
+                                    f['sc_discharge'].set_facecolors('none')
+                                    f['sc_discharge'].set_edgecolors(col)
+                                else:
+                                    f['sc_discharge'].set_color(col)
+                            except Exception:
+                                pass
+                        if 'efficiency_color' in f_info and f.get('sc_eff'):
+                            try:
+                                col = f_info['efficiency_color']
+                                is_hollow = f_info.get('efficiency_hollow', False)
+                                if is_hollow:
+                                    f['sc_eff'].set_facecolors('none')
+                                    f['sc_eff'].set_edgecolors(col)
+                                else:
+                                    f['sc_eff'].set_color(col)
+                                f['eff_color'] = col
+                            except Exception:
+                                pass
+                        # Restore legend labels
+                        if 'charge_label' in f_info and f.get('sc_charge'):
+                            try:
+                                f['sc_charge'].set_label(f_info['charge_label'])
+                            except Exception:
+                                pass
+                        if 'discharge_label' in f_info and f.get('sc_discharge'):
+                            try:
+                                f['sc_discharge'].set_label(f_info['discharge_label'])
+                            except Exception:
+                                pass
+                        if 'efficiency_label' in f_info and f.get('sc_eff'):
+                            try:
+                                f['sc_eff'].set_label(f_info['efficiency_label'])
+                            except Exception:
+                                pass
+                        # Update filename if present
+                        if 'filename' in f_info:
+                            f['filename'] = f_info['filename']
+        else:
+            # Single file mode: restore legend labels
+            s = cfg.get('series', {})
+            ch = s.get('charge', {})
+            dh = s.get('discharge', {})
+            ef = s.get('efficiency', {})
+            if 'label' in ch and hasattr(sc_charge, 'set_label'):
+                try:
+                    sc_charge.set_label(ch['label'])
+                except Exception:
+                    pass
+            if 'label' in dh and hasattr(sc_discharge, 'set_label'):
+                try:
+                    sc_discharge.set_label(dh['label'])
+                except Exception:
+                    pass
+            if 'label' in ef and hasattr(sc_eff, 'set_label'):
+                try:
+                    sc_eff.set_label(ef['label'])
+                except Exception:
+                    pass
+        # Rebuild legend after restoring labels
+        _rebuild_legend(ax, ax2, file_data, preserve_position=True)
     except Exception:
         pass
     try:
@@ -993,24 +1445,42 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     # If file_data is provided, we're in multi-file mode.
     # If not provided, we create a single-file structure for backward compatibility.
     # ====================================================================
-    is_multi_file = file_data is not None and len(file_data) > 1
-    
     if file_data is None:
         # Backward compatibility: create file_data structure from single file
         # This allows the function to work with old code that passes individual artists
+        # Try to get filename from label if available
+        filename = 'Data'
+        try:
+            if hasattr(sc_charge, 'get_label') and sc_charge.get_label():
+                label = sc_charge.get_label()
+                # Extract filename from label like "filename (Chg)" or use label as-is
+                if ' (Chg)' in label:
+                    filename = label.replace(' (Chg)', '')
+                elif ' (Dch)' in label:
+                    filename = label.replace(' (Dch)', '')
+                elif label and label != 'Charge capacity':
+                    filename = label
+        except Exception:
+            pass
         file_data = [{
-            'filename': 'Data',  # Default filename
+            'filename': filename,
             'sc_charge': sc_charge,      # Charge capacity scatter artist
             'sc_discharge': sc_discharge,  # Discharge capacity scatter artist
             'sc_eff': sc_eff,            # Efficiency scatter artist
             'visible': True               # File is visible by default
         }]
-    
     # Track which file is currently selected for editing (in multi-file mode)
     current_file_idx = 0  # Index of currently selected file (0 = first file)
     
     # Collect file paths for session saving (if available)
     file_paths = _collect_file_paths(file_data)
+
+    # Multi-file flag: now that file_data is finalized
+    is_multi_file = file_data is not None and len(file_data) > 1
+    try:
+        fig._cpc_is_multi_file = bool(is_multi_file)
+    except Exception:
+        pass
     
     # ====================================================================
     # TICK STATE MANAGEMENT
@@ -1042,6 +1512,19 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         'mly': False, # minor left y-axis ticks - hidden by default
         'mry': False, # minor right y-axis ticks - hidden by default
     }
+    try:
+        saved_wasd = getattr(fig, '_cpc_wasd_state', None)
+        if isinstance(saved_wasd, dict) and saved_wasd:
+            tick_state['bx'] = bool(saved_wasd.get('bottom', {}).get('labels', tick_state['bx']))
+            tick_state['tx'] = bool(saved_wasd.get('top', {}).get('labels', tick_state['tx']))
+            tick_state['ly'] = bool(saved_wasd.get('left', {}).get('labels', tick_state['ly']))
+            tick_state['ry'] = bool(saved_wasd.get('right', {}).get('labels', tick_state['ry']))
+            tick_state['mbx'] = bool(saved_wasd.get('bottom', {}).get('minor', tick_state['mbx']))
+            tick_state['mtx'] = bool(saved_wasd.get('top', {}).get('minor', tick_state['mtx']))
+            tick_state['mly'] = bool(saved_wasd.get('left', {}).get('minor', tick_state['mly']))
+            tick_state['mry'] = bool(saved_wasd.get('right', {}).get('minor', tick_state['mry']))
+    except Exception:
+        pass
 
     # --- Undo stack using style snapshots ---
     state_history = []  # list of cfg dicts
@@ -1106,6 +1589,27 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if k in tick_state:
                     tick_state[k] = bool(v)
             _update_ticks()
+            # Re-apply legend text colors after state restore (undo)
+            try:
+                leg = ax.get_legend()
+                if leg is not None:
+                    handles = list(getattr(leg, "legendHandles", []))
+                    for h, txt in zip(handles, leg.get_texts()):
+                        col = _color_of(h)
+                        if col is None and hasattr(h, 'get_edgecolor'):
+                            col = h.get_edgecolor()
+                        if isinstance(col, (list, tuple)) and len(col) and not isinstance(col, str):
+                            col = col[0]
+                        try:
+                            import numpy as _np
+                            if hasattr(col, "__len__") and not isinstance(col, str):
+                                col = tuple(_np.array(col).ravel().tolist())
+                        except Exception:
+                            pass
+                        if col is not None:
+                            txt.set_color(col)
+            except Exception:
+                pass
             try:
                 fig.canvas.draw()
             except Exception:
@@ -1118,6 +1622,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         try:
             # Apply shared visibility to primary ax; then adjust twin for right side
             _ui_update_tick_visibility(ax, tick_state)
+            # Ensure left axis ticks/labels don't appear on right axis
+            ax.tick_params(axis='y', right=False, labelright=False)
             # Right axis tick params follow r_* keys
             ax2.tick_params(axis='y',
                             right=tick_state.get('r_ticks', tick_state.get('ry', False)),
@@ -1128,9 +1634,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 ax2.tick_params(axis='y', which='minor', right=True, labelright=False)
             else:
                 ax2.tick_params(axis='y', which='minor', right=False, labelright=False)
-            # Position label spacings (bottom/left) for consistency
-            _ui_position_bottom_xlabel(ax, fig, tick_state)
-            _ui_position_left_ylabel(ax, fig, tick_state)
+            # Note: Do NOT call position functions during undo restore as it causes title drift
+            # Title offsets are already restored from snapshot in restore_state()
             try:
                 for spine_name, color in getattr(fig, '_cpc_spine_colors', {}).items():
                     _set_spine_color(spine_name, color)
@@ -1176,8 +1681,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         """Reapply legend position using stored inches offset relative to canvas center."""
         try:
             xy_in = _sanitize_legend_offset(getattr(fig, '_cpc_legend_xy_in', None))
-            leg = ax.get_legend()
-            if xy_in is None or leg is None:
+            if xy_in is None:
                 return
             # Compute figure-fraction anchor from inches
             fw, fh = fig.get_size_inches()
@@ -1185,11 +1689,19 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 return
             fx = 0.5 + float(xy_in[0]) / float(fw)
             fy = 0.5 + float(xy_in[1]) / float(fh)
-            # Use current handles/labels
-            h1, l1 = ax.get_legend_handles_labels()
-            h2, l2 = ax2.get_legend_handles_labels()
-            if h1 or h2:
-                _legend_no_frame(ax, h1 + h2, l1 + l2, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
+            # Use current visible handles/labels
+            H, L = _visible_handles_labels(ax, ax2)
+            if H:
+                _legend_no_frame(
+                    ax,
+                    H,
+                    L,
+                    loc='center',
+                    bbox_to_anchor=(fx, fy),
+                    bbox_transform=fig.transFigure,
+                    borderaxespad=1.0,
+                    title=_get_legend_title(fig),
+                )
         except Exception:
             pass
 
@@ -1206,17 +1718,14 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     except Exception:
         pass
 
-    _print_menu()
-    if is_multi_file:
-        print(f"\n[Multi-file mode: {len(file_data)} files loaded]")
-        _print_file_list(file_data, current_file_idx)
+    _print_menu(fig)
     
     while True:
         try:
             # Update current file's scatter artists for commands that need them
             sc_charge, sc_discharge, sc_eff = _get_current_file_artists(file_data, current_file_idx)
             
-            key = input("Press a key: ").strip().lower()
+            key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1228,9 +1737,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             try:
                 if is_multi_file:
                     _print_file_list(file_data, current_file_idx)
-                    choice = input(f"Toggle visibility for file (1-{len(file_data)}), 'a' for all, or q=cancel: ").strip()
+                    choice = _safe_input(f"Toggle visibility for file (1-{len(file_data)}), 'a' for all, or q=cancel: ").strip()
                     if choice.lower() == 'q':
-                        _print_menu()
+                        _print_menu(fig)
                         _print_file_list(file_data, current_file_idx)
                         continue
                     
@@ -1255,330 +1764,362 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             f['sc_eff'].set_visible(new_vis)
                         else:
                             print("Invalid file number.")
+
+                    _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                    fig.canvas.draw_idle()
                 else:
-                    # Single file mode: toggle efficiency
-                    push_state("visibility-eff")
-                    vis = sc_eff.get_visible()
-                    sc_eff.set_visible(not vis)
-                    try:
-                        ax2.yaxis.label.set_visible(not vis)
-                    except Exception:
-                        pass
-                
-                _rebuild_legend(ax, ax2, file_data)
-                fig.canvas.draw_idle()
+                    # Single file mode: v is not meaningful (no per-file visibility)
+                    print("File visibility (v) is only available in multi-file CPC mode.")
             except ValueError:
                 print("Invalid input.")
             except Exception as e:
                 print(f"Visibility toggle failed: {e}")
-            _print_menu()
+            _print_menu(fig)
             if is_multi_file:
                 _print_file_list(file_data, current_file_idx)
             continue
         
         if key == 'q':
             try:
-                confirm = input(_colorize_prompt("Quit CPC interactive? Remember to save! Quit now? (y/n): ")).strip().lower()
+                confirm = _safe_input(_colorize_prompt("Quit CPC interactive? Remember to save! Quit now? (y/n): ")).strip().lower()
             except Exception:
                 confirm = 'y'
             if confirm == 'y':
                 break
             else:
-                _print_menu(); continue
+                _print_menu(fig); continue
         elif key == 'b':
             restore_state()
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'c':
-            # Colors submenu: ly (left Y series) and ry (right Y efficiency)
+            # Colors submenu: ly (left Y series) and ry (right Y efficiency), with user colors and palettes
             try:
+                # Note: Individual series may use different colors, so we can't show a single "current" palette
+                # Use same palettes as EC interactive
+                palette_opts = ['tab10', 'Set2', 'Dark2', 'viridis', 'plasma']
+                def _palette_color(name, idx=0, total=1, default_val=0.4):
+                    import matplotlib.cm as cm
+                    import matplotlib.colors as mcolors
+                    import numpy as _np
+                    # Ensure colormap is registered before use
+                    if not ensure_colormap(name):
+                        # Fallback to viridis if colormap can't be registered
+                        name = 'viridis'
+                        ensure_colormap(name)
+                    try:
+                        cmap = cm.get_cmap(name)
+                    except Exception:
+                        # Fallback if get_cmap fails
+                        ensure_colormap('viridis')
+                        cmap = cm.get_cmap('viridis')
+                    
+                    # Special handling for tab10 to match hardcoded colors exactly
+                    if name.lower() == 'tab10':
+                        default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                        return default_tab10_colors[idx % len(default_tab10_colors)]
+                    
+                    # For discrete colormaps (Set2, Dark2), access colors directly
+                    if hasattr(cmap, 'colors') and cmap.colors is not None:
+                        # Discrete colormap: access colors directly by index
+                        colors = cmap.colors
+                        rgb = colors[idx % len(colors)]
+                        if isinstance(rgb, tuple) and len(rgb) >= 3:
+                            return mcolors.rgb2hex(rgb[:3])
+                    
+                    # For continuous colormaps (viridis, plasma), sample evenly
+                    if total == 1:
+                        vals = [0.55]
+                    elif total == 2:
+                        vals = [0.15, 0.85]
+                    else:
+                        vals = _np.linspace(0.08, 0.88, total)
+                    rgb = cmap(vals[idx % len(vals)])
+                    return mcolors.rgb2hex(rgb[:3])
+                def _resolve_color(spec, idx=0, total=1, default_cmap='tab10'):
+                    spec = spec.strip()
+                    if not spec:
+                        return None
+                    if spec.lower() == 'r':
+                        return _palette_color(default_cmap, idx, total, 0.4)
+                    # user colors: u# or plain number referencing saved list
+                    uc = None
+                    if spec.lower().startswith('u') and len(spec) > 1 and spec[1:].isdigit():
+                        uc = resolve_color_token(spec, fig)
+                    elif spec.isdigit():
+                        # number as palette index if within palette list
+                        n = int(spec)
+                        if 1 <= n <= len(palette_opts):
+                            palette_name = palette_opts[n-1]
+                            return _palette_color(palette_name, idx, total, 0.4)
+                    if uc:
+                        return uc
+                    # Check if spec is a palette name (case-insensitive)
+                    spec_lower = spec.lower()
+                    base = spec.rstrip('_r').rstrip('_R')
+                    base_lower = base.lower()
+                    # Check against palette_opts (case-insensitive)
+                    for pal in palette_opts:
+                        if spec_lower == pal.lower() or base_lower == pal.lower() or spec_lower == (pal + '_r').lower():
+                            return _palette_color(pal if not spec.endswith('_r') and not spec.endswith('_R') else spec, idx, total, 0.4)
+                    # Fall back to resolve_color_token for hex colors, named colors, etc.
+                    return resolve_color_token(spec, fig)
+
                 while True:
-                    print("\nColors: ly=capacity curves, ry=efficiency triangles, q=back")
-                    sub = input("Colors> ").strip().lower()
+                    print("\nColors: ly=capacity curves, ry=efficiency triangles, u=user colors, q=back")
+                    sub = _safe_input("Colors> ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
+                    if sub == 'u':
+                        manage_user_colors(fig); continue
                     if sub == 'ly':
-                        if is_multi_file:
-                            # Show file list for selection
-                            print("\nSelect curve to color:")
-                            for i, f in enumerate(file_data, 1):
-                                vis_mark = "●" if f.get('visible', True) else "○"
-                                print(f"  {i}. {vis_mark} {f['filename']}")
-                            choice = input("Enter curve number (1-{}) or 'a' for all, q=cancel: ".format(len(file_data))).strip()
-                            if not choice or choice.lower() == 'q':
-                                continue
-                            
-                            push_state("colors-ly")
-                            if choice.lower() == 'a':
-                                # Apply to all files
-                                print("\nCharge color palettes (discharge will be auto-generated):")
-                                print("  1. Reds: #d62728, #c62828, #b71c1c, #8b0000, #a30000")
-                                print("  2. Oranges: #ff7f0e, #ff6f00, #ff5722, #f4511e, #e64a19")
-                                print("  3. Pinks/Magentas: #e377c2, #d81b60, #c2185b, #ad1457, #880e4f")
-                                print("  4. Purples: #9c27b0, #8e24aa, #7b1fa2, #6a1b9a, #4a148c")
-                                print("  5. Deep oranges/reds: #d84315, #bf360c, #c2185b, #d32f2f, #c62828")
-                                spec = input("Enter color (name/hex), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                                if not spec or spec.lower() == 'q':
+                        push_state("colors-ly")
+                        print("\nCurrent capacity curves:")
+                        for i, f in enumerate(file_data, 1):
+                            cur = _color_of(f['sc_charge'])
+                            vis_mark = "●" if f.get('visible', True) else "○"
+                            print(f"  {i}. {vis_mark} {f['filename']}  {color_block(cur)} {cur}")
+                        uc = get_user_color_list(fig)
+                        if uc:
+                            print("\nSaved colors (refer as number or u#):")
+                            for i, c in enumerate(uc, 1):
+                                print(f"  {i}: {color_block(c)} {c}")
+                        print("\nPalettes:")
+                        for idx, name in enumerate(palette_opts, 1):
+                            bar = palette_preview(name)
+                            print(f"  {idx}. {name}")
+                            if bar:
+                                print(f"      {bar}")
+                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3 or 1 2 2 3) or palette/number for all, q=cancel: ").strip()
+                        if not color_input or color_input.lower() == 'q':
+                            continue
+                        tokens = color_input.split()
+                        if len(tokens) == 1:
+                            # Single token: apply palette to all files
+                            spec = tokens[0]
+                            for i, f in enumerate(file_data):
+                                charge_col = _resolve_color(spec, i, len(file_data), default_cmap='tab10')
+                                if not charge_col:
                                     continue
-                                for i, f in enumerate(file_data):
-                                    if spec.lower() == 'r':
-                                        # Use Viridis colormap
-                                        import matplotlib.cm as cm
-                                        import matplotlib.colors as mcolors
-                                        viridis = cm.get_cmap('viridis', 10)
-                                        charge_col = mcolors.rgb2hex(viridis(_random.random())[:3])
-
-                                    elif spec in ['1', '2', '3', '4', '5']:
-                                        # Use selected palette
-                                        charge_palettes = [
-                                            ['#d62728', '#c62828', '#b71c1c', '#8b0000', '#a30000'],
-                                            ['#ff7f0e', '#ff6f00', '#ff5722', '#f4511e', '#e64a19'],
-                                            ['#e377c2', '#d81b60', '#c2185b', '#ad1457', '#880e4f'],
-                                            ['#9c27b0', '#8e24aa', '#7b1fa2', '#6a1b9a', '#4a148c'],
-                                            ['#d84315', '#bf360c', '#c2185b', '#d32f2f', '#c62828']
-                                        ]
-                                        palette = charge_palettes[int(spec) - 1]
-                                        charge_col = palette[i % len(palette)]
+                                discharge_col = _generate_similar_color(charge_col)
+                                try:
+                                    f['color'] = charge_col
+                                    # Chg: filled square; DChg: unfilled (hollow) square
+                                    if hasattr(f['sc_charge'], 'set_facecolors'):
+                                        from matplotlib.colors import to_rgba
+                                        f['sc_charge'].set_color(charge_col)
+                                        f['sc_charge'].set_facecolors(to_rgba(charge_col))
                                     else:
-                                        charge_col = spec
+                                        f['sc_charge'].set_color(charge_col)
+                                    if hasattr(f['sc_discharge'], 'set_facecolors'):
+                                        f['sc_discharge'].set_facecolors('none')
+                                        f['sc_discharge'].set_edgecolors(discharge_col)
+                                    else:
+                                        f['sc_discharge'].set_color(discharge_col)
+                                except Exception as e:
+                                    print(f"Error setting color: {e}")
+                                    pass
+                        else:
+                            # Multiple tokens: parse file:color pairs
+                            def _apply_manual_entries(tokens):
+                                idx_color_pairs = []
+                                i = 0
+                                while i < len(tokens):
+                                    tok = tokens[i]
+                                    if ':' in tok:
+                                        idx_str, color = tok.split(':', 1)
+                                    else:
+                                        if i + 1 >= len(tokens):
+                                            print(f"Skip incomplete entry: {tok}")
+                                            break
+                                        idx_str = tok
+                                        color = tokens[i + 1]
+                                        i += 1
+                                    idx_color_pairs.append((idx_str, color))
+                                    i += 1
+                                for idx_str, color in idx_color_pairs:
+                                    try:
+                                        file_idx = int(idx_str) - 1
+                                    except ValueError:
+                                        print(f"Bad index: {idx_str}")
+                                        continue
+                                    if not (0 <= file_idx < len(file_data)):
+                                        print(f"Index out of range: {idx_str}")
+                                        continue
+                                    resolved = resolve_color_token(color, fig)
+                                    charge_col = resolved if resolved else color
+                                    if not charge_col:
+                                        continue
                                     discharge_col = _generate_similar_color(charge_col)
                                     try:
-                                        f['sc_charge'].set_color(charge_col)
-                                        f['sc_discharge'].set_color(discharge_col)
-                                        f['color'] = charge_col
+                                        file_data[file_idx]['color'] = charge_col
+                                        # Chg: filled square; DChg: unfilled (hollow) square
+                                        if hasattr(file_data[file_idx]['sc_charge'], 'set_facecolors'):
+                                            from matplotlib.colors import to_rgba
+                                            file_data[file_idx]['sc_charge'].set_color(charge_col)
+                                            file_data[file_idx]['sc_charge'].set_facecolors(to_rgba(charge_col))
+                                        else:
+                                            file_data[file_idx]['sc_charge'].set_color(charge_col)
+                                        if hasattr(file_data[file_idx]['sc_discharge'], 'set_facecolors'):
+                                            file_data[file_idx]['sc_discharge'].set_facecolors('none')
+                                            file_data[file_idx]['sc_discharge'].set_edgecolors(discharge_col)
+                                        else:
+                                            file_data[file_idx]['sc_discharge'].set_color(discharge_col)
                                     except Exception:
                                         pass
-                            else:
-                                # Apply to selected file
-                                try:
-                                    idx = int(choice) - 1
-                                    if 0 <= idx < len(file_data):
-                                        print("\nCharge color palettes (discharge will be auto-generated):")
-                                        print("  1. Reds: #d62728, #c62828, #b71c1c, #8b0000, #a30000")
-                                        print("  2. Oranges: #ff7f0e, #ff6f00, #ff5722, #f4511e, #e64a19")
-                                        print("  3. Pinks/Magentas: #e377c2, #d81b60, #c2185b, #ad1457, #880e4f")
-                                        print("  4. Purples: #9c27b0, #8e24aa, #7b1fa2, #6a1b9a, #4a148c")
-                                        print("  5. Deep oranges/reds: #d84315, #bf360c, #c2185b, #d32f2f, #c62828")
-                                        spec = input("Enter color (name/hex), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                                        if not spec or spec.lower() == 'q':
-                                            continue
-                                        if spec.lower() == 'r':
-                                            # Use Viridis colormap
-                                            import matplotlib.cm as cm
-                                            import matplotlib.colors as mcolors
-                                            viridis = cm.get_cmap('viridis', 10)
-                                            charge_col = mcolors.rgb2hex(viridis(_random.random())[:3])
-                                        elif spec in ['1', '2', '3', '4', '5']:
-                                            # Use selected palette
-                                            charge_palettes = [
-                                                ['#d62728', '#c62828', '#b71c1c', '#8b0000', '#a30000'],
-                                                ['#ff7f0e', '#ff6f00', '#ff5722', '#f4511e', '#e64a19'],
-                                                ['#e377c2', '#d81b60', '#c2185b', '#ad1457', '#880e4f'],
-                                                ['#9c27b0', '#8e24aa', '#7b1fa2', '#6a1b9a', '#4a148c'],
-                                                ['#d84315', '#bf360c', '#c2185b', '#d32f2f', '#c62828']
-                                            ]
-                                            palette = charge_palettes[int(spec) - 1]
-                                            charge_col = palette[0]  # Use first color from palette for single file
-                                        else:
-                                            charge_col = spec
-                                        discharge_col = _generate_similar_color(charge_col)
-                                        try:
-                                            file_data[idx]['sc_charge'].set_color(charge_col)
-                                            file_data[idx]['sc_discharge'].set_color(discharge_col)
-                                            file_data[idx]['color'] = charge_col
-                                        except Exception:
-                                            pass
-                                    else:
-                                        print("Invalid file number.")
-                                except ValueError:
-                                    print("Invalid input.")
-                        else:
-                            # Single file mode
-                            push_state("colors-ly")
-                            print("\nCharge color palettes (discharge will be auto-generated):")
-                            print("  1. Reds: #d62728, #c62828, #b71c1c, #8b0000, #a30000")
-                            print("  2. Oranges: #ff7f0e, #ff6f00, #ff5722, #f4511e, #e64a19")
-                            print("  3. Pinks/Magentas: #e377c2, #d81b60, #c2185b, #ad1457, #880e4f")
-                            print("  4. Purples: #9c27b0, #8e24aa, #7b1fa2, #6a1b9a, #4a148c")
-                            print("  5. Deep oranges/reds: #d84315, #bf360c, #c2185b, #d32f2f, #c62828")
-                            spec = input("Enter color (name/hex), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                            if not spec or spec.lower() == 'q':
-                                continue
-                            if spec.strip().lower() == 'r':
-                                # Use Viridis colormap
-                                import matplotlib.cm as cm
-                                import matplotlib.colors as mcolors
-                                viridis = cm.get_cmap('viridis', 10)
-                                charge_col = mcolors.rgb2hex(viridis(_random.random())[:3])
-                            elif spec in ['1', '2', '3', '4', '5']:
-                                # Use selected palette
-                                charge_palettes = [
-                                    ['#d62728', '#c62828', '#b71c1c', '#8b0000', '#a30000'],
-                                    ['#ff7f0e', '#ff6f00', '#ff5722', '#f4511e', '#e64a19'],
-                                    ['#e377c2', '#d81b60', '#c2185b', '#ad1457', '#880e4f'],
-                                    ['#9c27b0', '#8e24aa', '#7b1fa2', '#6a1b9a', '#4a148c'],
-                                    ['#d84315', '#bf360c', '#c2185b', '#d32f2f', '#c62828']
-                                ]
-                                palette = charge_palettes[int(spec) - 1]
-                                charge_col = palette[0]  # Use first color from palette
-                            else:
-                                charge_col = spec
-                            discharge_col = _generate_similar_color(charge_col)
+                            _apply_manual_entries(tokens)
+                        if not is_multi_file and getattr(fig, '_cpc_spine_auto', False):
                             try:
-                                sc_charge.set_color(charge_col)
-                                sc_discharge.set_color(discharge_col)
+                                cur_col = _color_of(sc_charge)
+                                if cur_col:
+                                    _set_spine_color('left', cur_col)
                             except Exception:
                                 pass
                         try:
-                            _rebuild_legend(ax, ax2, file_data)
-                            fig.canvas.draw_idle()
+                            _rebuild_legend(ax, ax2, file_data); fig.canvas.draw_idle()
                         except Exception:
                             pass
                     elif sub == 'ry':
                         push_state("colors-ry")
-                        if is_multi_file:
-                            # Show file list for efficiency triangle selection
-                            print("\nSelect curve's efficiency to color:")
-                            for i, f in enumerate(file_data, 1):
-                                vis_mark = "●" if f.get('visible', True) else "○"
-                                print(f"  {i}. {vis_mark} {f['filename']}")
-                            choice = input("Enter curve number (1-{}) or 'a' for all, q=cancel: ".format(len(file_data))).strip()
-                            if not choice or choice.lower() == 'q':
-                                continue
-                            
-                            if choice.lower() == 'a':
-                                print("\nEfficiency color palettes:")
-                                print("  1. Blues: #1f77b4, #1976d2, #1565c0, #0d47a1, #01579b")
-                                print("  2. Cyans/Teals: #17becf, #00acc1, #0097a7, #00838f, #006064")
-                                print("  3. Purples/Indigos: #9467bd, #5e35b1, #512da8, #4527a0, #311b92")
-                                print("  4. Deep blues: #2196f3, #1e88e5, #1976d2, #1565c0, #0d47a1")
-                                print("  5. Dark cyans/purples: #0097a7, #00838f, #006064, #5e35b1, #4527a0")
-                                val = input("Enter color (hex/name), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                                if not val or val.lower() == 'q':
+                        print("\nCurrent efficiency curves:")
+                        for i, f in enumerate(file_data, 1):
+                            cur = _color_of(f['sc_eff'])
+                            vis_mark = "●" if f.get('visible', True) else "○"
+                            print(f"  {i}. {vis_mark} {f['filename']}  {color_block(cur)} {cur}")
+                        uc = get_user_color_list(fig)
+                        if uc:
+                            print("\nSaved colors (refer as number or u#):")
+                            for i, c in enumerate(uc, 1):
+                                print(f"  {i}: {color_block(c)} {c}")
+                        print("\nPalettes:")
+                        for idx, name in enumerate(palette_opts, 1):
+                            bar = palette_preview(name)
+                            print(f"  {idx}. {name}")
+                            if bar:
+                                print(f"      {bar}")
+                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3 or 1 2 2 3) or palette/number for all, q=cancel: ").strip()
+                        if not color_input or color_input.lower() == 'q':
+                            continue
+                        tokens = color_input.split()
+                        if len(tokens) == 1:
+                            # Single token: apply palette to all files
+                            spec = tokens[0]
+                            for i, f in enumerate(file_data):
+                                col = _resolve_color(spec, i, len(file_data), default_cmap='viridis')
+                                if not col:
                                     continue
-                                for i, f in enumerate(file_data):
-                                    if val.lower() == 'r':
-                                        # Use Plasma colormap
-                                        import matplotlib.cm as cm
-                                        import matplotlib.colors as mcolors
-                                        plasma = cm.get_cmap('plasma', 10)
-                                        col = mcolors.rgb2hex(plasma(_random.random())[:3])
-                                    elif val in ['1', '2', '3', '4', '5']:
-                                        # Use selected palette
-                                        efficiency_palettes = [
-                                            ['#1f77b4', '#1976d2', '#1565c0', '#0d47a1', '#01579b'],
-                                            ['#17becf', '#00acc1', '#0097a7', '#00838f', '#006064'],
-                                            ['#9467bd', '#5e35b1', '#512da8', '#4527a0', '#311b92'],
-                                            ['#2196f3', '#1e88e5', '#1976d2', '#1565c0', '#0d47a1'],
-                                            ['#0097a7', '#00838f', '#006064', '#5e35b1', '#4527a0']
-                                        ]
-                                        palette = efficiency_palettes[int(val) - 1]
-                                        col = palette[i % len(palette)]
+                                try:
+                                    f['sc_eff'].set_color(col)
+                                    f['eff_color'] = col
+                                    # Force update of facecolors for scatter plots
+                                    if hasattr(f['sc_eff'], 'set_facecolors'):
+                                        from matplotlib.colors import to_rgba
+                                        rgba = to_rgba(col)
+                                        f['sc_eff'].set_facecolors(rgba)
+                                except Exception:
+                                    pass
+                        else:
+                            # Multiple tokens: parse file:color pairs
+                            def _apply_manual_entries_eff(tokens):
+                                idx_color_pairs = []
+                                i = 0
+                                while i < len(tokens):
+                                    tok = tokens[i]
+                                    if ':' in tok:
+                                        idx_str, color = tok.split(':', 1)
                                     else:
-                                        col = val
+                                        if i + 1 >= len(tokens):
+                                            print(f"Skip incomplete entry: {tok}")
+                                            break
+                                        idx_str = tok
+                                        color = tokens[i + 1]
+                                        i += 1
+                                    idx_color_pairs.append((idx_str, color))
+                                    i += 1
+                                for idx_str, color in idx_color_pairs:
                                     try:
-                                        f['sc_eff'].set_color(col)
-                                        f['eff_color'] = col  # Store efficiency color
+                                        file_idx = int(idx_str) - 1
+                                    except ValueError:
+                                        print(f"Bad index: {idx_str}")
+                                        continue
+                                    if not (0 <= file_idx < len(file_data)):
+                                        print(f"Index out of range: {idx_str}")
+                                        continue
+                                    resolved = resolve_color_token(color, fig)
+                                    col = resolved if resolved else color
+                                    if not col:
+                                        continue
+                                    try:
+                                        file_data[file_idx]['sc_eff'].set_color(col)
+                                        file_data[file_idx]['eff_color'] = col
+                                        # Force update of facecolors for scatter plots
+                                        if hasattr(file_data[file_idx]['sc_eff'], 'set_facecolors'):
+                                            from matplotlib.colors import to_rgba
+                                            rgba = to_rgba(col)
+                                            file_data[file_idx]['sc_eff'].set_facecolors(rgba)
                                     except Exception:
                                         pass
-                            else:
-                                try:
-                                    idx = int(choice) - 1
-                                    if 0 <= idx < len(file_data):
-                                        print("\nEfficiency color palettes:")
-                                        print("  1. Blues: #1f77b4, #1976d2, #1565c0, #0d47a1, #01579b")
-                                        print("  2. Cyans/Teals: #17becf, #00acc1, #0097a7, #00838f, #006064")
-                                        print("  3. Purples/Indigos: #9467bd, #5e35b1, #512da8, #4527a0, #311b92")
-                                        print("  4. Deep blues: #2196f3, #1e88e5, #1976d2, #1565c0, #0d47a1")
-                                        print("  5. Dark cyans/purples: #0097a7, #00838f, #006064, #5e35b1, #4527a0")
-                                        val = input("Enter color (hex/name), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                                        if not val or val.lower() == 'q':
-                                            continue
-                                        if val.lower() == 'r':
-                                            # Use Plasma colormap
-                                            import matplotlib.cm as cm
-                                            import matplotlib.colors as mcolors
-                                            plasma = cm.get_cmap('plasma', 10)
-                                            col = mcolors.rgb2hex(plasma(_random.random())[:3])
-                                        elif val in ['1', '2', '3', '4', '5']:
-                                            # Use selected palette
-                                            efficiency_palettes = [
-                                                ['#1f77b4', '#1976d2', '#1565c0', '#0d47a1', '#01579b'],
-                                                ['#17becf', '#00acc1', '#0097a7', '#00838f', '#006064'],
-                                                ['#9467bd', '#5e35b1', '#512da8', '#4527a0', '#311b92'],
-                                                ['#2196f3', '#1e88e5', '#1976d2', '#1565c0', '#0d47a1'],
-                                                ['#0097a7', '#00838f', '#006064', '#5e35b1', '#4527a0']
-                                            ]
-                                            palette = efficiency_palettes[int(val) - 1]
-                                            col = palette[0]  # Use first color from palette for single file
-                                        else:
-                                            col = val
-                                        try:
-                                            file_data[idx]['sc_eff'].set_color(col)
-                                            file_data[idx]['eff_color'] = col  # Store efficiency color
-                                        except Exception:
-                                            pass
-                                    else:
-                                        print("Invalid file number.")
-                                except ValueError:
-                                    print("Invalid input.")
-                        else:
-                            # Single file mode
-                            print("\nEfficiency color palettes:")
-                            print("  1. Blues: #1f77b4, #1976d2, #1565c0, #0d47a1, #01579b")
-                            print("  2. Cyans/Teals: #17becf, #00acc1, #0097a7, #00838f, #006064")
-                            print("  3. Purples/Indigos: #9467bd, #5e35b1, #512da8, #4527a0, #311b92")
-                            print("  4. Deep blues: #2196f3, #1e88e5, #1976d2, #1565c0, #0d47a1")
-                            print("  5. Dark cyans/purples: #0097a7, #00838f, #006064, #5e35b1, #4527a0")
-                            val = input("Enter color (hex/name), palette number (1-5), or 'r' for random (q=cancel): ").strip()
-                            if not val or val.lower() == 'q':
-                                continue
-                            if val.lower() == 'r':
-                                # Use Plasma colormap
-                                import matplotlib.cm as cm
-                                import matplotlib.colors as mcolors
-                                plasma = cm.get_cmap('plasma', 10)
-                                col = mcolors.rgb2hex(plasma(_random.random())[:3])
-                            elif val in ['1', '2', '3', '4', '5']:
-                                # Use selected palette
-                                efficiency_palettes = [
-                                    ['#1f77b4', '#1976d2', '#1565c0', '#0d47a1', '#01579b'],
-                                    ['#17becf', '#00acc1', '#0097a7', '#00838f', '#006064'],
-                                    ['#9467bd', '#5e35b1', '#512da8', '#4527a0', '#311b92'],
-                                    ['#2196f3', '#1e88e5', '#1976d2', '#1565c0', '#0d47a1'],
-                                    ['#0097a7', '#00838f', '#006064', '#5e35b1', '#4527a0']
-                                ]
-                                palette = efficiency_palettes[int(val) - 1]
-                                col = palette[0]  # Use first color from palette
-                            else:
-                                col = val
+                            _apply_manual_entries_eff(tokens)
+                        if not is_multi_file and getattr(fig, '_cpc_spine_auto', False):
                             try:
-                                sc_eff.set_color(col)
+                                cur_col = _color_of(sc_eff)
+                                if cur_col:
+                                    _set_spine_color('right', cur_col)
                             except Exception:
                                 pass
                         try:
-                            _rebuild_legend(ax, ax2, file_data)
-                            fig.canvas.draw_idle()
+                            _rebuild_legend(ax, ax2, file_data); fig.canvas.draw_idle()
                         except Exception:
                             pass
                     else:
                         print("Unknown option.")
             except Exception as e:
                 print(f"Error in colors menu: {e}")
-            _print_menu()
+            _print_menu(fig)
             if is_multi_file:
                 _print_file_list(file_data, current_file_idx)
             continue
         elif key == 'k':
             # Spine colors (w=top, a=left, s=bottom, d=right)
             try:
-                print("Set spine colors (with matching tick and label colors):")
-                print(_colorize_inline_commands("  w : top spine    | a : left spine"))
-                print(_colorize_inline_commands("  s : bottom spine | d : right spine"))
-                print(_colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
-                line = input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
-                if line and line.lower() != 'q':
+                while True:
+                    print("\nSet spine colors (with matching tick and label colors):")
+                    print(_colorize_inline_commands("  w : top spine    | a : left spine"))
+                    print(_colorize_inline_commands("  s : bottom spine | d : right spine"))
+                    print(_colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
+                    # Add auto function when only one file is loaded
+                    if not is_multi_file:
+                        auto_enabled = getattr(fig, '_cpc_spine_auto', False)
+                        auto_status = "ON" if auto_enabled else "OFF"
+                        print(_colorize_inline_commands(f"  a : auto (apply capacity curve color to left y-axis, efficiency to right y-axis) [{auto_status}]"))
+                    print("q: back to main menu")
+                    line = _safe_input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
+                    if not line or line.lower() == 'q':
+                        break
+                    # Handle auto toggle when only one file is loaded
+                    if not is_multi_file and line.lower() == 'a':
+                        auto_enabled = getattr(fig, '_cpc_spine_auto', False)
+                        fig._cpc_spine_auto = not auto_enabled
+                        new_status = "ON" if fig._cpc_spine_auto else "OFF"
+                        print(f"Auto mode: {new_status}")
+                        if fig._cpc_spine_auto:
+                            # Apply auto colors immediately
+                            push_state("color-spine-auto")
+                            try:
+                                # Get capacity curve color (charge color)
+                                charge_col = _color_of(sc_charge)
+                                # Get efficiency curve color
+                                eff_col = _color_of(sc_eff)
+                                # Apply to left and right spines
+                                _set_spine_color('left', charge_col)
+                                _set_spine_color('right', eff_col)
+                                print(f"Applied: left y-axis = {charge_col}, right y-axis = {eff_col}")
+                                fig.canvas.draw()
+                            except Exception as e:
+                                print(f"Error applying auto colors: {e}")
+                        continue
                     push_state("color-spine")
                     # Map wasd to spine names
                     key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
@@ -1597,11 +2138,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         _set_spine_color(spine_name, resolved)
                         print(f"Set {spine_name} spine to {resolved}")
                     fig.canvas.draw()
-                else:
-                    print("Canceled.")
             except Exception as e:
                 print(f"Error in spine color menu: {e}")
-            _print_menu()
+            _print_menu(fig)
             if is_multi_file:
                 _print_file_list(file_data, current_file_idx)
             continue
@@ -1609,7 +2148,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             try:
                 base_path = choose_save_path(file_paths, purpose="figure export")
                 if not base_path:
-                    _print_menu()
+                    _print_menu(fig)
                     continue
                 print(f"\nChosen path: {base_path}")
                 # List existing figure files from Figures/ subdirectory
@@ -1626,22 +2165,38 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         else:
                             print(f"  {i}: {fname}")
                 
-                fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if last_figure_path:
+                    fname = _safe_input("Export filename (default .svg if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                else:
+                    fname = _safe_input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
-                    _print_menu(); continue
+                    _print_menu(fig); continue
                 
+                # Check for 'o' option
+                if fname.lower() == 'o':
+                    if not last_figure_path:
+                        print("No previous export found.")
+                        _print_menu(fig); continue
+                    if not os.path.exists(last_figure_path):
+                        print(f"Previous export file not found: {last_figure_path}")
+                        _print_menu(fig); continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        _print_menu(fig); continue
+                    target = last_figure_path
                 # Check if user selected a number
-                if fname.isdigit() and files:
+                elif fname.isdigit() and files:
                     idx = int(fname)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             _print_menu(); continue
                         target = file_list[idx-1][1]  # Full path from list
                     else:
                         print("Invalid number.")
-                        _print_menu(); continue
+                        _print_menu(fig); continue
                 else:
                     root, ext = os.path.splitext(fname)
                     if ext == '':
@@ -1652,10 +2207,21 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     else:
                         target = get_organized_path(fname, 'figure', base_path=base_path)
                     if os.path.exists(target):
-                        yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
-                            _print_menu(); continue
+                            _print_menu(fig); continue
                 if target:
+                    # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                    from .utils import ensure_exact_case_filename
+                    target = ensure_exact_case_filename(target)
+                    
+                    # Save current legend position before export (savefig can change layout)
+                    saved_legend_pos = None
+                    try:
+                        saved_legend_pos = getattr(fig, '_cpc_legend_xy_in', None)
+                    except Exception:
+                        pass
+                    
                     # Remove numbering from legend labels before export
                     original_labels = {}
                     if is_multi_file:
@@ -1678,27 +2244,150 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             pass
                     
                     # Export the figure
-                    fig.savefig(target, bbox_inches='tight')
-                    print(f"Exported figure to {target}")
-                    
-                    # Restore original labels
-                    if is_multi_file and original_labels:
+                    _, _ext = os.path.splitext(target)
+                    if _ext.lower() == '.svg':
+                        # Temporarily force transparent patches so SVG background stays transparent
                         try:
-                            for artist, label in original_labels.items():
-                                artist.set_label(label)
-                            _rebuild_legend(ax, ax2, file_data)
+                            _fig_fc = fig.get_facecolor()
+                        except Exception:
+                            _fig_fc = None
+                        try:
+                            _ax_fc = ax.get_facecolor()
+                        except Exception:
+                            _ax_fc = None
+                        try:
+                            _ax2_fc = ax2.get_facecolor()
+                        except Exception:
+                            _ax2_fc = None
+                        try:
+                            if getattr(fig, 'patch', None) is not None:
+                                fig.patch.set_alpha(0.0); fig.patch.set_facecolor('none')
+                            if getattr(ax, 'patch', None) is not None:
+                                ax.patch.set_alpha(0.0); ax.patch.set_facecolor('none')
+                            if getattr(ax2, 'patch', None) is not None:
+                                ax2.patch.set_alpha(0.0); ax2.patch.set_facecolor('none')
                         except Exception:
                             pass
+                        try:
+                            fig.savefig(target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none')
+                        finally:
+                            try:
+                                if _fig_fc is not None and getattr(fig, 'patch', None) is not None:
+                                    fig.patch.set_alpha(1.0); fig.patch.set_facecolor(_fig_fc)
+                            except Exception:
+                                pass
+                            try:
+                                if _ax_fc is not None and getattr(ax, 'patch', None) is not None:
+                                    ax.patch.set_alpha(1.0); ax.patch.set_facecolor(_ax_fc)
+                            except Exception:
+                                pass
+                            try:
+                                if _ax2_fc is not None and getattr(ax2, 'patch', None) is not None:
+                                    ax2.patch.set_alpha(1.0); ax2.patch.set_facecolor(_ax2_fc)
+                            except Exception:
+                                pass
+                        print(f"Exported figure to {target}")
+                        fig._last_figure_export_path = target
+                        
+                        # Restore original labels and legend position
+                        if is_multi_file and original_labels:
+                            try:
+                                for artist, label in original_labels.items():
+                                    artist.set_label(label)
+                                _rebuild_legend(ax, ax2, file_data)
+                            except Exception:
+                                pass
+                        # Restore legend position after savefig (which may have changed layout)
+                        if saved_legend_pos is not None:
+                            try:
+                                fig._cpc_legend_xy_in = saved_legend_pos
+                                _rebuild_legend(ax, ax2, file_data)
+                                fig.canvas.draw_idle()
+                            except Exception:
+                                pass
+                    else:
+                        fig.savefig(target, bbox_inches='tight')
+                        print(f"Exported figure to {target}")
+                        fig._last_figure_export_path = target
+                        
+                        # Restore original labels and legend position
+                        if is_multi_file and original_labels:
+                            try:
+                                for artist, label in original_labels.items():
+                                    artist.set_label(label)
+                                _rebuild_legend(ax, ax2, file_data)
+                            except Exception:
+                                pass
+                        # Restore legend position after savefig (which may have changed layout)
+                        if saved_legend_pos is not None:
+                            try:
+                                fig._cpc_legend_xy_in = saved_legend_pos
+                                _rebuild_legend(ax, ax2, file_data)
+                                fig.canvas.draw_idle()
+                            except Exception:
+                                pass
             except Exception as e:
                 print(f"Export failed: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 's':
             # Save CPC session (.pkl) with all data and styles
             try:
                 from .session import dump_cpc_session
+                # Sync current tick/title visibility (including minors) into stored WASD state before save
+                try:
+                    wasd = getattr(fig, '_cpc_wasd_state', {})
+                    if not isinstance(wasd, dict):
+                        wasd = {}
+                    # bottom
+                    w = wasd.setdefault('bottom', {})
+                    w['ticks'] = bool(tick_state.get('b_ticks', tick_state.get('bx', True)))
+                    w['labels'] = bool(tick_state.get('b_labels', tick_state.get('bx', True)))
+                    w['minor'] = bool(tick_state.get('mbx', False))
+                    w['title'] = bool(ax.xaxis.label.get_visible())
+                    try:
+                        sp = ax.spines.get('bottom')
+                        w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+                    except Exception:
+                        pass
+                    # top
+                    w = wasd.setdefault('top', {})
+                    w['ticks'] = bool(tick_state.get('t_ticks', tick_state.get('tx', False)))
+                    w['labels'] = bool(tick_state.get('t_labels', tick_state.get('tx', False)))
+                    w['minor'] = bool(tick_state.get('mtx', False))
+                    w['title'] = bool(getattr(ax, '_top_xlabel_on', False))
+                    try:
+                        sp = ax.spines.get('top')
+                        w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', False)
+                    except Exception:
+                        pass
+                    # left
+                    w = wasd.setdefault('left', {})
+                    w['ticks'] = bool(tick_state.get('l_ticks', tick_state.get('ly', True)))
+                    w['labels'] = bool(tick_state.get('l_labels', tick_state.get('ly', True)))
+                    w['minor'] = bool(tick_state.get('mly', False))
+                    w['title'] = bool(ax.yaxis.label.get_visible())
+                    try:
+                        sp = ax.spines.get('left')
+                        w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+                    except Exception:
+                        pass
+                    # right
+                    w = wasd.setdefault('right', {})
+                    w['ticks'] = bool(tick_state.get('r_ticks', tick_state.get('ry', True)))
+                    w['labels'] = bool(tick_state.get('r_labels', tick_state.get('ry', True)))
+                    w['minor'] = bool(tick_state.get('mry', False))
+                    w['title'] = bool(ax2.yaxis.label.get_visible() if ax2 is not None else False)
+                    try:
+                        sp = ax2.spines.get('right') if ax2 is not None else None
+                        w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+                    except Exception:
+                        pass
+                    setattr(fig, '_cpc_wasd_state', wasd)
+                except Exception:
+                    pass
                 folder = choose_save_path(file_paths, purpose="CPC session save")
                 if not folder:
-                    _print_menu(); continue
+                    _print_menu(fig); continue
                 print(f"\nChosen path: {folder}")
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
@@ -1713,35 +2402,57 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"  {i}: {f}  ({timestamp})")
                         else:
                             print(f"  {i}: {f}")
-                prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
-                choice = input(prompt).strip()
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if last_session_path:
+                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
+                else:
+                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+                choice = _safe_input(prompt).strip()
                 if not choice or choice.lower() == 'q':
+                    _print_menu(fig); continue
+                if choice.lower() == 'o':
+                    # Overwrite last saved session
+                    if not last_session_path:
+                        print("No previous save found.")
+                        _print_menu(fig); continue
+                    if not os.path.exists(last_session_path):
+                        print(f"Previous save file not found: {last_session_path}")
+                        _print_menu(fig); continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        _print_menu(fig); continue
+                    dump_cpc_session(last_session_path, fig=fig, ax=ax, ax2=ax2, sc_charge=sc_charge, sc_discharge=sc_discharge, sc_eff=sc_eff, file_data=file_data, skip_confirm=True)
+                    print(f"Overwritten session to {last_session_path}")
                     _print_menu(); continue
                 if choice.isdigit() and files:
                     idx = int(choice)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             _print_menu(); continue
                         target = os.path.join(folder, name)
+                        dump_cpc_session(target, fig=fig, ax=ax, ax2=ax2, sc_charge=sc_charge, sc_discharge=sc_discharge, sc_eff=sc_eff, file_data=file_data, skip_confirm=True)
+                        fig._last_session_save_path = target
+                        _print_menu(); continue
                     else:
                         print("Invalid number.")
-                        _print_menu(); continue
-                else:
+                        _print_menu(fig); continue
+                if choice.lower() != 'o':
                     name = choice
                     root, ext = os.path.splitext(name)
                     if ext == '':
                         name = name + '.pkl'
                     target = name if os.path.isabs(name) else os.path.join(folder, name)
                     if os.path.exists(target):
-                        yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
-                            _print_menu(); continue
-                dump_cpc_session(target, fig=fig, ax=ax, ax2=ax2, sc_charge=sc_charge, sc_discharge=sc_discharge, sc_eff=sc_eff, file_data=file_data, skip_confirm=True)
+                            _print_menu(fig); continue
+                    dump_cpc_session(target, fig=fig, ax=ax, ax2=ax2, sc_charge=sc_charge, sc_discharge=sc_discharge, sc_eff=sc_eff, file_data=file_data, skip_confirm=True)
+                    fig._last_session_save_path = target
             except Exception as e:
                 print(f"Save failed: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'p':
             try:
                 style_menu_active = True
@@ -1775,6 +2486,15 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             vis = props.get('visible', False)
                             col = props.get('color')
                             print(f"  {name:<6} lw={lw} visible={vis} color={col}")
+                    # Spine colors (k command)
+                    spine_colors = snap.get('spine_colors', {})
+                    if spine_colors:
+                        print("Spine colors:")
+                        for name, color in spine_colors.items():
+                            print(f"  {name}: {color}")
+                    spine_auto = snap.get('spine_colors_auto', False)
+                    if spine_auto:
+                        print(f"Spine colors auto: ON (capacity → left y-axis, efficiency → right y-axis)")
                     
                     ticks = snap.get('ticks', {})
                     print(f"Tick widths: x_major={ticks.get('x_major_width')}, x_minor={ticks.get('x_minor_width')}")
@@ -1853,17 +2573,50 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             else:
                                 print(f"  {_i}: {fname}")
                     
-                    sub = input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
+                    last_style_path = getattr(fig, '_last_style_export_path', None)
+                    if last_style_path:
+                        sub = _safe_input(_colorize_prompt("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ")).strip().lower()
+                    else:
+                        sub = _safe_input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == 'r' or sub == '':
                         continue
+                    if sub == 'o':
+                        # Overwrite last exported style file
+                        if not last_style_path:
+                            print("No previous export found.")
+                            continue
+                        if not os.path.exists(last_style_path):
+                            print(f"Previous export file not found: {last_style_path}")
+                            continue
+                        yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            continue
+                        # Rebuild config based on current state
+                        snap = _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
+                        # Determine if last export was style-only or style+geometry
+                        try:
+                            with open(last_style_path, 'r', encoding='utf-8') as f:
+                                old_cfg = json.load(f)
+                            if old_cfg.get('kind') == 'cpc_style_geom':
+                                snap['kind'] = 'cpc_style_geom'
+                                snap['geometry'] = _get_geometry_snapshot(ax, ax2)
+                            else:
+                                snap['kind'] = 'cpc_style'
+                        except Exception:
+                            snap['kind'] = 'cpc_style'
+                        with open(last_style_path, 'w', encoding='utf-8') as f:
+                            json.dump(snap, f, indent=2)
+                        print(f"Overwritten style to {last_style_path}")
+                        style_menu_active = False
+                        break
                     if sub == 'e':
                         # Ask for ps or psg
                         print("Export options:")
                         print("  ps  = style only (.bps)")
                         print("  psg = style + geometry (.bpsg)")
-                        exp_choice = input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
+                        exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                         if not exp_choice or exp_choice == 'q':
                             print("Style export canceled.")
                             continue
@@ -1915,16 +2668,48 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     print(f"  {i}: {fname}  ({timestamp})")
                                 else:
                                     print(f"  {i}: {fname}")
-                        choice = input("Enter new filename or number to overwrite (q=cancel): ").strip()
+                        if last_style_path:
+                            choice = _safe_input("Enter new filename, number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                        else:
+                            choice = _safe_input("Enter new filename or number to overwrite (q=cancel): ").strip()
                         if not choice or choice.lower() == 'q':
                             print("Style export canceled.")
                             continue
+                        if choice.lower() == 'o':
+                            # Overwrite last exported style file
+                            if not last_style_path:
+                                print("No previous export found.")
+                                continue
+                            if not os.path.exists(last_style_path):
+                                print(f"Previous export file not found: {last_style_path}")
+                                continue
+                            yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                            if yn != 'y':
+                                continue
+                            # Rebuild config based on current state
+                            snap = _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
+                            # Determine if last export was style-only or style+geometry
+                            try:
+                                with open(last_style_path, 'r', encoding='utf-8') as f:
+                                    old_cfg = json.load(f)
+                                if old_cfg.get('kind') == 'cpc_style_geom':
+                                    snap['kind'] = 'cpc_style_geom'
+                                    snap['geometry'] = _get_geometry_snapshot(ax, ax2)
+                                else:
+                                    snap['kind'] = 'cpc_style'
+                            except Exception:
+                                snap['kind'] = 'cpc_style'
+                            with open(last_style_path, 'w', encoding='utf-8') as f:
+                                json.dump(snap, f, indent=2)
+                            print(f"Overwritten style to {last_style_path}")
+                            style_menu_active = False
+                            break
                         target = None
                         if choice.isdigit() and files:
                             idx = int(choice)
                             if 1 <= idx <= len(files):
                                 name = files[idx-1]
-                                yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                                yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                                 if yn == 'y':
                                     target = file_list[idx-1][1]  # Full path from list
                             else:
@@ -1941,25 +2726,26 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             else:
                                 target = get_organized_path(name, 'style', base_path=save_base)
                             if os.path.exists(target):
-                                yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                                yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                                 if yn != 'y':
                                     target = None
                         if target:
                             with open(target, 'w', encoding='utf-8') as f:
                                 json.dump(snap, f, indent=2)
                             print(f"Exported CPC style to {target}")
+                            fig._last_style_export_path = target
                         style_menu_active = False  # Exit style submenu and return to main menu
                         break
                     else:
                         print("Unknown choice.")
             except Exception as e:
                 print(f"Error in style submenu: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'i':
             try:
                 path = choose_style_file(file_paths, purpose="style import")
                 if not path:
-                    _print_menu(); continue
+                    _print_menu(fig); continue
                 push_state("import-style")
                 with open(path, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
@@ -1967,7 +2753,18 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 # Check file type
                 kind = cfg.get('kind', '')
                 if kind not in ('cpc_style', 'cpc_style_geom'):
-                    print("Not a CPC style file."); _print_menu(); continue
+                    print("Not a CPC style file."); _print_menu(fig); continue
+
+                # Enforce compatibility between style/geom ro state and current figure ro state
+                file_ro = bool(cfg.get('ro_active', False))
+                current_ro = bool(getattr(fig, '_ro_active', False))
+                if file_ro != current_ro:
+                    if file_ro:
+                        print("Warning: Style/geometry file was saved with --ro (swapped x/y axes); current plot is not using --ro.")
+                    else:
+                        print("Warning: Style/geometry file was saved without --ro; current plot was created with --ro.")
+                    print("Not applying CPC style/geometry to avoid corrupting axis orientation.")
+                    _print_menu(fig); continue
                 
                 has_geometry = (kind == 'cpc_style_geom' and 'geometry' in cfg)
                 
@@ -1997,16 +2794,60 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         
             except Exception as e:
                 print(f"Error importing style: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'ry':
             # Toggle efficiency visibility on the right axis
             try:
                 push_state("toggle-eff")
-                vis = bool(sc_eff.get_visible()) if hasattr(sc_eff, 'get_visible') else True
-                new_vis = not vis
                 
-                # 1. Hide/show efficiency points
-                sc_eff.set_visible(new_vis)
+                # Capture current legend position BEFORE toggling visibility
+                # This ensures the position is preserved when legend is rebuilt
+                try:
+                    if not hasattr(fig, '_cpc_legend_xy_in') or getattr(fig, '_cpc_legend_xy_in') is None:
+                        leg0 = ax.get_legend()
+                        if leg0 is not None and leg0.get_visible():
+                            try:
+                                # Ensure renderer exists
+                                try:
+                                    renderer = fig.canvas.get_renderer()
+                                except Exception:
+                                    fig.canvas.draw()
+                                    renderer = fig.canvas.get_renderer()
+                                bb = leg0.get_window_extent(renderer=renderer)
+                                cx = 0.5 * (bb.x0 + bb.x1)
+                                cy = 0.5 * (bb.y0 + bb.y1)
+                                fx, fy = fig.transFigure.inverted().transform((cx, cy))
+                                fw, fh = fig.get_size_inches()
+                                offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                                offset = _sanitize_legend_offset(offset)
+                                if offset is not None:
+                                    fig._cpc_legend_xy_in = offset
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                
+                # Determine current visibility state (check if any efficiency is visible)
+                if is_multi_file:
+                    # In multi-file mode, check if any efficiency is visible
+                    any_eff_visible = any(f.get('sc_eff', {}).get_visible() if hasattr(f.get('sc_eff'), 'get_visible') else True for f in file_data if f.get('sc_eff'))
+                    new_vis = not any_eff_visible
+                else:
+                    # Single file mode
+                    vis = bool(sc_eff.get_visible()) if hasattr(sc_eff, 'get_visible') else True
+                    new_vis = not vis
+                
+                # 1. Hide/show efficiency points (all files in multi-file mode)
+                if is_multi_file:
+                    for f in file_data:
+                        eff_sc = f.get('sc_eff')
+                        if eff_sc is not None:
+                            try:
+                                eff_sc.set_visible(new_vis)
+                            except Exception:
+                                pass
+                else:
+                    sc_eff.set_visible(new_vis)
                 
                 # 2. Hide/show right y-axis title
                 try:
@@ -2022,73 +2863,47 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 except Exception:
                     pass
                 
-                # 4. Rebuild legend to remove/add efficiency entry
+                # Persist WASD state so save/load and styles honor the toggle
                 try:
-                    h1, l1 = ax.get_legend_handles_labels()
-                except Exception:
-                    h1, l1 = [], []
-                try:
-                    h2, l2 = ax2.get_legend_handles_labels()
-                except Exception:
-                    h2, l2 = [], []
-                
-                # Filter out efficiency entry if hidden
-                eff_label = None
-                try:
-                    eff_label = sc_eff.get_label()
+                    wasd = getattr(fig, '_cpc_wasd_state', None)
+                    if not isinstance(wasd, dict):
+                        wasd = {
+                            'top':    {'spine': bool(ax.spines.get('top').get_visible()) if ax.spines.get('top') else False,
+                                       'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))),
+                                       'minor': bool(tick_state.get('mtx', False)),
+                                       'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))),
+                                       'title': bool(getattr(ax, '_top_xlabel_on', False))},
+                            'bottom': {'spine': bool(ax.spines.get('bottom').get_visible()) if ax.spines.get('bottom') else True,
+                                       'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))),
+                                       'minor': bool(tick_state.get('mbx', False)),
+                                       'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))),
+                                       'title': bool(ax.xaxis.label.get_visible()) and bool(ax.get_xlabel())},
+                            'left':   {'spine': bool(ax.spines.get('left').get_visible()) if ax.spines.get('left') else True,
+                                       'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))),
+                                       'minor': bool(tick_state.get('mly', False)),
+                                       'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))),
+                                       'title': bool(ax.yaxis.label.get_visible()) and bool(ax.get_ylabel())},
+                            'right':  {'spine': bool(ax2.spines.get('right').get_visible()) if ax2.spines.get('right') else True,
+                                       'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', True))),
+                                       'minor': bool(tick_state.get('mry', False)),
+                                       'labels': bool(tick_state.get('r_labels', tick_state.get('ry', True))),
+                                       'title': bool(ax2.yaxis.label.get_visible()) and bool(ax2.get_ylabel())},
+                        }
+                    wasd.setdefault('right', {})
+                    wasd['right']['ticks'] = bool(new_vis)
+                    wasd['right']['labels'] = bool(new_vis)
+                    wasd['right']['title'] = bool(new_vis)
+                    setattr(fig, '_cpc_wasd_state', wasd)
                 except Exception:
                     pass
                 
-                pairs1 = list(zip(h1, l1))
-                pairs2 = list(zip(h2, l2))
-                
-                def _keep(pair):
-                    h, l = pair
-                    # Drop invisible handles
-                    try:
-                        if hasattr(h, 'get_visible') and not h.get_visible():
-                            return False
-                    except Exception:
-                        pass
-                    # Drop the efficiency label when hidden
-                    if eff_label and (l == eff_label) and not new_vis:
-                        return False
-                    return True
-                
-                vis_pairs1 = [p for p in pairs1 if _keep(p)]
-                vis_pairs2 = [p for p in pairs2 if _keep(p)]
-                H = [h for h, _ in vis_pairs1 + vis_pairs2]
-                L = [l for _, l in vis_pairs1 + vis_pairs2]
-                
-                if H:
-                    try:
-                        # Honor stored inch-based anchor if present; else fallback to 'best'
-                        xy_in = getattr(fig, '_cpc_legend_xy_in', None)
-                        if xy_in is not None:
-                            try:
-                                fw, fh = fig.get_size_inches()
-                                fx = 0.5 + float(xy_in[0]) / float(fw)
-                                fy = 0.5 + float(xy_in[1]) / float(fh)
-                                _legend_no_frame(ax, H, L, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, borderaxespad=1.0)
-                            except Exception:
-                                _legend_no_frame(ax, H, L, loc='best', borderaxespad=1.0)
-                        else:
-                            _legend_no_frame(ax, H, L, loc='best', borderaxespad=1.0)
-                    except Exception:
-                        pass
-                else:
-                    # No visible series: hide legend if present
-                    try:
-                        leg = ax.get_legend()
-                        if leg is not None:
-                            leg.set_visible(False)
-                    except Exception:
-                        pass
+                # 4. Rebuild legend to remove/add efficiency entries (preserve position)
+                _rebuild_legend(ax, ax2, file_data, preserve_position=True)
                 
                 fig.canvas.draw_idle()
             except Exception:
                 pass
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'h':
             # Legend submenu: toggle visibility, set position in inches relative to canvas center (0,0)
             try:
@@ -2126,7 +2941,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
-                    sub = input("Legend: t=toggle, p=set position, q=back: ").strip().lower()
+                    sub = _safe_input("Legend: t=toggle, p=set position, q=back: ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -2139,25 +2954,24 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 leg.set_visible(False)
                             else:
                                 # Ensure a legend exists at the stored position
-                                h1, l1 = ax.get_legend_handles_labels()
-                                h2, l2 = ax2.get_legend_handles_labels()
-                                if h1 or h2:
-                                    offset = _sanitize_legend_offset(getattr(fig, '_cpc_legend_xy_in', None))
-                                    if offset is not None:
-                                        fig._cpc_legend_xy_in = offset
-                                        _apply_legend_position()
-                                    else:
-                                        _legend_no_frame(ax, h1 + h2, l1 + l2, loc='best', borderaxespad=1.0)
+                                H, L = _visible_handles_labels(ax, ax2)
+                                if H:
+                                    # Always use _rebuild_legend for consistency
+                                    _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                                else:
+                                    print("No visible legend items found.")
                             fig.canvas.draw_idle()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"Error toggling legend: {e}")
+                            import traceback
+                            traceback.print_exc()
                     elif sub == 'p':
                         # Position submenu with x and y subcommands
                         while True:
                             xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
                             xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                             print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                            pos_cmd = input("Position: (x y) or x=x only, y=y only, q=back: ").strip().lower()
+                            pos_cmd = _safe_input("Position: (x y) or x=x only, y=y only, q=back: ").strip().lower()
                             if not pos_cmd or pos_cmd == 'q':
                                 break
                             if pos_cmd == 'x':
@@ -2166,7 +2980,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
                                     xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
+                                    val = _safe_input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
                                     if not val or val.lower() == 'q':
                                         break
                                     try:
@@ -2176,20 +2990,24 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                         continue
                                     push_state("legend-position")
                                     try:
-                                        fig._cpc_legend_xy_in = (x_in, xy_in[1])
-                                        fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                        _apply_legend_position()
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={x_in:.2f}, y={xy_in[1]:.2f}")
-                                    except Exception:
-                                        pass
+                                        # Sanitize and store the new position
+                                        new_pos = _sanitize_legend_offset((x_in, xy_in[1]))
+                                        if new_pos is not None:
+                                            fig._cpc_legend_xy_in = new_pos
+                                            _apply_legend_position()
+                                            fig.canvas.draw_idle()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        else:
+                                            print(f"Invalid position: x={x_in:.2f} is out of bounds. Position not updated.")
+                                    except Exception as e:
+                                        print(f"Error updating legend position: {e}")
                             elif pos_cmd == 'y':
                                 # Y only: stay in loop
                                 while True:
                                     xy_in = getattr(fig, '_cpc_legend_xy_in', (0.0, 0.0))
                                     xy_in = _sanitize_legend_offset(xy_in) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
+                                    val = _safe_input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
                                     if not val or val.lower() == 'q':
                                         break
                                     try:
@@ -2199,13 +3017,17 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                         continue
                                     push_state("legend-position")
                                     try:
-                                        fig._cpc_legend_xy_in = (xy_in[0], y_in)
-                                        fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                        _apply_legend_position()
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={xy_in[0]:.2f}, y={y_in:.2f}")
-                                    except Exception:
-                                        pass
+                                        # Sanitize and store the new position
+                                        new_pos = _sanitize_legend_offset((xy_in[0], y_in))
+                                        if new_pos is not None:
+                                            fig._cpc_legend_xy_in = new_pos
+                                            _apply_legend_position()
+                                            fig.canvas.draw_idle()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        else:
+                                            print(f"Invalid position: y={y_in:.2f} is out of bounds. Position not updated.")
+                                    except Exception as e:
+                                        print(f"Error updating legend position: {e}")
                             else:
                                 # Try to parse as "x y" format
                                 parts = pos_cmd.replace(',', ' ').split()
@@ -2217,24 +3039,28 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     print("Invalid numbers."); continue
                                 push_state("legend-position")
                                 try:
-                                    fig._cpc_legend_xy_in = (x_in, y_in)
-                                    fig._cpc_legend_xy_in = _sanitize_legend_offset(fig._cpc_legend_xy_in)
-                                    _apply_legend_position()
-                                    fig.canvas.draw_idle()
-                                    print(f"Legend position updated: x={x_in:.2f}, y={y_in:.2f}")
-                                except Exception:
-                                    pass
+                                    # Sanitize and store the new position
+                                    new_pos = _sanitize_legend_offset((x_in, y_in))
+                                    if new_pos is not None:
+                                        fig._cpc_legend_xy_in = new_pos
+                                        _apply_legend_position()
+                                        fig.canvas.draw_idle()
+                                        print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                    else:
+                                        print(f"Invalid position: x={x_in:.2f}, y={y_in:.2f} is out of bounds. Position not updated.")
+                                except Exception as e:
+                                    print(f"Error updating legend position: {e}")
                     else:
                         print("Unknown option.")
             except Exception:
                 pass
             _print_menu(); continue
         elif key == 'f':
-            sub = input("Font: f=family, s=size, q=back: ").strip().lower()
+            sub = _safe_input("Font: f=family, s=size, q=back: ").strip().lower()
             if sub == 'q' or not sub:
                 _print_menu(); continue
             if sub == 'f':
-                fam = input("Enter font family (e.g., Arial, DejaVu Sans): ").strip()
+                fam = _safe_input("Enter font family (e.g., Arial, DejaVu Sans): ").strip()
                 if fam:
                     try:
                         push_state("font-family")
@@ -2290,7 +3116,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     except Exception:
                         pass
             elif sub == 's':
-                val = input("Enter font size (number): ").strip()
+                val = _safe_input("Enter font size (number): ").strip()
                 try:
                     size = float(val)
                     push_state("font-size")
@@ -2384,13 +3210,13 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"  {_colorize_menu('f  : change frame (axes spines) and tick widths')}")
                     print(f"  {_colorize_menu('g  : toggle grid lines')}")
                     print(f"  {_colorize_menu('q  : return')}")
-                    sub = input(_colorize_prompt("Choose (f/g/q): ")).strip().lower()
+                    sub = _safe_input(_colorize_prompt("Choose (f/g/q): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub == 'f':
-                        fw_in = input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
+                        fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
                         if not fw_in or fw_in.lower() == 'q':
                             print("Canceled.")
                             continue
@@ -2462,30 +3288,51 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 except Exception:
                     e_ms = 40
                 print(f"  charge ms={c_ms}, discharge ms={d_ms}, efficiency ms={e_ms}")
-                spec = input("Set marker size: 'c <ms>', 'd <ms>', 'e <ms>' (q=cancel): ").strip().lower()
+                spec = _safe_input("Set new marker size for all series (q=cancel): ").strip().lower()
                 if not spec or spec == 'q':
-                    _print_menu(); continue
-                parts = spec.split()
-                if len(parts) != 2:
-                    print("Need two tokens."); _print_menu(); continue
-                role, val = parts[0], parts[1]
+                    _print_menu(fig); continue
                 try:
-                    num = float(val)
+                    num = float(spec)
                     push_state("marker-size")
-                    if role == 'c' and hasattr(sc_charge, 'set_sizes'):
+                    # Apply to current file's artists
+                    if hasattr(sc_charge, 'set_sizes'):
                         sc_charge.set_sizes([num])
-                    elif role == 'd' and hasattr(sc_discharge, 'set_sizes'):
+                    if hasattr(sc_discharge, 'set_sizes'):
                         sc_discharge.set_sizes([num])
-                    elif role == 'e' and hasattr(sc_eff, 'set_sizes'):
+                    if hasattr(sc_eff, 'set_sizes'):
                         sc_eff.set_sizes([num])
+                    # In multi-file mode, also apply to all files' capacity/efficiency
+                    if is_multi_file and file_data:
+                        for f in file_data:
+                            ch = f.get('sc_charge')
+                            dh = f.get('sc_discharge')
+                            ef = f.get('sc_eff')
+                            try:
+                                if ch is not None and hasattr(ch, 'set_sizes'):
+                                    ch.set_sizes([num])
+                            except Exception:
+                                pass
+                            try:
+                                if dh is not None and hasattr(dh, 'set_sizes'):
+                                    dh.set_sizes([num])
+                            except Exception:
+                                pass
+                            try:
+                                if ef is not None and hasattr(ef, 'set_sizes'):
+                                    ef.set_sizes([num])
+                            except Exception:
+                                pass
                     fig.canvas.draw_idle()
                 except Exception:
                     print("Invalid value.")
             except Exception as e:
                 print(f"Error: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 't':
             # Unified WASD toggles for spines/ticks/minor/labels/title per side
+            # Import UI positioning functions locally to ensure they're accessible in nested functions
+            from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
+            
             try:
                 # Local WASD state stored on figure to persist across openings
                 wasd = getattr(fig, '_cpc_wasd_state', None)
@@ -2719,10 +3566,15 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' to show current state, 'q' to go back."))
                 print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
                 while True:
-                    cmd = input(_colorize_prompt("t> ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt("t> ")).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
+                        # Update ax._saved_tick_state before exiting so changes are persisted
+                        try:
+                            ax._saved_tick_state = dict(tick_state)
+                        except Exception:
+                            pass
                         break
                     if cmd == 'i':
                         # Invert tick direction (toggle between 'out' and 'in')
@@ -2744,7 +3596,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             # Get current major tick length from axes
                             current_major = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 4.0
                             print(f"Current major tick length: {current_major}")
-                            new_length_str = input("Enter new major tick length (e.g., 6.0): ").strip()
+                            new_length_str = _safe_input("Enter new major tick length (e.g., 6.0): ").strip()
                             if not new_length_str:
                                 continue
                             new_major = float(new_length_str)
@@ -2819,7 +3671,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 current_y_px = _px_value('_top_xlabel_manual_offset_y_pts')
                                 current_x_px = _px_value('_top_xlabel_manual_offset_x_pts')
                                 print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
-                                sub = input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2856,7 +3708,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             while True:
                                 current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts')
                                 print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
-                                sub = input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2886,7 +3738,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             while True:
                                 current_x_px = _px_value('_left_ylabel_manual_offset_x_pts')
                                 print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
-                                sub = input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2917,7 +3769,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 current_x_px = _px_value('_right_ylabel_manual_offset_x_pts')
                                 current_y_px = _px_value('_right_ylabel_manual_offset_y_pts')
                                 print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
-                                sub = input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -2955,7 +3807,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
                             print("  " + _colorize_menu('r : reset all offsets'))
                             print("  " + _colorize_menu('q : return'))
-                            choice = input(_colorize_prompt("p> ")).strip().lower()
+                            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
                             if not choice:
                                 continue
                             if choice == 'q':
@@ -3044,6 +3896,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             tick_state['mry'] = bool(wasd['right']['minor'])
                     if changed:
                         push_state("wasd-toggle")
+                        # Update ax._saved_tick_state so dump_session can read it
+                        try:
+                            ax._saved_tick_state = dict(tick_state)
+                        except Exception:
+                            pass
                         _apply_wasd(changed_sides if changed_sides else None)
                         # Single draw at the end after all positioning is complete
                         try:
@@ -3052,11 +3909,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Error in WASD tick menu: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'g':
             while True:
                 print("Geometry: p=plot frame, c=canvas, q=back")
-                sub = input("Geom> ").strip().lower()
+                sub = _safe_input("Geom> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -3074,24 +3931,244 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         resize_canvas(fig, ax)
                     except Exception as e:
                         print(f"Resize failed: {e}")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'r':
             # Rename axis titles
             print("Tip: Use LaTeX/mathtext for special characters:")
             print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-            print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+            print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+            print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
             while True:
-                print("Rename titles: x=x-axis, ly=left y-axis, ry=right y-axis, q=back")
-                sub = input("Rename> ").strip().lower()
+                print("Rename: x=x-axis, ly=left y-axis, ry=right y-axis, l=legend labels, q=back")
+                sub = _safe_input("Rename> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
                     break
-                if sub == 'x':
+                if sub == 'l':
+                    # Rename legend labels (file name in legend)
+                    if not is_multi_file:
+                        # Single file mode: rename the default file
+                        current_file = file_data[0]
+                        sc_chg = current_file['sc_charge']
+                        sc_dchg = current_file['sc_discharge']
+                        sc_eff = current_file['sc_eff']
+                        
+                        # Get current labels
+                        chg_label = sc_chg.get_label() or ''
+                        dchg_label = sc_dchg.get_label() or ''
+                        eff_label = sc_eff.get_label() or ''
+                        
+                        # Extract base filename (everything before " charge", " discharge", or " efficiency")
+                        # Also handle patterns like "filename (Chg)", "filename (Dchg)", "filename (Eff)"
+                        base_name = current_file.get('filename', 'Data')
+                        
+                        # Try to extract from labels
+                        import re
+                        for label in [chg_label, dchg_label, eff_label]:
+                            if label:
+                                # First try to extract from bracket pattern: "filename (Chg)" -> "filename"
+                                bracket_match = re.search(r'^(.+?)\s*\([^)]+\)\s*$', label)
+                                if bracket_match:
+                                    potential_base = bracket_match.group(1).strip()
+                                    if potential_base:
+                                        base_name = potential_base
+                                        break
+                                else:
+                                    # Try to extract from text suffix patterns
+                                    for suffix in [' charge', ' discharge', ' efficiency']:
+                                        if label.endswith(suffix):
+                                            potential_base = label[:-len(suffix)].strip()
+                                            if potential_base:
+                                                base_name = potential_base
+                                                break
+                                    if base_name != current_file.get('filename', 'Data'):
+                                        break
+                        
+                        print(f"Current file name in legend: '{base_name}'")
+                        new_name = _safe_input("Enter new file name (q=cancel): ").strip()
+                        if new_name and new_name.lower() != 'q':
+                            new_name = convert_label_shortcuts(new_name)
+                            try:
+                                push_state("rename-legend")
+                                
+                                # Extract bracket content from original labels if present
+                                import re
+                                chg_bracket = ''
+                                dchg_bracket = ''
+                                eff_bracket = ''
+                                
+                                # Check for bracket patterns in original labels
+                                chg_match = re.search(r'\(([^)]+)\)', chg_label)
+                                if chg_match:
+                                    chg_bracket = chg_match.group(1)
+                                dchg_match = re.search(r'\(([^)]+)\)', dchg_label)
+                                if dchg_match:
+                                    dchg_bracket = dchg_match.group(1)
+                                    # Fix capitalization: Dchg -> DChg
+                                    if dchg_bracket.lower() == 'dchg':
+                                        dchg_bracket = 'DChg'
+                                eff_match = re.search(r'\(([^)]+)\)', eff_label)
+                                if eff_match:
+                                    eff_bracket = eff_match.group(1)
+                                
+                                # If no brackets found, extract from label suffix or use defaults
+                                if not chg_bracket:
+                                    # Try to extract from " charge" suffix
+                                    if chg_label.endswith(' charge'):
+                                        chg_bracket = 'Chg'
+                                    else:
+                                        chg_bracket = 'Chg'
+                                if not dchg_bracket:
+                                    # Try to extract from " discharge" suffix
+                                    if dchg_label.endswith(' discharge'):
+                                        dchg_bracket = 'DChg'
+                                    else:
+                                        dchg_bracket = 'DChg'
+                                if not eff_bracket:
+                                    # Try to extract from " efficiency" suffix
+                                    if eff_label.endswith(' efficiency'):
+                                        eff_bracket = 'Eff'
+                                    else:
+                                        eff_bracket = 'Eff'
+                                
+                                # Build new labels with brackets preserved
+                                new_chg_label = f"{new_name} ({chg_bracket})"
+                                new_dchg_label = f"{new_name} ({dchg_bracket})"
+                                new_eff_label = f"{new_name} ({eff_bracket})"
+                                
+                                # Update labels
+                                sc_chg.set_label(new_chg_label)
+                                sc_dchg.set_label(new_dchg_label)
+                                sc_eff.set_label(new_eff_label)
+                                
+                                # Update filename in file_data
+                                current_file['filename'] = new_name
+                                
+                                # Rebuild legend (preserve position)
+                                _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                                fig.canvas.draw_idle()
+                                print(f"Legend labels updated: '{new_chg_label}', '{new_dchg_label}', '{new_eff_label}'")
+                            except Exception as e:
+                                print(f"Error: {e}")
+                    else:
+                        # Multi-file mode: show file list and let user select
+                        print("\nAvailable files:")
+                        _print_file_list(file_data, current_file_idx)
+                        file_choice = _safe_input("Enter file number to rename (q=cancel): ").strip()
+                        if file_choice and file_choice.lower() != 'q':
+                            try:
+                                file_idx = int(file_choice) - 1
+                                if 0 <= file_idx < len(file_data):
+                                    current_file = file_data[file_idx]
+                                    sc_chg = current_file['sc_charge']
+                                    sc_dchg = current_file['sc_discharge']
+                                    sc_eff = current_file['sc_eff']
+                                    
+                                    # Get current labels
+                                    chg_label = sc_chg.get_label() or ''
+                                    dchg_label = sc_dchg.get_label() or ''
+                                    eff_label = sc_eff.get_label() or ''
+                                    
+                                    # Extract base filename
+                                    base_name = current_file.get('filename', 'Data')
+                                    import re
+                                    for label in [chg_label, dchg_label, eff_label]:
+                                        if label:
+                                            # First try to extract from bracket pattern: "filename (Chg)" -> "filename"
+                                            bracket_match = re.search(r'^(.+?)\s*\([^)]+\)\s*$', label)
+                                            if bracket_match:
+                                                potential_base = bracket_match.group(1).strip()
+                                                if potential_base:
+                                                    base_name = potential_base
+                                                    break
+                                            else:
+                                                # Try to extract from text suffix patterns
+                                                for suffix in [' charge', ' discharge', ' efficiency']:
+                                                    if label.endswith(suffix):
+                                                        potential_base = label[:-len(suffix)].strip()
+                                                        if potential_base:
+                                                            base_name = potential_base
+                                                            break
+                                                if base_name != current_file.get('filename', 'Data'):
+                                                    break
+                                    
+                                    print(f"Current file name in legend: '{base_name}'")
+                                    new_name = _safe_input("Enter new file name (q=cancel): ").strip()
+                                    if new_name and new_name.lower() != 'q':
+                                        new_name = convert_label_shortcuts(new_name)
+                                        try:
+                                            push_state("rename-legend")
+                                            
+                                            # Extract bracket content from original labels if present
+                                            import re
+                                            chg_bracket = ''
+                                            dchg_bracket = ''
+                                            eff_bracket = ''
+                                            
+                                            # Check for bracket patterns in original labels
+                                            chg_match = re.search(r'\(([^)]+)\)', chg_label)
+                                            if chg_match:
+                                                chg_bracket = chg_match.group(1)
+                                            dchg_match = re.search(r'\(([^)]+)\)', dchg_label)
+                                            if dchg_match:
+                                                dchg_bracket = dchg_match.group(1)
+                                                # Fix capitalization: Dchg -> DChg
+                                                if dchg_bracket.lower() == 'dchg':
+                                                    dchg_bracket = 'DChg'
+                                            eff_match = re.search(r'\(([^)]+)\)', eff_label)
+                                            if eff_match:
+                                                eff_bracket = eff_match.group(1)
+                                            
+                                            # If no brackets found, extract from label suffix or use defaults
+                                            if not chg_bracket:
+                                                # Try to extract from " charge" suffix
+                                                if chg_label.endswith(' charge'):
+                                                    chg_bracket = 'Chg'
+                                                else:
+                                                    chg_bracket = 'Chg'
+                                            if not dchg_bracket:
+                                                # Try to extract from " discharge" suffix
+                                                if dchg_label.endswith(' discharge'):
+                                                    dchg_bracket = 'DChg'
+                                                else:
+                                                    dchg_bracket = 'DChg'
+                                            if not eff_bracket:
+                                                # Try to extract from " efficiency" suffix
+                                                if eff_label.endswith(' efficiency'):
+                                                    eff_bracket = 'Eff'
+                                                else:
+                                                    eff_bracket = 'Eff'
+                                            
+                                            # Build new labels with brackets preserved
+                                            new_chg_label = f"{new_name} ({chg_bracket})"
+                                            new_dchg_label = f"{new_name} ({dchg_bracket})"
+                                            new_eff_label = f"{new_name} ({eff_bracket})"
+                                            
+                                            # Update labels
+                                            sc_chg.set_label(new_chg_label)
+                                            sc_dchg.set_label(new_dchg_label)
+                                            sc_eff.set_label(new_eff_label)
+                                            
+                                            # Update filename in file_data
+                                            current_file['filename'] = new_name
+                                            
+                                            # Rebuild legend (preserve position)
+                                            _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                                            fig.canvas.draw_idle()
+                                            print(f"Legend labels updated: '{new_chg_label}', '{new_dchg_label}', '{new_eff_label}'")
+                                        except Exception as e:
+                                            print(f"Error: {e}")
+                                else:
+                                    print("Invalid file number.")
+                            except (ValueError, KeyboardInterrupt):
+                                print("Invalid input.")
+                elif sub == 'x':
                     current = ax.get_xlabel()
                     print(f"Current x-axis title: '{current}'")
-                    new_title = input("Enter new x-axis title (q=cancel): ")
+                    new_title = _safe_input("Enter new x-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
+                        new_title = convert_label_shortcuts(new_title)
                         try:
                             push_state("rename-x")
                             ax.set_xlabel(new_title)
@@ -3109,8 +4186,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 elif sub == 'ly':
                     current = ax.get_ylabel()
                     print(f"Current left y-axis title: '{current}'")
-                    new_title = input("Enter new left y-axis title (q=cancel): ")
+                    new_title = _safe_input("Enter new left y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
+                        new_title = convert_label_shortcuts(new_title)
                         try:
                             push_state("rename-ly")
                             ax.set_ylabel(new_title)
@@ -3123,8 +4201,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 elif sub == 'ry':
                     current = ax2.get_ylabel()
                     print(f"Current right y-axis title: '{current}'")
-                    new_title = input("Enter new right y-axis title (q=cancel): ")
+                    new_title = _safe_input("Enter new right y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
+                        new_title = convert_label_shortcuts(new_title)
                         try:
                             push_state("rename-ry")
                             ax2.set_ylabel(new_title)
@@ -3138,12 +4217,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"Error: {e}")
                 else:
                     print("Unknown option.")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'x':
             while True:
                 current_xlim = ax.get_xlim()
                 print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                rng = input("Enter x-range: min max, w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                rng = _safe_input("Enter x-range: min max, w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not rng or rng.lower() == 'q':
                     break
                 if rng.lower() == 'w':
@@ -3151,7 +4230,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3172,12 +4251,13 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             pass
                         fig.canvas.draw_idle()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                    continue
                 if rng.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3198,6 +4278,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             pass
                         fig.canvas.draw_idle()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                    continue
                 if rng.lower() == 'a':
                     # Auto: restore original range from scatter plots
                     push_state("x-range-auto")
@@ -3235,210 +4316,274 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             fig.canvas.draw_idle()
                     except Exception:
                         print("Invalid numbers.")
-            _print_menu(); continue
+            _print_menu(fig); continue
         elif key == 'y':
             while True:
                 print("Y-ranges: ly=left axis, ry=right axis, q=back")
-                ycmd = input("Y> ").strip().lower()
+                ycmd = _safe_input("Y> ").strip().lower()
                 if not ycmd:
                     continue
                 if ycmd == 'q':
                     break
                 if ycmd == 'ly':
-                    current_ylim = ax.get_ylim()
-                    print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter left y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=cancel: ").strip()
-                    if not rng or rng.lower() == 'q':
-                        continue
-                    if rng.lower() == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper left Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-left-range")
-                            ax.set_ylim(current_ylim[0], new_upper)
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng.lower() == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_ylim = ax.get_ylim()
-                            print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower left Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-left-range")
-                            ax.set_ylim(new_lower, current_ylim[1])
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                    if rng.lower() == 'a':
-                        # Auto: restore original range from scatter plots
-                        push_state("y-left-range-auto")
-                        try:
-                            all_y = []
-                            for sc in [sc_charge, sc_discharge]:
-                                if sc is not None and hasattr(sc, 'get_offsets'):
-                                    offsets = sc.get_offsets()
-                                    if offsets.size > 0:
-                                        all_y.extend([offsets[:, 1].min(), offsets[:, 1].max()])
-                            if all_y:
-                                orig_min = min(all_y)
-                                orig_max = max(all_y)
-                                ax.set_ylim(orig_min, orig_max)
+                    while True:
+                        current_ylim = ax.get_ylim()
+                        print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                        rng = _safe_input("Enter left y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                        if not rng or rng.lower() == 'q':
+                            break
+                        if rng.lower() == 'w':
+                            # Upper only: change upper limit, fix lower - stay in loop
+                            while True:
+                                current_ylim = ax.get_ylim()
+                                print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                                val = _safe_input(f"Enter new upper left Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                                if not val or val.lower() == 'q':
+                                    break
+                                try:
+                                    new_upper = float(val)
+                                except (ValueError, KeyboardInterrupt):
+                                    print("Invalid value, ignored.")
+                                    continue
+                                push_state("y-left-range")
+                                ax.set_ylim(current_ylim[0], new_upper)
                                 ax.relim()
                                 ax.autoscale_view(scalex=False, scaley=True)
+                                # Reapply legend position after axis change to prevent movement
+                                try:
+                                    leg = ax.get_legend()
+                                    if leg is not None and leg.get_visible():
+                                        _apply_legend_position()
+                                except Exception:
+                                    pass
                                 fig.canvas.draw_idle()
-                                print(f"Left Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
-                            else:
-                                print("No original data available.")
-                        except Exception as e:
-                            print(f"Error restoring original left Y range: {e}")
-                        continue
-                    parts = rng.replace(',', ' ').split()
-                    if len(parts) != 2:
-                        print("Need two numbers."); continue
-                    try:
-                        lo = float(parts[0]); hi = float(parts[1])
-                        if lo == hi:
-                            print("Min and max cannot be equal."); continue
-                        push_state("y-left-range")
-                        ax.set_ylim(min(lo, hi), max(lo, hi))
-                        fig.canvas.draw_idle()
-                    except Exception:
-                        print("Invalid numbers.")
-                elif ycmd == 'ry':
-                    try:
-                        eff_on = bool(sc_eff.get_visible())
-                    except Exception:
-                        eff_on = True
-                    if not eff_on:
-                        print("Right Y is not shown; enable efficiency with 'ry' first.")
-                        continue
-                    current_ylim = ax2.get_ylim()
-                    print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter right y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=cancel: ").strip()
-                    if not rng or rng.lower() == 'q':
-                        continue
-                    if rng.lower() == 'w':
-                        # Upper only: change upper limit, fix lower - stay in loop
-                        while True:
-                            current_ylim = ax2.get_ylim()
-                            print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper right Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
+                                print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                            continue
+                        if rng.lower() == 's':
+                            # Lower only: change lower limit, fix upper - stay in loop
+                            while True:
+                                current_ylim = ax.get_ylim()
+                                print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                                val = _safe_input(f"Enter new lower left Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                                if not val or val.lower() == 'q':
+                                    break
+                                try:
+                                    new_lower = float(val)
+                                except (ValueError, KeyboardInterrupt):
+                                    print("Invalid value, ignored.")
+                                    continue
+                                push_state("y-left-range")
+                                ax.set_ylim(new_lower, current_ylim[1])
+                                ax.relim()
+                                ax.autoscale_view(scalex=False, scaley=True)
+                                # Reapply legend position after axis change to prevent movement
+                                try:
+                                    leg = ax.get_legend()
+                                    if leg is not None and leg.get_visible():
+                                        _apply_legend_position()
+                                except Exception:
+                                    pass
+                                fig.canvas.draw_idle()
+                                print(f"Left Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                            continue
+                        if rng.lower() == 'a':
+                            # Auto: restore original range from scatter plots
+                            push_state("y-left-range-auto")
                             try:
-                                new_upper = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-right-range")
-                            ax2.set_ylim(current_ylim[0], new_upper)
-                            ax2.relim()
-                            ax2.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
-                    if rng.lower() == 's':
-                        # Lower only: change lower limit, fix upper - stay in loop
-                        while True:
-                            current_ylim = ax2.get_ylim()
-                            print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower right Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
-                            if not val or val.lower() == 'q':
-                                break
-                            try:
-                                new_lower = float(val)
-                            except (ValueError, KeyboardInterrupt):
-                                print("Invalid value, ignored.")
-                                continue
-                            push_state("y-right-range")
-                            ax2.set_ylim(new_lower, current_ylim[1])
-                            ax2.relim()
-                            ax2.autoscale_view(scalex=False, scaley=True)
-                            # Reapply legend position after axis change to prevent movement
-                            try:
-                                leg = ax.get_legend()
-                                if leg is not None and leg.get_visible():
-                                    _apply_legend_position()
-                            except Exception:
-                                pass
-                            fig.canvas.draw_idle()
-                            print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
-                    if rng.lower() == 'a':
-                        # Auto: restore original range from efficiency scatter plot
-                        push_state("y-right-range-auto")
-                        try:
-                            if sc_eff is not None and hasattr(sc_eff, 'get_offsets'):
-                                offsets = sc_eff.get_offsets()
-                                if offsets.size > 0:
-                                    orig_min = float(offsets[:, 1].min())
-                                    orig_max = float(offsets[:, 1].max())
-                                    ax2.set_ylim(orig_min, orig_max)
-                                    ax2.relim()
-                                    ax2.autoscale_view(scalex=False, scaley=True)
+                                all_y = []
+                                for sc in [sc_charge, sc_discharge]:
+                                    if sc is not None and hasattr(sc, 'get_offsets'):
+                                        offsets = sc.get_offsets()
+                                        if offsets.size > 0:
+                                            all_y.extend([offsets[:, 1].min(), offsets[:, 1].max()])
+                                if all_y:
+                                    orig_min = min(all_y)
+                                    orig_max = max(all_y)
+                                    ax.set_ylim(orig_min, orig_max)
+                                    ax.relim()
+                                    ax.autoscale_view(scalex=False, scaley=True)
                                     fig.canvas.draw_idle()
-                                    print(f"Right Y range restored to original: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
+                                    print(f"Left Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
                                 else:
                                     print("No original data available.")
+                            except Exception as e:
+                                print(f"Error restoring original left Y range: {e}")
+                            continue
+                        parts = rng.replace(',', ' ').split()
+                        if len(parts) != 2:
+                            print("Need two numbers."); continue
+                        try:
+                            lo = float(parts[0]); hi = float(parts[1])
+                            if lo == hi:
+                                print("Min and max cannot be equal."); continue
+                            push_state("y-left-range")
+                            ax.set_ylim(min(lo, hi), max(lo, hi))
+                            fig.canvas.draw_idle()
+                        except Exception:
+                            print("Invalid numbers.")
+                elif ycmd == 'ry':
+                    while True:
+                        try:
+                            eff_on = bool(sc_eff.get_visible())
+                        except Exception:
+                            eff_on = True
+                        if not eff_on:
+                            print("Right Y is not shown; enable efficiency with 'ry' first.")
+                            break
+                        current_ylim = ax2.get_ylim()
+                        print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                        rng = _safe_input("Enter right y-range: min max, w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                        if not rng or rng.lower() == 'q':
+                            break
+                        if rng.lower() == 'w':
+                            # Upper only: change upper limit, fix lower - stay in loop
+                            while True:
+                                current_ylim = ax2.get_ylim()
+                                print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                                val = _safe_input(f"Enter new upper right Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                                if not val or val.lower() == 'q':
+                                    break
+                                try:
+                                    new_upper = float(val)
+                                except (ValueError, KeyboardInterrupt):
+                                    print("Invalid value, ignored.")
+                                    continue
+                                push_state("y-right-range")
+                                ax2.set_ylim(current_ylim[0], new_upper)
+                                ax2.relim()
+                                ax2.autoscale_view(scalex=False, scaley=True)
+                                # Reapply legend position after axis change to prevent movement
+                                try:
+                                    leg = ax.get_legend()
+                                    if leg is not None and leg.get_visible():
+                                        _apply_legend_position()
+                                except Exception:
+                                    pass
+                                fig.canvas.draw_idle()
+                                print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
+                            continue
+                        if rng.lower() == 's':
+                            # Lower only: change lower limit, fix upper - stay in loop
+                            while True:
+                                current_ylim = ax2.get_ylim()
+                                print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
+                                val = _safe_input(f"Enter new lower right Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                                if not val or val.lower() == 'q':
+                                    break
+                                try:
+                                    new_lower = float(val)
+                                except (ValueError, KeyboardInterrupt):
+                                    print("Invalid value, ignored.")
+                                    continue
+                                push_state("y-right-range")
+                                ax2.set_ylim(new_lower, current_ylim[1])
+                                ax2.relim()
+                                ax2.autoscale_view(scalex=False, scaley=True)
+                                # Reapply legend position after axis change to prevent movement
+                                try:
+                                    leg = ax.get_legend()
+                                    if leg is not None and leg.get_visible():
+                                        _apply_legend_position()
+                                except Exception:
+                                    pass
+                                fig.canvas.draw_idle()
+                                print(f"Right Y range updated: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
+                            continue
+                        if rng.lower() == 'a':
+                            # Auto: restore original range from efficiency scatter plot
+                            push_state("y-right-range-auto")
+                            try:
+                                if sc_eff is not None and hasattr(sc_eff, 'get_offsets'):
+                                    offsets = sc_eff.get_offsets()
+                                    if offsets.size > 0:
+                                        orig_min = float(offsets[:, 1].min())
+                                        orig_max = float(offsets[:, 1].max())
+                                        ax2.set_ylim(orig_min, orig_max)
+                                        ax2.relim()
+                                        ax2.autoscale_view(scalex=False, scaley=True)
+                                        fig.canvas.draw_idle()
+                                        print(f"Right Y range restored to original: {ax2.get_ylim()[0]:.6g} to {ax2.get_ylim()[1]:.6g}")
+                                    else:
+                                        print("No original data available.")
+                                else:
+                                    print("No original data available.")
+                            except Exception as e:
+                                print(f"Error restoring original right Y range: {e}")
+                            continue
+                        parts = rng.replace(',', ' ').split()
+                        if len(parts) != 2:
+                            print("Need two numbers."); continue
+                        try:
+                            lo = float(parts[0]); hi = float(parts[1])
+                            if lo == hi:
+                                print("Min and max cannot be equal."); continue
+                            push_state("y-right-range")
+                            ax2.set_ylim(min(lo, hi), max(lo, hi))
+                            fig.canvas.draw_idle()
+                        except Exception:
+                            print("Invalid numbers.")
+            _print_menu(fig); continue
+        elif key == 'ie':
+            # Invert coulombic efficiency values around 100% for the current file(s)
+            try:
+                if sc_eff is None or not hasattr(sc_eff, 'get_offsets'):
+                    print("No efficiency data to invert.")
+                    _print_menu(fig); continue
+                if is_multi_file:
+                    _print_file_list(file_data, current_file_idx)
+                    choice = _safe_input(
+                        f"Invert efficiency for file (1-{len(file_data)}), 'a' for all, or q=cancel: "
+                    ).strip().lower()
+                    if not choice or choice == 'q':
+                        _print_menu(fig); continue
+                    targets = []
+                    if choice == 'a':
+                        targets = list(range(len(file_data)))
+                    else:
+                        try:
+                            idx = int(choice) - 1
+                            if 0 <= idx < len(file_data):
+                                targets = [idx]
                             else:
-                                print("No original data available.")
-                        except Exception as e:
-                            print(f"Error restoring original right Y range: {e}")
-                        continue
-                    parts = rng.replace(',', ' ').split()
-                    if len(parts) != 2:
-                        print("Need two numbers."); continue
-                    try:
-                        lo = float(parts[0]); hi = float(parts[1])
-                        if lo == hi:
-                            print("Min and max cannot be equal."); continue
-                        push_state("y-right-range")
-                        ax2.set_ylim(min(lo, hi), max(lo, hi))
-                        fig.canvas.draw_idle()
-                    except Exception:
-                        print("Invalid numbers.")
-            _print_menu(); continue
+                                print("Invalid file number.")
+                                _print_menu(fig); continue
+                        except ValueError:
+                            print("Invalid choice.")
+                            _print_menu(fig); continue
+                    push_state("invert-efficiency")
+                    for idx in targets:
+                        f = file_data[idx]
+                        eff_sc = f.get('sc_eff')
+                        if eff_sc is None or not hasattr(eff_sc, 'get_offsets'):
+                            continue
+                        offsets = eff_sc.get_offsets()
+                        if offsets.size == 0:
+                            continue
+                        xs = offsets[:, 0]
+                        ys = offsets[:, 1]
+                        # Invert around 100% (y -> 100 - y + 100 = 200 - y)
+                        new_ys = 200.0 - ys
+                        eff_sc.set_offsets(list(zip(xs, new_ys)))
+                    fig.canvas.draw_idle()
+                    print("Inverted efficiency for selected file(s).")
+                else:
+                    offsets = sc_eff.get_offsets()
+                    if offsets.size == 0:
+                        print("No efficiency data to invert.")
+                        _print_menu(fig); continue
+                    xs = offsets[:, 0]
+                    ys = offsets[:, 1]
+                    push_state("invert-efficiency")
+                    new_ys = 200.0 - ys
+                    sc_eff.set_offsets(list(zip(xs, new_ys)))
+                    fig.canvas.draw_idle()
+                    print("Inverted efficiency for current dataset.")
+            except Exception as e:
+                print(f"Error in efficiency inversion: {e}")
+            _print_menu(fig); continue
         else:
             print("Unknown key.")
-            _print_menu(); continue
+            _print_menu(fig); continue
 
 
 __all__ = ["cpc_interactive_menu"]

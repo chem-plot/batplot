@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Optional, Tuple
 import json
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -30,6 +31,7 @@ from .utils import (
     choose_style_file,
     list_files_in_subdirectory,
     get_organized_path,
+    convert_label_shortcuts,
 )
 import time
 from .color_utils import (
@@ -40,6 +42,37 @@ from .color_utils import (
     get_user_color_list,
     resolve_color_token,
 )
+
+
+class _FilterIMKWarning:
+    """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Filter out the harmless macOS IMK warning
+        if 'IMKCFRunLoopWakeUpReliable' not in message:
+            self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+
+
+def _safe_input(prompt: str = "") -> str:
+    """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
+    
+    This is a harmless macOS system message that appears when using input() in terminals.
+    """
+    # Filter stderr to hide macOS IMK warnings while preserving other errors
+    original_stderr = sys.stderr
+    sys.stderr = _FilterIMKWarning(original_stderr)
+    try:
+        result = input(prompt)
+        return result
+    except (KeyboardInterrupt, EOFError):
+        raise
+    finally:
+        sys.stderr = original_stderr
 
 
 def _colorize_menu(text):
@@ -227,7 +260,121 @@ def _savgol_smooth(y: np.ndarray, window: int = 9, poly: int = 3) -> np.ndarray:
     return smoothed
 
 
-def _print_menu(n_cycles: int, is_dqdv: bool = False):
+def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[object]]], fig) -> None:
+    """Apply stored smooth settings to newly visible cycles that haven't been smoothed yet."""
+    if not hasattr(fig, '_dqdv_smooth_settings'):
+        return
+    settings = fig._dqdv_smooth_settings
+    if not settings:
+        return
+    
+    method = settings.get('method')
+    if method == 'diffcap':
+        min_step = settings.get('min_step', 0.001)
+        window = settings.get('window', 9)
+        poly = settings.get('poly', 3)
+        for cyc, parts in cycle_lines.items():
+            iter_parts = [(None, parts)] if not isinstance(parts, dict) else parts.items()
+            for role, ln in iter_parts:
+                if ln is None or not ln.get_visible():
+                    continue
+                # Only apply if this cycle hasn't been smoothed yet
+                if hasattr(ln, '_smooth_applied') and ln._smooth_applied:
+                    continue
+                xdata = np.asarray(ln.get_xdata(), float)
+                ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size < 3:
+                    continue
+                # Get original data if available, otherwise use current data
+                if hasattr(ln, '_original_xdata'):
+                    xdata = np.asarray(ln._original_xdata, float)
+                    ydata = np.asarray(ln._original_ydata, float)
+                else:
+                    ln._original_xdata = np.array(xdata, copy=True)
+                    ln._original_ydata = np.array(ydata, copy=True)
+                x_clean, y_clean, removed = _diffcap_clean_series(xdata, ydata, min_step)
+                if x_clean.size < poly + 2:
+                    continue
+                y_smooth = _savgol_smooth(y_clean, window, poly)
+                ln.set_xdata(x_clean)
+                ln.set_ydata(y_smooth)
+                ln._smooth_applied = True
+    elif method == 'voltage_step':
+        threshold_v = settings.get('threshold_v', 0.0005)
+        for cyc, parts in cycle_lines.items():
+            for role in ("charge", "discharge"):
+                ln = parts.get(role) if isinstance(parts, dict) else parts
+                if ln is None or not ln.get_visible():
+                    continue
+                # Only apply if this cycle hasn't been smoothed yet
+                if hasattr(ln, '_smooth_applied') and ln._smooth_applied:
+                    continue
+                xdata = np.asarray(ln.get_xdata(), float)
+                ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size < 3:
+                    continue
+                # Get original data if available, otherwise use current data
+                if hasattr(ln, '_original_xdata'):
+                    xdata = np.asarray(ln._original_xdata, float)
+                    ydata = np.asarray(ln._original_ydata, float)
+                else:
+                    ln._original_xdata = np.array(xdata, copy=True)
+                    ln._original_ydata = np.array(ydata, copy=True)
+                dv = np.abs(np.diff(xdata))
+                mask = np.ones_like(xdata, dtype=bool)
+                mask[1:] &= dv >= threshold_v
+                mask[:-1] &= dv >= threshold_v
+                filtered_x = xdata[mask]
+                filtered_y = ydata[mask]
+                if len(filtered_x) < len(xdata):
+                    ln.set_xdata(filtered_x)
+                    ln.set_ydata(filtered_y)
+                    ln._smooth_applied = True
+    elif method == 'outlier':
+        outlier_method = settings.get('outlier_method', '1')
+        threshold = settings.get('threshold', 5.0)
+        for cyc, parts in cycle_lines.items():
+            for role in ("charge", "discharge"):
+                ln = parts.get(role) if isinstance(parts, dict) else parts
+                if ln is None or not ln.get_visible():
+                    continue
+                # Only apply if this cycle hasn't been smoothed yet
+                if hasattr(ln, '_smooth_applied') and ln._smooth_applied:
+                    continue
+                xdata = np.asarray(ln.get_xdata(), float)
+                ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size < 5:
+                    continue
+                # Get original data if available, otherwise use current data
+                if hasattr(ln, '_original_xdata'):
+                    xdata = np.asarray(ln._original_xdata, float)
+                    ydata = np.asarray(ln._original_ydata, float)
+                else:
+                    ln._original_xdata = np.array(xdata, copy=True)
+                    ln._original_ydata = np.array(ydata, copy=True)
+                if outlier_method == '1':
+                    mean_y = np.nanmean(ydata)
+                    std_y = np.nanstd(ydata)
+                    if not np.isfinite(std_y) or std_y == 0:
+                        continue
+                    zscores = np.abs((ydata - mean_y) / std_y)
+                    mask = zscores <= threshold
+                else:
+                    median_y = np.nanmedian(ydata)
+                    mad = np.nanmedian(np.abs(ydata - median_y))
+                    if not np.isfinite(mad) or mad == 0:
+                        continue
+                    deviations = np.abs(ydata - median_y) / mad
+                    mask = deviations <= threshold
+                filtered_x = xdata[mask]
+                filtered_y = ydata[mask]
+                if len(filtered_x) < len(xdata):
+                    ln.set_xdata(filtered_x)
+                    ln.set_ydata(filtered_y)
+                    ln._smooth_applied = True
+
+
+def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None):
     # Three-column menu similar to operando: Styles | Geometries | Options
     # Use dynamic column widths for clean alignment.
     col1 = [
@@ -258,6 +405,19 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False):
         "b: undo",
         "q: quit",
     ]
+
+    # Conditional overwrite shortcuts under (Options)
+    if fig is not None:
+        last_session = getattr(fig, "_last_session_save_path", None)
+        last_style = getattr(fig, "_last_style_export_path", None)
+        last_figure = getattr(fig, "_last_figure_export_path", None)
+        if last_session:
+            col3.append("os: overwrite session")
+        if last_style:
+            col3.append("ops: overwrite style")
+            col3.append("opsg: overwrite style+geom")
+        if last_figure:
+            col3.append("oe: overwrite figure")
     # Compute widths (min width prevents overly narrow columns)
     w1 = max(len("(Styles)"), *(len(s) for s in col1), 18)
     w2 = max(len("(Geometries)"), *(len(s) for s in col2), 12)
@@ -354,6 +514,30 @@ def _get_legend_title(fig, default: str = "Cycle") -> str:
 def _rebuild_legend(ax):
     """Rebuild legend using only visible lines, anchoring to absolute inches from canvas center if available."""
     fig = ax.figure
+    # Capture existing title before any rebuild so it isn't lost
+    _store_legend_title(fig, ax)
+    # If no stored position yet, try to capture the current legend location once
+    # so rebuilds (e.g., after renaming) don't jump to a new "best" spot.
+    try:
+        if getattr(fig, '_ec_legend_xy_in', None) is None:
+            leg0 = ax.get_legend()
+            if leg0 is not None and leg0.get_visible():
+                try:
+                    renderer = fig.canvas.get_renderer()
+                except Exception:
+                    fig.canvas.draw()
+                    renderer = fig.canvas.get_renderer()
+                bb = leg0.get_window_extent(renderer=renderer)
+                cx = 0.5 * (bb.x0 + bb.x1)
+                cy = 0.5 * (bb.y0 + bb.y1)
+                fx, fy = fig.transFigure.inverted().transform((cx, cy))
+                fw, fh = fig.get_size_inches()
+                offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                offset = _sanitize_legend_offset(fig, offset)
+                if offset is not None:
+                    fig._ec_legend_xy_in = offset
+    except Exception:
+        pass
     if not _get_legend_user_pref(fig):
         leg = ax.get_legend()
         if leg is not None:
@@ -821,6 +1005,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
 
     def _title_offset_menu():
         """Allow nudging duplicate top/right titles by single-pixel increments."""
+        # Import UI positioning functions locally to ensure they're accessible in nested functions
+        from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
+        
         def _dpi():
             try:
                 return float(fig.dpi)
@@ -864,7 +1051,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 current_y_px = _px_value('_top_xlabel_manual_offset_y_pts')
                 current_x_px = _px_value('_top_xlabel_manual_offset_x_pts')
                 print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
-                sub = input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -902,7 +1089,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 current_x_px = _px_value('_right_ylabel_manual_offset_x_pts')
                 current_y_px = _px_value('_right_ylabel_manual_offset_y_pts')
                 print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
-                sub = input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -939,7 +1126,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             while True:
                 current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts')
                 print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
-                sub = input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -969,7 +1156,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             while True:
                 current_x_px = _px_value('_left_ylabel_manual_offset_x_pts')
                 print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
-                sub = input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -1000,7 +1187,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
             print("  " + _colorize_menu('r : reset all offsets'))
             print("  " + _colorize_menu('q : return'))
-            choice = input(_colorize_prompt("p> ")).strip().lower()
+            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
             if not choice:
                 continue
             if choice == 'q':
@@ -1139,13 +1326,28 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     'visible': False,
                     'position_inches': None,
                 },
+                'grid': False,
                 'lines': []
             }
+            # Grid state
+            try:
+                current_grid = False
+                for line in ax.get_xgridlines() + ax.get_ygridlines():
+                    if line.get_visible():
+                        current_grid = True
+                        break
+                snap['grid'] = current_grid
+            except Exception:
+                snap['grid'] = ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
             try:
                 leg_obj = ax.get_legend()
                 snap['legend']['visible'] = bool(leg_obj.get_visible()) if leg_obj is not None else False
             except Exception:
                 pass
+            try:
+                snap['legend']['title'] = _get_legend_title(fig)
+            except Exception:
+                snap['legend']['title'] = None
             try:
                 legend_xy = getattr(fig, '_ec_legend_xy_in', None)
                 if legend_xy is not None:
@@ -1174,7 +1376,33 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             if len(state_history) > 40:
                 state_history.pop(0)
         except Exception:
-            pass
+            # Minimal fallback so undo still works if full snapshot fails
+            try:
+                fallback = {
+                    'note': f"{note}-fallback",
+                    'xlim': ax.get_xlim(),
+                    'ylim': ax.get_ylim(),
+                    'legend': {
+                        'visible': bool(ax.get_legend().get_visible()) if ax.get_legend() else False,
+                        'position_inches': getattr(fig, '_ec_legend_xy_in', None),
+                        'title': _get_legend_title(fig),
+                    },
+                    'lines': []
+                }
+                for i, ln in enumerate(ax.lines):
+                    try:
+                        fallback['lines'].append({
+                            'index': i,
+                            'color': ln.get_color(),
+                            'visible': ln.get_visible(),
+                        })
+                    except Exception:
+                        fallback['lines'].append({'index': i})
+                state_history.append(fallback)
+                if len(state_history) > 40:
+                    state_history.pop(0)
+            except Exception:
+                pass
 
     def restore_state():
         if not state_history:
@@ -1191,6 +1419,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             try:
                 ax.set_xlim(*snap.get('xlim', ax.get_xlim()))
                 ax.set_ylim(*snap.get('ylim', ax.get_ylim()))
+                _apply_nice_ticks()
             except Exception:
                 pass
             try:
@@ -1276,6 +1505,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if font_size is not None:
                     mpl.rcParams['font.size'] = font_size
                     _apply_font_size(ax, font_size)
+                    _rebuild_legend(ax)
             except Exception:
                 pass
             try:
@@ -1293,6 +1523,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             _apply_font_family(ax, font_sans_serif[0])
                         elif font_family:
                             _apply_font_family(ax, font_family)
+                    _rebuild_legend(ax)
             except Exception:
                 pass
             # Title offsets - all four titles
@@ -1333,10 +1564,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     ax._right_ylabel_manual_offset_y_pts = 0.0
                 ax._top_xlabel_on = bool(snap.get('titles',{}).get('top_x', False))
                 ax._right_ylabel_on = bool(snap.get('titles',{}).get('right_y', False))
-                _ui_position_top_xlabel(ax, fig, tick_state)
-                _ui_position_bottom_xlabel(ax, fig, tick_state)
-                _ui_position_left_ylabel(ax, fig, tick_state)
-                _ui_position_right_ylabel(ax, fig, tick_state)
+                # Note: Do NOT call position functions during undo restore as it causes title drift
+                # Title offsets are already restored from snapshot above
             except Exception:
                 pass
             # Restore labelpads (for title positioning)
@@ -1388,9 +1617,21 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 pass
             except Exception:
                 pass
+            # Grid state
+            if 'grid' in snap:
+                try:
+                    grid_enabled = snap.get('grid', False)
+                    if grid_enabled:
+                        ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+                    else:
+                        ax.grid(False)
+                except Exception:
+                    pass
             legend_snap = snap.get('legend', {})
             if legend_snap:
                 try:
+                    if 'title' in legend_snap:
+                        fig._ec_legend_title = legend_snap.get('title') or _get_legend_title(fig)
                     xy = legend_snap.get('position_inches')
                     fig._ec_legend_xy_in = _sanitize_legend_offset(fig, xy) if xy is not None else None
                 except Exception:
@@ -1412,10 +1653,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             print("Undo: restored previous state.")
         except Exception as e:
             print(f"Undo failed: {e}")
-    _print_menu(len(all_cycles), is_dqdv)
+    _print_menu(len(all_cycles), is_dqdv, fig)
     while True:
         try:
-            key = input("Press a key: ").strip().lower()
+            key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1423,24 +1664,24 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             continue
         if key == 'q':
             try:
-                confirm = input(_colorize_prompt("Quit EC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
+                confirm = _safe_input(_colorize_prompt("Quit EC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except Exception:
                 confirm = 'y'
             if confirm == 'y':
                 break
             else:
-                _print_menu(len(all_cycles), is_dqdv)
+                _print_menu(len(all_cycles), is_dqdv, fig)
                 continue
         elif key == 'b':
             restore_state()
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'e':
             # Export current figure to a file; default extension .svg if missing
             try:
                 base_path = choose_save_path(source_paths, purpose="figure export")
                 if not base_path:
-                    _print_menu(len(all_cycles), is_dqdv)
+                    _print_menu(len(all_cycles), is_dqdv, fig)
                     continue
                 # List existing figure files in Figures/ subdirectory
                 fig_extensions = ('.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.tif', '.tiff')
@@ -1456,26 +1697,47 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         else:
                             print(f"  {i}: {fname}")
                 
-                fname = input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if last_figure_path:
+                    fname = _safe_input("Export filename (default .svg if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                else:
+                    fname = _safe_input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
                 if not fname or fname.lower() == 'q':
-                    _print_menu(len(all_cycles), is_dqdv)
+                    _print_menu(len(all_cycles), is_dqdv, fig)
                     continue
                 
+                already_confirmed = False  # Initialize for new filename case
+                # Check for 'o' option
+                if fname.lower() == 'o':
+                    if not last_figure_path:
+                        print("No previous export found.")
+                        _print_menu(len(all_cycles), is_dqdv, fig)
+                        continue
+                    if not os.path.exists(last_figure_path):
+                        print(f"Previous export file not found: {last_figure_path}")
+                        _print_menu(len(all_cycles), is_dqdv, fig)
+                        continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        _print_menu(len(all_cycles), is_dqdv, fig)
+                        continue
+                    target = last_figure_path
+                    already_confirmed = True
                 # Check if user selected a number
-                already_confirmed = False
-                if fname.isdigit() and files:
+                elif fname.isdigit() and files:
+                    already_confirmed = False
                     idx = int(fname)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
-                            _print_menu(len(all_cycles), is_dqdv)
+                            _print_menu(len(all_cycles), is_dqdv, fig)
                             continue
                         target = file_list[idx-1][1]  # Full path from list
                         already_confirmed = True
                     else:
                         print("Invalid number.")
-                        _print_menu(len(all_cycles), is_dqdv)
+                        _print_menu(len(all_cycles), is_dqdv, fig)
                         continue
                 else:
                     root, ext = os.path.splitext(fname)
@@ -1491,6 +1753,17 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     if not already_confirmed and os.path.exists(target):
                         target = _confirm_overwrite(target)
                     if target:
+                        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                        from .utils import ensure_exact_case_filename
+                        target = ensure_exact_case_filename(target)
+                        
+                        # Save current legend position before export (savefig can change layout)
+                        saved_legend_pos = None
+                        try:
+                            saved_legend_pos = getattr(fig, '_ec_legend_xy_in', None)
+                        except Exception:
+                            pass
+                        
                         # If exporting SVG, make background transparent for PowerPoint
                         _, ext2 = os.path.splitext(target)
                         ext2 = ext2.lower()
@@ -1533,11 +1806,21 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         else:
                             fig.savefig(target, bbox_inches='tight')
                         print(f"Exported figure to {target}")
+                        fig._last_figure_export_path = target
+                        
+                        # Restore legend position after savefig (which may have changed layout)
+                        if saved_legend_pos is not None:
+                            try:
+                                fig._ec_legend_xy_in = saved_legend_pos
+                                _rebuild_legend(ax)
+                                fig.canvas.draw_idle()
+                            except Exception:
+                                pass
                 except Exception as e:
                     print(f"Export failed: {e}")
             except Exception as e:
                 print(f"Export failed: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'h':
             # Legend submenu: toggle visibility and move legend in inches relative to canvas center
@@ -1584,7 +1867,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
-                    sub = input(_colorize_prompt("Legend: (t=toggle, p=set position, q=back): ")).strip().lower()
+                    sub = _safe_input(_colorize_prompt("Legend: (t=toggle, p=set position, q=back): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -1608,7 +1891,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         while True:
                             xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                             print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                            pos_cmd = input(_colorize_prompt("Position: (x y) or x=x only, y=y only, q=back: ")).strip().lower()
+                            pos_cmd = _safe_input(_colorize_prompt("Position: (x y) or x=x only, y=y only, q=back: ")).strip().lower()
                             if not pos_cmd or pos_cmd == 'q':
                                 break
                             if pos_cmd == 'x':
@@ -1616,7 +1899,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 while True:
                                     xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
+                                    val = _safe_input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
                                     if not val or val.lower() == 'q':
                                         break
                                     try:
@@ -1626,24 +1909,33 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                         continue
                                     push_state("legend-position")
                                     try:
-                                        fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, xy_in[1]))
-                                        # If legend visible, reposition now
-                                        leg = ax.get_legend()
-                                        if leg is not None and leg.get_visible():
-                                            if not _apply_legend_position(fig, ax):
-                                                handles, labels = _visible_legend_entries(ax)
-                                                if handles:
-                                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={x_in:.2f}, y={xy_in[1]:.2f}")
-                                    except Exception:
-                                        pass
+                                        # Store title before updating position
+                                        _store_legend_title(fig, ax)
+                                        # Sanitize and store the new position
+                                        new_pos = _sanitize_legend_offset(fig, (x_in, xy_in[1]))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            # If legend visible, reposition now
+                                            leg = ax.get_legend()
+                                            if leg is not None and leg.get_visible():
+                                                if not _apply_legend_position(fig, ax):
+                                                    # Fallback: rebuild with title preserved
+                                                    handles, labels = _visible_legend_entries(ax)
+                                                    if handles:
+                                                        legend_title = _get_legend_title(fig)
+                                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title)
+                                            fig.canvas.draw_idle()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        else:
+                                            print(f"Invalid position: x={x_in:.2f} is out of bounds. Position not updated.")
+                                    except Exception as e:
+                                        print(f"Error updating legend position: {e}")
                             elif pos_cmd == 'y':
                                 # Y only: stay in loop
                                 while True:
                                     xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
+                                    val = _safe_input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
                                     if not val or val.lower() == 'q':
                                         break
                                     try:
@@ -1653,18 +1945,27 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                         continue
                                     push_state("legend-position")
                                     try:
-                                        fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (xy_in[0], y_in))
-                                        # If legend visible, reposition now
-                                        leg = ax.get_legend()
-                                        if leg is not None and leg.get_visible():
-                                            if not _apply_legend_position(fig, ax):
-                                                handles, labels = _visible_legend_entries(ax)
-                                                if handles:
-                                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={xy_in[0]:.2f}, y={y_in:.2f}")
-                                    except Exception:
-                                        pass
+                                        # Store title before updating position
+                                        _store_legend_title(fig, ax)
+                                        # Sanitize and store the new position
+                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0], y_in))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            # If legend visible, reposition now
+                                            leg = ax.get_legend()
+                                            if leg is not None and leg.get_visible():
+                                                if not _apply_legend_position(fig, ax):
+                                                    # Fallback: rebuild with title preserved
+                                                    handles, labels = _visible_legend_entries(ax)
+                                                    if handles:
+                                                        legend_title = _get_legend_title(fig)
+                                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title)
+                                            fig.canvas.draw_idle()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        else:
+                                            print(f"Invalid position: y={y_in:.2f} is out of bounds. Position not updated.")
+                                    except Exception as e:
+                                        print(f"Error updating legend position: {e}")
                             else:
                                 # Try to parse as "x y" format
                                 parts = pos_cmd.replace(',', ' ').split()
@@ -1676,23 +1977,32 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                     print("Invalid numbers."); continue
                                 push_state("legend-position")
                                 try:
-                                    fig._ec_legend_xy_in = _sanitize_legend_offset(fig, (x_in, y_in))
-                                    # If legend visible, reposition now
-                                    leg = ax.get_legend()
-                                    if leg is not None and leg.get_visible():
-                                        if not _apply_legend_position(fig, ax):
-                                            handles, labels = _visible_legend_entries(ax)
-                                            if handles:
-                                                _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0)
-                                    fig.canvas.draw_idle()
-                                    print(f"Legend position updated: x={x_in:.2f}, y={y_in:.2f}")
-                                except Exception:
-                                    pass
+                                    # Store title before updating position
+                                    _store_legend_title(fig, ax)
+                                    # Sanitize and store the new position
+                                    new_pos = _sanitize_legend_offset(fig, (x_in, y_in))
+                                    if new_pos is not None:
+                                        fig._ec_legend_xy_in = new_pos
+                                        # If legend visible, reposition now
+                                        leg = ax.get_legend()
+                                        if leg is not None and leg.get_visible():
+                                            if not _apply_legend_position(fig, ax):
+                                                # Fallback: rebuild with title preserved
+                                                handles, labels = _visible_legend_entries(ax)
+                                                if handles:
+                                                    legend_title = _get_legend_title(fig)
+                                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title)
+                                        fig.canvas.draw_idle()
+                                        print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                    else:
+                                        print(f"Invalid position: x={x_in:.2f}, y={y_in:.2f} is out of bounds. Position not updated.")
+                                except Exception as e:
+                                    print(f"Error updating legend position: {e}")
                     else:
                         print("Unknown option.")
             except Exception:
                 pass
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'p':
             # Print/export style or style+geometry
@@ -1716,17 +2026,51 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             else:
                                 print(f"  {_i}: {fname}")
                     
-                    sub = input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
+                    last_style_path = getattr(fig, '_last_style_export_path', None)
+                    if last_style_path:
+                        sub = _safe_input(_colorize_prompt("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ")).strip().lower()
+                    else:
+                        sub = _safe_input(_colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == 'r' or sub == '':
                         continue
+                    if sub == 'o':
+                        # Overwrite last exported style file
+                        if not last_style_path:
+                            print("No previous export found.")
+                            continue
+                        if not os.path.exists(last_style_path):
+                            print(f"Previous export file not found: {last_style_path}")
+                            continue
+                        yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            continue
+                        # Rebuild config based on current state
+                        cfg = _get_style_snapshot(fig, ax, cycle_lines, tick_state)
+                        # Determine if last export was style-only or style+geometry
+                        try:
+                            with open(last_style_path, 'r', encoding='utf-8') as f:
+                                old_cfg = json.load(f)
+                            if old_cfg.get('kind') == 'ec_style_geom':
+                                geom = _get_geometry_snapshot(fig, ax)
+                                cfg['kind'] = 'ec_style_geom'
+                                cfg['geometry'] = geom
+                            else:
+                                cfg['kind'] = 'ec_style'
+                        except Exception:
+                            cfg['kind'] = 'ec_style'
+                        with open(last_style_path, 'w', encoding='utf-8') as f:
+                            json.dump(cfg, f, indent=2)
+                        print(f"Overwritten style to {last_style_path}")
+                        style_menu_active = False
+                        break
                     if sub == 'e':
                         # Ask for ps or psg
                         print("Export options:")
                         print("  ps  = style only (.bps)")
                         print("  psg = style + geometry (.bpsg)")
-                        exp_choice = input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
+                        exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                         if not exp_choice or exp_choice == 'q':
                             print("Style export canceled.")
                             continue
@@ -1757,21 +2101,23 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             print("Style export canceled.")
                             continue
                         print(f"\nChosen path: {save_base}")
-                        _export_style_dialog(cfg, default_ext=default_ext, base_path=save_base)
+                        exported_path = _export_style_dialog(cfg, default_ext=default_ext, base_path=save_base)
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
                         style_menu_active = False  # Exit style submenu and return to main menu
                         break
                     else:
                         print("Unknown choice.")
             except Exception as e:
                 print(f"Error in style submenu: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'i':
             # Import style from .bps/.bpsg/.bpcfg
             try:
                 path = choose_style_file(source_paths, purpose="style import")
                 if not path:
-                    _print_menu(len(all_cycles), is_dqdv)
+                    _print_menu(len(all_cycles), is_dqdv, fig)
                     continue
                 push_state("import-style")
                 with open(path, 'r', encoding='utf-8') as f:
@@ -1781,7 +2127,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 kind = cfg.get('kind', '')
                 if kind not in ('ec_style', 'ec_style_geom'):
                     print("Not an EC style file.")
-                    _print_menu(len(all_cycles), is_dqdv)
+                    _print_menu(len(all_cycles), is_dqdv, fig)
+                    continue
+
+                # Enforce compatibility between style/geom ro state and current figure ro state
+                file_ro = bool(cfg.get('ro_active', False))
+                current_ro = bool(getattr(fig, '_ro_active', False))
+                if file_ro != current_ro:
+                    if file_ro:
+                        print("Warning: EC style/geometry file was saved with --ro (swapped x/y axes); current plot is not using --ro.")
+                    else:
+                        print("Warning: EC style/geometry file was saved without --ro; current plot was created with --ro.")
+                    print("Not applying EC style/geometry to avoid corrupting axis orientation.")
+                    _print_menu(len(all_cycles), is_dqdv, fig)
                     continue
                 
                 has_geometry = (kind == 'ec_style_geom' and 'geometry' in cfg)
@@ -2059,6 +2417,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     except Exception as e:
                         print(f"Warning: Could not apply geometry: {e}")
                 
+                # Restore title offsets
+                try:
+                    offsets = cfg.get('title_offsets', {})
+                    if offsets:
+                        ax._top_xlabel_manual_offset_y_pts = float(offsets.get('top_y', 0.0) or 0.0)
+                        ax._top_xlabel_manual_offset_x_pts = float(offsets.get('top_x', 0.0) or 0.0)
+                        ax._bottom_xlabel_manual_offset_y_pts = float(offsets.get('bottom_y', 0.0) or 0.0)
+                        ax._left_ylabel_manual_offset_x_pts = float(offsets.get('left_x', 0.0) or 0.0)
+                        ax._right_ylabel_manual_offset_x_pts = float(offsets.get('right_x', 0.0) or 0.0)
+                        ax._right_ylabel_manual_offset_y_pts = float(offsets.get('right_y', 0.0) or 0.0)
+                except Exception:
+                    pass
+                
                 # Final label positioning - do this AFTER all style changes to prevent drift
                 # Set pending labelpad before repositioning to preserve original values
                 try:
@@ -2072,12 +2443,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     font_cfg = cfg.get('font', {})
                     font_changed = (font_cfg.get('family') is not None or font_cfg.get('size') is not None)
                     
-                    if axes_position_changed or font_changed:
-                        # Reposition titles (will use _pending_xlabelpad if set, preserving original labelpad)
-                        _ui_position_top_xlabel(ax, fig, tick_state)
-                        _ui_position_bottom_xlabel(ax, fig, tick_state)
-                        _ui_position_left_ylabel(ax, fig, tick_state)
-                        _ui_position_right_ylabel(ax, fig, tick_state)
+                    # Always reposition titles to apply offsets (even if nothing else changed)
+                    _ui_position_top_xlabel(ax, fig, tick_state)
+                    _ui_position_bottom_xlabel(ax, fig, tick_state)
+                    _ui_position_left_ylabel(ax, fig, tick_state)
+                    _ui_position_right_ylabel(ax, fig, tick_state)
                     
                     # Always ensure labelpad is exactly as it was before style import
                     # This is a final safeguard against any drift
@@ -2106,7 +2476,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
 
             except Exception as e:
                 print(f"Error importing style: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'l':
             # Line widths submenu: curves vs frame/ticks
@@ -2164,13 +2534,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     print(f"  {_colorize_menu('ld : show line and dots (markers) for all curves')}")
                     print(f"  {_colorize_menu('d  : show only dots (no connecting line) for all curves')}")
                     print(f"  {_colorize_menu('q  : return')}")
-                    sub = input(_colorize_prompt("Choose (c/f/g/l/ld/d/q): ")).strip().lower()
+                    sub = _safe_input(_colorize_prompt("Choose (c/f/g/l/ld/d/q): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub == 'c':
-                        spec = input("Curve linewidth (single value for all curves, q=cancel): ").strip()
+                        spec = _safe_input("Curve linewidth (single value for all curves, q=cancel): ").strip()
                         if not spec or spec.lower() == 'q':
                             continue
                         # Apply single width to all curves
@@ -2199,7 +2569,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         except ValueError:
                             print("Invalid width value.")
                     elif sub == 'f':
-                        fw_in = input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
+                        fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
                         if not fw_in or fw_in.lower() == 'q':
                             print("Canceled.")
                             continue
@@ -2274,7 +2644,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         # Line + dots for all curves
                         push_state("line+dots")
                         try:
-                            msize_in = input("Marker size (blank=auto ~3*lw): ").strip()
+                            msize_in = _safe_input("Marker size (blank=auto ~3*lw): ").strip()
                             custom_msize = float(msize_in) if msize_in else None
                         except ValueError:
                             custom_msize = None
@@ -2304,7 +2674,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         # Dots only for all curves
                         push_state("dots-only")
                         try:
-                            msize_in = input("Marker size (blank=auto ~3*lw): ").strip()
+                            msize_in = _safe_input("Marker size (blank=auto ~3*lw): ").strip()
                             custom_msize = float(msize_in) if msize_in else None
                         except ValueError:
                             custom_msize = None
@@ -2334,27 +2704,29 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         print("Unknown option.")
             except Exception as e:
                 print(f"Error in line submenu: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'k':
             # Spine colors (w=top, a=left, s=bottom, d=right)
             try:
-                print("Set spine colors (with matching tick and label colors):")
-                print(_colorize_inline_commands("  w : top spine    | a : left spine"))
-                print(_colorize_inline_commands("  s : bottom spine | d : right spine"))
-                print(_colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
-                user_colors = get_user_color_list(fig)
-                if user_colors:
-                    print("\nSaved colors (enter number or u# to reuse):")
-                    for idx, color in enumerate(user_colors, 1):
-                        print(f"  {idx}: {color_block(color)} {color}")
-                    print("Type 'u' to edit saved colors.")
-                line = input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
-                if line.lower() == 'u':
-                    manage_user_colors(fig)
-                    _print_menu(len(all_cycles), is_dqdv)
-                    continue
-                if line and line.lower() != 'q':
+                while True:
+                    print("\nSet spine colors (with matching tick and label colors):")
+                    print(_colorize_inline_commands("  w : top spine    | a : left spine"))
+                    print(_colorize_inline_commands("  s : bottom spine | d : right spine"))
+                    print(_colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
+                    user_colors = get_user_color_list(fig)
+                    if user_colors:
+                        print("\nSaved colors (enter number or u# to reuse):")
+                        for idx, color in enumerate(user_colors, 1):
+                            print(f"  {idx}: {color_block(color)} {color}")
+                        print("Type 'u' to edit saved colors.")
+                    print("q: back to main menu")
+                    line = _safe_input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
+                    if not line or line.lower() == 'q':
+                        break
+                    if line.lower() == 'u':
+                        manage_user_colors(fig)
+                        continue
                     push_state("color-spine")
                     key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
                     tokens = line.split()
@@ -2388,28 +2760,28 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         except Exception as e:
                             print(f"Error setting {spine_name} color: {e}")
                     fig.canvas.draw()
-                else:
-                    print("Canceled.")
             except Exception as e:
                 print(f"Error in spine color menu: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'r':
             # Rename axis labels
             try:
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
                 while True:
                     print("Rename axis: x, y, both, q=back")
-                    sub = input("Rename> ").strip().lower()
+                    sub = _safe_input("Rename> ").strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
                     if sub in ('x','both'):
-                        txt = input("New X-axis label (blank=cancel): ")
+                        txt = _safe_input("New X-axis label (blank=cancel): ")
                         if txt:
+                            txt = convert_label_shortcuts(txt)
                             push_state("rename-x")
                             try:
                                 # Freeze layout and preserve existing pad for one-shot restore
@@ -2431,8 +2803,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             except Exception:
                                 pass
                     if sub in ('y','both'):
-                        txt = input("New Y-axis label (blank=cancel): ")
+                        txt = _safe_input("New Y-axis label (blank=cancel): ")
                         if txt:
+                            txt = convert_label_shortcuts(txt)
                             push_state("rename-y")
                             base_ylabel = txt
                             try:
@@ -2459,7 +2832,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Error renaming axes: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 't':
             # Unified WASD: w/a/s/d x 1..5 => spine, ticks, minor, labels, title
@@ -2567,7 +2940,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     print(_colorize_inline_commands("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title"))
                     print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' for state, 'q' to return."))
                     print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
-                    cmd = input(_colorize_prompt("t> ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt("t> ")).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -2594,7 +2967,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             # Get current major tick length from axes
                             current_major = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 4.0
                             print(f"Current major tick length: {current_major}")
-                            new_length_str = input("Enter new major tick length (e.g., 6.0): ").strip()
+                            new_length_str = _safe_input("Enter new major tick length (e.g., 6.0): ").strip()
                             if not new_length_str:
                                 continue
                             new_major = float(new_length_str)
@@ -2655,14 +3028,15 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Error in WASD tick visibility menu: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 's':
             try:
                 from .session import dump_ec_session
+                last_session_path = getattr(fig, '_last_session_save_path', None)
                 folder = choose_save_path(source_paths, purpose="EC session save")
                 if not folder:
-                    _print_menu(len(all_cycles), is_dqdv); continue
+                    _print_menu(len(all_cycles), is_dqdv, fig); continue
                 print(f"\nChosen path: {folder}")
                 try:
                     files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
@@ -2677,37 +3051,60 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             print(f"  {i}: {f}  ({timestamp})")
                         else:
                             print(f"  {i}: {f}")
-                prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
-                choice = input(prompt).strip()
+                if last_session_path:
+                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
+                else:
+                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+                choice = _safe_input(prompt).strip()
                 if not choice or choice.lower() == 'q':
-                    _print_menu(len(all_cycles), is_dqdv); continue
+                    _print_menu(len(all_cycles), is_dqdv, fig); continue
+                if choice.lower() == 'o':
+                    # Overwrite last saved session
+                    if not last_session_path:
+                        print("No previous save found.")
+                        _print_menu(len(all_cycles), is_dqdv, fig); continue
+                    if not os.path.exists(last_session_path):
+                        print(f"Previous save file not found: {last_session_path}")
+                        _print_menu(len(all_cycles), is_dqdv, fig); continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        _print_menu(len(all_cycles), is_dqdv, fig); continue
+                    dump_ec_session(last_session_path, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+                    print(f"Overwritten session to {last_session_path}")
+                    _print_menu(len(all_cycles), is_dqdv, fig); continue
                 if choice.isdigit() and files:
                     idx = int(choice)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
-                            _print_menu(len(all_cycles), is_dqdv); continue
+                            _print_menu(len(all_cycles), is_dqdv, fig); continue
                         target = os.path.join(folder, name)
+                        dump_ec_session(target, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+                        fig._last_session_save_path = target
+                        _print_menu(len(all_cycles), is_dqdv, fig); continue
                     else:
                         print("Invalid number.")
-                        _print_menu(len(all_cycles), is_dqdv); continue
-                else:
+                        _print_menu(len(all_cycles), is_dqdv, fig); continue
+                if choice.lower() != 'o':
                     name = choice
                     root, ext = os.path.splitext(name)
                     if ext == '':
                         name = name + '.pkl'
                     target = name if os.path.isabs(name) else os.path.join(folder, name)
                     if os.path.exists(target):
-                        yn = input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
-                            _print_menu(len(all_cycles), is_dqdv); continue
+                            _print_menu(len(all_cycles), is_dqdv, fig); continue
                 dump_ec_session(target, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+                fig._last_session_save_path = target
             except Exception as e:
                 print(f"Save failed: {e}")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'c':
+            # Show current palette if one is applied (this is informational only)
+            # Note: Individual cycles may use different colors, so we can't show a single "current" palette
             print(f"Total cycles: {len(all_cycles)}")
             print("Enter one of:")
             print(_colorize_inline_commands("  - numbers: e.g. 1 5 10"))
@@ -2734,12 +3131,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 for idx, color in enumerate(user_colors, 1):
                     print(f"  {idx}: {color_block(color)} {color}")
                 print("Type 'u' to edit saved colors before assigning.")
-            line = input("Selection: ").strip()
+            line = _safe_input("Selection: ").strip()
             if not line:
                 continue
             if line.lower() == 'u':
                 manage_user_colors(fig)
-                _print_menu(len(all_cycles), is_dqdv)
+                _print_menu(len(all_cycles), is_dqdv, fig)
                 continue
             tokens = line.replace(',', ' ').split()
             mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
@@ -2796,33 +3193,45 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 # over multiple cycles (degradation, capacity fade, etc.)
                 # ====================================================================
                 
-                try:
-                    # Get the continuous colormap from matplotlib
-                    # This allows direct sampling without quantization
-                    cmap = cm.get_cmap(palette) if palette else None
-                except Exception:
-                    cmap = None
+                # Special handling for Tab10 (default palette) to match hardcoded colors exactly
+                default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
                 
-                if cmap is None:
-                    print(f"Unknown colormap '{palette}'.")
-                else:
-                    # Get number of cycles to color
+                if palette and palette.lower() in ('tab10', '1'):
+                    # Use the exact hardcoded Tab10 colors to match default behavior
                     n = len(existing)
+                    cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)]) 
+                            for i in range(n)]
+                else:
+                    try:
+                        # Get the continuous colormap from matplotlib
+                        # This allows direct sampling without quantization
+                        cmap = cm.get_cmap(palette) if palette else None
+                    except Exception:
+                        cmap = None
                     
-                    # Sample colors from colormap at evenly spaced positions
-                    if n == 1:
-                        # Single cycle: use middle of colormap
-                        cols = [cmap(0.55)]
-                    elif n == 2:
-                        # Two cycles: use endpoints for maximum contrast
-                        cols = [cmap(0.15), cmap(0.85)]
+                    if cmap is None:
+                        print(f"Unknown colormap '{palette}'.")
+                        cols = []
                     else:
-                        # Multiple cycles: sample evenly across colormap range
-                        # np.linspace(0.08, 0.88, n) creates n evenly spaced positions
-                        # Example with 5 cycles: [0.08, 0.28, 0.48, 0.68, 0.88]
-                        # Each position is passed to cmap() to get the color at that position
-                        cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
-                    
+                        # Get number of cycles to color
+                        n = len(existing)
+                        
+                        # Sample colors from colormap at evenly spaced positions
+                        if n == 1:
+                            # Single cycle: use middle of colormap
+                            cols = [cmap(0.55)]
+                        elif n == 2:
+                            # Two cycles: use endpoints for maximum contrast
+                            cols = [cmap(0.15), cmap(0.85)]
+                        else:
+                            # Multiple cycles: sample evenly across colormap range
+                            # np.linspace(0.08, 0.88, n) creates n evenly spaced positions
+                            # Example with 5 cycles: [0.08, 0.28, 0.48, 0.68, 0.88]
+                            # Each position is passed to cmap() to get the color at that position
+                            cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
+                
+                if cols:
                     # Apply colors to cycles
                     # Create dictionary mapping cycle number to color
                     # Then apply to all line objects for those cycles
@@ -2832,13 +3241,18 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     except Exception:
                         preview = ""
                     if preview:
-                        print(f"Palette '{palette}' applied: {preview}")
+                        palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
+                        print(f"Palette '{palette_display}' applied: {preview}")
             elif mode == 'numbers' and existing:
                 # Do not change colors in numbers-only mode; only visibility changes.
                 pass
 
             # Reapply curve linewidth (in case it was set)
             _apply_curve_linewidth(fig, cycle_lines)
+            
+            # Apply stored smooth settings to newly visible cycles (only in dQdV mode)
+            if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
+                _apply_stored_smooth_settings(cycle_lines, fig)
             
             # Rebuild legend and redraw
             _rebuild_legend(ax)
@@ -2851,25 +3265,25 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
             if ignored:
                 print("Ignored cycles:", ", ".join(str(c) for c in ignored))
             # Show the menu again after completing the command
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'a':
             # X-axis submenu: number-of-ions vs capacity (not available in dQdV mode)
             if is_dqdv:
                 print("Capacity/ion conversion is not available in dQ/dV mode.")
-                _print_menu(len(all_cycles), is_dqdv)
+                _print_menu(len(all_cycles), is_dqdv, fig)
                 continue
             # X-axis submenu: number-of-ions vs capacity
             while True:
                 print("X-axis menu: n=number of ions, c=capacity, q=back")
-                sub = input("X> ").strip().lower()
+                sub = _safe_input("X> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
                     break
                 if sub == 'n':
                     print("Input the theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
-                    val = input("C_theoretical_per_ion: ").strip()
+                    val = _safe_input("C_theoretical_per_ion: ").strip()
                     try:
                         c_th = float(val)
                         if c_th <= 0:
@@ -2998,13 +3412,15 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             fig.canvas.draw()
                         except Exception:
                             fig.canvas.draw_idle()
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'f':
             # Font submenu with numbered options
+            cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
+            cur_size = plt.rcParams.get('font.size', None)
             while True:
-                print("\nFont menu: f=font family, s=size, q=back")
-                sub = input("Font> ").strip().lower()
+                print(f"\nFont menu (current: family='{cur_family}', size={cur_size}): f=font family, s=size, q=back")
+                sub = _safe_input("Font> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -3017,7 +3433,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     for i, font in enumerate(fonts, 1):
                         print(f"  {i}: {font}")
                     print("Or enter custom font name directly.")
-                    choice = input("Font family (number or name): ").strip()
+                    choice = _safe_input(f"Font family (current: '{cur_family}', number or name): ").strip()
                     if not choice:
                         continue
                     # Check if it's a number
@@ -3049,7 +3465,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     # Show current size and accept direct input
                     import matplotlib as mpl
                     cur_size = mpl.rcParams.get('font.size', None)
-                    choice = input(f"Font size (current: {cur_size}): ").strip()
+                    choice = _safe_input(f"Font size (current: {cur_size}): ").strip()
                     if not choice:
                         continue
                     try:
@@ -3067,14 +3483,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             print("Size must be positive.")
                     except Exception:
                         print("Invalid size.")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'x':
             # X-axis: set limits only
             while True:
                 current_xlim = ax.get_xlim()
                 print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                lim = input("Set X limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = _safe_input("Set X limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not lim or lim.lower() == 'q':
                     break
                 if lim.lower() == 'a':
@@ -3096,7 +3512,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3116,12 +3532,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             pass
                         fig.canvas.draw()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                    continue
                 if lim.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3141,6 +3558,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             pass
                         fig.canvas.draw()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                    continue
                 try:
                     lo, hi = map(float, lim.split())
                     push_state("x-limits")
@@ -3149,14 +3567,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     fig.canvas.draw()
                 except Exception:
                     print("Invalid limits, ignored.")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'y':
             # Y-axis: set limits only
             while True:
                 current_ylim = ax.get_ylim()
                 print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                lim = input("Set Y limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = _safe_input("Set Y limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
                 if not lim or lim.lower() == 'q':
                     break
                 if lim.lower() == 'a':
@@ -3178,7 +3596,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     while True:
                         current_ylim = ax.get_ylim()
                         print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3198,12 +3616,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             pass
                         fig.canvas.draw()
                         print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    continue
                 if lim.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
                         current_ylim = ax.get_ylim()
                         print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                        val = _safe_input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3223,6 +3642,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             pass
                         fig.canvas.draw()
                         print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    continue
                 try:
                     lo, hi = map(float, lim.split())
                     push_state("y-limits")
@@ -3231,13 +3651,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     fig.canvas.draw()
                 except Exception:
                     print("Invalid limits, ignored.")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'g':
             # Geometry submenu: plot frame vs canvas (scales moved to separate keys)
             while True:
                 print("Geometry menu: p=plot frame size, c=canvas size, q=back")
-                sub = input("Geom> ").strip().lower()
+                sub = _safe_input("Geom> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -3260,13 +3680,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     fig.canvas.draw()
                 except Exception:
                     fig.canvas.draw_idle()
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         elif key == 'sm':
             # dQ/dV smoothing utilities (only available in dQdV mode)
             if not is_dqdv:
                 print("Smoothing is only available in dQ/dV mode.")
-                _print_menu(len(all_cycles), is_dqdv)
+                _print_menu(len(all_cycles), is_dqdv, fig)
                 continue
             while True:
                 print("\n\033[1mdQ/dV Data Filtering (Neware method)\033[0m")
@@ -3276,7 +3696,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 print("  o: remove outliers (removes abrupt dQ/dV spikes)")
                 print("  r: reset to original data")
                 print("  q: back to main menu")
-                sub = input("sm> ").strip().lower()
+                sub = _safe_input("sm> ").strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -3293,9 +3713,15 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 if hasattr(ln, '_original_xdata'):
                                     ln.set_xdata(ln._original_xdata)
                                     ln.set_ydata(ln._original_ydata)
+                                    # Clear smooth flag so smooth can be reapplied if needed
+                                    if hasattr(ln, '_smooth_applied'):
+                                        delattr(ln, '_smooth_applied')
                                     restored_count += 1
                         if restored_count:
                             print(f"Reset {restored_count} curve(s) to original data.")
+                            # Clear stored smooth settings
+                            if hasattr(fig, '_dqdv_smooth_settings'):
+                                fig._dqdv_smooth_settings = {}
                             fig.canvas.draw_idle()
                         else:
                             print("No filtered data to reset.")
@@ -3304,13 +3730,36 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     continue
                 if sub == 'a':
                     try:
-                        threshold_input = input("Enter minimum voltage step in mV (default 0.5 mV): ").strip()
-                        threshold_mv = 0.5 if not threshold_input else float(threshold_input)
+                        while True:
+                            threshold_input = _safe_input("Enter minimum voltage step in mV (default 0.5 mV, 'q'=quit, 'e'=explain): ").strip()
+                            if threshold_input.lower() == 'q':
+                                break
+                            if threshold_input.lower() == 'e':
+                                print("\n--- Voltage Step Filter Explanation ---")
+                                print("This filter removes data points where the voltage change (ΔV) between")
+                                print("consecutive points is smaller than the threshold.")
+                                print("\nExample: If threshold = 0.5 mV, any point where |V[i+1] - V[i]| < 0.5 mV")
+                                print("will be removed. This helps eliminate noisy or redundant measurements.")
+                                print("\nTypical values: 0.1-1.0 mV (smaller = more aggressive filtering)")
+                                print("Higher values remove more points but may oversmooth the data.")
+                                print("----------------------------------------\n")
+                                continue
+                            threshold_mv = 0.5 if not threshold_input else float(threshold_input)
+                            break
+                        if threshold_input.lower() == 'q':  # User quit
+                            continue
                         threshold_v = threshold_mv / 1000.0
                         if threshold_v <= 0:
                             print("Threshold must be positive.")
                             continue
                         push_state("smooth-apply")
+                        # Store smooth settings for future cycle changes
+                        if not hasattr(fig, '_dqdv_smooth_settings'):
+                            fig._dqdv_smooth_settings = {}
+                        fig._dqdv_smooth_settings.update({
+                            'method': 'voltage_step',
+                            'threshold_v': threshold_v
+                        })
                         filtered = 0
                         total_before = 0
                         total_after = 0
@@ -3337,6 +3786,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 if after < before:
                                     ln.set_xdata(filtered_x)
                                     ln.set_ydata(filtered_y)
+                                    ln._smooth_applied = True
                                     filtered += 1
                                     total_before += before
                                     total_after += after
@@ -3354,15 +3804,68 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                 if sub == 'd':
                     try:
                         print("DiffCap smoothing per Thompson et al. (2020): clean ΔV < threshold and apply Savitzky–Golay (order 3).")
-                        delta_input = input("Minimum ΔV between points (mV, default 1.0): ").strip()
-                        min_step = 0.001 if not delta_input else max(float(delta_input), 0.0) / 1000.0
-                        if min_step <= 0:
-                            print("ΔV threshold must be positive.")
+                        while True:
+                            delta_input = _safe_input("Minimum ΔV between points (mV, default 1.0, 'q'=quit, 'e'=explain): ").strip()
+                            if delta_input.lower() == 'q':
+                                break
+                            if delta_input.lower() == 'e':
+                                print("\n--- Minimum ΔV Explanation ---")
+                                print("First step: Remove points where voltage change is too small.")
+                                print("This threshold (in mV) determines the minimum voltage difference")
+                                print("required between consecutive points. Points with smaller ΔV are")
+                                print("removed as noise before smoothing.")
+                                print("\nTypical values: 0.5-2.0 mV")
+                                print("Smaller values = keep more points (less aggressive cleaning)")
+                                print("Larger values = remove more points (more aggressive cleaning)")
+                                print("--------------------------------\n")
+                                continue
+                            min_step = 0.001 if not delta_input else max(float(delta_input), 0.0) / 1000.0
+                            if min_step <= 0:
+                                print("ΔV threshold must be positive.")
+                                continue
+                            break
+                        # Only skip if user explicitly quit with 'q', not if they pressed Enter (empty = use default)
+                        if delta_input and delta_input.lower() == 'q':  # User quit at previous step
                             continue
-                        window_input = input("Savitzky–Golay window (odd, default 9): ").strip()
-                        poly_input = input("Polynomial order (default 3): ").strip()
-                        window = 9 if not window_input else int(window_input)
-                        poly = 3 if not poly_input else int(poly_input)
+                        while True:
+                            window_input = _safe_input("Savitzky–Golay window (odd, default 9, 'q'=quit, 'e'=explain): ").strip()
+                            if window_input.lower() == 'q':
+                                break
+                            if window_input.lower() == 'e':
+                                print("\n--- Savitzky–Golay Window Explanation ---")
+                                print("The window size determines how many neighboring points are used")
+                                print("to smooth each data point. Must be an odd number (3, 5, 7, 9, 11, ...).")
+                                print("\nLarger window = smoother result but may lose fine details")
+                                print("Smaller window = preserves more detail but less smoothing")
+                                print("\nTypical values: 5-15 (9 is a good default)")
+                                print("Window must be larger than polynomial order.")
+                                print("------------------------------------------\n")
+                                continue
+                            window = 9 if not window_input else int(window_input)
+                            break
+                        # Only skip if user explicitly quit with 'q', not if they pressed Enter (empty = use default)
+                        if window_input and window_input.lower() == 'q':  # User quit at previous step
+                            continue
+                        while True:
+                            poly_input = _safe_input("Polynomial order (default 3, 'q'=quit, 'e'=explain): ").strip()
+                            if poly_input.lower() == 'q':
+                                break
+                            if poly_input.lower() == 'e':
+                                print("\n--- Polynomial Order Explanation ---")
+                                print("The polynomial order determines the complexity of the smoothing")
+                                print("function. Higher order = more flexible curve fitting.")
+                                print("\nOrder 1 = linear (straight line) - very smooth, may oversimplify")
+                                print("Order 3 = cubic (default) - good balance of smoothness and detail")
+                                print("Order 5+ = higher complexity - preserves more features, less smooth")
+                                print("\nTypical values: 1-5 (3 is recommended)")
+                                print("Order must be less than window size.")
+                                print("--------------------------------------\n")
+                                continue
+                            poly = 3 if not poly_input else int(poly_input)
+                            break
+                        # Only skip if user explicitly quit with 'q', not if they pressed Enter (empty = use default)
+                        if poly_input and poly_input.lower() == 'q':  # User quit at previous step
+                            continue
                     except ValueError:
                         print("Invalid number.")
                         continue
@@ -3373,6 +3876,15 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     if poly < 1:
                         poly = 1
                     push_state("smooth-diffcap")
+                    # Store smooth settings for future cycle changes
+                    if not hasattr(fig, '_dqdv_smooth_settings'):
+                        fig._dqdv_smooth_settings = {}
+                    fig._dqdv_smooth_settings.update({
+                        'method': 'diffcap',
+                        'min_step': min_step,
+                        'window': window,
+                        'poly': poly
+                    })
                     cleaned_curves = 0
                     total_removed = 0
                     for cyc, parts in cycle_lines.items():
@@ -3393,6 +3905,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             y_smooth = _savgol_smooth(y_clean, window, poly)
                             ln.set_xdata(x_clean)
                             ln.set_ydata(y_smooth)
+                            ln._smooth_applied = True
                             cleaned_curves += 1
                             total_removed += removed
                     if cleaned_curves:
@@ -3405,25 +3918,80 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                     print("Outlier removal methods:")
                     print("  1: Z-score (enter standard deviation threshold, default 5.0)")
                     print("  2: MAD (median absolute deviation, default factor 6.0)")
-                    method = input("Method (1/2, blank=cancel): ").strip()
-                    if not method:
-                        continue
-                    if method not in ('1', '2'):
-                        print("Unknown method.")
+                    while True:
+                        method = _safe_input("Method (1/2, blank=cancel, 'q'=quit, 'e'=explain): ").strip()
+                        if not method or method.lower() == 'q':
+                            break
+                        if method.lower() == 'e':
+                            print("\n--- Outlier Removal Methods Explanation ---")
+                            print("Method 1 - Z-score:")
+                            print("  Removes points where |(value - mean) / std| > threshold")
+                            print("  Works well for normally distributed data")
+                            print("  Default threshold: 5.0 (removes points >5 standard deviations)")
+                            print("\nMethod 2 - MAD (Median Absolute Deviation):")
+                            print("  Removes points where |(value - median) / MAD| > threshold")
+                            print("  More robust to outliers (uses median instead of mean)")
+                            print("  Default threshold: 6.0 (removes points >6 MAD units)")
+                            print("\nHigher threshold = removes fewer points (less aggressive)")
+                            print("Lower threshold = removes more points (more aggressive)")
+                            print("Typical thresholds: 3.0-10.0")
+                            print("--------------------------------------------\n")
+                            continue
+                        if method not in ('1', '2'):
+                            print("Unknown method.")
+                            continue
+                        break
+                    if not method:  # User canceled/quitted
                         continue
                     try:
-                        thresh_input = input("Enter threshold (blank=default): ").strip()
-                        if method == '1':
-                            z_threshold = 5.0 if not thresh_input else float(thresh_input)
-                            if z_threshold <= 0:
-                                print("Threshold must be positive.")
+                        while True:
+                            thresh_input = _safe_input("Enter threshold (blank=default, 'q'=quit, 'e'=explain): ").strip()
+                            if thresh_input.lower() == 'q':
+                                break
+                            if thresh_input.lower() == 'e':
+                                if method == '1':
+                                    print("\n--- Z-score Threshold Explanation ---")
+                                    print("Threshold determines how many standard deviations a point can")
+                                    print("deviate from the mean before being considered an outlier.")
+                                    print("\nDefault: 5.0 (removes points where |z-score| > 5)")
+                                    print("Higher values (6-10) = remove only extreme outliers")
+                                    print("Lower values (2-4) = remove more points, including moderate spikes")
+                                    print("\nExample: threshold=5.0 means points >5σ from mean are removed")
+                                    print("--------------------------------------\n")
+                                else:
+                                    print("\n--- MAD Threshold Explanation ---")
+                                    print("Threshold determines how many MAD units a point can deviate")
+                                    print("from the median before being considered an outlier.")
+                                    print("\nDefault: 6.0 (removes points where |MAD-score| > 6)")
+                                    print("Higher values (7-10) = remove only extreme outliers")
+                                    print("Lower values (3-5) = remove more points, including moderate spikes")
+                                    print("\nMAD is more robust than standard deviation for noisy data.")
+                                    print("----------------------------------\n")
                                 continue
-                        else:
-                            mad_threshold = 6.0 if not thresh_input else float(thresh_input)
-                            if mad_threshold <= 0:
-                                print("Threshold must be positive.")
-                                continue
+                            if method == '1':
+                                z_threshold = 5.0 if not thresh_input else float(thresh_input)
+                                if z_threshold <= 0:
+                                    print("Threshold must be positive.")
+                                    continue
+                            else:
+                                mad_threshold = 6.0 if not thresh_input else float(thresh_input)
+                                if mad_threshold <= 0:
+                                    print("Threshold must be positive.")
+                                    continue
+                            break
+                        # Only skip if user explicitly quit with 'q', not if they pressed Enter (empty = use default)
+                        if thresh_input and thresh_input.lower() == 'q':  # User quit
+                            continue
                         push_state("smooth-outlier")
+                        # Store smooth settings for future cycle changes
+                        if not hasattr(fig, '_dqdv_smooth_settings'):
+                            fig._dqdv_smooth_settings = {}
+                        thresh_val = z_threshold if method == '1' else mad_threshold
+                        fig._dqdv_smooth_settings.update({
+                            'method': 'outlier',
+                            'outlier_method': method,
+                            'threshold': thresh_val
+                        })
                         filtered = 0
                         total_before = 0
                         total_after = 0
@@ -3460,6 +4028,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                                 if after < before:
                                     ln.set_xdata(filtered_x)
                                     ln.set_ydata(filtered_y)
+                                    ln._smooth_applied = True
                                     filtered += 1
                                     total_before += before
                                     total_after += after
@@ -3467,7 +4036,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                             removed = total_before - total_after
                             pct = 100 * removed / total_before if total_before else 0
                             method_name = "Z-score" if method == '1' else "MAD"
-                            thresh_val = z_threshold if method == '1' else mad_threshold
                             print(f"Removed outliers from {filtered} curve(s) using {method_name} (threshold={thresh_val}).")
                             print(f"Removed {removed} of {total_before} points ({pct:.1f}%).")
                             print("Tip: Adjust threshold to control sensitivity (always applied to raw data).")
@@ -3478,11 +4046,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Dict[int, Dict[str, Optio
                         print("Invalid number.")
                     continue
                 print("Unknown command. Use a/o/r/q.")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
             continue
         else:
             print("Unknown command.")
-            _print_menu(len(all_cycles), is_dqdv)
+            _print_menu(len(all_cycles), is_dqdv, fig)
 
 
 def _get_geometry_snapshot(fig, ax) -> Dict:
@@ -3701,10 +4269,20 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict) -> Dict:
         'ticks': {'widths': tick_widths, 'direction': tick_direction},
         'grid': grid_enabled,
         'wasd_state': wasd_state,
+        'title_offsets': {
+            'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        },
         'curve_linewidth': curve_linewidth,
         'curve_markers': curve_marker_props,
         'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),
         'cycle_styles': cycle_styles,
+        # Track whether data axes were swapped via --ro when this style was saved
+        'ro_active': bool(getattr(fig, '_ro_active', False)),
     }
 
 
@@ -3795,6 +4373,10 @@ def _print_style_snapshot(cfg: Dict):
     rotation_angle = cfg.get('rotation_angle', 0)
     if rotation_angle != 0:
         print(f"Rotation angle: {rotation_angle}°")
+
+    # ro / axis-swap state
+    ro_active = bool(cfg.get('ro_active', False))
+    print(f"Data axes swapped via --ro: {'YES' if ro_active else 'no'}")
 
     # Per-side matrix summary (spine, major, minor, labels, title)
     def _onoff(v):
@@ -3901,7 +4483,7 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Opti
             for i, f in enumerate(bpcfg_files, 1):
                 print(f"  {i}: {f}")
         
-        choice = input(f"Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
+        choice = _safe_input(f"Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
         if not choice or choice.lower() == 'q':
             return
 
@@ -3929,9 +4511,11 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Opti
         with open(target_path, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, indent=2)
         print(f"Style exported to {target_path}")
+        return target_path
 
     except Exception as e:
         print(f"Export failed: {e}")
+        return None
 def _legend_no_frame(ax, *args, title: Optional[str] = None, **kwargs):
     leg = ax.legend(*args, **kwargs)
     if leg is not None:
@@ -3951,6 +4535,8 @@ def _apply_legend_position(fig, ax):
     xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', None))
     if xy_in is None:
         return False
+    # Preserve current title before rebuilding the legend
+    _store_legend_title(fig, ax)
     handles, labels = _visible_legend_entries(ax)
     if not handles:
         return False

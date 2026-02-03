@@ -9,7 +9,7 @@ the command-line interface, including:
 
 HOW COMMAND-LINE ARGUMENTS WORK:
 --------------------------------
-When you run 'batplot file.xy --interactive', Python's argparse library:
+When you run (for example) 'batplot --xaxis 2theta file.xy --i', Python's argparse library:
 1. Parses the command line into structured arguments
 2. Validates that required arguments are present
 3. Converts string arguments to appropriate types (int, float, bool, etc.)
@@ -26,7 +26,7 @@ import sys
 import re
 
 # ====================================================================
-# COLORED HELP OUTPUT (OPTIONAL ENHANCEMENT)
+# COLORED HELP OUTPUT
 # ====================================================================
 # The 'rich' library provides colored terminal output. If available,
 # we use it to make help text more readable by highlighting:
@@ -64,8 +64,8 @@ def _colorize_help(text: str) -> str:
     - Bullet points: • → bold
     
     Example:
-        Input:  "batplot file.xy --interactive"
-        Output: "[green]batplot[/green] [yellow]file.xy[/yellow] [cyan]--interactive[/cyan]"
+        Input:  "batplot file.qye --i"
+        Output: "[green]batplot[/green] [yellow]file.qye[/yellow] [cyan]--i[/cyan]"
     
     Args:
         text: Plain help text (uncolored)
@@ -133,86 +133,92 @@ def _print_general_help() -> None:
     msg = (
         version_str +
         "What it does:\n"
-        "  • XY: XRD/PDF/XAS/... curves\n"
-        "  • EC: GC/CPC/dQdV/CV (from .csv or .mpt)\n"
-        "  • Operando: contour maps from a folder of XY and .mpt files\n"
-        "  • Batch: export SVG plots for all files in a directory\n\n"
-        "  • Interactive mode: -i / --interactive flag opens a menu for styling, ranges, fonts, export, sessions\n\n"
-    "How to run (basics):\n"
-"  [XY curves]\n"
-"    batplot file1.xy file2.qye [option1] [option2]             # XY curves\n"
-"    batplot allfiles                       # Plot all XY files in current directory on same figure\n"
-"    batplot allfiles /path/to/dir          # Plot all XY files in specified directory\n"
-"    batplot allfiles --interactive         # Plot all files with interactive menu\n"
-"    batplot allxyfiles                     # Plot only .xy files (natural sorted)\n"
-"    batplot /path/to/data allnorfiles --i  # Plot only .nor files from a directory\n"
-    "    batplot --all                          # Batch mode: all XY files → Figures/ as .svg\n"
-    "    batplot --all --format png             # Batch mode: export as .png files\n"
-    "    batplot --all --xaxis 2theta --xrange 10 80  # Batch mode with custom axis and range\n"
-    "    batplot --all style.bps                # Batch with style: apply style.bps to all XY files\n"
-    "    batplot --all ./Style/style.bps        # Batch with style: use relative path to style file\n"
-    "    batplot --all config.bpsg              # Batch with style+geom: apply to all XY files\n"
-    "    batplot file1.xy file2.xye style.bps  # Apply style to multiple files and export\n"
-    "    batplot file1.xy file2.xye ./Style/style.bps  # Apply style from relative path\n\n"
-    "  [Electrochemistry]\n"
-    "    batplot --gc FILE.mpt --mass 7.0       # EC GC from .mpt (requires --mass mg)\n"
-    "    batplot --gc FILE.csv                  # EC GC from supported .csv (no mass required)\n"
-    "    batplot --gc --all --mass 7.0          # Batch: all .mpt/.csv → Figures/ as .svg\n"
-    "    batplot --gc --all --mass 7 --format pdf  # Batch: export as .pdf files\n"
-    "    batplot --all --gc style.bps --mass 7  # Batch with style: apply style.bps to all GC files\n"
-    "    batplot --all --gc ./Style/style.bps --mass 7  # Batch with style: use relative path\n"
-    "    batplot --all --cv config.bpsg         # Batch with style+geom: apply to all CV files\n"
-    "    batplot --all --cv ./Style/config.bpsg  # Batch with style+geom: use relative path\n"
-    "    batplot --dqdv FILE.csv                # EC dQ/dV from supported .csv\n"
-    "    batplot --dqdv --all                   # Batch: all .csv in directory (dQdV mode)\n"
-    "    batplot --cv FILE.mpt                  # EC CV (cyclic voltammetry) from .mpt\n"
-    "    batplot --cv FILE.txt                  # EC CV (cyclic voltammetry) from .txt\n"
-    "    batplot --cv --all                     # Batch: all .mpt/.txt in directory (CV mode)\n\n"
-    "  [Operando]\n"
-    "    batplot --operando [FOLDER]            # Operando contour (with or without .mpt file)\n\n"
-        "Features:\n"
-"  • Quick plotting with sensible defaults, no config files needed\n"
-"  • Supports many common file formats (see -h xy/ec/op)\n"
-"  • Interactive menus (--interactive): styling, ranges, fonts, export, sessions\n"
-"  • Batch processing: use 'allfiles' / 'all<ext>files' to plot together, or --all for separate files\n"
+        "  • XY: XRD/PDF/XAS/User defined curves\n"
+        "  • EC: Galvanostatic cycling(GC)/Capacity per cycle(CPC)/Diffrential capacity(dQdV)/Cyclic Voltammetry(CV) from Neware (.csv) or Biologic (.mpt)\n"
+        "  • Operando: contour maps from a folder of .xy/.xye/.dat/.txt and optional file as side panel\n"
+        "  • Batch: export vector plots for all files in a directory\n\n"
+        "  • Interactive mode: --i / --interactive flag opens a menu for styling, ranges, export, and save\n\n"
+        "How to run (basics):\n"
+        "  [1D(XY) curves]\n"
+        "    batplot file1.xy file2.qye [option1] [option2]             # 1D curves, read the first two columns as X and Y axis by default\n"
+        "    batplot file1.xy file2.xy --1d --stack --i                  # Plot 1st derivatives with interactive menu\n"
+        "    batplot allfiles                       # Plot all files in current directory on same figure\n"
+        "    batplot allfiles /path/to/dir          # Plot all files in specified directory\n"
+        "    batplot allfiles --i                   # Plot all files with interactive menu\n"
+        "    batplot allxyfiles                     # Plot only .xy files (natural sorted)\n"
+        "    batplot /path/to/data allnorfiles --i  # Plot only .nor files from a directory\n"
+        "    batplot --all                          # Batch mode: all XY files → Figures/ as .svg\n"
+        "    batplot --all --format png             # Batch mode: export as .png files\n"
+        "    batplot --all --xaxis 2theta --xrange 10 80  # Batch mode with custom axis and range\n"
+        "    batplot --all style.bps                # Batch with style: apply style.bps to all files\n"
+        "    batplot --all ./Style/style.bps        # Batch with style: use relative path to style file\n"
+        "    batplot --all config.bpsg              # Batch with style+geom: apply to all XY files\n"
+        "    batplot file1.xy:1.54 file2.qye --stack  # Stack mode: stack all files vertically\n"
+        "    batplot file1.xy:1.54 file2.qye structure.cif --stack --i # Stack mode: stack all files vertically with cif ticks\n"
+        "    batplot file1.qye file2.qye style.bps  # Apply style to multiple files and export\n"
+        "    batplot file1.xy file2.xye ./Style/style.bps  # Apply style from relative path\n\n"
+        "  [Electrochemistry]\n"
+        "    batplot --gc file.mpt --mass 7.0       # EC GC from .mpt (requires --mass mg)\n"
+        "    batplot --gc file.csv --i              # EC GC from supported .csv (no mass required) with interactive menu\n"
+        "    batplot --gc --all --mass 7.0          # Batch: all .mpt/.csv → Figures/ as .svg\n"
+        "    batplot --gc --all --mass 7 --format png  # Batch: export as .png files\n"
+        "    batplot --all --dqdv style.bps --mass 7  # Batch with style: apply style.bps to all GC files\n"
+        "    batplot --all --gc ./Style/style.bps --mass 7  # Batch with style: use relative path\n"
+        "    batplot --all --cpc config.bpsg         # Batch with style+geom: apply to all CV files\n"
+        "    batplot --all --cv ./Style/config.bpsg  # Batch with style+geom: use relative path\n"
+        "    batplot --dqdv FILE.csv                # EC dQ/dV from supported .csv\n"
+        "    batplot --dqdv --all                   # Batch: all .csv in directory (dQdV mode)\n"
+        "    batplot --cv FILE.mpt                  # EC CV (cyclic voltammetry) from .mpt\n"
+        "    batplot --cv FILE.txt                  # EC CV (cyclic voltammetry) from .txt\n"
+        "    batplot --cv --all                     # Batch: all .mpt/.txt in directory (CV mode)\n\n"
+        "  [Operando]\n"
+        "    batplot --operando --i [FOLDER]        # Operando contour (with or without .mpt file)\n\n"
+            "Features:\n"
+        "  • Quick plotting with sensible defaults, no config files needed\n"
+        "  • Supports many common file formats (see -h xy/ec/op)\n"
+        "  • Interactive menus (--interactive): styling, ranges, fonts, export, sessions\n"
+        "  • Batch processing: use 'allfiles' / 'all<ext>files' to plot together, or --all for separate files\n"
         "  • Batch exports saved to Figures/ subdirectory (default: .svg format)\n"
         "  • Batch styling: apply .bps/.bpsg files to all exports (use --all flag)\n"
         "  • Format option: use --format png/pdf/jpg/etc to change export format\n\n"
-    
-    "More help:\n"
-    "  batplot -h xy   # XY file plotting guide\n"
-    "  batplot -h ec   # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
-    "  batplot -h op   # Operando guide\n"
-    "  Manual: to be added\n\n"
-    "Contact & Updates:\n"
-    "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
-    "  (If you are not from UiO, send an email to sympa@kjemi.uio.no with the subject line \"subscribe batplot-lab@kjemi.uio.no your-name\")\n"
-    "  GitHub: https://github.com/TianDaiChem\n"
-    "  Kindly cite the github page if the plot is used for publication\n"
-    "  Email: tianda@uio.no\n"
-    )
+        
+        "More help:\n"
+        "  batplot -h xy   # XY file plotting guide\n"
+        "  batplot -h ec   # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
+        "  batplot -h op   # Operando guide\n"
+        "  batplot -m      # Open the illustrated txt manual with highlights\n\n"
+
+        "Contact & Updates:\n"
+        "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
+        "  (If you are not from UiO, send an email to sympa@kjemi.uio.no with the subject line \"subscribe batplot-lab@kjemi.uio.no your-name\")\n"
+        "  Kindly cite the pypi package page (https://pypi.org/project/batplot/) if the plot is used for publication\n"
+        "  Email: tianda@uio.no\n"
+        "  Personal page: https://www.mn.uio.no/kjemi/english/people/aca/tianda/\n"
+        )
     _print_help(msg)
 
 
 def _print_xy_help() -> None:
     msg = (
-        "XY plots (diffraction/PDF/XAS)\n\n"
-        "Supported files: .xye .xy .qye .dat .csv .gr .nor .chik .chir .txt (2-col). CIF overlays supported.\n\n"
-        "Axis detection: .qye→Q, .gr→r, .nor→energy, .chik→k, .chir→r, else use --xaxis (Q, 2theta, r, k, energy, rft, time).\n"
-        "If mixing 2θ data in Q, give wavelength per-file (file.xye:1.5406) or global --wl.\n"
+        "XY plots (XRD/PDF/XAS and many more)\n\n"
+        "Supported files: .xye .xy .qye .dat .csv .gr .nor .chik .chir .txt and other user specified formats. CIF overlays supported.\n\n"
+        "Axis detection: .qye→Q, .gr→r, .nor→energy, .chik→k, .chir→r, else use --xaxis (Q, 2theta, r, k, energy, time or user defined).\n"
+        "If mixing 2θ data in Q, give wavelength per-file (file.xye:1.5406) or global flag --wl.\n"
+        "A wavelength can be converted into a different wave length by file.xye:1.54:0.709.\n"
         "For electrochemistry CSV/MPT time-voltage plots, use --xaxis time.\n\n"
         "Examples:\n"
-        "  batplot a.xye:1.5406 b.qye --stack --interactive\n"
-        "  batplot a.dat b.xy --wl 1.54 --out fig.svg\n"
-        "  batplot pattern.qye ticks.cif --interactive\n\n"
-"Plot all files together:\n"
-"  batplot allfiles                       # Plot all XY files on same figure\n"
-"  batplot allfiles /path/to/dir          # Plot all XY files in specified directory\n"
-"  batplot allfiles --stack --interactive # Stack all files with interactive menu\n"
-"  batplot allfiles --xaxis 2theta --xrange 10 80  # All files with custom axis and range\n"
-"  batplot allfiles --wl 1.5406 --delta 0.2        # All files with wavelength and spacing\n"
-"  batplot allxyfiles                     # Only plot .xy files (natural sorting)\n"
-"  batplot \"/path with spaces\" allnorfiles --interactive  # Restrict to .nor files in a folder\n\n"
+        "  batplot a.xye:1.5406 b.qye --stack --i\n"
+        "  batplot a.dat b.xy --wl 1.54 --i\n"
+        "  batplot pattern.qye ticks.cif:1.54 --i\n"
+        "  batplot file1.xy file2.xy --1d --stack --i  # Plot 1st derivatives with interactive menu\n\n"
+        "Plot all files together:\n"
+        "  batplot allfiles                       # Plot all XY files on same figure\n"
+        "  batplot allfiles /path/to/dir          # Plot all XY files in specified directory\n"
+        "  batplot allfiles --stack --interactive # Stack all files with interactive menu\n"
+        "  batplot allfiles --xaxis 2theta --xrange 10 80  # All files with custom axis and range\n"
+        "  batplot allfiles --wl 1.5406 --delta 0.2        # All files with wavelength and spacing\n"
+        "  batplot allxyfiles                     # Only plot .xy files (natural sorting)\n"
+        "  batplot \"/path with spaces\" allnorfiles --interactive  # Restrict to .nor files in a folder\n\n"
         "Batch mode (separate file for each, saved to Figures/ subdirectory):\n"
         "  batplot --all                          # Export all XY files as .svg (default)\n"
         "  batplot --all --format png             # Export all XY files as .png\n"
@@ -230,38 +236,48 @@ def _print_xy_help() -> None:
         "  batplot file1.xy file2.xye ./Style/style.bpsg --xaxis 2theta  # Style+geom from relative path\n\n"
         "Tips and options:\n"
         "[XY plot]\n"
-    "  --interactive / -i        : open interactive menu for styling, ranges, fonts, export, sessions\n"
-    "  --delta/-d <float>        : spacing between curves, e.g. --delta 0.1\n"
-    "  --norm                    : normalize intensity to 0-1 range. Stack mode (--stack) auto-normalizes\n"
-    "  --chik                    : EXAFS χ(k) plot (sets labels to k (Å⁻¹) vs χ(k))\n"
-    "  --kchik                   : multiply y by x for EXAFS kχ(k) plots (sets labels to k (Å⁻¹) vs kχ(k) (Å⁻¹))\n"
-    "  --k2chik                  : multiply y by x² for EXAFS k²χ(k) plots (sets labels to k (Å⁻¹) vs k²χ(k) (Å⁻²))\n"
-    "  --k3chik                  : multiply y by x³ for EXAFS k³χ(k) plots (sets labels to k (Å⁻¹) vs k³χ(k) (Å⁻³))\n"
-    "  --xrange/-r <min> <max>   : set x-axis range, e.g. --xrange 0 10\n"
-    "  --out/-o <filename>       : save figure to file, e.g. --out file.svg\n"
-    "  --xaxis <type>            : set x-axis type (Q, 2theta, r, k, energy, rft, time, or user defined)\n"
-    "                              e.g. --xaxis 2theta, or --xaxis time for electrochemistry CSV/MPT time-voltage plots\n"
-    "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
-    "                              e.g. --xaxis time --ro plots time as y-axis and voltage as x-axis\n"
-    "  --wl <float>              : set wavelength for Q conversion for all files, e.g. --wl 1.5406\n"
-    "  File wavelength syntax   : specify wavelength(s) per file using colon syntax:\n"
-    "                              - file:wl          : single wavelength (for Q conversion or CIF 2theta calculation)\n"
-    "                              - file:wl1:wl2     : dual wavelength (convert 2theta→Q using wl1, then Q→2theta using wl2)\n"
-    "                              - file.cif:wl      : CIF file with wavelength for 2theta tick calculation\n"
-    "                              Examples:\n"
-    "                                batplot data.xye:1.5406 --xaxis 2theta\n"
-    "                                batplot data.xye:0.25:1.54 --xaxis 2theta\n"
-    "                                batplot data.xye pattern.cif:0.25448 --xaxis 2theta\n"
-    "  --readcol <x_col> <y_col> : specify which columns to read as x and y (1-indexed), e.g. --readcol 2 3\n"
-    "  --readcolxy <x> <y>       : read columns for .xy files only\n"
-    "  --readcolxye <x> <y>      : read columns for .xye files only\n"
-    "  --readcolqye <x> <y>      : read columns for .qye files only\n"
-    "  --readcolnor <x> <y>      : read columns for .nor files only\n"
-    "  --readcoldat <x> <y>      : read columns for .dat files only\n"
-    "  --readcolcsv <x> <y>      : read columns for .csv files only\n"
-    "  --readcol<ext> <x> <y>    : read columns for custom extension (e.g., --readcolafes 2 3 for .afes files)\n"
-    "  --fullprof <args>         : FullProf overlay options\n"
-    "  --stack                   : stack curves vertically (auto-enables normalization)\n"
+        "  --interactive / -i        : open interactive menu for styling, ranges, fonts, export, sessions\n"
+        "  --delta/-d <float>        : spacing between curves, e.g. --delta 0.1\n"
+        "  --norm                    : normalize intensity to 0-1 range. Stack mode (--stack) auto-normalizes\n"
+        "  --chik                    : EXAFS χ(k) plot (sets labels to k (Å⁻¹) vs χ(k))\n"
+        "  --kchik                   : multiply y by x for EXAFS kχ(k) plots (sets labels to k (Å⁻¹) vs kχ(k) (Å⁻¹))\n"
+        "  --k2chik                  : multiply y by x² for EXAFS k²χ(k) plots (sets labels to k (Å⁻¹) vs k²χ(k) (Å⁻²))\n"
+        "  --k3chik                  : multiply y by x³ for EXAFS k³χ(k) plots (sets labels to k (Å⁻¹) vs k³χ(k) (Å⁻³))\n"
+        "  --1d                      : plot the first derivative (dy/dx) of the datasets\n"
+        "  --2d                      : plot the first derivative (dy/dx) of the datasets (alias for --1d)\n"
+        "  --xrange/-r <min> <max>   : set x-axis range, e.g. --xrange 0 10\n"
+        "  --out/-o <filename>       : save figure to file, e.g. --out file.svg\n"
+        "  --xaxis <type>            : set x-axis type (Q, 2theta, r, k, energy, rft, time, or user defined)\n"
+        "                              e.g. --xaxis 2theta, or --xaxis time for electrochemistry CSV/MPT time-voltage plots\n"
+        "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
+        "                              e.g. --xaxis time --ro plots time as y-axis and voltage as x-axis\n"
+        "  --wl <float>              : set wavelength for Q conversion for all files, e.g. --wl 1.5406\n"
+        "  --convert/-c <from> <to>  : convert XRD data and export to 'converted' subfolder:\n"
+        "                              - <wl1> <wl2>  : convert 2θ from wavelength1 to wavelength2\n"
+        "                              - <wl> q       : convert 2θ (with wavelength) to Q space\n"
+        "                              - q <wl>      : convert Q space to 2θ (with wavelength)\n"
+        "                              Examples:\n"
+        "                                batplot file.xye --convert 1.54 0.25\n"
+        "                                batplot file.xye --convert 1.54 q\n"
+        "                                batplot file.qye --convert q 1.54\n"
+        "  File wavelength syntax   : specify wavelength(s) per file using colon syntax:\n"
+        "                              - file:wl          : single wavelength (for Q conversion or CIF 2theta calculation)\n"
+        "                              - file:wl1:wl2     : dual wavelength (convert 2theta→Q using wl1, then Q→2theta using wl2)\n"
+        "                              - file.cif:wl      : CIF file with wavelength for 2theta tick calculation\n"
+        "                              Examples:\n"
+        "                                batplot data.xye:1.5406 --xaxis 2theta\n"
+        "                                batplot data.xye:0.25:1.54 --xaxis 2theta\n"
+        "                                batplot data.xye pattern.cif:0.25448 --xaxis 2theta\n"
+        "  --readcol <x_col> <y_col> : specify which columns to read as x and y (1-indexed), e.g. --readcol 2 3\n"
+        "  --readcolxy <x> <y>       : read columns for .xy files only\n"
+        "  --readcolxye <x> <y>      : read columns for .xye files only\n"
+        "  --readcolqye <x> <y>      : read columns for .qye files only\n"
+        "  --readcolnor <x> <y>      : read columns for .nor files only\n"
+        "  --readcoldat <x> <y>      : read columns for .dat files only\n"
+        "  --readcolcsv <x> <y>      : read columns for .csv files only\n"
+        "  --readcol<ext> <x> <y>    : read columns for custom extension (e.g., --readcolafes 2 3 for .afes files)\n"
+        "  --fullprof <args>         : FullProf overlay options\n"
+        "  --stack                   : stack curves vertically (auto-enables normalization)\n"
     )
     _print_help(msg)
 
@@ -328,12 +344,15 @@ def _print_op_help() -> None:
         "Operando contour plots\n\n"
         "Example usage:\n"
         "  batplot --operando --interactive --wl 0.25995  # Interactive mode with Q conversion\n"
-        "  batplot --operando --xaxis 2theta              # Using 2theta axis\n\n"
+        "  batplot --operando --xaxis 2theta              # Using 2theta axis\n"
+        "  batplot --operando --1d --interactive           # Plot derivatives as contour with interactive menu\n"
+        "  batplot --operando --2d --interactive          # Plot derivatives (alias for --1d)\n\n"
         "  • Folder should contain XY files (.xy/.xye/.qye/.dat).\n"
         "  • Intensity scale is auto-adjusted between min/max values.\n"
         "  • If no .qye present, provide --xaxis 2theta or set --wl for Q conversion.\n"
         "  • If a .mpt file is present, an EC side panel is added for dual-panel mode.\n"
-        "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n\n"
+        "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n"
+        "  • --1d / --2d: plot the first derivative (dy/dx) of each scan as a contour plot.\n\n"
         "Interactive (--interactive): resize axes/canvas, change colormap, set intensity range (oz),\n"
         "EC y-axis options (time ↔ ions), geometry tweaks, toggle spines/ticks/labels,\n"
         "print/export/import style, save session.\n"
@@ -393,6 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ====================================================================
     parser.add_argument("--help", "-h", nargs="?", const="", metavar="topic",
                         help=argparse.SUPPRESS)  # SUPPRESS hides from auto-generated help
+    parser.add_argument("--manual", "-m", action="store_true", help=argparse.SUPPRESS)
     
     # ====================================================================
     # POSITIONAL ARGUMENTS (FILE PATHS)
@@ -411,7 +431,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", "-o", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--errors", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--xaxis", type=str, help=argparse.SUPPRESS)
-    parser.add_argument("--convert", "-c", nargs="+", help=argparse.SUPPRESS)
+    parser.add_argument("--convert", "-c", nargs=2, metavar=("FROM", "TO"), 
+                        help="Convert XRD data: wavelength-to-wavelength (e.g., 1.54 0.25), wavelength-to-Q (e.g., 1.54 q), or Q-to-wavelength (e.g., q 1.54). Exports to 'converted' subfolder.")
     parser.add_argument("--wl", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--fullprof", nargs="+", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--norm", action="store_true", help=argparse.SUPPRESS)
@@ -448,6 +469,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help=argparse.SUPPRESS)
     parser.add_argument("--readcolcsv", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
                        help=argparse.SUPPRESS)
+    parser.add_argument("--1d", action="store_true", dest="derivative_1d", help=argparse.SUPPRESS)
+    parser.add_argument("--2d", action="store_true", dest="derivative_2d", help=argparse.SUPPRESS)
     return parser
 
 
@@ -546,6 +569,21 @@ def parse_args(argv=None):
     # This is needed because we might have custom --readcol<ext> flags that
     # weren't in the parser yet when we built it
     ns, _unknown = parser.parse_known_args(argv)
+    if getattr(ns, "manual", False):
+        try:
+            from .manual import show_manual  # Lazy import avoids matplotlib startup unless needed
+            pdf_path = show_manual(open_viewer=True)
+            if _HAS_RICH and _console:
+                _console.print(f"\n[green]Opened manual:[/green] {pdf_path}")
+            else:
+                print(f"\nOpened manual: {pdf_path}")
+        except Exception as exc:  # pragma: no cover - rendering is best effort
+            if _HAS_RICH and _console:
+                _console.print(f"\n[red]Failed to open manual:[/red] {exc}")
+            else:
+                print(f"\nFailed to open manual: {exc}")
+        sys.exit(0)
+    
     topic = getattr(ns, 'help', None)
     
     if topic is not None:

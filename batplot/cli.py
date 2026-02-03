@@ -60,6 +60,20 @@ def main(argv: Optional[list] = None) -> int:
 		0
 	"""
 	# ====================================================================
+	# STEP 0: PYTHON VERSION CHECK
+	# ====================================================================
+	# Check if Python version is 3.13 (required for batplot)
+	# ====================================================================
+	if sys.version_info.major != 3 or sys.version_info.minor != 13:
+		current_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+		print(f"\n⚠️  WARNING: Python version mismatch detected!")
+		print(f"   batplot requires Python 3.13")
+		print(f"   Currently running: Python {current_version}")
+		print(f"\n   This may cause compatibility issues.")
+		print(f"   Please install Python 3.13 and use it to run batplot.")
+		print(f"   Continuing anyway, but expect potential issues...\n")
+	
+	# ====================================================================
 	# STEP 1: VERSION CHECK (NON-BLOCKING)
 	# ====================================================================
 	# Check PyPI for newer versions of batplot.

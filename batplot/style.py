@@ -8,6 +8,8 @@ from __future__ import annotations
 from typing import List, Dict, Any, Callable, Optional
 import json
 import importlib
+import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -25,20 +27,58 @@ from .ui import (
 
 
 def _color_to_hex(value):
+    """
+    Convert any color representation to hexadecimal format (e.g., '#FF0000').
+    
+    HOW IT WORKS:
+    ------------
+    Colors can be represented in many ways:
+    - Named colors: 'red', 'blue', 'green'
+    - Hex codes: '#FF0000', '#00FF00'
+    - RGB tuples: (1.0, 0.0, 0.0) or (255, 0, 0)
+    - RGBA tuples: (1.0, 0.0, 0.0, 1.0)
+    
+    This function normalizes all of these to hex format for consistent storage.
+    
+    WHY HEX FORMAT?
+    --------------
+    Hex format (#RRGGBB) is:
+    - Human-readable (easy to see what color it is)
+    - Standard format (works in CSS, HTML, etc.)
+    - Compact (6 characters for any color)
+    - Easy to store in JSON files
+    
+    Args:
+        value: Color in any format (string, tuple, matplotlib color object, etc.)
+    
+    Returns:
+        Hex color string (e.g., '#FF0000'), or original value if conversion fails
+    """
+    # None values stay None (no conversion needed)
     if value is None:
         return None
+    
+    # Handle special string values that shouldn't be converted
     if isinstance(value, str):
         low = value.lower()
         if low in ('none', 'auto'):
+            # 'none' and 'auto' are special matplotlib values - keep as-is
             return value
+    
+    # Try direct conversion (works for most matplotlib color formats)
     try:
         return mcolors.to_hex(value)
     except Exception:
+        # Direct conversion failed, try alternative methods
         if isinstance(value, str):
+            # Already a string - might be hex or named color, return as-is
             return value
         try:
+            # Try converting to RGBA first, then to hex
+            # This handles RGB tuples like (1.0, 0.0, 0.0)
             return mcolors.to_hex(mcolors.to_rgba(value))
         except Exception:
+            # All conversion methods failed - convert to string as last resort
             return str(value)
 
 
@@ -85,41 +125,99 @@ def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
 
 
 def _resolve_palette_cmap(palette_name: str):
+    """
+    Resolve a palette name to a matplotlib colormap object.
+    
+    HOW IT WORKS:
+    ------------
+    This function tries multiple sources to find a colormap:
+    
+    1. **Matplotlib built-in**: Try plt.get_cmap() first (fastest)
+       - Examples: 'viridis', 'plasma', 'tab10'
+    
+    2. **cmcrameri package**: Try to load from cmcrameri.cm module
+       - cmcrameri is an optional package with scientific colormaps
+       - Examples: 'batlow', 'batlowk', 'batloww'
+       - Only tried if palette name starts with 'batlow'
+    
+    3. **Custom colormaps**: Try to create from _CUSTOM_CMAPS dictionary
+       - Fallback if cmcrameri not installed
+       - Creates colormap from hardcoded color lists
+    
+    REVERSED COLORMAPS:
+    ------------------
+    Colormaps can be reversed by adding '_r' suffix:
+    - 'viridis' → normal (dark to bright)
+    - 'viridis_r' → reversed (bright to dark)
+    
+    The function handles this by:
+    1. Removing '_r' suffix to get base name
+    2. Getting the base colormap
+    3. Calling .reversed() if '_r' was present
+    
+    Args:
+        palette_name: Name of colormap (e.g., 'viridis', 'batlow', 'viridis_r')
+    
+    Returns:
+        Matplotlib colormap object, or None if not found
+    """
+    # Empty name - return None
     if not palette_name:
         return None
+    
+    # METHOD 1: Try matplotlib's built-in colormaps (most common case)
     try:
         return plt.get_cmap(palette_name)
     except ValueError:
+        # Not a built-in colormap, try other sources
         pass
+    
+    # Normalize name to lowercase for case-insensitive matching
     name_lower = palette_name.lower()
+    # Extract base name (remove '_r' suffix if present)
+    # Example: 'viridis_r' → base_name = 'viridis'
     base_name = name_lower[:-2] if name_lower.endswith('_r') else name_lower
+    
+    # METHOD 2: Try cmcrameri package (for 'batlow' variants)
     if name_lower.startswith('batlow'):
         try:
+            # Try to import cmcrameri package (optional dependency)
             cmc = importlib.import_module('cmcrameri.cm')
+            # Check if exact name exists (e.g., 'batlow', 'batlowk')
             if hasattr(cmc, name_lower):
                 cmap = getattr(cmc, name_lower)
+                # Reverse if '_r' suffix was present
                 if name_lower.endswith('_r'):
                     cmap = cmap.reversed()
                 return cmap
+            # Fallback: try generic 'batlow' if specific variant not found
             if hasattr(cmc, 'batlow'):
                 cmap = getattr(cmc, 'batlow')
                 if name_lower.endswith('_r'):
                     cmap = cmap.reversed()
                 return cmap
         except Exception:
+            # cmcrameri not installed or colormap not found, continue to next method
             pass
-        # Fallback: create from _CUSTOM_CMAPS
+        
+        # METHOD 3: Fallback to custom colormaps defined in this package
         try:
             from .color_utils import _CUSTOM_CMAPS
             custom_colors = _CUSTOM_CMAPS.get(base_name)
             if custom_colors:
                 from matplotlib.colors import LinearSegmentedColormap
+                # Create colormap from list of colors
+                # N=256 means create 256 intermediate colors by interpolation
                 cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
+                # Reverse if '_r' suffix was present
                 if name_lower.endswith('_r'):
                     cmap = cmap.reversed()
                 return cmap
         except Exception:
+            # Custom colormap creation failed
             pass
+    
+    # All methods failed - colormap not found
     return None
 
 
@@ -261,6 +359,13 @@ def print_style_info(
     print(f"Font family chain (rcParams['font.sans-serif']): {plt.rcParams.get('font.sans-serif')}")
     print(f"Mathtext fontset: {plt.rcParams.get('mathtext.fontset')}")
 
+    # Report whether data axes were swapped via --ro when this figure was created
+    try:
+        ro_active = bool(getattr(fig, "_ro_active", False))
+    except Exception:
+        ro_active = False
+    print(f"Data axes swapped via --ro: {'YES' if ro_active else 'no'}")
+
     # Rotation angle
     rotation_angle = getattr(ax, '_rotation_angle', 0)
     if rotation_angle != 0:
@@ -347,7 +452,19 @@ def print_style_info(
     except Exception:
         pass
 
-    # Omit CIF/HKL details from compact style print
+    # CIF hkl label visibility
+    if show_cif_hkl is not None:
+        print(f"CIF hkl labels: {'shown' if show_cif_hkl else 'hidden'}")
+    elif cif_tick_series:
+        # Try to read from __main__ module if not provided
+        try:
+            import sys
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                hkl_state = bool(getattr(_bp_module, 'show_cif_hkl', False))
+                print(f"CIF hkl labels: {'shown' if hkl_state else 'hidden'}")
+        except Exception:
+            pass
 
     # Omit non-style global flags (mode/raw/autoscale/delta)
 
@@ -360,11 +477,11 @@ def print_style_info(
             names_visible = True
     print(f"Curve names (h): {'shown' if names_visible else 'hidden'}")
     
-    # Stack label position (only relevant in stack mode)
-    if getattr(args, 'stack', False):
-        stack_label_at_bottom = getattr(fig, '_stack_label_at_bottom', False)
-        label_pos = "bottom-right" if stack_label_at_bottom else "top-right"
-        print(f"Stack label position (h>s): {label_pos}")
+    # Legend/label anchor summary
+    stack_label_at_bottom = getattr(fig, '_stack_label_at_bottom', False)
+    label_anchor_left = getattr(fig, '_label_anchor_left', False)
+    legend_pos = f"{'bottom' if stack_label_at_bottom else 'top'}-{'left' if label_anchor_left else 'right'}"
+    print(f"Curve label anchor: {legend_pos} (stack mode={getattr(args, 'stack', False)})")
 
     # Curves
     print("Lines (style):")
@@ -403,7 +520,9 @@ def export_style_config(
     label_text_objects: Optional[List] = None,
     base_path: Optional[str] = None,
     show_cif_titles: Optional[bool] = None,
-) -> None:
+    overwrite_path: Optional[str] = None,
+    force_kind: Optional[str] = None,
+) -> Optional[str]:
     """Export style configuration after displaying a summary and prompting the user.
     
     This function now matches the EC menu workflow: display summary, then prompt for export.
@@ -487,6 +606,8 @@ def export_style_config(
                 "x_minor_width": axis_tick_width(ax.xaxis, "minor"),
                 "y_major_width": axis_tick_width(ax.yaxis, "major"),
                 "y_minor_width": axis_tick_width(ax.yaxis, "minor"),
+                "lengths": dict(getattr(fig, '_tick_lengths', {})),
+                "direction": getattr(fig, '_tick_direction', 'out'),
             },
             "wasd_state": wasd_state,
             "spines": {
@@ -538,8 +659,18 @@ def export_style_config(
             "has_left_y": bool(ax.yaxis.label.get_visible()),
         }
         cfg["axis_title_texts"] = axis_title_texts
+        cfg["title_offsets"] = {
+            "top_y": float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            "top_x": float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            "bottom_y": float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            "left_x": float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            "right_x": float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            "right_y": float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
         # Save rotation angle
         cfg["rotation_angle"] = getattr(ax, '_rotation_angle', 0)
+        # Track whether data axes were swapped via --ro when this style was saved
+        cfg["ro_active"] = bool(getattr(fig, '_ro_active', False))
         
         # Save curve names visibility
         cfg["curve_names_visible"] = True  # Default to visible
@@ -549,11 +680,20 @@ def export_style_config(
             except Exception:
                 pass
         
-        # Save stack label position preference
+        # Save stack/legend anchor preferences
         cfg["stack_label_at_bottom"] = getattr(fig, '_stack_label_at_bottom', False)
+        cfg["label_anchor_left"] = getattr(fig, '_label_anchor_left', False)
         # Save CIF title visibility
         if show_cif_titles is not None:
             cfg["show_cif_titles"] = bool(show_cif_titles)
+        # Save CIF hkl label visibility (read from __main__ module if available)
+        try:
+            import sys
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                cfg["show_cif_hkl"] = bool(getattr(_bp_module, 'show_cif_hkl', False))
+        except Exception:
+            pass
         if cif_tick_series:
             cfg["cif_ticks"] = [
                 {"index": i, "color": color}
@@ -576,14 +716,45 @@ def export_style_config(
             if serialized_palettes:
                 cfg['curve_palettes'] = serialized_palettes
         
-        # Ask user for style-only or style+geometry
-        print("\nExport options:")
-        print("  ps  = style only (.bps)")
-        print("  psg = style + geometry (.bpsg)")
-        exp_choice = input("Export choice (ps/psg, q=cancel): ").strip().lower()
-        if not exp_choice or exp_choice == 'q':
-            print("Style export canceled.")
-            return
+        # Store smooth settings (metadata only, not full arrays)
+        if hasattr(fig, '_smooth_settings'):
+            cfg['smooth_settings'] = dict(fig._smooth_settings)
+        if hasattr(fig, '_last_smooth_settings'):
+            cfg['last_smooth_settings'] = dict(fig._last_smooth_settings)
+        # Store derivative order (metadata only)
+        if hasattr(fig, '_derivative_order'):
+            cfg['derivative_order'] = int(fig._derivative_order)
+        if hasattr(fig, '_derivative_reversed'):
+            cfg['derivative_reversed'] = bool(fig._derivative_reversed)
+        # Note: We don't store original_x_data_list/original_y_data_list or pre_derivative data in style files
+        # as style files are for styling only, and the data would be specific
+        # to the dataset. Session files (pickle) store this data instead.
+        
+        # If overwrite_path is provided, determine export type from existing file,
+        # unless the caller explicitly forces style-only or style+geometry.
+        if overwrite_path:
+            if force_kind in ('ps', 'psg'):
+                exp_choice = force_kind
+            else:
+                try:
+                    with open(overwrite_path, 'r', encoding='utf-8') as f:
+                        old_cfg = json.load(f)
+                    old_kind = old_cfg.get('kind', '')
+                    if old_kind == 'xy_style_geom':
+                        exp_choice = 'psg'
+                    else:
+                        exp_choice = 'ps'
+                except Exception:
+                    exp_choice = 'ps'  # Default to style-only if can't read
+        else:
+            # Ask user for style-only or style+geometry
+            print("\nExport options:")
+            print("  ps  = style only (.bps)")
+            print("  psg = style + geometry (.bpsg)")
+            exp_choice = input("Export choice (ps/psg, q=cancel): ").strip().lower()
+            if not exp_choice or exp_choice == 'q':
+                print("Style export canceled.")
+                return None
         
         # Determine file extension and add geometry if requested
         if exp_choice == 'ps':
@@ -606,55 +777,78 @@ def export_style_config(
             print(f"Unknown option: {exp_choice}")
             return
         
-        # List existing files for user convenience (from Styles subdirectory)
-        import os
-        from .utils import list_files_in_subdirectory, get_organized_path
-        
-        if base_path:
-            print(f"\nChosen path: {base_path}")
-        file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
-        style_files = [f[0] for f in file_list]
-
-        if style_files:
-            styles_root = base_path if base_path else os.getcwd()
-            styles_dir = os.path.join(styles_root, 'Styles')
-            print(f"\nExisting {default_ext} files in {styles_dir}:")
-            for i, f in enumerate(style_files, 1):
-                print(f"  {i}: {f}")
-
-        choice = input("Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
-        if not choice or choice.lower() == 'q':
-            print("Style export canceled.")
-            return
-
-        # Determine the target path
-        if choice.isdigit() and style_files and 1 <= int(choice) <= len(style_files):
-            target_path = file_list[int(choice) - 1][1]  # Full path from list
+        # If overwrite_path is provided, use it directly
+        if overwrite_path:
+            target_path = overwrite_path
         else:
-            # Add default extension if no extension provided
-            if not any(choice.lower().endswith(ext) for ext in ['.bps', '.bpsg', '.bpcfg']):
-                filename_with_ext = f"{choice}{default_ext}"
-            else:
-                filename_with_ext = choice
+            # List existing files for user convenience (from Styles subdirectory)
+            import os
+            from .utils import list_files_in_subdirectory, get_organized_path
             
-            # Use organized path unless it's an absolute path
-            if os.path.isabs(filename_with_ext):
-                target_path = filename_with_ext
+            if base_path:
+                print(f"\nChosen path: {base_path}")
+            file_list = list_files_in_subdirectory((default_ext, '.bpcfg'), 'style', base_path=base_path)
+            style_files = [f[0] for f in file_list]
+
+            if style_files:
+                styles_root = base_path if base_path else os.getcwd()
+                styles_dir = os.path.join(styles_root, 'Styles')
+                print(f"\nExisting {default_ext} files in {styles_dir}:")
+                for i, f in enumerate(style_files, 1):
+                    print(f"  {i}: {f}")
+
+            last_style_path = getattr(fig, '_last_style_export_path', None)
+            if last_style_path:
+                choice = input("Export to file? Enter filename, number to overwrite, or o to overwrite last (q=cancel): ").strip()
             else:
-                target_path = get_organized_path(filename_with_ext, 'style', base_path=base_path)
-
-        # Only prompt ONCE for overwrite if the file exists
-        if os.path.exists(target_path):
-            yn = input(f"Overwrite '{os.path.basename(target_path)}'? (y/n): ").strip().lower()
-            if yn != 'y':
+                choice = input("Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
+            if not choice or choice.lower() == 'q':
                 print("Style export canceled.")
-                return
+                return None
+            if choice.lower() == 'o':
+                # Overwrite last exported style file - handled by caller
+                if not last_style_path:
+                    print("No previous export found.")
+                    return None
+                if not os.path.exists(last_style_path):
+                    print(f"Previous export file not found: {last_style_path}")
+                    return None
+                target_path = last_style_path
+            else:
+                # Determine the target path
+                if choice.isdigit() and style_files and 1 <= int(choice) <= len(style_files):
+                    target_path = file_list[int(choice) - 1][1]  # Full path from list
+                else:
+                    # Add default extension if no extension provided
+                    if not any(choice.lower().endswith(ext) for ext in ['.bps', '.bpsg', '.bpcfg']):
+                        filename_with_ext = f"{choice}{default_ext}"
+                    else:
+                        filename_with_ext = choice
+                    
+                    # Use organized path unless it's an absolute path
+                    if os.path.isabs(filename_with_ext):
+                        target_path = filename_with_ext
+                    else:
+                        target_path = get_organized_path(filename_with_ext, 'style', base_path=base_path)
 
+                # Only prompt ONCE for overwrite if the file exists
+                if os.path.exists(target_path):
+                    yn = input(f"Overwrite '{os.path.basename(target_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print("Style export canceled.")
+                        return None
+
+        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+        from .utils import ensure_exact_case_filename
+        target_path = ensure_exact_case_filename(target_path)
+        
         with open(target_path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         print(f"Exported style to {target_path}")
+        return target_path
     except Exception as e:
         print(f"Error exporting style: {e}")
+        return None
 
 
 def apply_style_config(
@@ -710,6 +904,45 @@ def apply_style_config(
     except Exception as e:
         print(f"Could not read config: {e}")
         return
+    # Enforce compatibility between style/geometry ro state and current figure ro state.
+    # Styles saved from a plot using --ro (swapped x/y) must not be applied to a non-ro plot, and vice versa.
+    file_ro = bool(cfg.get("ro_active", False))
+    current_ro = bool(getattr(fig, "_ro_active", False))
+    if file_ro != current_ro:
+        if file_ro:
+            print("Warning: Style/geometry file was saved with --ro (swapped x/y axes); current plot is not using --ro.")
+        else:
+            print("Warning: Style/geometry file was saved without --ro; current plot was created with --ro.")
+        print("Not applying style/geometry to avoid corrupting axis orientation.")
+        return
+
+    # --- Style-import check messages (to debug y-axis / curve visibility after import)
+    # Disabled by default; set BATPLOT_STYLE_DEBUG=1 to enable. ---
+    _style_debug = os.environ.get("BATPLOT_STYLE_DEBUG", "0") == "1"
+    if _style_debug:
+        kind = cfg.get("kind", "")
+        has_geom = "geometry" in cfg and isinstance(cfg.get("geometry"), dict)
+        geom_ylim = cfg.get("geometry", {}).get("ylim") if has_geom else None
+        print("[style-import check] BEFORE applying style:")
+        print(f"  kind={kind!r}  has_geometry={has_geom}  geom_ylim={geom_ylim}")
+        try:
+            xlim0, xlim1 = ax.get_xlim()
+            ylim0, ylim1 = ax.get_ylim()
+            print(f"  ax xlim=({xlim0}, {xlim1})  ylim=({ylim0}, {ylim1})")
+        except Exception as e:
+            print(f"  ax get_xlim/get_ylim failed: {e}")
+        nlines = len(ax.lines)
+        print(f"  n_ax.lines={nlines}  n_cfg.lines={len(cfg.get('lines', []))}")
+        if orig_y is not None:
+            print(f"  len(orig_y)={len(orig_y)}  len(offsets_list)={len(offsets_list) if offsets_list else 0}")
+        for i in range(nlines):
+            ln = ax.lines[i]
+            xd, yd = ln.get_data()
+            ymn = float(yd.min()) if yd.size else float("nan")
+            ymx = float(yd.max()) if yd.size else float("nan")
+            print(f"  line[{i}] y_range=({ymn}, {ymx})  n_pts={len(yd)}")
+    # --- end check ---
+
     # Save current labelpad values BEFORE any style changes
     saved_xlabelpad = None
     saved_ylabelpad = None
@@ -735,8 +968,7 @@ def apply_style_config(
                 if not keep_canvas_fixed:
                     # Use forward=False to prevent automatic subplot adjustment that can shift the plot
                     fig.set_size_inches(fw, fh, forward=False)
-                else:
-                    print("(Canvas fixed) Ignoring style figure size request.")
+                # No message needed when canvas is fixed - this is normal behavior
             except Exception as e:
                 print(f"Warning: could not parse figure size: {e}")
         try:
@@ -759,6 +991,12 @@ def apply_style_config(
                 fig.subplots_adjust(left=left, right=left + w_frac, bottom=bottom, top=bottom + h_frac)
         except Exception as e:
             print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
+        if _style_debug:
+            try:
+                ylim0, ylim1 = ax.get_ylim()
+                print(f"[style-import check] AFTER figure size/axes_frac: ax ylim=({ylim0}, {ylim1})")
+            except Exception:
+                pass
         # Don't restore DPI from style - use system default to avoid display-dependent issues
         # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
 
@@ -939,6 +1177,32 @@ def apply_style_config(
                     ax.tick_params(axis="y", which="minor", width=yminr)
             except Exception as e:
                 print(f"[DEBUG] Exception setting tick widths: {e}")
+        # Tick lengths (t submenu)
+        tick_lengths = ticks_cfg.get("lengths") or {}
+        if isinstance(tick_lengths, dict):
+            try:
+                major_len = tick_lengths.get("major")
+                minor_len = tick_lengths.get("minor")
+                if major_len is not None:
+                    ax.tick_params(axis="both", which="major", length=float(major_len))
+                    if not hasattr(fig, '_tick_lengths'):
+                        fig._tick_lengths = {}
+                    fig._tick_lengths['major'] = float(major_len)
+                if minor_len is not None:
+                    ax.tick_params(axis="both", which="minor", length=float(minor_len))
+                    if not hasattr(fig, '_tick_lengths'):
+                        fig._tick_lengths = {}
+                    fig._tick_lengths['minor'] = float(minor_len)
+            except Exception as e:
+                print(f"Warning: Could not restore tick lengths: {e}")
+        # Tick direction (t submenu)
+        tick_direction = ticks_cfg.get("direction")
+        if tick_direction:
+            try:
+                setattr(fig, '_tick_direction', tick_direction)
+                ax.tick_params(axis="both", which="both", direction=tick_direction)
+            except Exception as e:
+                print(f"Warning: Could not restore tick direction: {e}")
 
     # Spines
         for name, sp_dict in cfg.get("spines", {}).items():
@@ -1017,19 +1281,33 @@ def apply_style_config(
                 except Exception:
                     pass
             # Restore offset if available
-            if "offset" in entry and offsets_list is not None and orig_y is not None and x_data_list is not None:
+            # Use current displayed y and current offset to get baseline, then apply file offset.
+            # (orig_y can be wrong in stacked sessions—e.g. already offset—so we derive baseline here.)
+            if "offset" in entry and offsets_list is not None and x_data_list is not None:
                 try:
                     offset_val = float(entry["offset"])
-                    if idx < len(offsets_list):
+                    if idx < len(offsets_list) and idx < len(y_data_list) and idx < len(x_data_list):
+                        current_y = y_data_list[idx]
+                        current_offset = offsets_list[idx]
+                        baseline = current_y - current_offset
+                        y_with_offset = baseline + offset_val
                         offsets_list[idx] = offset_val
-                        # Reapply offset to the curve
-                        if idx < len(orig_y) and idx < len(y_data_list) and idx < len(x_data_list):
-                            y_norm = orig_y[idx]
-                            y_with_offset = y_norm + offset_val
-                            y_data_list[idx] = y_with_offset
-                            ln.set_data(x_data_list[idx], y_with_offset)
+                        y_data_list[idx] = y_with_offset
+                        ln.set_data(x_data_list[idx], y_with_offset)
+                        if orig_y is not None and idx < len(orig_y):
+                            orig_y[idx] = np.asarray(baseline, dtype=float)
+                        if _style_debug:
+                            bmin, bmax = (float(baseline.min()), float(baseline.max())) if getattr(baseline, "size", 0) else (float("nan"), float("nan"))
+                            ymin, ymax = (float(y_with_offset.min()), float(y_with_offset.max())) if getattr(y_with_offset, "size", 0) else (float("nan"), float("nan"))
+                            print(f"[style-import check] line[{idx}] offset_from_file={offset_val} baseline=({bmin}, {bmax}) y_with_offset=({ymin}, {ymax})")
                 except Exception as e:
                     print(f"Warning: Could not restore offset for curve {idx+1}: {e}")
+        if _style_debug:
+            try:
+                ylim0, ylim1 = ax.get_ylim()
+                print(f"[style-import check] AFTER lines/offset restore: ax ylim=({ylim0}, {ylim1})")
+            except Exception as e:
+                print(f"[style-import check] AFTER lines: get_ylim failed: {e}")
         palette_cfg = cfg.get("curve_palettes", [])
         if palette_cfg:
             sanitized_history = []
@@ -1063,14 +1341,66 @@ def apply_style_config(
         # Restore CIF title visibility
         if "show_cif_titles" in cfg:
             try:
-                import sys
                 _bp_module = sys.modules.get('__main__')
                 if _bp_module is not None:
                     setattr(_bp_module, 'show_cif_titles', bool(cfg["show_cif_titles"]))
             except Exception:
                 pass
+        # Restore CIF hkl label visibility
+        if "show_cif_hkl" in cfg:
+            try:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None:
+                    setattr(_bp_module, 'show_cif_hkl', bool(cfg["show_cif_hkl"]))
+                # Also update _bp object if available
+                if cif_tick_series is not None:
+                    # Try to update via interactive menu's _bp object
+                    try:
+                        import sys
+                        _bp_obj = getattr(sys.modules.get('__main__'), '_bp', None)
+                        if _bp_obj is not None:
+                            setattr(_bp_obj, 'show_cif_hkl', bool(cfg["show_cif_hkl"]))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Restore smooth settings (metadata only, not full arrays)
+        if "smooth_settings" in cfg:
+            try:
+                fig._smooth_settings = dict(cfg["smooth_settings"])
+            except Exception:
+                pass
+        elif hasattr(fig, '_smooth_settings'):
+            delattr(fig, '_smooth_settings')
+        if "last_smooth_settings" in cfg:
+            try:
+                fig._last_smooth_settings = dict(cfg["last_smooth_settings"])
+            except Exception:
+                pass
+        elif hasattr(fig, '_last_smooth_settings'):
+            delattr(fig, '_last_smooth_settings')
+        # Restore derivative order (metadata only)
+        if "derivative_order" in cfg:
+            try:
+                order = int(cfg["derivative_order"])
+                fig._derivative_order = order
+                is_reversed = cfg.get("derivative_reversed", False)
+                if "derivative_reversed" in cfg:
+                    fig._derivative_reversed = bool(cfg["derivative_reversed"])
+                # Update y-axis label based on derivative order
+                from .interactive import _update_ylabel_for_derivative
+                current_ylabel = ax.get_ylabel() or ""
+                new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
+                ax.set_ylabel(new_ylabel)
+            except Exception:
+                pass
+        elif hasattr(fig, '_derivative_order'):
+            delattr(fig, '_derivative_order')
+        # Note: We don't restore original_x_data_list/original_y_data_list or pre_derivative data from style files
+        # as style files are for styling only, and the data would be specific
+        # to the dataset. Session files (pickle) store this data instead.
         # Redraw CIF ticks after applying changes
-        if (cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg:
+        if (cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg or "show_cif_hkl" in cfg:
             if hasattr(ax, "_cif_draw_func"):
                 try:
                     ax._cif_draw_func()
@@ -1088,12 +1418,17 @@ def apply_style_config(
             except Exception as e:
                 print(f"Warning: Could not restore curve names visibility: {e}")
 
-        # Restore stack label position preference
+        # Restore stack/legend anchor preferences
         if "stack_label_at_bottom" in cfg:
             try:
                 fig._stack_label_at_bottom = bool(cfg["stack_label_at_bottom"])
             except Exception as e:
                 print(f"Warning: Could not restore stack label position: {e}")
+        if "label_anchor_left" in cfg:
+            try:
+                fig._label_anchor_left = bool(cfg["label_anchor_left"])
+            except Exception as e:
+                print(f"Warning: Could not restore legend horizontal anchor: {e}")
 
         # Restore rotation angle
         if "rotation_angle" in cfg:
@@ -1101,6 +1436,27 @@ def apply_style_config(
                 ax._rotation_angle = int(cfg["rotation_angle"])
             except Exception as e:
                 print(f"Warning: Could not restore rotation angle: {e}")
+
+        # Restore title offsets BEFORE positioning titles
+        title_offsets = cfg.get("title_offsets", {})
+        if title_offsets:
+            try:
+                if 'top_y' in title_offsets:
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'top' for y-offset
+                    ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top', 0.0) or 0.0)
+                ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+                ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+                ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+                if 'right_x' in title_offsets:
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+                else:
+                    # Backward compatibility: old format used 'right' for x-offset
+                    ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right', 0.0) or 0.0)
+                ax._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
+            except Exception as e:
+                print(f"Warning: Could not restore title offsets: {e}")
 
         # Restore grid state
         if "grid" in cfg:
@@ -1151,11 +1507,19 @@ def apply_style_config(
                 if 'xlim' in geom and isinstance(geom['xlim'], list) and len(geom['xlim']) == 2:
                     ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
                 if 'ylim' in geom and isinstance(geom['ylim'], list) and len(geom['ylim']) == 2:
+                    if _style_debug:
+                        print(f"[style-import check] Applying geometry ylim=({geom['ylim'][0]}, {geom['ylim'][1]})")
                     ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
                 print("Applied geometry (labels and limits)")
             except Exception as e:
                 print(f"Warning: Could not apply geometry: {e}")
         
+        if _style_debug:
+            try:
+                ylim0, ylim1 = ax.get_ylim()
+                print(f"[style-import check] FINAL (before draw_idle): ax ylim=({ylim0}, {ylim1})")
+            except Exception as e:
+                print(f"[style-import check] FINAL get_ylim failed: {e}")
         try:
             fig.canvas.draw_idle()
         except Exception as e:

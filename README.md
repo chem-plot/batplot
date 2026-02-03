@@ -29,16 +29,16 @@ pip install batplot
 batplot pattern.xye --xaxis 2theta
 
 # Interactive styling
-batplot pattern.xye --interactive
+batplot pattern.xye --i
 
 # Plot all XY files in directory on same figure
 batplot allfiles
-batplot allfiles --stack --interactive
+batplot allfiles --stack --i
 batplot allfiles --xaxis 2theta --xrange 10 80
 
 # Only plot a specific extension (natural-sorted)
 batplot allxyfiles
-batplot "/path/to/data" allnorfiles --interactive
+batplot "/path/to/data" allnorfiles --i
 
 # Batch mode: export all XY files to SVG
 batplot --all
@@ -57,19 +57,19 @@ batplot --all --wl 1.5406
 
 ```bash
 # Galvanostatic cycling with interactive menu
-batplot battery.csv --gc --interactive
+batplot battery.csv --gc --i
 
 # Cyclic voltammetry
-batplot cyclic.mpt --cv --interactive
+batplot cyclic.mpt --cv --i
 
 # Differential capacity
 batplot battery.csv --dqdv
 
 # Capacity per cycle - single file
-batplot stability.mpt --cpc --mass 5.4 --interactive
+batplot stability.mpt --cpc --mass 5.4 --i
 
 # Capacity per cycle - multiple files with individual color control
-batplot file1.csv file2.csv file3.mpt --cpc --mass 5.4 --interactive
+batplot file1.csv file2.csv file3.mpt --cpc --mass 5.4 --i
 
 # Batch processing: export all EC files to SVG
 batplot --gc --all --mass 7.0       # All .mpt/.csv files (.mpt needs --mass, .csv doesn't)
@@ -89,11 +89,11 @@ batplot --all geom.bpsg --cpc --mass 5.4    # Apply style+geometry to all CPC fi
 ```bash
 # Correlate in-situ XRD with electrochemistry
 # (Place both .xye and .mpt files in same directory)
-batplot --operando --interactive
+batplot --operando --i
 
 # Operando mode without electrochemistry data
 # (Only .xye files, no .mpt file)
-batplot --operando --interactive
+batplot --operando --i
 ```
 
 ## Supported File Formats
@@ -103,11 +103,11 @@ batplot --operando --interactive
 | **Electrochemistry** | `.csv` (Neware raw data; summary format for CPC), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe summary for CPC) |
 | **XRD / PDF** | `.xye`, `.xy`, `.qye`, `.dat` |
 | **XAS** | `.nor`, `.chik`, `.chir` |
-| **Others** | `user defined` (plot first two columns as x and y) |
+| **Others** | `user defined` (skip the header lines and plot first two columns as x and y, alternatively using --readcol flag) |
 
 ## Interactive Features
 
-When launched with `--interactive`:
+When launched with `--interactive/--i`:
 - **Cycle/Scan Control**: Toggle visibility, change colors
 - **Styling**: Line widths, markers, transparency
 - **Axes**: Labels, limits, ticks, spine styles
@@ -116,7 +116,18 @@ When launched with `--interactive`:
 
 ## Documentation
 
-For detailed usage, see [USER_MANUAL.md](USER_MANUAL.md)
+For detailed usage, see [USER_MANUAL.md](USER_MANUAL.md).
+
+After installing from PyPI you can read the packaged manual straight from a
+terminal:
+
+```bash
+# Stream the manual through your $PAGER (defaults to less/more)
+batplot-manual
+
+# Alternative when the console script is unavailable
+python -m batplot.manual
+```
 
 ## Requirements
 
@@ -130,9 +141,9 @@ See [LICENSE](LICENSE)
 
 ## Author & Contact
 
-Tian Dai (tianda@uio.no)  
+Tian Dai
+tianda@uio.no
 University of Oslo
-
-**GitHub**: https://github.com/tiandai-chem/batplot
+https://www.mn.uio.no/kjemi/english/people/aca/tianda/
 
 **Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback. If you are not from UiO, send an email to sympa@kjemi.uio.no with the exact subject line with your name: "subscribe batplot-lab@kjemi.uio.no your-name"

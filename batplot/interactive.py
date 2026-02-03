@@ -25,6 +25,7 @@ from .utils import (
     choose_save_path,
     choose_style_file,
     list_files_in_subdirectory,
+    convert_label_shortcuts,
     get_organized_path,
 )
 import time
@@ -56,6 +57,38 @@ from .color_utils import (
     ensure_colormap,
     _CUSTOM_CMAPS,
 )
+from .config import load_config, save_config
+
+
+class _FilterIMKWarning:
+    """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+    
+    def write(self, message):
+        # Filter out the harmless macOS IMK warning
+        if 'IMKCFRunLoopWakeUpReliable' not in message:
+            self.original_stderr.write(message)
+    
+    def flush(self):
+        self.original_stderr.flush()
+
+
+def _safe_input(prompt: str = "") -> str:
+    """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
+    
+    This is a harmless macOS system message that appears when using input() in terminals.
+    """
+    # Filter stderr to hide macOS IMK warnings while preserving other errors
+    original_stderr = sys.stderr
+    sys.stderr = _FilterIMKWarning(original_stderr)
+    try:
+        result = input(prompt)
+        return result
+    except (KeyboardInterrupt, EOFError):
+        raise
+    finally:
+        sys.stderr = original_stderr
 
 
 def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
@@ -141,6 +174,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # Initialize stack label position state (True = bottom, False = top/max)
     if not hasattr(fig, '_stack_label_at_bottom'):
         fig._stack_label_at_bottom = False
+    # Track horizontal anchor (False=right, True=left)
+    if not hasattr(fig, '_label_anchor_left'):
+        fig._label_anchor_left = False
 
     # ANSI color codes for menu highlighting
     def colorize_menu(text):
@@ -218,16 +254,28 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 has_cif = bool(getattr(_bp, 'cif_tick_series', None))
         except Exception:
             pass
-        col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend"]
+        col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend", "sm: smooth"]
         if has_cif:
             col1.append("z: hkl")
             col1.append("j: CIF titles")
-        col2 = ["a: rearrange", "d: offset", "r: rename", "x: change X", "y: change Y"]
+        col2 = ["a: rearrange", "o: offset", "r: rename", "x: change X", "y: change Y", "d: derivative"]
         col3 = ["v: find peaks", "n: crosshair", "p: print(export) style/geom", "i: import style/geom", "e: export figure", "s: save project", "b: undo", "q: quit"]
+
+        # Conditional overwrite shortcuts under (Options)
+        last_session = getattr(fig, "_last_session_save_path", None)
+        last_style = getattr(fig, "_last_style_export_path", None)
+        last_figure = getattr(fig, "_last_figure_export_path", None)
+        if last_session:
+            col3.append("os: overwrite session")
+        if last_style:
+            col3.append("ops: overwrite style")
+            col3.append("opsg: overwrite style+geom")
+        if last_figure:
+            col3.append("oe: overwrite figure")
         
         # Hide offset/y-range in stack mode
         if args.stack:
-            col2 = [item for item in col2 if not item.startswith("d:") and not item.startswith("y:")]
+            col2 = [item for item in col2 if not item.startswith("o:") and not item.startswith("y:")]
         
         if not is_diffraction:
             col3 = [item for item in col3 if not item.startswith("n:")]
@@ -301,6 +349,20 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     def position_left_ylabel():
         return _ui_position_left_ylabel(ax, fig, tick_state)
     
+    def _current_label_position() -> str:
+        vertical = "bottom" if getattr(fig, '_stack_label_at_bottom', False) else "top"
+        horizontal = "left" if getattr(fig, '_label_anchor_left', False) else "right"
+        return f"{vertical}-{horizontal}"
+    
+    def _apply_legend_position(bottom: bool, left: bool) -> None:
+        fig._stack_label_at_bottom = bottom
+        fig._label_anchor_left = left
+        update_labels(ax, y_data_list, label_text_objects, args.stack, bottom)
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+    
     def _title_offset_menu():
         """Interactive nudging for duplicate top/right titles."""
         def _dpi():
@@ -346,7 +408,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 current_y_px = _px_value('_top_xlabel_manual_offset_y_pts')
                 current_x_px = _px_value('_top_xlabel_manual_offset_x_pts')
                 print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
-                sub = input(colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -384,7 +446,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 current_x_px = _px_value('_right_ylabel_manual_offset_x_pts')
                 current_y_px = _px_value('_right_ylabel_manual_offset_y_pts')
                 print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
-                sub = input(colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -421,7 +483,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             while True:
                 current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts')
                 print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
-                sub = input(colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -451,7 +513,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             while True:
                 current_x_px = _px_value('_left_ylabel_manual_offset_x_pts')
                 print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
-                sub = input(colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                sub = _safe_input(colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -482,7 +544,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             print("  " + colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
             print("  " + colorize_menu('r : reset all offsets'))
             print("  " + colorize_menu('q : back to toggle menu'))
-            choice = input(colorize_prompt("p> ")).strip().lower()
+            choice = _safe_input(colorize_prompt("p> ")).strip().lower()
             if not choice:
                 continue
             if choice == 'q':
@@ -601,7 +663,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
         while True:
             render()
-            cmd = input("> ").strip().lower()
+            cmd = _safe_input("> ").strip().lower()
             if cmd == 'q':
                 print("Exited game. Returning to interactive menu.\n")
                 break
@@ -835,7 +897,17 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # NEW: style / diagnostics printer (clean version)
     def print_style_info():
         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
-        show_hkl = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else None
+        # Read show_cif_hkl from __main__ module (where it's stored when toggled)
+        show_hkl = None
+        try:
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                show_hkl = bool(getattr(_bp_module, 'show_cif_hkl', False))
+        except Exception:
+            pass
+        # Fall back to _bp object if not in __main__
+        if show_hkl is None and _bp is not None:
+            show_hkl = bool(getattr(_bp, 'show_cif_hkl', False)) if hasattr(_bp, 'show_cif_hkl') else None
         return _bp_print_style_info(
             fig, ax,
             y_data_list, labels,
@@ -849,10 +921,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         )
 
     # NEW: export current style to .bpcfg
-    def export_style_config(filename, base_path=None):
+    def export_style_config(filename, base_path=None, overwrite_path=None, force_kind=None):
         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
         show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
-        return _bp_export_style_config(
+        from .style import export_style_config as _export_style_config
+        return _export_style_config(
             filename,
             fig,
             ax,
@@ -866,6 +939,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             label_text_objects,
             base_path,
             show_cif_titles=show_titles,
+            overwrite_path=overwrite_path,
+            force_kind=force_kind,
         )
 
     # NEW: apply imported style config (restricted application)
@@ -928,7 +1003,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             # Only ask for wavelength if it's diffraction data, not using Q, and no file wavelength info
             if is_diffraction and not use_Q and not file_wavelength_info:
                 try:
-                    wl_in = input("Enter wavelength in Å for Q,d display (blank=skip, q=cancel): ").strip()
+                    wl_in = _safe_input("Enter wavelength in Å for Q,d display (blank=skip, q=cancel): ").strip()
                     if wl_in.lower() == 'q':
                         print("Canceled.")
                         return
@@ -944,7 +1019,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             txt = ax.text(1.0, 1.0, "",
                           ha='right', va='bottom',
                           transform=ax.transAxes,
-                          fontsize=max(9, int(0.6 * plt.rcParams.get('font.size', 12))),
+                          fontsize=max(9, int(0.6 * plt.rcParams.get('font.size', 16))),
                           color='0.15',
                           bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
 
@@ -1032,6 +1107,342 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # history management:
     state_history = []
 
+    # ====================================================================
+    # SMOOTHING AND REDUCE ROWS HELPER FUNCTIONS
+    # ====================================================================
+    
+    def _savgol_kernel(window: int, poly: int) -> np.ndarray:
+        """Return Savitzky–Golay smoothing kernel of given window/poly."""
+        half = window // 2
+        x = np.arange(-half, half + 1, dtype=float)
+        A = np.vander(x, poly + 1, increasing=True)
+        ATA = A.T @ A
+        ATA_inv = np.linalg.pinv(ATA)
+        target = np.zeros(poly + 1, dtype=float)
+        target[0] = 1.0  # evaluate polynomial at x=0
+        coeffs = target @ ATA_inv @ A.T
+        return coeffs
+
+    def _savgol_smooth(y: np.ndarray, window: int = 9, poly: int = 3) -> np.ndarray:
+        """Apply Savitzky–Golay smoothing (defaults from DiffCapAnalyzer) to data."""
+        n = y.size
+        if n < 3:
+            return y
+        if window > n:
+            window = n if n % 2 == 1 else n - 1
+        if window < 3:
+            return y
+        if window % 2 == 0:
+            window -= 1
+        if window < 3:
+            return y
+        if poly >= window:
+            poly = window - 1
+        coeffs = _savgol_kernel(window, poly)
+        half = window // 2
+        padded = np.pad(y, (half, half), mode='edge')
+        smoothed = np.convolve(padded, coeffs[::-1], mode='valid')
+        return smoothed
+
+    def _fft_smooth(y: np.ndarray, points: int = 5, cutoff: float = 0.1) -> np.ndarray:
+        """Apply FFT filter smoothing to data."""
+        n = y.size
+        if n < 3:
+            return y
+        # FFT
+        fft_vals = np.fft.rfft(y)
+        freq = np.fft.rfftfreq(n)
+        # Low-pass filter: zero out frequencies above cutoff
+        mask = freq <= cutoff
+        fft_vals[~mask] = 0
+        # Inverse FFT
+        smoothed = np.fft.irfft(fft_vals, n)
+        return smoothed
+
+    def _adjacent_average_smooth(y: np.ndarray, points: int = 5) -> np.ndarray:
+        """Apply Adjacent-Averaging smoothing to data."""
+        n = y.size
+        if n < points:
+            return y
+        if points < 2:
+            return y
+        # Use convolution for moving average
+        kernel = np.ones(points) / points
+        # Pad edges
+        padded = np.pad(y, (points//2, points//2), mode='edge')
+        smoothed = np.convolve(padded, kernel, mode='valid')
+        return smoothed
+
+    def _get_last_reduce_rows_settings(method: str) -> dict:
+        """Get last reduce rows settings from config file.
+        
+        Args:
+            method: Method name ('delete_skip', 'delete_missing', 'merge')
+        
+        Returns:
+            Dictionary with last settings for the method, or empty dict if none
+        """
+        config = load_config()
+        last_settings = config.get('last_reduce_rows_settings', {})
+        return last_settings.get(method, {})
+    
+    def _save_last_reduce_rows_settings(method: str, settings: dict) -> None:
+        """Save last reduce rows settings to config file.
+        
+        Args:
+            method: Method name ('delete_skip', 'delete_missing', 'merge')
+            settings: Dictionary with settings to save
+        """
+        config = load_config()
+        if 'last_reduce_rows_settings' not in config:
+            config['last_reduce_rows_settings'] = {}
+        config['last_reduce_rows_settings'][method] = settings
+        save_config(config)
+    
+    def _get_last_smooth_settings_from_config() -> dict:
+        """Get last smooth settings from config file (persistent across sessions).
+        
+        Returns:
+            Dictionary with last smooth settings, or empty dict if none
+        """
+        config = load_config()
+        return config.get('last_smooth_settings', {})
+    
+    def _save_last_smooth_settings_to_config(settings: dict) -> None:
+        """Save last smooth settings to config file (persistent across sessions).
+        
+        Args:
+            settings: Dictionary with smooth settings to save
+        """
+        config = load_config()
+        config['last_smooth_settings'] = settings
+        save_config(config)
+    
+    def _ensure_original_data():
+        """Ensure original data is stored for all curves."""
+        if not hasattr(fig, '_original_x_data_list'):
+            fig._original_x_data_list = [np.array(a, copy=True) for a in x_data_list]
+            fig._original_y_data_list = [np.array(a, copy=True) for a in y_data_list]
+    
+    def _update_full_processed_data():
+        """Update the full processed data (after all processing steps, before any X-range filtering)."""
+        # This stores the complete processed data (reduce + smooth + derivative) for X-range filtering
+        fig._full_processed_x_data_list = [np.array(a, copy=True) for a in x_data_list]
+        fig._full_processed_y_data_list = [np.array(a, copy=True) for a in y_data_list]
+    
+    def _reset_to_original():
+        """Reset all curves to original data."""
+        if not hasattr(fig, '_original_x_data_list'):
+            return (False, 0, 0)
+        reset_count = 0
+        total_points = 0
+        for i in range(min(len(fig._original_x_data_list), len(ax.lines))):
+            try:
+                orig_x = fig._original_x_data_list[i]
+                orig_y = fig._original_y_data_list[i]
+                # Restore offsets
+                if i < len(offsets_list):
+                    orig_y_with_offset = orig_y + offsets_list[i]
+                else:
+                    orig_y_with_offset = orig_y.copy()
+                ax.lines[i].set_data(orig_x, orig_y_with_offset)
+                x_data_list[i] = orig_x.copy()
+                y_data_list[i] = orig_y_with_offset.copy()
+                reset_count += 1
+                total_points += len(orig_x)
+            except Exception:
+                pass
+        # Clear processing settings
+        if hasattr(fig, '_smooth_settings'):
+            delattr(fig, '_smooth_settings')
+        return (reset_count > 0, reset_count, total_points)
+
+    def _apply_data_changes():
+        """Update plot and data lists after data modification."""
+        for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
+            try:
+                ax.lines[i].set_data(x_data_list[i], y_data_list[i])
+            except Exception:
+                pass
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _calculate_derivative(x: np.ndarray, y: np.ndarray, order: int = 1) -> np.ndarray:
+        """Calculate 1st or 2nd derivative using numpy gradient.
+        
+        Args:
+            x: X values
+            y: Y values
+            order: 1 for first derivative (dy/dx), 2 for second derivative (d²y/dx²)
+        
+        Returns:
+            Derivative array (same length as input)
+        """
+        if len(y) < 2:
+            return y.copy()
+        # Calculate dy/dx
+        dy_dx = np.gradient(y, x)
+        if order == 1:
+            return dy_dx
+        elif order == 2:
+            # Calculate d²y/dx² = d(dy/dx)/dx
+            if len(dy_dx) < 2:
+                return np.zeros_like(y)
+            d2y_dx2 = np.gradient(dy_dx, x)
+            return d2y_dx2
+        else:
+            return y.copy()
+    
+    def _calculate_reversed_derivative(x, y, order):
+        """Calculate reversed 1st or 2nd derivative (dx/dy or d²x/dy²).
+        
+        Args:
+            x: X values
+            y: Y values
+            order: 1 for first reversed derivative (dx/dy), 2 for second reversed derivative (d²x/dy²)
+        
+        Returns:
+            Reversed derivative array (same length as input)
+        """
+        if len(y) < 2:
+            return y.copy()
+        # First calculate dy/dx
+        dy_dx = np.gradient(y, x)
+        # Avoid division by zero - replace zeros with small epsilon
+        epsilon = 1e-10
+        dy_dx_safe = np.where(np.abs(dy_dx) < epsilon, np.sign(dy_dx) * epsilon, dy_dx)
+        # Calculate dx/dy = 1 / (dy/dx)
+        dx_dy = 1.0 / dy_dx_safe
+        if order == 1:
+            return dx_dy
+        elif order == 2:
+            # Calculate d²x/dy² = d(dx/dy)/dy
+            # d(dx/dy)/dy = d(1/(dy/dx))/dy = -1/(dy/dx)² * d²y/dx²
+            if len(dx_dy) < 2:
+                return np.zeros_like(y)
+            # Calculate d²y/dx² first
+            d2y_dx2 = np.gradient(dy_dx, x)
+            # d²x/dy² = -d²y/dx² / (dy/dx)³
+            d2x_dy2 = -d2y_dx2 / (dy_dx_safe ** 3)
+            return d2x_dy2
+        else:
+            return y.copy()
+
+    def _update_ylabel_for_derivative(order: int, current_label: str = None, is_reversed: bool = False) -> str:
+        """Generate appropriate y-axis label for derivative.
+        
+        Args:
+            order: 1 for first derivative, 2 for second derivative
+            current_label: Current y-axis label (optional)
+            is_reversed: True for reversed derivative (dx/dy), False for normal (dy/dx)
+        
+        Returns:
+            New y-axis label string
+        """
+        if current_label is None:
+            current_label = ax.get_ylabel() or "Y"
+        
+        # Try to detect common patterns and update accordingly
+        current_lower = current_label.lower()
+        
+        if is_reversed:
+            # Reversed derivative: dx/dy or d²x/dy²
+            y_label = current_label if current_label and current_label != "Y" else (ax.get_ylabel() or "Y")
+            if order == 1:
+                # First reversed derivative: dx/dy
+                if x_label:
+                    return f"d({x_label})/d({y_label})"
+                else:
+                    return f"dx/d({y_label})"
+            else:  # order == 2
+                # Second reversed derivative: d²x/dy²
+                if x_label:
+                    return f"d²({x_label})/d({y_label})²"
+                else:
+                    return f"d²x/d({y_label})²"
+        
+        # Normal derivative: dy/dx or d²y/dx²
+        if order == 1:
+            # First derivative: dy/dx or dY/dX
+            if "/" in current_label:
+                # If already has derivative notation, try to increment
+                if "d²" in current_label or "d2" in current_lower:
+                    # Change from 2nd to 1st (shouldn't normally happen, but handle it)
+                    new_label = current_label.replace("d²", "d").replace("d2", "d")
+                    return new_label
+                elif "d" in current_label.lower() and "/" in current_label:
+                    # Already has derivative, keep as is but update order if needed
+                    return current_label
+            # Add d/dx prefix or suffix
+            if x_label:
+                if any(op in current_label for op in ["/", "(", "["]):
+                    # Complex label, prepend d/dx
+                    return f"d({current_label})/d({x_label})"
+                else:
+                    # Simple label, use d/dx notation
+                    return f"d({current_label})/d({x_label})"
+            else:
+                return f"d({current_label})/dx"
+        else:  # order == 2
+            # Second derivative: d²y/dx² or d2Y/dX2
+            if "/" in current_label:
+                if "d²" in current_label or "d2" in current_lower:
+                    # Already 2nd derivative, keep as is
+                    return current_label
+                elif "d" in current_label.lower() and "/" in current_label:
+                    # First derivative, convert to second
+                    new_label = current_label.replace("d(", "d²(").replace("d2(", "d²(").replace("d/", "d²/").replace("/d(", "²/d(")
+                    return new_label
+            # Add d²/dx² prefix
+            if x_label:
+                if any(op in current_label for op in ["/", "(", "["]):
+                    return f"d²({current_label})/d({x_label})²"
+                else:
+                    return f"d²({current_label})/d({x_label})²"
+            else:
+                return f"d²({current_label})/dx²"
+        
+        return current_label
+
+    def _ensure_pre_derivative_data():
+        """Ensure pre-derivative data is stored for reset."""
+        if not hasattr(fig, '_pre_derivative_x_data_list'):
+            fig._pre_derivative_x_data_list = [np.array(a, copy=True) for a in x_data_list]
+            fig._pre_derivative_y_data_list = [np.array(a, copy=True) for a in y_data_list]
+            fig._pre_derivative_ylabel = ax.get_ylabel() or ""
+
+    def _reset_from_derivative():
+        """Reset all curves from derivative back to pre-derivative state."""
+        if not hasattr(fig, '_pre_derivative_x_data_list'):
+            return (False, 0, 0)
+        reset_count = 0
+        total_points = 0
+        for i in range(min(len(fig._pre_derivative_x_data_list), len(ax.lines))):
+            try:
+                pre_x = fig._pre_derivative_x_data_list[i]
+                pre_y = fig._pre_derivative_y_data_list[i]
+                # Restore offsets
+                if i < len(offsets_list):
+                    pre_y_with_offset = pre_y + offsets_list[i]
+                else:
+                    pre_y_with_offset = pre_y.copy()
+                ax.lines[i].set_data(pre_x, pre_y_with_offset)
+                x_data_list[i] = pre_x.copy()
+                y_data_list[i] = pre_y_with_offset.copy()
+                reset_count += 1
+                total_points += len(pre_x)
+            except Exception:
+                pass
+        # Restore y-axis label
+        if hasattr(fig, '_pre_derivative_ylabel'):
+            ax.set_ylabel(fig._pre_derivative_ylabel)
+        # Clear derivative settings
+        if hasattr(fig, '_derivative_order'):
+            delattr(fig, '_derivative_order')
+        return (reset_count > 0, reset_count, total_points)
+
     def push_state(note=""):
         """Snapshot current editable state (before a modifying action)."""
         try:
@@ -1087,6 +1498,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 "show_cif_titles": (bool(getattr(_bp, 'show_cif_titles')) if _bp is not None and hasattr(_bp, 'show_cif_titles') else True),
                 "rotation_angle": getattr(ax, '_rotation_angle', 0),
                 "stack_label_at_bottom": getattr(fig, '_stack_label_at_bottom', False),
+                "label_anchor_left": getattr(fig, '_label_anchor_left', False),
                 "grid": ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
             }
             # Line + data arrays
@@ -1109,6 +1521,26 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             snap["y_data_list"] = [np.array(a, copy=True) for a in y_data_list]
             snap["orig_y"]      = [np.array(a, copy=True) for a in orig_y]
             snap["offsets"]     = list(offsets_list)
+            # Processed data (for smooth/reduce operations)
+            if hasattr(fig, '_original_x_data_list'):
+                snap["original_x_data_list"] = [np.array(a, copy=True) for a in fig._original_x_data_list]
+                snap["original_y_data_list"] = [np.array(a, copy=True) for a in fig._original_y_data_list]
+            if hasattr(fig, '_full_processed_x_data_list'):
+                snap["full_processed_x_data_list"] = [np.array(a, copy=True) for a in fig._full_processed_x_data_list]
+                snap["full_processed_y_data_list"] = [np.array(a, copy=True) for a in fig._full_processed_y_data_list]
+            if hasattr(fig, '_smooth_settings'):
+                snap["smooth_settings"] = dict(fig._smooth_settings)
+            if hasattr(fig, '_last_smooth_settings'):
+                snap["last_smooth_settings"] = dict(fig._last_smooth_settings)
+            # Derivative data (for derivative operations)
+            if hasattr(fig, '_pre_derivative_x_data_list'):
+                snap["pre_derivative_x_data_list"] = [np.array(a, copy=True) for a in fig._pre_derivative_x_data_list]
+                snap["pre_derivative_y_data_list"] = [np.array(a, copy=True) for a in fig._pre_derivative_y_data_list]
+                snap["pre_derivative_ylabel"] = str(getattr(fig, '_pre_derivative_ylabel', ''))
+            if hasattr(fig, '_derivative_order'):
+                snap["derivative_order"] = int(fig._derivative_order)
+            if hasattr(fig, '_derivative_reversed'):
+                snap["derivative_reversed"] = bool(fig._derivative_reversed)
             # Label text content
             snap["label_texts"] = [t.get_text() for t in label_text_objects]
             state_history.append(snap)
@@ -1158,6 +1590,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     plt.rcParams['font.size'] = snap["font_size"]
                 except Exception:
                     pass
+            # Apply restored font settings to all existing text objects
+            # This ensures labels, tick labels, etc. update to match restored font size/family
+            try:
+                sync_fonts()
+            except Exception:
+                pass
 
             # Figure size & dpi
             if snap.get("fig_size") and isinstance(snap["fig_size"], (list, tuple)) and len(snap["fig_size"])==2:
@@ -1166,8 +1604,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         fig.set_size_inches(snap["fig_size"][0], snap["fig_size"][1], forward=True)
                     except Exception:
                         pass
-                else:
-                    print("(Canvas fixed) Ignoring undo figure size restore.")
+                # No message needed - canvas size is managed by system
             # Don't restore DPI from undo - use system default to avoid display-dependent issues
             
             # Restore axes (plot frame) via stored bbox if present
@@ -1235,15 +1672,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 position_right_ylabel()
             except Exception:
                 pass
-            # Also reposition bottom/left titles to consume pending pads and match tick label visibility
-            try:
-                position_bottom_xlabel()
-            except Exception:
-                pass
-            try:
-                position_left_ylabel()
-            except Exception:
-                pass
+            # Note: Do NOT call position_bottom_xlabel() / position_left_ylabel() here
+            # as it causes title drift when combined with fig.canvas.draw() below.
+            # Title offsets are already restored from snapshot above.
 
             # Spines (linewidth, color, visibility)
             for name, spec in snap.get("spines", {}).items():
@@ -1336,14 +1767,65 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             offsets_list[:] = list(snap["offsets"]) 
             delta = snap.get("delta", delta)
             
-            # Recalculate y_data_list from orig_y and offsets_list to ensure consistency
-            for i in range(len(orig_y)):
-                if i < len(offsets_list):
-                    y_data_list[i] = orig_y[i] + offsets_list[i]
-                else:
-                    y_data_list[i] = orig_y[i].copy()
+            # Restore processed data (for smooth/reduce operations)
+            if "original_x_data_list" in snap:
+                fig._original_x_data_list = [np.array(a, copy=True) for a in snap["original_x_data_list"]]
+                fig._original_y_data_list = [np.array(a, copy=True) for a in snap["original_y_data_list"]]
+            elif hasattr(fig, '_original_x_data_list'):
+                # Clear if not in snapshot
+                delattr(fig, '_original_x_data_list')
+                delattr(fig, '_original_y_data_list')
+            if "full_processed_x_data_list" in snap:
+                fig._full_processed_x_data_list = [np.array(a, copy=True) for a in snap["full_processed_x_data_list"]]
+                fig._full_processed_y_data_list = [np.array(a, copy=True) for a in snap["full_processed_y_data_list"]]
+            elif hasattr(fig, '_full_processed_x_data_list'):
+                # Clear if not in snapshot
+                delattr(fig, '_full_processed_x_data_list')
+                delattr(fig, '_full_processed_y_data_list')
+            if "smooth_settings" in snap:
+                fig._smooth_settings = dict(snap["smooth_settings"])
+            elif hasattr(fig, '_smooth_settings'):
+                delattr(fig, '_smooth_settings')
+            if "last_smooth_settings" in snap:
+                fig._last_smooth_settings = dict(snap["last_smooth_settings"])
+            elif hasattr(fig, '_last_smooth_settings'):
+                delattr(fig, '_last_smooth_settings')
+            # Restore derivative data (for derivative operations)
+            if "pre_derivative_x_data_list" in snap:
+                fig._pre_derivative_x_data_list = [np.array(a, copy=True) for a in snap["pre_derivative_x_data_list"]]
+                fig._pre_derivative_y_data_list = [np.array(a, copy=True) for a in snap["pre_derivative_y_data_list"]]
+                fig._pre_derivative_ylabel = str(snap.get("pre_derivative_ylabel", ""))
+            elif hasattr(fig, '_pre_derivative_x_data_list'):
+                delattr(fig, '_pre_derivative_x_data_list')
+                delattr(fig, '_pre_derivative_y_data_list')
+                if hasattr(fig, '_pre_derivative_ylabel'):
+                    delattr(fig, '_pre_derivative_ylabel')
+            if "derivative_order" in snap:
+                fig._derivative_order = int(snap["derivative_order"])
+            elif hasattr(fig, '_derivative_order'):
+                delattr(fig, '_derivative_order')
+            if "derivative_reversed" in snap:
+                fig._derivative_reversed = bool(snap["derivative_reversed"])
+            elif hasattr(fig, '_derivative_reversed'):
+                delattr(fig, '_derivative_reversed')
+            # Restore y-axis label if derivative was applied
+            if "derivative_order" in snap:
+                try:
+                    current_ylabel = ax.get_ylabel() or ""
+                    order = int(snap["derivative_order"])
+                    is_reversed = snap.get("derivative_reversed", False)
+                    new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
+                    ax.set_ylabel(new_ylabel)
+                except Exception:
+                    pass
             
-            # Update line data with restored values
+            # DON'T recalculate y_data_list - trust the snapshotted data to avoid offset drift
+            # The snapshot already captured the correct y_data_list with offsets applied.
+            # Recalculating from orig_y + offsets_list can introduce floating-point errors
+            # or inconsistencies if the data underwent transformations (normalize, etc.)
+            
+            # Update line data with restored values from snapshot
+            # This ensures line visual data matches the snapshotted data lists exactly
             for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
                 try:
                     ax.lines[i].set_data(x_data_list[i], y_data_list[i])
@@ -1357,6 +1839,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             # Restore legend position (stack_label_at_bottom)
             if 'stack_label_at_bottom' in snap:
                 fig._stack_label_at_bottom = bool(snap['stack_label_at_bottom'])
+            if 'label_anchor_left' in snap:
+                fig._label_anchor_left = bool(snap['label_anchor_left'])
 
             # Restore grid state
             if 'grid' in snap:
@@ -1376,7 +1860,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     pass
             if _bp is not None and 'show_cif_hkl' in snap:
                 try:
-                    setattr(_bp, 'show_cif_hkl', bool(snap['show_cif_hkl']))
+                    new_state = bool(snap['show_cif_hkl'])
+                    setattr(_bp, 'show_cif_hkl', new_state)
+                    # Also store in __main__ module so draw function can access it
+                    try:
+                        _bp_module = sys.modules.get('__main__')
+                        if _bp_module is not None:
+                            setattr(_bp_module, 'show_cif_hkl', new_state)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             if _bp is not None and 'show_cif_titles' in snap:
@@ -1386,7 +1878,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     # Also update figure attribute and __main__ module
                     fig._bp_show_cif_titles = new_state
                     try:
-                        import sys
                         _bp_module = sys.modules.get('__main__')
                         if _bp_module is not None:
                             setattr(_bp_module, 'show_cif_titles', new_state)
@@ -1424,7 +1915,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     while True:
         try:
             print_main_menu()
-            key = input("Press a key: ").strip().lower()
+            key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1439,7 +1930,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
         if key == 'q':
             try:
-                confirm = input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
+                confirm = _safe_input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting interactive menu...")
                 break
@@ -1448,11 +1939,30 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             else:
                 continue
         elif key == 'z':  # toggle hkl labels on CIF ticks (non-blocking)
+            # Check if CIF files exist before allowing this command
+            has_cif = False
+            try:
+                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                if not has_cif and _bp is not None:
+                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+            except Exception:
+                pass
+            if not has_cif:
+                print("Unknown option.")
+                continue
             try:
                 # Flip visibility flag in batplot module
                 cur = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
+                new_state = not cur
                 if _bp is not None:
-                    setattr(_bp, 'show_cif_hkl', not cur)
+                    setattr(_bp, 'show_cif_hkl', new_state)
+                # Also store in __main__ module so draw function can access it
+                try:
+                    _bp_module = sys.modules.get('__main__')
+                    if _bp_module is not None:
+                        setattr(_bp_module, 'show_cif_hkl', new_state)
+                except Exception:
+                    pass
                 # Avoid re-entrant extension while redrawing
                 prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
                 if _bp is not None:
@@ -1479,15 +1989,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 while True:
                     print("\n\033[1mLegend submenu:\033[0m")
                     print(f"  {colorize_menu('v: show/hide curve names')}")
-                    current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
+                    current_pos = _current_label_position()
                     print(f"  {colorize_menu(f's: legend position (current: {current_pos})')}")
                     print(f"  {colorize_menu('q: back to main menu')}")
-                    sub_key = input("Choose: ").strip().lower()
+                    sub_key = _safe_input("Choose: ").strip().lower()
                     
                     if sub_key == 'q':
                         break
                     elif sub_key == 'v':
                         # Toggle curve name labels visibility
+                        push_state("legend-visibility")
                         first_visible = label_text_objects[0].get_visible() if label_text_objects else True
                         new_state = not first_visible
                         for lbl in label_text_objects:
@@ -1498,19 +2009,45 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         fig.canvas.draw_idle()
                         print(f"Curve name labels {'ON' if new_state else 'OFF'}.")
                     elif sub_key == 's':
-                        # Toggle label position between top-right and bottom-right
-                        current_bottom = getattr(fig, '_stack_label_at_bottom', False)
-                        fig._stack_label_at_bottom = not current_bottom
-                        new_pos = "bottom-right" if fig._stack_label_at_bottom else "top-right"
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, fig._stack_label_at_bottom)
-                        fig.canvas.draw_idle()
-                        print(f"Legend position changed to {new_pos}.")
+                        print("\nChoose legend position:")
+                        print("  1: top-right")
+                        print("  2: top-left")
+                        print("  3: bottom-right")
+                        print("  4: bottom-left")
+                        choice = _safe_input("Position (1-4, q=cancel): ").strip().lower()
+                        options = {
+                            '1': (False, False),
+                            '2': (False, True),
+                            '3': (True, False),
+                            '4': (True, True),
+                        }
+                        if not choice or choice == 'q':
+                            continue
+                        if choice in options:
+                            push_state("legend-position")
+                            bottom, left = options[choice]
+                            _apply_legend_position(bottom, left)
+                            new_pos = f"{'bottom' if bottom else 'top'}-{'left' if left else 'right'}"
+                            print(f"Legend position changed to {new_pos}.")
+                        else:
+                            print("Unknown option.")
                     else:
                         print("Unknown option.")
             except Exception as e:
                 print(f"Error in legend submenu: {e}")
             continue
         elif key == 'j':  # toggle CIF title labels (filename labels)
+            # Check if CIF files exist before allowing this command
+            has_cif = False
+            try:
+                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
+                if not has_cif and _bp is not None:
+                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+            except Exception:
+                pass
+            if not has_cif:
+                print("Unknown option.")
+                continue
             try:
                 # Preserve both x and y-axis limits to prevent movement
                 prev_xlim = ax.get_xlim()
@@ -1524,7 +2061,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 fig._bp_show_cif_titles = new_state
                 # Also update __main__ module for backward compatibility
                 try:
-                    import sys
                     _bp_module = sys.modules.get('__main__')
                     if _bp_module is not None:
                         setattr(_bp_module, 'show_cif_titles', new_state)
@@ -1553,6 +2089,141 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             except Exception as e:
                 print(f"Error toggling crosshair: {e}")
             continue
+        elif key == 'os':
+            # Quick overwrite of last saved session (.pkl)
+            try:
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if not last_session_path:
+                    print("No previous session save found.")
+                    continue
+                if not os.path.exists(last_session_path):
+                    print(f"Previous save file not found: {last_session_path}")
+                    continue
+                yn = _safe_input(f"Overwrite session '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    continue
+                _bp_dump_session(
+                    last_session_path,
+                    fig=fig,
+                    ax=ax,
+                    x_data_list=x_data_list,
+                    y_data_list=y_data_list,
+                    orig_y=orig_y,
+                    offsets_list=offsets_list,
+                    labels=labels,
+                    delta=delta,
+                    args=args,
+                    tick_state=tick_state,
+                    cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                    cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                    cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                    show_cif_hkl=(bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False),
+                    show_cif_titles=(bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True),
+                    skip_confirm=True,
+                )
+                fig._last_session_save_path = last_session_path
+                print(f"Overwritten session to {last_session_path}")
+            except Exception as e:
+                print(f"Error overwriting session: {e}")
+            continue
+        elif key in ('ops', 'opsg'):
+            # Quick overwrite of last exported style file (.bps / .bpsg)
+            try:
+                last_style_path = getattr(fig, '_last_style_export_path', None)
+                if not last_style_path:
+                    print("No previous style export found.")
+                    continue
+                if not os.path.exists(last_style_path):
+                    print(f"Previous style file not found: {last_style_path}")
+                    continue
+                if key == 'ops':
+                    mode = 'ps'
+                    label = "style-only"
+                else:
+                    mode = 'psg'
+                    label = "style+geometry"
+                yn = _safe_input(
+                    f"Overwrite {label} file '{os.path.basename(last_style_path)}'? (y/n): "
+                ).strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    continue
+                exported = export_style_config(
+                    None,
+                    base_path=None,
+                    overwrite_path=last_style_path,
+                    force_kind=mode,
+                )
+                if exported:
+                    fig._last_style_export_path = exported
+                    print(f"Overwritten {label} style to {exported}")
+            except Exception as e:
+                print(f"Error overwriting style: {e}")
+            continue
+        elif key == 'oe':
+            # Quick overwrite of last exported figure
+            try:
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if not last_figure_path:
+                    print("No previous figure export found.")
+                    continue
+                if not os.path.exists(last_figure_path):
+                    print(f"Previous export file not found: {last_figure_path}")
+                    continue
+                yn = _safe_input(
+                    f"Overwrite figure '{os.path.basename(last_figure_path)}'? (y/n): "
+                ).strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    continue
+                export_target = last_figure_path
+                from .utils import ensure_exact_case_filename
+                export_target = ensure_exact_case_filename(export_target)
+                # Temporarily remove numbering for export
+                for i, txt in enumerate(label_text_objects):
+                    txt.set_text(labels[i])
+                _, _ext = os.path.splitext(export_target)
+                if _ext.lower() == '.svg':
+                    try:
+                        _fig_fc = fig.get_facecolor()
+                    except Exception:
+                        _fig_fc = None
+                    try:
+                        _ax_fc = ax.get_facecolor()
+                    except Exception:
+                        _ax_fc = None
+                    try:
+                        if getattr(fig, 'patch', None) is not None:
+                            fig.patch.set_alpha(0.0); fig.patch.set_facecolor('none')
+                        if getattr(ax, 'patch', None) is not None:
+                            ax.patch.set_alpha(0.0); ax.patch.set_facecolor('none')
+                    except Exception:
+                        pass
+                    try:
+                        fig.savefig(export_target, dpi=300, transparent=True, facecolor='none', edgecolor='none')
+                    finally:
+                        try:
+                            if _fig_fc is not None and getattr(fig, 'patch', None) is not None:
+                                fig.patch.set_alpha(1.0); fig.patch.set_facecolor(_fig_fc)
+                        except Exception:
+                            pass
+                        try:
+                            if _ax_fc is not None and getattr(ax, 'patch', None) is not None:
+                                ax.patch.set_alpha(1.0); ax.patch.set_facecolor(_ax_fc)
+                        except Exception:
+                            pass
+                else:
+                    fig.savefig(export_target, dpi=300)
+                print(f"Figure saved to {export_target}")
+                fig._last_figure_export_path = export_target
+                # Restore numbering
+                for i, txt in enumerate(label_text_objects):
+                    txt.set_text(f"{i+1}: {labels[i]}")
+                fig.canvas.draw()
+            except Exception as e:
+                print(f"Error overwriting figure: {e}")
+            continue
         elif key == 's':
             # Save current interactive session with numbered overwrite picker
             try:
@@ -1575,10 +2246,46 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print(f"  {i}: {f}  ({timestamp})")
                         else:
                             print(f"  {i}: {f}")
-                prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
-                choice = input(prompt).strip()
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if last_session_path:
+                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
+                else:
+                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+                choice = _safe_input(prompt).strip()
                 if not choice or choice.lower() == 'q':
                     print("Canceled.")
+                    continue
+                if choice.lower() == 'o':
+                    # Overwrite last saved session
+                    if not last_session_path:
+                        print("No previous save found.")
+                        continue
+                    if not os.path.exists(last_session_path):
+                        print(f"Previous save file not found: {last_session_path}")
+                        continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        continue
+                    _bp_dump_session(
+                        last_session_path,
+                        fig=fig,
+                        ax=ax,
+                        x_data_list=x_data_list,
+                        y_data_list=y_data_list,
+                        orig_y=orig_y,
+                        offsets_list=offsets_list,
+                        labels=labels,
+                        delta=delta,
+                        args=args,
+                        tick_state=tick_state,
+                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                        cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                        show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                        show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                        skip_confirm=True,
+                    )
+                    print(f"Overwritten session to {last_session_path}")
                     continue
                 target_path = None
                 # Overwrite by number
@@ -1586,16 +2293,38 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     idx = int(choice)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             print("Canceled.")
                             continue
                         target_path = os.path.join(folder, name)
                         skip_confirm = True  # Already confirmed above
+                        _bp_dump_session(
+                            target_path,
+                            fig=fig,
+                            ax=ax,
+                            x_data_list=x_data_list,
+                            y_data_list=y_data_list,
+                            orig_y=orig_y,
+                            offsets_list=offsets_list,
+                            labels=labels,
+                            delta=delta,
+                            args=args,
+                            tick_state=tick_state,
+                            cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                            cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                            cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                            show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                            show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                            skip_confirm=skip_confirm,
+                        )
+                        # Message already printed by dump_session
+                        fig._last_session_save_path = target_path
+                        continue
                     else:
                         print("Invalid number.")
                         continue
-                else:
+                if choice.lower() != 'o':
                     # New name, allow relative or absolute
                     name = choice
                     root, ext = os.path.splitext(name)
@@ -1604,32 +2333,33 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     target_path = name if os.path.isabs(name) else os.path.join(folder, name)
                     skip_confirm = False  # Let dump_session ask
                     if os.path.exists(target_path):
-                        yn = input(f"'{os.path.basename(target_path)}' exists. Overwrite? (y/n): ").strip().lower()
+                        yn = _safe_input(f"'{os.path.basename(target_path)}' exists. Overwrite? (y/n): ").strip().lower()
                         if yn != 'y':
                             print("Canceled.")
                             continue
                         skip_confirm = True  # Already confirmed
-                # Delegate to session dumper
-                _bp_dump_session(
-                    target_path,
-                    fig=fig,
-                    ax=ax,
-                    x_data_list=x_data_list,
-                    y_data_list=y_data_list,
-                    orig_y=orig_y,
-                    offsets_list=offsets_list,
-                    labels=labels,
-                    delta=delta,
-                    args=args,
-                    tick_state=tick_state,
-                    cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
-                    cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
-                    cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
-                    show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
-                    show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
-                    skip_confirm=skip_confirm,
-                )
-                print(f"Saved session to {target_path}")
+                    # Delegate to session dumper
+                    _bp_dump_session(
+                        target_path,
+                        fig=fig,
+                        ax=ax,
+                        x_data_list=x_data_list,
+                        y_data_list=y_data_list,
+                        orig_y=orig_y,
+                        offsets_list=offsets_list,
+                        labels=labels,
+                        delta=delta,
+                        args=args,
+                        tick_state=tick_state,
+                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
+                        cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
+                        show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
+                        show_cif_titles=(bool(getattr(_bp,'show_cif_titles', True)) if _bp is not None else True),
+                        skip_confirm=skip_confirm,
+                    )
+                    # Message already printed by dump_session
+                    fig._last_session_save_path = target_path
             except Exception as e:
                 print(f"Error saving session: {e}")
             continue
@@ -1655,7 +2385,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print(f"  {colorize_menu('t : change CIF tick set color (e.g., 1:red 2:#888888)')}")
                     print(f"  {colorize_menu('u : manage saved colors (use in m/p via number or u#)')}")
                     print(f"  {colorize_menu('q : return to main menu')}")
-                    sub = input(colorize_prompt("Choose (m/p/s/t/u/q): ")).strip().lower()
+                    sub = _safe_input(colorize_prompt("Choose (m/p/s/t/u/q): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == '':
@@ -1673,7 +2403,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print("\nSaved colors (refer as number or u#):")
                             for idx, color in enumerate(user_colors, 1):
                                 print(f"  {idx}: {color_block(color)} {color}")
-                        color_input = input("Enter curve+color pairs (e.g., 1 red 2:u3) or q: ").strip()
+                        color_input = _safe_input("Enter curve+color pairs (e.g., 1 red 2:u3) or q: ").strip()
                         if not color_input or color_input.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -1727,7 +2457,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             for idx, color in enumerate(user_colors, 1):
                                 print(f"  {idx}: {color_block(color)} {color}")
                             print("Type 'u' to edit saved colors.")
-                        line = input("Enter mappings (e.g., w red a u3) or q: ").strip()
+                        line = _safe_input("Enter mappings (e.g., w red a u3) or q: ").strip()
                         if line.lower() == 'u':
                             manage_user_colors(fig)
                             continue
@@ -1783,7 +2513,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print("Current CIF tick sets:")
                         for i,(lab, fname, *_rest) in enumerate(cts):
                             print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
-                        line = input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
+                        line = _safe_input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
                         if not line or line.lower()=='q':
                             print("Canceled.")
                         else:
@@ -1807,12 +2537,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 ax._cif_draw_func()
                         fig.canvas.draw()
                     elif sub == 'p':
+                        # Show current palette if one is applied
                         history = getattr(fig, '_curve_palette_history', [])
                         current_palette = history[-1]['palette'] if history else None
                         if current_palette:
                             print(f"Current palette: {current_palette}")
-                        else:
-                            print("Current palette: manual/custom")
                         base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
                         extras = []
                         def _palette_available(name: str) -> bool:
@@ -1849,7 +2578,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             if bar:
                                 print(f"      {bar}")
                         print(colorize_inline_commands("Example: 1-4 viridis   or: all magma_r   or: 1-3,5 plasma, _r for reverse"))
-                        line = input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
+                        line = _safe_input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
                         if not line or line.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -2054,7 +2783,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if has_cif:
                         rename_opts += ", t=cif tick label"
                     rename_opts += ", x=x-axis, y=y-axis, q=return"
-                    mode = input(f"Rename ({rename_opts}): ").strip().lower()
+                    mode = _safe_input(f"Rename ({rename_opts}): ").strip().lower()
                     if mode == 'q':
                         break
                     if mode == '':
@@ -2062,8 +2791,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if mode == 'c':
                         print("Tip: Use LaTeX/mathtext for special characters:")
                         print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                        print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        idx_in = input("Curve number to rename (q=cancel): ").strip()
+                        print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        idx_in = _safe_input("Curve number to rename (q=cancel): ").strip()
                         if not idx_in or idx_in.lower() == 'q':
                             print("Canceled.")
                             continue
@@ -2075,10 +2805,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         if not (0 <= idx < len(labels)):
                             print("Invalid index.")
                             continue
-                        new_label = input("New curve label (q=cancel): ")
+                        new_label = _safe_input("New curve label (q=cancel): ")
                         if not new_label or new_label.lower() == 'q':
                             print("Canceled.")
                             continue
+                        new_label = convert_label_shortcuts(new_label)
                         push_state("rename-curve")
                         labels[idx] = new_label
                         label_text_objects[idx].set_text(f"{idx+1}: {new_label}")
@@ -2090,7 +2821,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         for i,(lab, fname, *_rest) in enumerate(cts):
                             print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
-                        s = input("CIF tick number to rename (q=cancel): ").strip()
+                        s = _safe_input("CIF tick number to rename (q=cancel): ").strip()
                         if not s or s.lower()=='q':
                             print("Canceled."); continue
                         try:
@@ -2102,9 +2833,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print("Tip: Use LaTeX/mathtext for special characters:")
                         print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                         print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        new_name = input("New CIF tick label (q=cancel): ")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        new_name = _safe_input("New CIF tick label (q=cancel): ")
                         if not new_name or new_name.lower()=='q':
                             print("Canceled."); continue
+                        new_name = convert_label_shortcuts(new_name)
                         lab,fname,peaksQ,wl,qmax_sim,color = cts[idx]
                         # Suspend extension while updating label
                         if _bp is not None:
@@ -2130,10 +2863,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print("Tip: Use LaTeX/mathtext for special characters:")
                         print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                         print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        new_axis = input("New axis label: ")
+                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        new_axis = _safe_input("New axis label: ")
                         if not new_axis or new_axis.lower() == 'q':
                             print("Canceled.")
                             continue
+                        new_axis = convert_label_shortcuts(new_axis)
                         new_axis = normalize_label_text(new_axis)
                         push_state("rename-axis")
                         # Freeze layout and preserve current pad via one-shot pending to avoid drift
@@ -2179,7 +2914,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print("Current curve order:")
                 for idx, label in enumerate(labels):
                     print(f"{idx+1}: {label}")
-                new_order_str = input("Enter new order (space-separated indices, q=cancel): ").strip()
+                new_order_str = _safe_input("Enter new order (space-separated indices, q=cancel): ").strip()
                 if not new_order_str or new_order_str.lower() == 'q':
                     print("Canceled.")
                     continue
@@ -2269,7 +3004,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_xlim = ax.get_xlim()
                     print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                    rng = input("Enter new X range (min max), w=upper only, s=lower only, 'full', or 'a'=auto (restore original) (q=back): ").strip()
+                    rng = _safe_input("Enter new X range (min max), w=upper only, s=lower only, 'full', or 'a'=auto (restore original) (q=back): ").strip()
                     if not rng or rng.lower() == 'q':
                         break
                     if rng.lower() == 'w':
@@ -2277,7 +3012,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_xlim = ax.get_xlim()
                             print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                            val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -2286,7 +3021,49 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print("Invalid value, ignored.")
                                 continue
                             push_state("xrange")
-                            ax.set_xlim(current_xlim[0], new_upper)
+                            new_min = current_xlim[0]
+                            new_max = new_upper
+                            ax.set_xlim(new_min, new_max)
+                            # Re-filter data from original processed data if available
+                            data_is_processed = (hasattr(fig, '_original_x_data_list') or 
+                                               hasattr(fig, '_smooth_settings') or 
+                                               hasattr(fig, '_derivative_order') or
+                                               hasattr(fig, '_pre_derivative_x_data_list'))
+                            if data_is_processed and hasattr(fig, '_original_x_data_list'):
+                                for i in range(len(labels)):
+                                    if i < len(fig._original_x_data_list):
+                                        x_current = fig._original_x_data_list[i]
+                                        y_current = fig._original_y_data_list[i]
+                                        if i < len(offsets_list):
+                                            y_current_no_offset = y_current - offsets_list[i]
+                                        else:
+                                            y_current_no_offset = y_current.copy()
+                                        mask = (x_current >= new_min) & (x_current <= new_max)
+                                        x_sub = np.asarray(x_current[mask], dtype=float).flatten()
+                                        y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
+                                        if x_sub.size == 0:
+                                            ax.lines[i].set_data([], [])
+                                            x_data_list[i] = np.array([], dtype=float)
+                                            y_data_list[i] = np.array([], dtype=float)
+                                            if i < len(orig_y):
+                                                orig_y[i] = np.array([], dtype=float)
+                                            continue
+                                        if i < len(offsets_list):
+                                            y_sub = y_sub + offsets_list[i]
+                                        ax.lines[i].set_data(x_sub, y_sub)
+                                        x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
+                                        y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
+                                        # Update orig_y with robust method
+                                        while len(orig_y) <= i:
+                                            orig_y.append(np.array([], dtype=float))
+                                        try:
+                                            y_no_offset = y_sub - offsets_list[i] if i < len(offsets_list) else y_sub
+                                            y_no_offset_1d = np.array(y_no_offset, dtype=float).ravel()
+                                            if i < len(orig_y):
+                                                del orig_y[i]
+                                            orig_y.insert(i, y_no_offset_1d)
+                                        except Exception:
+                                            pass
                             ax.relim()
                             ax.autoscale_view(scalex=False, scaley=True)
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -2302,12 +3079,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 pass
                             fig.canvas.draw()
                             print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        continue
                     if rng.lower() == 's':
                         # Lower only: change lower limit, fix upper - stay in loop
                         while True:
                             current_xlim = ax.get_xlim()
                             print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                            val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -2316,7 +3094,49 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print("Invalid value, ignored.")
                                 continue
                             push_state("xrange")
-                            ax.set_xlim(new_lower, current_xlim[1])
+                            new_min = new_lower
+                            new_max = current_xlim[1]
+                            ax.set_xlim(new_min, new_max)
+                            # Re-filter data from original processed data if available
+                            data_is_processed = (hasattr(fig, '_original_x_data_list') or 
+                                               hasattr(fig, '_smooth_settings') or 
+                                               hasattr(fig, '_derivative_order') or
+                                               hasattr(fig, '_pre_derivative_x_data_list'))
+                            if data_is_processed and hasattr(fig, '_original_x_data_list'):
+                                for i in range(len(labels)):
+                                    if i < len(fig._original_x_data_list):
+                                        x_current = fig._original_x_data_list[i]
+                                        y_current = fig._original_y_data_list[i]
+                                        if i < len(offsets_list):
+                                            y_current_no_offset = y_current - offsets_list[i]
+                                        else:
+                                            y_current_no_offset = y_current.copy()
+                                        mask = (x_current >= new_min) & (x_current <= new_max)
+                                        x_sub = np.asarray(x_current[mask], dtype=float).flatten()
+                                        y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
+                                        if x_sub.size == 0:
+                                            ax.lines[i].set_data([], [])
+                                            x_data_list[i] = np.array([], dtype=float)
+                                            y_data_list[i] = np.array([], dtype=float)
+                                            if i < len(orig_y):
+                                                orig_y[i] = np.array([], dtype=float)
+                                            continue
+                                        if i < len(offsets_list):
+                                            y_sub = y_sub + offsets_list[i]
+                                        ax.lines[i].set_data(x_sub, y_sub)
+                                        x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
+                                        y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
+                                        # Update orig_y with robust method
+                                        while len(orig_y) <= i:
+                                            orig_y.append(np.array([], dtype=float))
+                                        try:
+                                            y_no_offset = y_sub - offsets_list[i] if i < len(offsets_list) else y_sub
+                                            y_no_offset_1d = np.array(y_no_offset, dtype=float).ravel()
+                                            if i < len(orig_y):
+                                                del orig_y[i]
+                                            orig_y.insert(i, y_no_offset_1d)
+                                        except Exception:
+                                            pass
                             ax.relim()
                             ax.autoscale_view(scalex=False, scaley=True)
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -2332,23 +3152,268 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 pass
                             fig.canvas.draw()
                             print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        continue
                     if rng.lower() == 'a':
-                        # Auto: restore original range from x_full_list
+                        # Auto: restore original range from CURRENT PROCESSED data (not original unprocessed)
                         push_state("xrange-auto")
-                        if x_full_list:
+                        try:
+                            # Check if data has been processed
+                            data_is_processed = (hasattr(fig, '_original_x_data_list') or 
+                                               hasattr(fig, '_smooth_settings') or 
+                                               hasattr(fig, '_derivative_order') or
+                                               hasattr(fig, '_pre_derivative_x_data_list'))
+                            if data_is_processed and x_data_list and all(xd.size > 0 for xd in x_data_list):
+                                # Use CURRENT processed data to determine full range (preserves all processing)
+                                print(f"DEBUG: Using current processed data for auto restore (has {len(x_data_list)} curves)")
+                                new_min = min(xd.min() for xd in x_data_list if xd.size)
+                                new_max = max(xd.max() for xd in x_data_list if xd.size)
+                                print(f"DEBUG: Processed data range: {new_min:.6g} to {new_max:.6g}")
+                            elif x_full_list:
+                                print(f"DEBUG: Using original full data (no processing detected)")
+                                new_min = min(xf.min() for xf in x_full_list if xf.size)
+                                new_max = max(xf.max() for xf in x_full_list if xf.size)
+                            else:
+                                print("No original data available.")
+                                continue
+                            # Restore all data - use CURRENT PROCESSED data (preserves all processing steps)
+                            for i in range(len(labels)):
+                                if data_is_processed and hasattr(fig, '_full_processed_x_data_list') and i < len(fig._full_processed_x_data_list):
+                                    # Use FULL processed data (preserves all processing: reduce + smooth + derivative)
+                                    print(f"DEBUG: Auto restore curve {i+1}: Using full processed data ({len(fig._full_processed_x_data_list[i])} points)")
+                                    xf = np.asarray(fig._full_processed_x_data_list[i], dtype=float).flatten()
+                                    yf = np.asarray(fig._full_processed_y_data_list[i], dtype=float).flatten()
+                                    yf_raw = yf - (offsets_list[i] if i < len(offsets_list) else 0.0)
+                                elif data_is_processed and i < len(x_data_list) and x_data_list[i].size > 0:
+                                    # Fallback: use current processed data
+                                    print(f"DEBUG: Auto restore curve {i+1}: Using current processed data ({len(x_data_list[i])} points)")
+                                    xf = np.asarray(x_data_list[i], dtype=float).flatten()
+                                    yf = np.asarray(y_data_list[i], dtype=float).flatten()
+                                    yf_raw = yf - (offsets_list[i] if i < len(offsets_list) else 0.0)
+                                else:
+                                    # Use full original data (no processing)
+                                    print(f"DEBUG: Auto restore curve {i+1}: Using original full data")
+                                    xf = x_full_list[i] if i < len(x_full_list) else x_data_list[i]
+                                    yf_raw = raw_y_full_list[i] if i < len(raw_y_full_list) else (orig_y[i] if i < len(orig_y) else y_data_list[i])
+                                    xf = np.asarray(xf, dtype=float).flatten()
+                                    yf_raw = np.asarray(yf_raw, dtype=float).flatten()
+                                mask = (xf >= new_min) & (xf <= new_max)
+                                x_sub = np.asarray(xf[mask], dtype=float).flatten()
+                                y_sub_raw = np.asarray(yf_raw[mask], dtype=float).flatten()
+                                if x_sub.size == 0:
+                                    ax.lines[i].set_data([], [])
+                                    x_data_list[i] = np.array([], dtype=float)
+                                    y_data_list[i] = np.array([], dtype=float)
+                                    if i < len(orig_y):
+                                        orig_y[i] = np.array([], dtype=float)
+                                    continue
+                                should_normalize = args.stack or getattr(args, 'norm', False)
+                                if should_normalize:
+                                    if y_sub_raw.size:
+                                        y_min = float(y_sub_raw.min())
+                                        y_max = float(y_sub_raw.max())
+                                        span = y_max - y_min
+                                        if span > 0:
+                                            y_sub_norm = (y_sub_raw - y_min) / span
+                                        else:
+                                            y_sub_norm = np.zeros_like(y_sub_raw)
+                                    else:
+                                        y_sub_norm = y_sub_raw
+                                else:
+                                    y_sub_norm = y_sub_raw
+                                offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
+                                y_with_offset = y_sub_norm + offset_val
+                                ax.lines[i].set_data(x_sub, y_with_offset)
+                                x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
+                                y_data_list[i] = np.asarray(y_with_offset, dtype=float).flatten()
+                                # Ensure orig_y list has enough elements
+                                while len(orig_y) <= i:
+                                    orig_y.append(np.array([], dtype=float))
+                                # Create a new 1D array - ensure it's a proper numpy array
+                                # Handle all edge cases: scalar, 0-d array, multi-d array
+                                try:
+                                    if isinstance(y_sub_norm, np.ndarray):
+                                        if y_sub_norm.ndim == 0:
+                                            y_sub_norm_1d = np.array([float(y_sub_norm)], dtype=float)
+                                        else:
+                                            y_sub_norm_1d = np.array(y_sub_norm.flatten(), dtype=float, copy=True)
+                                    else:
+                                        # It's a scalar or list
+                                        y_sub_norm_1d = np.array(y_sub_norm, dtype=float).flatten()
+                                    # Ensure it's 1D
+                                    if y_sub_norm_1d.ndim != 1:
+                                        y_sub_norm_1d = y_sub_norm_1d.reshape(-1)
+                                    # Replace list element - delete old one first if needed
+                                    if i < len(orig_y):
+                                        del orig_y[i]
+                                    orig_y.insert(i, y_sub_norm_1d)
+                                except Exception as e:
+                                    # Fallback: just create a simple array
+                                    try:
+                                        y_sub_norm_1d = np.array(y_sub_norm, dtype=float).ravel()
+                                        if i < len(orig_y):
+                                            orig_y[i] = y_sub_norm_1d
+                                        else:
+                                            orig_y.append(y_sub_norm_1d)
+                                    except Exception:
+                                        # Last resort: skip orig_y update
+                                        pass
+                            ax.set_xlim(new_min, new_max)
+                            ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            try:
+                                if hasattr(ax, '_cif_extend_func'):
+                                    ax._cif_extend_func(ax.get_xlim()[1])
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(ax, '_cif_draw_func'):
+                                    ax._cif_draw_func()
+                            except Exception:
+                                pass
+                            fig.canvas.draw()
+                            print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
+                        except Exception as e:
+                            print(f"Error during auto restore: {e}")
+                            import traceback
+                            traceback.print_exc()
+                        continue
+                    push_state("xrange")
+                    if rng.lower() == 'full':
+                        # Use full data if available, otherwise use current processed data
+                        if x_full_list and all(xf.size > 0 for xf in x_full_list):
                             new_min = min(xf.min() for xf in x_full_list if xf.size)
                             new_max = max(xf.max() for xf in x_full_list if xf.size)
                         else:
-                            print("No original data available.")
-                            continue
-                        # Restore all data
-                        for i in range(len(labels)):
-                            xf = x_full_list[i]; yf_raw = raw_y_full_list[i]
-                            mask = (xf>=new_min) & (xf<=new_max)
-                            x_sub = xf[mask]; y_sub_raw = yf_raw[mask]
+                            new_min = min(xd.min() for xd in x_data_list if xd.size)
+                            new_max = max(xd.max() for xd in x_data_list if xd.size)
+                    else:
+                        new_min, new_max = map(float, rng.split())
+                    ax.set_xlim(new_min, new_max)
+                    # Check if data has been processed (smooth/derivative/reduce)
+                    data_is_processed = (hasattr(fig, '_original_x_data_list') or 
+                                       hasattr(fig, '_smooth_settings') or 
+                                       hasattr(fig, '_derivative_order') or
+                                       hasattr(fig, '_pre_derivative_x_data_list'))
+                    
+                    for i in range(len(labels)):
+                        if data_is_processed and i < len(x_data_list) and x_data_list[i].size > 0:
+                            # Use full processed data if available (allows expansion), otherwise use current filtered data
+                            curr_x = np.asarray(x_data_list[i], dtype=float)
+                            curr_min = curr_x.min() if curr_x.size > 0 else float('inf')
+                            curr_max = curr_x.max() if curr_x.size > 0 else float('-inf')
+                            
+                            # Check if we need full processed data (for expansion beyond current filter)
+                            need_full = (new_min < curr_min or new_max > curr_max)
+                            
+                            if need_full and hasattr(fig, '_full_processed_x_data_list') and i < len(fig._full_processed_x_data_list):
+                                # Use full processed data to allow expansion
+                                full_x = np.asarray(fig._full_processed_x_data_list[i], dtype=float)
+                                if full_x.size > 0:
+                                    full_min = full_x.min()
+                                    full_max = full_x.max()
+                                    print(f"DEBUG: Curve {i+1}: Expanding range ({curr_min:.6g}-{curr_max:.6g} -> {new_min:.6g}-{new_max:.6g}), using full processed data (range {full_min:.6g} to {full_max:.6g})")
+                                    x_current = full_x
+                                    y_current = np.asarray(fig._full_processed_y_data_list[i], dtype=float)
+                                else:
+                                    print(f"DEBUG: Curve {i+1}: Full processed data empty, using current data")
+                                    x_current = curr_x
+                                    y_current = np.asarray(y_data_list[i], dtype=float)
+                            else:
+                                print(f"DEBUG: Curve {i+1}: Using current processed data (range {curr_min:.6g} to {curr_max:.6g}, requested {new_min:.6g} to {new_max:.6g})")
+                                x_current = curr_x
+                                y_current = np.asarray(y_data_list[i], dtype=float)
+                            # Remove offset for filtering
+                            if i < len(offsets_list):
+                                y_current_no_offset = y_current - offsets_list[i]
+                            else:
+                                y_current_no_offset = y_current.copy()
+                            mask = (x_current >= new_min) & (x_current <= new_max)
+                            x_sub = np.asarray(x_current[mask], dtype=float).flatten()
+                            y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
                             if x_sub.size == 0:
                                 ax.lines[i].set_data([], [])
-                                y_data_list[i] = np.array([]); orig_y[i] = np.array([]); continue
+                                x_data_list[i] = np.array([], dtype=float)
+                                y_data_list[i] = np.array([], dtype=float)
+                                if i < len(orig_y):
+                                    orig_y[i] = np.array([], dtype=float)
+                                continue
+                            # Restore offset
+                            if i < len(offsets_list):
+                                y_sub = y_sub + offsets_list[i]
+                            ax.lines[i].set_data(x_sub, y_sub)
+                            x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
+                            y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
+                            # Update orig_y
+                            # Update orig_y with robust method
+                            while len(orig_y) <= i:
+                                orig_y.append(np.array([], dtype=float))
+                            try:
+                                y_no_offset = y_sub - offsets_list[i] if i < len(offsets_list) else y_sub
+                                y_no_offset_1d = np.array(y_no_offset, dtype=float).ravel()
+                                if i < len(orig_y):
+                                    del orig_y[i]
+                                orig_y.insert(i, y_no_offset_1d)
+                            except Exception:
+                                pass
+                        elif data_is_processed and i < len(x_data_list) and x_data_list[i].size > 0:
+                            # Fallback: use current data if _original_x_data_list not available
+                            x_current = np.asarray(x_data_list[i], dtype=float)
+                            y_current = np.asarray(y_data_list[i], dtype=float)
+                            mask = (x_current >= new_min) & (x_current <= new_max)
+                            x_sub = np.asarray(x_current[mask], dtype=float).flatten()
+                            y_sub = np.asarray(y_current[mask], dtype=float).flatten()
+                            if x_sub.size == 0:
+                                ax.lines[i].set_data([], [])
+                                x_data_list[i] = np.array([], dtype=float)
+                                y_data_list[i] = np.array([], dtype=float)
+                                if i < len(orig_y):
+                                    orig_y[i] = np.array([], dtype=float)
+                                continue
+                            ax.lines[i].set_data(x_sub, y_sub)
+                            x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
+                            y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
+                            # Update orig_y - use same robust method as in 'a' branch
+                            while len(orig_y) <= i:
+                                orig_y.append(np.array([], dtype=float))
+                            try:
+                                y_no_offset = y_sub - offsets_list[i] if i < len(offsets_list) else y_sub
+                                if isinstance(y_no_offset, np.ndarray):
+                                    if y_no_offset.ndim == 0:
+                                        y_no_offset_1d = np.array([float(y_no_offset)], dtype=float)
+                                    else:
+                                        y_no_offset_1d = np.array(y_no_offset.flatten(), dtype=float, copy=True)
+                                else:
+                                    y_no_offset_1d = np.array(y_no_offset, dtype=float).flatten()
+                                if y_no_offset_1d.ndim != 1:
+                                    y_no_offset_1d = y_no_offset_1d.reshape(-1)
+                                if i < len(orig_y):
+                                    del orig_y[i]
+                                orig_y.insert(i, y_no_offset_1d)
+                            except Exception:
+                                try:
+                                    y_no_offset = y_sub - offsets_list[i] if i < len(offsets_list) else y_sub
+                                    y_no_offset_1d = np.array(y_no_offset, dtype=float).ravel()
+                                    if i < len(orig_y):
+                                        orig_y[i] = y_no_offset_1d
+                                    else:
+                                        orig_y.append(y_no_offset_1d)
+                                except Exception:
+                                    pass
+                        else:
+                            # Use original full data as source
+                            xf = x_full_list[i] if i < len(x_full_list) else x_data_list[i]
+                            yf_raw = raw_y_full_list[i] if i < len(raw_y_full_list) else (orig_y[i] if i < len(orig_y) else y_data_list[i])
+                            mask = (xf >= new_min) & (xf <= new_max)
+                            x_sub = np.array(xf[mask], copy=True)
+                            y_sub_raw = np.array(yf_raw[mask], copy=True)
+                            if x_sub.size == 0:
+                                ax.lines[i].set_data([], [])
+                                x_data_list[i] = np.array([])
+                                y_data_list[i] = np.array([])
+                                if i < len(orig_y):
+                                    orig_y[i] = np.array([])
+                                continue
+                            # Auto-normalize for --stack mode, or explicit --norm flag
                             should_normalize = args.stack or getattr(args, 'norm', False)
                             if should_normalize:
                                 if y_sub_raw.size:
@@ -2363,63 +3428,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     y_sub_norm = y_sub_raw
                             else:
                                 y_sub_norm = y_sub_raw
-                            offset_val = offsets_list[i]
+                            offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
                             y_with_offset = y_sub_norm + offset_val
                             ax.lines[i].set_data(x_sub, y_with_offset)
                             x_data_list[i] = x_sub
                             y_data_list[i] = y_with_offset
-                            orig_y[i] = y_sub_norm
-                        ax.set_xlim(new_min, new_max)
-                        ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        try:
-                            if hasattr(ax, '_cif_extend_func'):
-                                ax._cif_extend_func(ax.get_xlim()[1])
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ax, '_cif_draw_func'):
-                                ax._cif_draw_func()
-                        except Exception:
-                            pass
-                        fig.canvas.draw()
-                        print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
-                        continue
-                    push_state("xrange")
-                    if rng.lower() == 'full':
-                        new_min = min(xf.min() for xf in x_full_list if xf.size)
-                        new_max = max(xf.max() for xf in x_full_list if xf.size)
-                    else:
-                        new_min, new_max = map(float, rng.split())
-                    ax.set_xlim(new_min, new_max)
-                    for i in range(len(labels)):
-                        xf = x_full_list[i]; yf_raw = raw_y_full_list[i]
-                        mask = (xf>=new_min) & (xf<=new_max)
-                        x_sub = xf[mask]; y_sub_raw = yf_raw[mask]
-                        if x_sub.size == 0:
-                            ax.lines[i].set_data([], [])
-                            y_data_list[i] = np.array([]); orig_y[i] = np.array([]); continue
-                        # Auto-normalize for --stack mode, or explicit --norm flag
-                        should_normalize = args.stack or getattr(args, 'norm', False)
-                        if should_normalize:
-                            if y_sub_raw.size:
-                                y_min = float(y_sub_raw.min())
-                                y_max = float(y_sub_raw.max())
-                                span = y_max - y_min
-                                if span > 0:
-                                    y_sub_norm = (y_sub_raw - y_min) / span
-                                else:
-                                    y_sub_norm = np.zeros_like(y_sub_raw)
-                            else:
-                                y_sub_norm = y_sub_raw
-                        else:
-                            y_sub_norm = y_sub_raw
-                        offset_val = offsets_list[i]
-                        y_with_offset = y_sub_norm + offset_val
-                        ax.lines[i].set_data(x_sub, y_with_offset)
-                        x_data_list[i] = x_sub
-                        y_data_list[i] = y_with_offset
-                        orig_y[i] = y_sub_norm
+                            if i < len(orig_y):
+                                orig_y[i] = y_sub_norm
                     ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
                     update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                     # Extend CIF ticks after x-range change
@@ -2441,7 +3456,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_ylim = ax.get_ylim()
                     print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = input("Enter new Y range (min max), w=upper only, s=lower only, 'auto', 'a'=auto (restore original), or 'full' (q=back): ").strip().lower()
+                    rng = _safe_input("Enter new Y range (min max), w=upper only, s=lower only, 'auto', 'a'=auto (restore original), or 'full' (q=back): ").strip().lower()
                     if not rng or rng == 'q':
                         break
                     if rng == 'w':
@@ -2449,7 +3464,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_ylim = ax.get_ylim()
                             print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                            val = _safe_input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -2464,12 +3479,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                             fig.canvas.draw_idle()
                             print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    if rng == 'w':
+                        continue
                     if rng == 's':
                         # Lower only: change lower limit, fix upper - stay in loop
                         while True:
                             current_ylim = ax.get_ylim()
                             print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                            val = _safe_input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -2484,6 +3501,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                             fig.canvas.draw_idle()
                             print(f"Y range updated: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
+                    if rng == 's':
+                        continue
                     if rng == 'a':
                         # Auto: restore original range from y_data_list
                         push_state("yrange-auto")
@@ -2537,13 +3556,105 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 eps = abs(y_min)*1e-6 if y_min != 0 else 1e-6
                                 y_min -= eps
                                 y_max += eps
-                        ax.set_ylim(y_min, y_max)
+                    ax.set_ylim(y_min, y_max)
                     update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                     fig.canvas.draw_idle()
-                    print(f"Y range set to {ax.get_ylim()}")
+                    ymin, ymax = ax.get_ylim()
+                    print(f"Y range set to ({float(ymin)}, {float(ymax)})")
                 except Exception as e:
                     print(f"Error setting Y-axis range: {e}")
-        elif key == 'd':  # <-- DELTA / OFFSET HANDLER (now only reachable if not args.stack)
+        elif key == 'd':  # <-- DERIVATIVE HANDLER
+            while True:
+                try:
+                    print("\n\033[1mDerivative Menu\033[0m")
+                    print("Commands:")
+                    print("  1: Calculate 1st derivative (dy/dx)")
+                    print("  2: Calculate 2nd derivative (d²y/dx²)")
+                    print("  3: Calculate reversed 1st derivative (dx/dy)")
+                    print("  4: Calculate reversed 2nd derivative (d²x/dy²)")
+                    print("  reset: Reset to data before derivative")
+                    print("  q: back to main menu")
+                    sub = _safe_input(colorize_prompt("d> ")).strip().lower()
+                    if not sub or sub == 'q':
+                        break
+                    if sub == 'reset':
+                        push_state("derivative-reset")
+                        success, reset_count, total_points = _reset_from_derivative()
+                        if success:
+                            print(f"Reset {reset_count} curve(s) from derivative to original data ({total_points} total points restored).")
+                            ax.relim()
+                            ax.autoscale_view(scalex=False, scaley=True)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            _apply_data_changes()
+                        else:
+                            print("No derivative data to reset.")
+                        continue
+                    if sub in ('1', '2', '3', '4'):
+                        try:
+                            option = int(sub)
+                            is_reversed = (option == 3 or option == 4)
+                            order = 1 if option in (1, 3) else 2
+                            push_state(f"derivative-{option}")
+                            _ensure_pre_derivative_data()
+                            processed = 0
+                            total_points = 0
+                            for i in range(len(x_data_list)):
+                                try:
+                                    # Use current data (may already be processed)
+                                    current_x = x_data_list[i].copy()
+                                    current_y = y_data_list[i].copy()
+                                    # Remove offset for processing
+                                    if i < len(offsets_list):
+                                        current_y_no_offset = current_y - offsets_list[i]
+                                    else:
+                                        current_y_no_offset = current_y.copy()
+                                    n_points = len(current_y_no_offset)
+                                    if n_points < 2:
+                                        print(f"Curve {i+1} has too few points (<2) for derivative calculation.")
+                                        continue
+                                    # Calculate derivative
+                                    if is_reversed:
+                                        derivative_y = _calculate_reversed_derivative(current_x, current_y_no_offset, order)
+                                    else:
+                                        derivative_y = _calculate_derivative(current_x, current_y_no_offset, order)
+                                    if len(derivative_y) > 0:
+                                        # Restore offset
+                                        if i < len(offsets_list):
+                                            derivative_y = derivative_y + offsets_list[i]
+                                        # Update data (keep same x, replace y with derivative)
+                                        x_data_list[i] = current_x.copy()
+                                        y_data_list[i] = derivative_y
+                                        processed += 1
+                                        total_points += n_points
+                                except Exception as e:
+                                    print(f"Error processing curve {i+1}: {e}")
+                            if processed > 0:
+                                # Update y-axis label
+                                current_ylabel = ax.get_ylabel() or ""
+                                new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
+                                ax.set_ylabel(new_ylabel)
+                                # Store derivative order and reversed flag
+                                fig._derivative_order = order
+                                fig._derivative_reversed = is_reversed
+                                # Update plot
+                                _apply_data_changes()
+                                ax.relim()
+                                ax.autoscale_view(scalex=False, scaley=True)
+                                update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                                fig.canvas.draw_idle()
+                                order_name = "1st" if order == 1 else "2nd"
+                                direction = "reversed " if is_reversed else ""
+                                print(f"Applied {direction}{order_name} derivative to {processed} curve(s) with {total_points} total points.")
+                                print(f"Y-axis label updated to: {new_ylabel}")
+                                _update_full_processed_data()  # Store full processed data for X-range filtering
+                            else:
+                                print("No curves were processed.")
+                        except ValueError:
+                            print("Invalid input.")
+                        continue
+                except Exception as e:
+                    print(f"Error in derivative menu: {e}")
+        elif key == 'o':  # <-- OFFSET HANDLER (now only reachable if not args.stack)
             print("\n\033[1mOffset adjustment menu:\033[0m")
             print(f"  {colorize_menu('1-{}: adjust individual curve offset'.format(len(labels)))}")
             print(f"  {colorize_menu('a: set spacing between curves')}")
@@ -2552,7 +3663,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             print(f"  {colorize_menu('q: back to main menu')}")
             
             while True:
-                offset_cmd = input("Offset> ").strip().lower()
+                offset_cmd = _safe_input("Offset> ").strip().lower()
                 
                 if offset_cmd == 'q' or offset_cmd == '':
                     break
@@ -2602,7 +3713,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             if spacing_diffs:
                                 current_spacing = sum(spacing_diffs) / len(spacing_diffs)
                         
-                        spacing_input = input("Enter spacing value between curves (current avg: {:.4g}): ".format(current_spacing)).strip()
+                        spacing_input = _safe_input("Enter spacing value between curves (current avg: {:.4g}): ".format(current_spacing)).strip()
                         if not spacing_input:
                             print("Canceled.")
                             continue
@@ -2661,7 +3772,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if len(labels) <= 1:
                         print("Warning: Only one curve loaded; applying an offset is not recommended.")
                     try:
-                        new_delta_str = input(f"Enter new offset spacing (current={delta}): ").strip()
+                        new_delta_str = _safe_input(f"Enter new offset spacing (current={delta}): ").strip()
                         if not new_delta_str:
                             print("Canceled.")
                             continue
@@ -2724,7 +3835,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         
                         current_offset = offsets_list[idx] if idx < len(offsets_list) else 0.0
                         
-                        individual_offset_input = input("Enter offset for curve {} (current: {:.4g}): ".format(
+                        individual_offset_input = _safe_input("Enter offset for curve {} (current: {:.4g}): ".format(
                             curve_num, current_offset)).strip()
                         if not individual_offset_input:
                             print("Canceled.")
@@ -2764,7 +3875,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print("No curves to modify.")
                         return []
                     print(f"Total curves available: {total}")
-                    raw = input(prompt_text + " ").strip().lower()
+                    raw = _safe_input(prompt_text + " ").strip().lower()
                     if not raw or raw in ('all', '*'):
                         return list(range(total))
                     import re as _re
@@ -2783,7 +3894,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     return selected
 
                 def _prompt_float(prompt_text):
-                    raw = input(prompt_text).strip()
+                    raw = _safe_input(prompt_text).strip()
                     if not raw:
                         return None
                     if raw.lower() == 'q':
@@ -2796,10 +3907,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
                 def _prompt_dash_pattern(kind='dash'):
                     if kind == 'dashdot':
-                        raw = input("Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=cancel): ").strip().lower()
+                        raw = _safe_input("Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=cancel): ").strip().lower()
                         default = (6.0, 3.0, 1.0, 3.0)
                     else:
-                        raw = input("Dash pattern 'length gap' (blank=6 3, q=cancel): ").strip().lower()
+                        raw = _safe_input("Dash pattern 'length gap' (blank=6 3, q=cancel): ").strip().lower()
                         default = (6.0, 3.0)
                     if not raw:
                         return default
@@ -2839,13 +3950,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print(f"  {colorize_menu('da : dashed line for selected curves')}")
                     print(f"  {colorize_menu('dd : dashed line + dots for selected curves')}")
                     print(f"  {colorize_menu('q  : return')}")
-                    sub = input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
+                    sub = _safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == '':
                         continue
                     if sub == 'c':
-                        spec = input("Curve widths (single value OR mappings like '1:1.2 3:2', q=cancel): ").strip()
+                        spec = _safe_input("Curve widths (single value OR mappings like '1:1.2 3:2', q=cancel): ").strip()
                         if not spec or spec.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -2875,7 +3986,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     print("Invalid width value.")
                             fig.canvas.draw()
                     elif sub == 'f':
-                        fw_in = input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
+                        fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
                         if not fw_in or fw_in.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -3007,15 +4118,18 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             except Exception as e:
                 print(f"Error setting widths: {e}")
         elif key == 'f':
+            cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
+            cur_size = plt.rcParams.get('font.size', None)
             while True:
-                subkey = input(colorize_prompt("Font submenu (s=size, f=family, q=return): ")).strip().lower()
+                subkey = _safe_input(colorize_prompt(f"Font submenu (current: family='{cur_family}', size={cur_size}) - s=size, f=family, q=return: ")).strip().lower()
                 if subkey == 'q':
                     break
                 if subkey == '':
                     continue
                 if subkey == 's':
                     try:
-                        fs = input("Enter new font size (q=cancel): ").strip()
+                        cur_size = plt.rcParams.get('font.size', None)
+                        fs = _safe_input(f"Enter new font size (current: {cur_size}, q=cancel): ").strip()
                         if not fs or fs.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -3030,13 +4144,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print(f"Error changing font size: {e}")
                 elif subkey == 'f':
                     try:
+                        cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
                         print("Common publication fonts:")
                         print("  1) Arial")
                         print("  2) Helvetica")
                         print("  3) Times New Roman")
                         print("  4) STIXGeneral")
                         print("  5) DejaVu Sans")
-                        ft_raw = input("Enter font number or family name (q=cancel): ").strip()
+                        ft_raw = _safe_input(f"Enter font number or family name (current: '{cur_family}', q=cancel): ").strip()
                         if not ft_raw or ft_raw.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -3062,7 +4177,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 'g':
             try:
                 while True:
-                    choice = input(colorize_prompt("Resize submenu: (p=plot frame, c=canvas, q=cancel): ")).strip().lower()
+                    choice = _safe_input(colorize_prompt("Resize submenu: (p=plot frame, c=canvas, q=cancel): ")).strip().lower()
                     if not choice:
                         continue
                     if choice == 'q':
@@ -3087,7 +4202,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
                     print(f"  s: legend position (current: {current_pos})")
                     print("  q: back to main menu")
-                    sub_key = input("Choose: ").strip().lower()
+                    sub_key = _safe_input("Choose: ").strip().lower()
                     
                     if sub_key == 'q':
                         break
@@ -3145,10 +4260,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print(colorize_inline_commands("  Combine letter+number to toggle, e.g. 's2 w5 a4' (case-insensitive)"))
                     print(colorize_inline_commands("  i = invert tick direction, l = change tick length, list = show state, q = return"))
                     print(colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
-                    cmd = input(colorize_prompt("Enter code(s): ")).strip().lower()
+                    cmd = _safe_input(colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
+                        # Update ax._saved_tick_state before exiting so changes are persisted
+                        try:
+                            ax._saved_tick_state = dict(tick_state)
+                        except Exception:
+                            pass
                         break
                     if cmd == 'i':
                         # Invert tick direction (toggle between 'out' and 'in')
@@ -3172,7 +4292,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             # Get current major tick length from axes
                             current_major = ax.xaxis.get_major_ticks()[0].tick1line.get_markersize() if ax.xaxis.get_major_ticks() else 4.0
                             print(f"Current major tick length: {current_major}")
-                            new_length_str = input("Enter new major tick length (e.g., 6.0): ").strip()
+                            new_length_str = _safe_input("Enter new major tick length (e.g., 6.0): ").strip()
                             if not new_length_str:
                                 continue
                             new_major = float(new_length_str)
@@ -3420,6 +4540,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         # Unknown code
                         print(f"Unknown code: {p}")
+                    # After tick toggles, update ax._saved_tick_state so dump_session can read it
+                    try:
+                        ax._saved_tick_state = dict(tick_state)
+                    except Exception:
+                        pass
                     # After tick toggles, update visibility and reposition ALL axis labels for independence
                     update_tick_visibility()
                     update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -3453,11 +4578,50 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print(f"  {_i}: {fname}  ({timestamp})")
                             else:
                                 print(f"  {_i}: {fname}")
-                    sub = input(colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
+                    last_style_path = getattr(fig, '_last_style_export_path', None)
+                    n_style = len(style_file_list) if style_file_list else 0
+                    if last_style_path and n_style:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, o=overwrite last, q=return, r=refresh). Press number to overwrite: ")).strip().lower()
+                    elif last_style_path:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ")).strip().lower()
+                    elif n_style:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, q=return, r=refresh). Press number to overwrite: ")).strip().lower()
+                    else:
+                        sub = _safe_input(colorize_prompt("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                     if sub == 'q':
                         break
                     if sub == 'r' or sub == '':
                         continue
+                    if sub == 'o':
+                        # Overwrite last exported style file
+                        if not last_style_path:
+                            print("No previous export found.")
+                            continue
+                        if not os.path.exists(last_style_path):
+                            print(f"Previous export file not found: {last_style_path}")
+                            continue
+                        yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            continue
+                        # Call export_style_config with overwrite_path to skip dialog
+                        exported_path = export_style_config(None, base_path=None, overwrite_path=last_style_path)
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
+                        style_menu_active = False
+                        break
+                    if sub.isdigit() and n_style and 1 <= int(sub) <= n_style:
+                        # Overwrite listed style file by number (same as e → export → number)
+                        idx = int(sub) - 1
+                        target_path = style_file_list[idx][1]
+                        fname = style_file_list[idx][0]
+                        yn = _safe_input(f"Overwrite '{fname}'? (y/n): ").strip().lower()
+                        if yn != 'y':
+                            continue
+                        exported_path = export_style_config(None, base_path=None, overwrite_path=target_path)
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
+                        style_menu_active = False
+                        break
                     if sub == 'e':
                         save_base = choose_save_path(source_file_paths, purpose="style export")
                         if not save_base:
@@ -3465,7 +4629,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         print(f"\nChosen path: {save_base}")
                         # Call export_style_config which handles the entire export dialog
-                        export_style_config(None, base_path=save_base)  # filename parameter ignored
+                        exported_path = export_style_config(None, base_path=save_base)  # filename parameter ignored
+                        if exported_path:
+                            fig._last_style_export_path = exported_path
                         style_menu_active = False  # Exit style submenu and return to main menu
                         break
                     else:
@@ -3476,6 +4642,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 fname = choose_style_file(source_file_paths, purpose="style import")
                 if not fname:
+                    print("Style import canceled.")
+                    continue
+                import os
+                bname = os.path.basename(fname)
+                yn = _safe_input(colorize_prompt(f"Apply style '{bname}'? (y/n): ")).strip().lower()
+                if yn != 'y':
                     print("Style import canceled.")
                     continue
                 push_state("style-import")
@@ -3503,18 +4675,37 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         else:
                             print(f"  {i}: {fname}")
                 
-                filename = input("Enter filename (default SVG if no extension) or number to overwrite (q=cancel): ").strip()
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if last_figure_path:
+                    filename = _safe_input("Enter filename (default SVG if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                else:
+                    filename = _safe_input("Enter filename (default SVG if no extension) or number to overwrite (q=cancel): ").strip()
                 if not filename or filename.lower() == 'q':
                     print("Canceled.")
                     continue
                 
+                already_confirmed = False  # Initialize for new filename case
+                # Check for 'o' option
+                if filename.lower() == 'o':
+                    if not last_figure_path:
+                        print("No previous export found.")
+                        continue
+                    if not os.path.exists(last_figure_path):
+                        print(f"Previous export file not found: {last_figure_path}")
+                        continue
+                    yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                    if yn != 'y':
+                        print("Canceled.")
+                        continue
+                    export_target = last_figure_path
+                    already_confirmed = True
                 # Check if user selected a number
-                already_confirmed = False
-                if filename.isdigit() and files:
+                elif filename.isdigit() and files:
+                    already_confirmed = False
                     idx = int(filename)
                     if 1 <= idx <= len(files):
                         name = files[idx-1]
-                        yn = input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                         if yn != 'y':
                             print("Canceled.")
                             continue
@@ -3540,6 +4731,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if not export_target:
                     print("Export canceled.")
                 else:
+                        # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
+                        from .utils import ensure_exact_case_filename
+                        export_target = ensure_exact_case_filename(export_target)
+                        
                         # Temporarily remove numbering for export
                         for i, txt in enumerate(label_text_objects):
                             txt.set_text(labels[i])
@@ -3577,15 +4772,678 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         else:
                             fig.savefig(export_target, dpi=300)
                         print(f"Figure saved to {export_target}")
+                        fig._last_figure_export_path = export_target
                         for i, txt in enumerate(label_text_objects):
                             txt.set_text(f"{i+1}: {labels[i]}")
                         fig.canvas.draw()
             except Exception as e:
                 print(f"Error saving figure: {e}")
+        elif key == 'sm':
+            # Smoothing and data reduction menu
+            _ensure_original_data()
+            while True:
+                print("\n\033[1mSmoothing and Data Reduction\033[0m")
+                print("Commands:")
+                print("  r: reduce rows (delete/merge rows based on pattern)")
+                print("  s: smooth data (various smoothing methods)")
+                print("  reset: reset all curves to original data")
+                print("  q: back to main menu")
+                sub = _safe_input(colorize_prompt("sm> ")).strip().lower()
+                if not sub:
+                    continue
+                if sub == 'q':
+                    break
+                if sub == 'reset':
+                    push_state("smooth-reset")
+                    success, reset_count, total_points = _reset_to_original()
+                    if success:
+                        print(f"Reset {reset_count} curve(s) to original data ({total_points} total points restored).")
+                        _apply_data_changes()
+                    else:
+                        print("No processed data to reset.")
+                    continue
+                if sub == 'r':
+                    # Reduce rows submenu
+                    while True:
+                        print("\n\033[1mReduce Rows\033[0m")
+                        print("Methods:")
+                        print("  1: Delete N rows, then skip M rows")
+                        print("  2: Delete rows with missing values")
+                        print("  3: Reduce N rows with merged values (average/sum/min/max)")
+                        print("  q: back to smooth menu")
+                        method = _safe_input(colorize_prompt("sm>r> ")).strip().lower()
+                        if not method or method == 'q':
+                            break
+                        if method == '1':
+                            # Delete N rows, then skip M rows
+                            try:
+                                # Check for last settings
+                                last_settings = _get_last_reduce_rows_settings('delete_skip')
+                                last_n = last_settings.get('n')
+                                last_m = last_settings.get('m')
+                                last_start_row = last_settings.get('start_row')
+                                
+                                if last_n is not None and last_m is not None and last_start_row is not None:
+                                    use_last = _safe_input(f"Use last settings? (N={last_n}, M={last_m}, start_row={last_start_row+1}, y/n or enter N): ").strip().lower()
+                                    # Check if user entered a number directly (skip "use last settings")
+                                    if use_last and use_last.replace('-', '').replace('.', '').isdigit():
+                                        n = int(float(use_last))
+                                        if n < 1:
+                                            print("N must be >= 1.")
+                                            continue
+                                        m_in = _safe_input(f"Enter M (rows to skip, default {last_m}): ").strip()
+                                        m = int(m_in) if m_in else last_m
+                                        if m < 0:
+                                            print("M must be >= 0.")
+                                            continue
+                                        start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
+                                        start_row = int(start_in) - 1 if start_in else last_start_row
+                                    elif use_last != 'n':
+                                        n = last_n
+                                        m = last_m
+                                        start_row = last_start_row  # Already 0-based in config
+                                    else:
+                                        n_in = _safe_input(f"Enter N (rows to delete, default {last_n}): ").strip()
+                                        n = int(n_in) if n_in else last_n
+                                        if n < 1:
+                                            print("N must be >= 1.")
+                                            continue
+                                        m_in = _safe_input(f"Enter M (rows to skip, default {last_m}): ").strip()
+                                        m = int(m_in) if m_in else last_m
+                                        if m < 0:
+                                            print("M must be >= 0.")
+                                            continue
+                                        start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
+                                        start_row = int(start_in) - 1 if start_in else last_start_row
+                                else:
+                                    n_in = _safe_input("Enter N (rows to delete, default 1): ").strip()
+                                    n = int(n_in) if n_in else 1
+                                    if n < 1:
+                                        print("N must be >= 1.")
+                                        continue
+                                    m_in = _safe_input("Enter M (rows to skip, default 0): ").strip()
+                                    m = int(m_in) if m_in else 0
+                                    if m < 0:
+                                        print("M must be >= 0.")
+                                        continue
+                                    start_in = _safe_input("Starting row (1-based, default 1): ").strip()
+                                    start_row = int(start_in) - 1 if start_in else 0
+                                
+                                if start_row < 0:
+                                    start_row = 0
+                                push_state("reduce-rows-delete-skip")
+                                _ensure_original_data()
+                                processed = 0
+                                total_before = 0
+                                total_after = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        if start_row >= len(orig_x):
+                                            continue
+                                        before = len(orig_x)
+                                        # Create mask: delete n rows, then skip m rows, repeat
+                                        mask = np.ones(len(orig_x), dtype=bool)
+                                        idx = start_row
+                                        while idx < len(orig_x):
+                                            # Delete n rows
+                                            end_del = min(idx + n, len(orig_x))
+                                            mask[idx:end_del] = False
+                                            idx = end_del
+                                            # Skip m rows
+                                            idx = min(idx + m, len(orig_x))
+                                        new_x = orig_x[mask]
+                                        new_y = orig_y[mask]
+                                        after = len(new_x)
+                                        if len(new_x) > 0:
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                new_y = new_y + offsets_list[i]
+                                            x_data_list[i] = new_x
+                                            y_data_list[i] = new_y
+                                            processed += 1
+                                            total_before += before
+                                            total_after += after
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    removed = total_before - total_after
+                                    pct = 100 * removed / total_before if total_before else 0
+                                    print(f"Processed {processed} curve(s); removed {removed} of {total_before} points ({pct:.1f}%).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Save settings for next time
+                                    _save_last_reduce_rows_settings('delete_skip', {
+                                        'n': n,
+                                        'm': m,
+                                        'start_row': start_row  # Save as 0-based
+                                    })
+                                else:
+                                    print("No curves were processed.")
+                            except ValueError:
+                                print("Invalid number.")
+                            continue
+                        if method == '2':
+                            # Delete rows with missing values
+                            try:
+                                # Check for last settings
+                                last_settings = _get_last_reduce_rows_settings('delete_missing')
+                                last_delete_entire_row = last_settings.get('delete_entire_row')
+                                
+                                if last_delete_entire_row is not None:
+                                    default_str = "y" if last_delete_entire_row else "n"
+                                    use_last = _safe_input(f"Use last settings? (delete_entire_row={'y' if last_delete_entire_row else 'n'}, y/n or enter y/n): ").strip().lower()
+                                    # Check if user entered y/n directly (skip "use last settings")
+                                    if use_last in ('y', 'n', 'yes', 'no'):
+                                        delete_entire_row = use_last in ('y', 'yes')
+                                    elif use_last != 'n':
+                                        delete_entire_row = last_delete_entire_row
+                                    else:
+                                        delete_entire_row_in = _safe_input(f"Delete entire row? (y/n, default {default_str}): ").strip().lower()
+                                        delete_entire_row = delete_entire_row_in != 'n'
+                                else:
+                                    delete_entire_row_in = _safe_input("Delete entire row? (y/n, default y): ").strip().lower()
+                                    delete_entire_row = delete_entire_row_in != 'n'
+                                push_state("reduce-rows-delete-missing")
+                                _ensure_original_data()
+                                processed = 0
+                                total_before = 0
+                                total_after = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        before = len(orig_x)
+                                        # Check for missing values (NaN or inf)
+                                        if delete_entire_row:
+                                            mask = np.isfinite(orig_x) & np.isfinite(orig_y)
+                                        else:
+                                            # Only delete missing in current column
+                                            mask = np.isfinite(orig_y)
+                                        new_x = orig_x[mask]
+                                        new_y = orig_y[mask]
+                                        after = len(new_x)
+                                        if len(new_x) > 0:
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                new_y = new_y + offsets_list[i]
+                                            x_data_list[i] = new_x
+                                            y_data_list[i] = new_y
+                                            processed += 1
+                                            total_before += before
+                                            total_after += after
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    removed = total_before - total_after
+                                    pct = 100 * removed / total_before if total_before else 0
+                                    print(f"Processed {processed} curve(s); removed {removed} of {total_before} points ({pct:.1f}%).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Save settings for next time
+                                    _save_last_reduce_rows_settings('delete_missing', {
+                                        'delete_entire_row': delete_entire_row
+                                    })
+                                else:
+                                    print("No curves were processed.")
+                            except Exception:
+                                print("Error processing data.")
+                            continue
+                        if method == '3':
+                            # Reduce N rows with merged values
+                            try:
+                                # Check for last settings
+                                last_settings = _get_last_reduce_rows_settings('merge')
+                                last_n = last_settings.get('n')
+                                last_merge_by = last_settings.get('merge_by')
+                                last_start_row = last_settings.get('start_row')
+                                
+                                if last_n is not None and last_merge_by is not None and last_start_row is not None:
+                                    merge_names = {
+                                        '1': 'First point',
+                                        '2': 'Last point',
+                                        '3': 'Average',
+                                        '4': 'Min',
+                                        '5': 'Max',
+                                        '6': 'Sum'
+                                    }
+                                    merge_name = merge_names.get(last_merge_by, 'Average')
+                                    use_last = _safe_input(f"Use last settings? (N={last_n}, merge_by={merge_name}, start_row={last_start_row+1}, y/n or enter N): ").strip().lower()
+                                    # Check if user entered a number directly (skip "use last settings")
+                                    if use_last and use_last.replace('-', '').replace('.', '').isdigit():
+                                        n = int(float(use_last))
+                                        if n < 2:
+                                            print("N must be >= 2.")
+                                            continue
+                                        print("Merge by:")
+                                        print("  1: First point")
+                                        print("  2: Last point")
+                                        print("  3: Average")
+                                        print("  4: Min")
+                                        print("  5: Max")
+                                        print("  6: Sum")
+                                        merge_by_in = _safe_input(f"Choose (1-6, default {last_merge_by}): ").strip()
+                                        merge_by = merge_by_in if merge_by_in else last_merge_by
+                                        start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
+                                        start_row = int(start_in) - 1 if start_in else last_start_row
+                                    elif use_last != 'n':
+                                        n = last_n
+                                        merge_by = last_merge_by
+                                        start_row = last_start_row  # Already 0-based in config
+                                    else:
+                                        n_in = _safe_input(f"Enter N (rows to merge, default {last_n}): ").strip()
+                                        n = int(n_in) if n_in else last_n
+                                        if n < 2:
+                                            print("N must be >= 2.")
+                                            continue
+                                        print("Merge by:")
+                                        print("  1: First point")
+                                        print("  2: Last point")
+                                        print("  3: Average")
+                                        print("  4: Min")
+                                        print("  5: Max")
+                                        print("  6: Sum")
+                                        merge_by_in = _safe_input(f"Choose (1-6, default {last_merge_by}): ").strip()
+                                        merge_by = merge_by_in if merge_by_in else last_merge_by
+                                        start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
+                                        start_row = int(start_in) - 1 if start_in else last_start_row
+                                else:
+                                    n_in = _safe_input("Enter N (rows to merge, default 2): ").strip()
+                                    n = int(n_in) if n_in else 2
+                                    if n < 2:
+                                        print("N must be >= 2.")
+                                        continue
+                                    print("Merge by:")
+                                    print("  1: First point")
+                                    print("  2: Last point")
+                                    print("  3: Average")
+                                    print("  4: Min")
+                                    print("  5: Max")
+                                    print("  6: Sum")
+                                    merge_by_in = _safe_input("Choose (1-6, default 3): ").strip()
+                                    merge_by = merge_by_in if merge_by_in else '3'
+                                    start_in = _safe_input("Starting row (1-based, default 1): ").strip()
+                                    start_row = int(start_in) - 1 if start_in else 0
+                                
+                                if start_row < 0:
+                                    start_row = 0
+                                
+                                merge_funcs = {
+                                    '1': lambda arr: arr[0] if len(arr) > 0 else np.nan,
+                                    '2': lambda arr: arr[-1] if len(arr) > 0 else np.nan,
+                                    '3': np.nanmean,
+                                    '4': np.nanmin,
+                                    '5': np.nanmax,
+                                    '6': np.nansum,
+                                }
+                                merge_func = merge_funcs.get(merge_by, np.nanmean)
+                                push_state("reduce-rows-merge")
+                                _ensure_original_data()
+                                processed = 0
+                                total_before = 0
+                                total_after = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        if start_row >= len(orig_x):
+                                            continue
+                                        before = len(orig_x)
+                                        # Group into chunks of N
+                                        new_x_list = []
+                                        new_y_list = []
+                                        idx = 0
+                                        while idx < start_row:
+                                            new_x_list.append(orig_x[idx])
+                                            new_y_list.append(orig_y[idx])
+                                            idx += 1
+                                        while idx < len(orig_x):
+                                            end_idx = min(idx + n, len(orig_x))
+                                            chunk_x = orig_x[idx:end_idx]
+                                            chunk_y = orig_y[idx:end_idx]
+                                            # Merge: use first x, merge y based on method
+                                            new_x = chunk_x[0] if len(chunk_x) > 0 else np.nan
+                                            new_y = merge_func(chunk_y) if len(chunk_y) > 0 else np.nan
+                                            if np.isfinite(new_x) and np.isfinite(new_y):
+                                                new_x_list.append(new_x)
+                                                new_y_list.append(new_y)
+                                            idx = end_idx
+                                        if len(new_x_list) > 0:
+                                            new_x = np.array(new_x_list)
+                                            new_y = np.array(new_y_list)
+                                            after = len(new_x)
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                new_y = new_y + offsets_list[i]
+                                            x_data_list[i] = new_x
+                                            y_data_list[i] = new_y
+                                            processed += 1
+                                            total_before += before
+                                            total_after += after
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    removed = total_before - total_after
+                                    pct = 100 * removed / total_before if total_before else 0
+                                    print(f"Processed {processed} curve(s); reduced {total_before} to {total_after} points (removed {removed}, {pct:.1f}%).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Save settings for next time
+                                    _save_last_reduce_rows_settings('merge', {
+                                        'n': n,
+                                        'merge_by': merge_by,
+                                        'start_row': start_row  # Save as 0-based
+                                    })
+                                else:
+                                    print("No curves were processed.")
+                            except (ValueError, KeyError):
+                                print("Invalid input.")
+                            continue
+                if sub == 's':
+                    # Smooth submenu
+                    while True:
+                        print("\n\033[1mSmooth Data\033[0m")
+                        print("Methods:")
+                        print("  1: Adjacent-Averaging (moving average)")
+                        print("  2: Savitzky-Golay (polynomial smoothing)")
+                        print("  3: FFT Filter (low-pass frequency filter)")
+                        print("  q: back to smooth menu")
+                        method = _safe_input(colorize_prompt("sm>s> ")).strip().lower()
+                        if not method or method == 'q':
+                            break
+                        if method == '1':
+                            # Adjacent-Averaging
+                            try:
+                                # Check for last settings (from config file for persistence)
+                                config_settings = _get_last_smooth_settings_from_config()
+                                session_settings = getattr(fig, '_last_smooth_settings', {})
+                                # Prefer config settings (persistent) over session settings
+                                last_settings = config_settings if config_settings.get('method') == 'adjacent_average' else session_settings
+                                last_method = last_settings.get('method')
+                                last_points = last_settings.get('points')
+                                
+                                if last_method == 'adjacent_average' and last_points is not None:
+                                    use_last = _safe_input(f"Use last settings? (points={last_points}, y/n or enter points): ").strip().lower()
+                                    # Check if user entered a number directly (skip "use last settings")
+                                    if use_last and use_last.replace('-', '').replace('.', '').isdigit():
+                                        points = int(float(use_last))
+                                    elif use_last != 'n':
+                                        points = last_points
+                                    else:
+                                        points_in = _safe_input(f"Number of points (default {last_points}): ").strip()
+                                        points = int(points_in) if points_in else last_points
+                                else:
+                                    points_in = _safe_input("Number of points (default 5): ").strip()
+                                    points = int(points_in) if points_in else 5
+                                
+                                if points < 2:
+                                    print("Points must be >= 2.")
+                                    continue
+                                push_state("smooth-adjacent-average")
+                                _ensure_original_data()
+                                processed = 0
+                                total_points = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        n_points = len(orig_y)
+                                        # Apply smoothing
+                                        smoothed_y = _adjacent_average_smooth(orig_y, points)
+                                        if len(smoothed_y) > 0:
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                smoothed_y = smoothed_y + offsets_list[i]
+                                            # Keep original x, update y
+                                            x_data_list[i] = orig_x.copy()
+                                            y_data_list[i] = smoothed_y
+                                            processed += 1
+                                            total_points += n_points
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    print(f"Smoothed {processed} curve(s) with {total_points} total points using Adjacent-Averaging (window={points}).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Store settings (both current and last)
+                                    if not hasattr(fig, '_smooth_settings'):
+                                        fig._smooth_settings = {}
+                                    fig._smooth_settings['method'] = 'adjacent_average'
+                                    fig._smooth_settings['points'] = points
+                                    # Store as last settings for next time (both in-memory and config file)
+                                    if not hasattr(fig, '_last_smooth_settings'):
+                                        fig._last_smooth_settings = {}
+                                    fig._last_smooth_settings['method'] = 'adjacent_average'
+                                    fig._last_smooth_settings['points'] = points
+                                    # Save to config file for persistence across sessions
+                                    _save_last_smooth_settings_to_config({
+                                        'method': 'adjacent_average',
+                                        'points': points
+                                    })
+                                else:
+                                    print("No curves were smoothed.")
+                            except ValueError:
+                                print("Invalid number.")
+                            continue
+                        if method == '2':
+                            # Savitzky-Golay
+                            try:
+                                # Check for last settings (from config file for persistence)
+                                config_settings = _get_last_smooth_settings_from_config()
+                                session_settings = getattr(fig, '_last_smooth_settings', {})
+                                # Prefer config settings (persistent) over session settings
+                                last_settings = config_settings if config_settings.get('method') == 'savgol' else session_settings
+                                last_method = last_settings.get('method')
+                                last_window = last_settings.get('window')
+                                last_poly = last_settings.get('poly')
+                                
+                                if last_method == 'savgol' and last_window is not None and last_poly is not None:
+                                    use_last = _safe_input(f"Use last settings? (window={last_window}, poly={last_poly}, y/n or enter window): ").strip().lower()
+                                    # Check if user entered a number directly (skip "use last settings")
+                                    if use_last and use_last.replace('-', '').replace('.', '').isdigit():
+                                        window = int(float(use_last))
+                                        if window < 3:
+                                            window = 3
+                                        if window % 2 == 0:
+                                            window += 1
+                                        poly_in = _safe_input(f"Polynomial order (default {last_poly}): ").strip()
+                                        poly = int(poly_in) if poly_in else last_poly
+                                    elif use_last != 'n':
+                                        window = last_window
+                                        poly = last_poly
+                                    else:
+                                        window_in = _safe_input(f"Window size (odd >= 3, default {last_window}): ").strip()
+                                        window = int(window_in) if window_in else last_window
+                                        if window < 3:
+                                            window = 3
+                                        if window % 2 == 0:
+                                            window += 1
+                                        poly_in = _safe_input(f"Polynomial order (default {last_poly}): ").strip()
+                                        poly = int(poly_in) if poly_in else last_poly
+                                else:
+                                    window_in = _safe_input("Window size (odd >= 3, default 9): ").strip()
+                                    window = int(window_in) if window_in else 9
+                                    if window < 3:
+                                        window = 3
+                                    if window % 2 == 0:
+                                        window += 1
+                                    poly_in = _safe_input("Polynomial order (default 3): ").strip()
+                                    poly = int(poly_in) if poly_in else 3
+                                
+                                if poly < 1:
+                                    poly = 1
+                                if poly >= window:
+                                    poly = window - 1
+                                push_state("smooth-savgol")
+                                _ensure_original_data()
+                                processed = 0
+                                total_points = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        n_points = len(orig_y)
+                                        # Apply smoothing
+                                        smoothed_y = _savgol_smooth(orig_y, window, poly)
+                                        if len(smoothed_y) > 0:
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                smoothed_y = smoothed_y + offsets_list[i]
+                                            # Keep original x, update y
+                                            x_data_list[i] = orig_x.copy()
+                                            y_data_list[i] = smoothed_y
+                                            processed += 1
+                                            total_points += n_points
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    print(f"Smoothed {processed} curve(s) with {total_points} total points using Savitzky-Golay (window={window}, poly={poly}).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Store settings (both current and last)
+                                    if not hasattr(fig, '_smooth_settings'):
+                                        fig._smooth_settings = {}
+                                    fig._smooth_settings['method'] = 'savgol'
+                                    fig._smooth_settings['window'] = window
+                                    fig._smooth_settings['poly'] = poly
+                                    # Store as last settings for next time (both in-memory and config file)
+                                    if not hasattr(fig, '_last_smooth_settings'):
+                                        fig._last_smooth_settings = {}
+                                    fig._last_smooth_settings['method'] = 'savgol'
+                                    fig._last_smooth_settings['window'] = window
+                                    fig._last_smooth_settings['poly'] = poly
+                                    # Save to config file for persistence across sessions
+                                    _save_last_smooth_settings_to_config({
+                                        'method': 'savgol',
+                                        'window': window,
+                                        'poly': poly
+                                    })
+                                else:
+                                    print("No curves were smoothed.")
+                            except ValueError:
+                                print("Invalid number.")
+                            continue
+                        if method == '3':
+                            # FFT Filter
+                            try:
+                                # Check for last settings (from config file for persistence)
+                                config_settings = _get_last_smooth_settings_from_config()
+                                session_settings = getattr(fig, '_last_smooth_settings', {})
+                                # Prefer config settings (persistent) over session settings
+                                last_settings = config_settings if config_settings.get('method') == 'fft' else session_settings
+                                last_method = last_settings.get('method')
+                                last_points = last_settings.get('points')
+                                last_cutoff = last_settings.get('cutoff')
+                                
+                                if last_method == 'fft' and last_points is not None and last_cutoff is not None:
+                                    use_last = _safe_input(f"Use last settings? (points={last_points}, cutoff={last_cutoff:.3f}, y/n or enter points): ").strip().lower()
+                                    # Check if user entered a number directly (skip "use last settings")
+                                    if use_last and use_last.replace('-', '').replace('.', '').isdigit():
+                                        points = int(float(use_last))
+                                        if points < 2:
+                                            points = 2
+                                        cutoff_in = _safe_input(f"Cutoff frequency (0-1, default {last_cutoff:.3f}): ").strip()
+                                        cutoff = float(cutoff_in) if cutoff_in else last_cutoff
+                                    elif use_last != 'n':
+                                        points = last_points
+                                        cutoff = last_cutoff
+                                    else:
+                                        points_in = _safe_input(f"Points for FFT (default {last_points}): ").strip()
+                                        points = int(points_in) if points_in else last_points
+                                        if points < 2:
+                                            points = 2
+                                        cutoff_in = _safe_input(f"Cutoff frequency (0-1, default {last_cutoff:.3f}): ").strip()
+                                        cutoff = float(cutoff_in) if cutoff_in else last_cutoff
+                                else:
+                                    points_in = _safe_input("Points for FFT (default 5): ").strip()
+                                    points = int(points_in) if points_in else 5
+                                    if points < 2:
+                                        points = 2
+                                    cutoff_in = _safe_input("Cutoff frequency (0-1, default 0.1): ").strip()
+                                    cutoff = float(cutoff_in) if cutoff_in else 0.1
+                                
+                                if cutoff < 0:
+                                    cutoff = 0
+                                if cutoff > 1:
+                                    cutoff = 1
+                                push_state("smooth-fft")
+                                _ensure_original_data()
+                                processed = 0
+                                total_points = 0
+                                for i in range(len(x_data_list)):
+                                    try:
+                                        # Use current data (may already be processed), not original
+                                        orig_x = x_data_list[i].copy()
+                                        orig_y = y_data_list[i].copy()
+                                        # Remove offset for processing
+                                        if i < len(offsets_list):
+                                            orig_y = orig_y - offsets_list[i]
+                                        n_points = len(orig_y)
+                                        # Apply smoothing
+                                        smoothed_y = _fft_smooth(orig_y, points, cutoff)
+                                        if len(smoothed_y) > 0:
+                                            # Restore offset
+                                            if i < len(offsets_list):
+                                                smoothed_y = smoothed_y + offsets_list[i]
+                                            # Keep original x, update y
+                                            x_data_list[i] = orig_x.copy()
+                                            y_data_list[i] = smoothed_y
+                                            processed += 1
+                                            total_points += n_points
+                                    except Exception as e:
+                                        print(f"Error processing curve {i+1}: {e}")
+                                if processed > 0:
+                                    print(f"Smoothed {processed} curve(s) with {total_points} total points using FFT Filter (cutoff={cutoff:.3f}).")
+                                    _update_full_processed_data()  # Store full processed data for X-range filtering
+                                    _apply_data_changes()
+                                    # Store settings (both current and last)
+                                    if not hasattr(fig, '_smooth_settings'):
+                                        fig._smooth_settings = {}
+                                    fig._smooth_settings['method'] = 'fft'
+                                    fig._smooth_settings['points'] = points
+                                    fig._smooth_settings['cutoff'] = cutoff
+                                    # Store as last settings for next time (both in-memory and config file)
+                                    if not hasattr(fig, '_last_smooth_settings'):
+                                        fig._last_smooth_settings = {}
+                                    fig._last_smooth_settings['method'] = 'fft'
+                                    fig._last_smooth_settings['points'] = points
+                                    fig._last_smooth_settings['cutoff'] = cutoff
+                                    # Save to config file for persistence across sessions
+                                    _save_last_smooth_settings_to_config({
+                                        'method': 'fft',
+                                        'points': points,
+                                        'cutoff': cutoff
+                                    })
+                                else:
+                                    print("No curves were smoothed.")
+                            except ValueError:
+                                print("Invalid number.")
+                            continue
         elif key == 'v':
             while True:
                 try:
-                    rng_in = input("Peak X range (min max, 'current' for axes limits, q=back): ").strip().lower()
+                    rng_in = _safe_input("Peak X range (min max, 'current' for axes limits, q=back): ").strip().lower()
                     if not rng_in or rng_in == 'q':
                         break
                     if rng_in == 'current':
@@ -3599,12 +5457,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         if x_min > x_max:
                             x_min, x_max = x_max, x_min
 
-                    frac_in = input("Min relative peak height (0–1, default 0.1): ").strip()
+                    frac_in = _safe_input("Min relative peak height (0–1, default 0.1): ").strip()
                     min_frac = float(frac_in) if frac_in else 0.1
                     if min_frac < 0: min_frac = 0.0
                     if min_frac > 1: min_frac = 1.0
 
-                    swin = input("Smoothing window (odd int >=3, blank=none): ").strip()
+                    swin = _safe_input("Smoothing window (odd int >=3, blank=none): ").strip()
                     if swin:
                         try:
                             win = int(swin)
@@ -3621,6 +5479,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
                     print("\n--- Peak Report ---")
                     print(f"X range used: {x_min} .. {x_max}  (relative height threshold={min_frac})")
+                    all_peak_results = []  # list of (curve_index, label, [(x, y), ...])
                     for i, (x_arr, y_off) in enumerate(zip(x_data_list, y_data_list)):
                         # Recover original curve (remove vertical offset)
                         if i < len(offsets_list):
@@ -3674,9 +5533,50 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             last_idx = pi
 
                         print("  Peaks (x, y):")
+                        peak_xy_list = []
                         for pi in peaks:
+                            px, py = float(x_sel[pi]), float(y_sel[pi])
+                            peak_xy_list.append((px, py))
                             print(f"    x={x_sel[pi]:.6g}, y={y_sel[pi]:.6g}")
+                        if peak_xy_list:
+                            all_peak_results.append((i + 1, label, peak_xy_list))
                     print("\n--- End Peak Report ---\n")
+
+                    # Export peaks to file
+                    if all_peak_results:
+                        export_yn = _safe_input("Export peaks to file? (y/n): ").strip().lower()
+                        if export_yn == 'y':
+                            folder = choose_save_path(source_file_paths, purpose="peak export")
+                            if folder:
+                                print(f"\nChosen path: {folder}")
+                                fname = _safe_input("Export filename (default: peaks.txt): ").strip()
+                                if not fname:
+                                    fname = "peaks.txt"
+                                if not fname.endswith('.txt'):
+                                    fname += '.txt'
+                                import os
+                                target = fname if os.path.isabs(fname) else os.path.join(folder, fname)
+                                do_write = not os.path.exists(target)
+                                if os.path.exists(target):
+                                    ow = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                                    if ow == 'y':
+                                        do_write = True
+                                    else:
+                                        print("Export canceled.")
+                                if do_write:
+                                    try:
+                                        with open(target, 'w') as f:
+                                            f.write("# Curve\tLabel\tPeak x\tPeak y\n")
+                                            for curve_idx, label, peak_xy_list in all_peak_results:
+                                                for px, py in peak_xy_list:
+                                                    f.write(f"{curve_idx}\t{label}\t{px:.6g}\t{py:.6g}\n")
+                                        total_peaks = sum(len(pairs) for _, _, pairs in all_peak_results)
+                                        print(f"Peak positions exported to {target}")
+                                        print(f"Found {total_peaks} peaks across {len(all_peak_results)} curves.")
+                                    except Exception as e:
+                                        print(f"Error saving file: {e}")
+                            else:
+                                print("Export canceled.")
                 except Exception as e:
                     print(f"Error finding peaks: {e}")
 

@@ -1,5 +1,5 @@
 """batplot: Interactive plotting for battery data visualization."""
 
-__version__ = "1.7.14"
+__version__ = "1.8.11"
 
 __all__ = ["__version__"]
