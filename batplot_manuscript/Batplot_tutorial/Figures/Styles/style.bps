@@ -1,0 +1,1615 @@
+{
+  "kind": "ec_style",
+  "version": 2,
+  "figure": {
+    "canvas_size": [
+      10.0,
+      6.0
+    ],
+    "frame_size": [
+      8.299999999999999,
+      4.38
+    ],
+    "axes_fraction": [
+      0.12,
+      0.15000000000000002,
+      0.83,
+      0.73
+    ]
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "size": 16.0
+  },
+  "legend": {
+    "visible": true,
+    "position_inches": [
+      3.6646527777777784,
+      0.6244444444444439
+    ],
+    "title": "Cycle"
+  },
+  "spines": {
+    "bottom": {
+      "linewidth": 0.8,
+      "visible": true
+    },
+    "top": {
+      "linewidth": 0.8,
+      "visible": true
+    },
+    "left": {
+      "linewidth": 0.8,
+      "visible": true
+    },
+    "right": {
+      "linewidth": 0.8,
+      "visible": true
+    }
+  },
+  "ticks": {
+    "widths": {
+      "x_major": 0.8,
+      "x_minor": 0.6,
+      "y_major": 0.8,
+      "y_minor": 0.6
+    },
+    "direction": "out"
+  },
+  "grid": false,
+  "wasd_state": {
+    "top": {
+      "spine": true,
+      "ticks": false,
+      "minor": false,
+      "labels": false,
+      "title": false
+    },
+    "bottom": {
+      "spine": true,
+      "ticks": true,
+      "minor": false,
+      "labels": true,
+      "title": true
+    },
+    "left": {
+      "spine": true,
+      "ticks": true,
+      "minor": false,
+      "labels": true,
+      "title": true
+    },
+    "right": {
+      "spine": true,
+      "ticks": false,
+      "minor": false,
+      "labels": false,
+      "title": false
+    }
+  },
+  "title_offsets": {
+    "top_y": 0.0,
+    "top_x": 0.0,
+    "bottom_y": 0.0,
+    "left_x": 0.0,
+    "right_x": 0.0,
+    "right_y": 0.0
+  },
+  "curve_linewidth": 2.0,
+  "curve_markers": {
+    "linestyle": "-",
+    "marker": "None",
+    "markersize": 6.0,
+    "markerfacecolor": "red",
+    "markeredgecolor": "red"
+  },
+  "rotation_angle": 0,
+  "cycle_styles": {
+    "1": {
+      "charge": {
+        "color": "#ff0000",
+        "visible": true
+      },
+      "discharge": {
+        "color": "#ff0000",
+        "visible": true
+      }
+    },
+    "2": {
+      "charge": {
+        "color": "#0000ff",
+        "visible": true
+      },
+      "discharge": {
+        "color": "#0000ff",
+        "visible": true
+      }
+    },
+    "3": {
+      "charge": {
+        "color": "#008000",
+        "visible": true
+      },
+      "discharge": {
+        "color": "#008000",
+        "visible": true
+      }
+    },
+    "4": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "5": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "6": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "7": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "8": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "9": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "10": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "11": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "12": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "13": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "14": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "15": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "16": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "17": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "18": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "19": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "20": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "21": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "22": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "23": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "24": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "25": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "26": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "27": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "28": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "29": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "30": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "31": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "32": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "33": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "34": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "35": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "36": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "37": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "38": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "39": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "40": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "41": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "42": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "43": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "44": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "45": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "46": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "47": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "48": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "49": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "50": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "51": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "52": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "53": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "54": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "55": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "56": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "57": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "58": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "59": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "60": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "61": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "62": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "63": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "64": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "65": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "66": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "67": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "68": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "69": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "70": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "71": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "72": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "73": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "74": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "75": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "76": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "77": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "78": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "79": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "80": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "81": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "82": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "83": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "84": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "85": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "86": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "87": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "88": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "89": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "90": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "91": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "92": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "93": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "94": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "95": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "96": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "97": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "98": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "99": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "100": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "101": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "102": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "103": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "104": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "105": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "106": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "107": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "108": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "109": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "110": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "111": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "112": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "113": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "114": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "115": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "116": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "117": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "118": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "119": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "120": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "121": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "122": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "123": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "124": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "125": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "126": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "127": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "128": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "129": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "130": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "131": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "132": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "133": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "134": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "135": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "136": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "137": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "138": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "139": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "140": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    },
+    "141": {
+      "charge": {
+        "color": "#1f77b4",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#1f77b4",
+        "visible": false
+      }
+    },
+    "142": {
+      "charge": {
+        "color": "#ff7f0e",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#ff7f0e",
+        "visible": false
+      }
+    },
+    "143": {
+      "charge": {
+        "color": "#2ca02c",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#2ca02c",
+        "visible": false
+      }
+    },
+    "144": {
+      "charge": {
+        "color": "#d62728",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#d62728",
+        "visible": false
+      }
+    },
+    "145": {
+      "charge": {
+        "color": "#9467bd",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#9467bd",
+        "visible": false
+      }
+    },
+    "146": {
+      "charge": {
+        "color": "#8c564b",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#8c564b",
+        "visible": false
+      }
+    },
+    "147": {
+      "charge": {
+        "color": "#e377c2",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#e377c2",
+        "visible": false
+      }
+    },
+    "148": {
+      "charge": {
+        "color": "#7f7f7f",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#7f7f7f",
+        "visible": false
+      }
+    },
+    "149": {
+      "charge": {
+        "color": "#bcbd22",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#bcbd22",
+        "visible": false
+      }
+    },
+    "150": {
+      "charge": {
+        "color": "#17becf",
+        "visible": false
+      },
+      "discharge": {
+        "color": "#17becf",
+        "visible": false
+      }
+    }
+  },
+  "ro_active": false,
+  "xaxis_dual": {
+    "mode": "capacity",
+    "c_theoretical": 162.0,
+    "swapped": false
+  }
+}

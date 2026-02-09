@@ -689,7 +689,186 @@ def batplot_main() -> int:
         if len(data_files) > 1 and (args.savefig or args.out):
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
-        
+
+        # GC multi-file interactive: one figure with all files overlaid
+        if len(data_files) > 1 and args.interactive:
+            fig, ax = _plt.subplots(figsize=(10, 6))
+            file_data = []
+            base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+
+            def _contiguous_blocks(mask):
+                inds = np.where(mask)[0]
+                if inds.size == 0:
+                    return []
+                blocks = []
+                start, prev = inds[0], inds[0]
+                for j in inds[1:]:
+                    if j == prev + 1:
+                        prev = j
+                    else:
+                        blocks.append((start, prev))
+                        start, prev = j, j
+                blocks.append((start, prev))
+                return blocks
+
+            def _broken_arrays_from_indices(idx, x, y):
+                if idx.size == 0:
+                    return np.array([]), np.array([])
+                parts_x, parts_y = [], []
+                start = 0
+                for k in range(1, idx.size):
+                    if idx[k] != idx[k - 1] + 1:
+                        parts_x.append(x[idx[start:k]])
+                        parts_y.append(y[idx[start:k]])
+                        start = k
+                parts_x.append(x[idx[start:]])
+                parts_y.append(y[idx[start:]])
+                X, Y = [], []
+                for i, (px, py) in enumerate(zip(parts_x, parts_y)):
+                    if i > 0:
+                        X.append(np.array([np.nan]))
+                        Y.append(np.array([np.nan]))
+                    X.append(px)
+                    Y.append(py)
+                return np.concatenate(X) if X else np.array([]), np.concatenate(Y) if Y else np.array([])
+
+            for file_idx, ec_file in enumerate(data_files):
+                if not _os.path.isfile(ec_file) or not (ec_file.lower().endswith('.mpt') or ec_file.lower().endswith('.csv')):
+                    continue
+                try:
+                    if ec_file.lower().endswith('.mpt'):
+                        mass_mg = getattr(args, 'mass', None)
+                        if mass_mg is None:
+                            continue
+                        specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
+                        cap_x = specific_capacity
+                    elif ec_file.lower().endswith('.csv'):
+                        try:
+                            header, _, _ = _load_csv_header_and_rows(ec_file)
+                            if is_cs_b_format(header):
+                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
+                            else:
+                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                        except Exception:
+                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                    else:
+                        continue
+                    color_offset = (file_idx * 5) % len(base_colors)
+                    if cycle_numbers is not None:
+                        cyc_int_raw = np.array(np.rint(cycle_numbers), dtype=int)
+                        min_c = int(np.min(cyc_int_raw)) if cyc_int_raw.size else 1
+                        shift = 1 - min_c if min_c <= 0 else 0
+                        cyc_int = cyc_int_raw + shift
+                        cycles_present = sorted(int(c) for c in np.unique(cyc_int))
+                    else:
+                        cycles_present = [1]
+                    inferred = len(cycles_present) <= 1
+                    if inferred:
+                        ch_blocks = _contiguous_blocks(charge_mask)
+                        dch_blocks = _contiguous_blocks(discharge_mask)
+                        cycles_present = list(range(1, max(len(ch_blocks), len(dch_blocks)) + 1)) if (ch_blocks or dch_blocks) else [1]
+                    # Legend: multi-file use filename (or display_name) so legend reflects data
+                    file_lbl = os.path.basename(ec_file) if len(data_files) > 1 else ""
+                    cycle_lines = {}
+                    if not inferred and cycle_numbers is not None:
+                        for cyc in cycles_present:
+                            mask_c = (cyc_int == cyc) & charge_mask
+                            idx = np.where(mask_c)[0]
+                            ln_c = None
+                            if idx.size >= 2:
+                                x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                                col = base_colors[(color_offset + cyc - 1) % len(base_colors)]
+                                leg_cyc = f"{file_lbl}: {cyc}" if file_lbl else str(cyc)
+                                if getattr(args, 'ro', False):
+                                    ln_c, = ax.plot(y_b, x_b, '-', color=col, linewidth=2.0, label=leg_cyc, alpha=0.8)
+                                else:
+                                    ln_c, = ax.plot(x_b, y_b, '-', color=col, linewidth=2.0, label=leg_cyc, alpha=0.8)
+                            mask_d = (cyc_int == cyc) & discharge_mask
+                            idxd = np.where(mask_d)[0]
+                            ln_d = None
+                            if idxd.size >= 2:
+                                xd_b, yd_b = _broken_arrays_from_indices(idxd, cap_x, voltage)
+                                lbl = '_nolegend_' if ln_c is not None else (f"{file_lbl}: {cyc}" if file_lbl else str(cyc))
+                                col = base_colors[(color_offset + cyc - 1) % len(base_colors)]
+                                if getattr(args, 'ro', False):
+                                    ln_d, = ax.plot(yd_b, xd_b, '-', color=col, linewidth=2.0, label=lbl, alpha=0.8)
+                                else:
+                                    ln_d, = ax.plot(xd_b, yd_b, '-', color=col, linewidth=2.0, label=lbl, alpha=0.8)
+                            cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
+                    else:
+                        ch_blocks = _contiguous_blocks(charge_mask)
+                        dch_blocks = _contiguous_blocks(discharge_mask)
+                        N = max(len(ch_blocks), len(dch_blocks))
+                        for i in range(N):
+                            cyc = i + 1
+                            col = base_colors[(color_offset + cyc - 1) % len(base_colors)]
+                            leg_cyc = f"{file_lbl}: {cyc}" if file_lbl else str(cyc)
+                            ln_c = None
+                            if i < len(ch_blocks):
+                                a, b = ch_blocks[i]
+                                idx = np.arange(a, b + 1)
+                                x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                                if getattr(args, 'ro', False):
+                                    ln_c, = ax.plot(y_b, x_b, '-', color=col, linewidth=2.0, label=leg_cyc, alpha=0.8)
+                                else:
+                                    ln_c, = ax.plot(x_b, y_b, '-', color=col, linewidth=2.0, label=leg_cyc, alpha=0.8)
+                            ln_d = None
+                            if i < len(dch_blocks):
+                                a, b = dch_blocks[i]
+                                idx = np.arange(a, b + 1)
+                                xd_b, yd_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                                lbl = '_nolegend_' if ln_c is not None else (f"{file_lbl}: {cyc}" if file_lbl else str(cyc))
+                                if getattr(args, 'ro', False):
+                                    ln_d, = ax.plot(yd_b, xd_b, '-', color=col, linewidth=2.0, label=lbl, alpha=0.8)
+                                else:
+                                    ln_d, = ax.plot(xd_b, yd_b, '-', color=col, linewidth=2.0, label=lbl, alpha=0.8)
+                            cycle_lines[cyc] = {"charge": ln_c, "discharge": ln_d}
+                    file_data.append({
+                        'filename': os.path.basename(ec_file),
+                        'display_name': os.path.basename(ec_file),
+                        'cycle_lines': cycle_lines,
+                        'visible': True,
+                        'filepath': ec_file,
+                    })
+                except Exception as _e:
+                    print(f"GC multi-file: skip {ec_file}: {_e}")
+            if not file_data:
+                print("GC multi-file: no files loaded.")
+                exit(1)
+            if getattr(args, 'ro', False):
+                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel(x_label_gc, labelpad=8.0)
+            else:
+                ax.set_xlabel(x_label_gc, labelpad=8.0)
+                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            ax.legend(title='Cycle')
+            fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
+            if style_cfg:
+                try:
+                    from .batch import _apply_ec_style
+                    _apply_ec_style(fig, ax, style_cfg)
+                    if hasattr(fig, 'canvas'):
+                        fig.canvas.draw()
+                except Exception as e:
+                    print(f"Warning: Error applying style file: {e}")
+            try:
+                _plt.ion()
+            except Exception:
+                pass
+            _plt.show(block=False)
+            try:
+                fig._bp_source_paths = [_os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
+            except Exception:
+                pass
+            try:
+                electrochem_interactive_menu(fig, ax, file_data=file_data)
+            except Exception as _ie:
+                print(f"Interactive menu failed: {_ie}")
+            _plt.show()
+            exit(0)
+
         for ec_file_idx, ec_file in enumerate(data_files):
             if not _os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
@@ -1402,7 +1581,141 @@ def batplot_main() -> int:
         if len(data_files) > 1 and (args.savefig or args.out):
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
-        
+
+        # Multi-file interactive: one figure with all files overlaid
+        if len(data_files) > 1 and args.interactive:
+            fig, ax = _plt.subplots(figsize=(10, 6))
+            ax._is_dqdv_mode = True
+            file_data = []
+            base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            y_label_used = None
+            for file_idx, ec_file in enumerate(data_files):
+                if not _os.path.isfile(ec_file) or not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
+                    continue
+                try:
+                    if ec_file.lower().endswith('.mpt'):
+                        mass_mg = getattr(args, 'mass', None)
+                        if mass_mg is None or mass_mg <= 0:
+                            continue
+                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=mass_mg, prefer_specific=True)
+                    else:
+                        try:
+                            header, _, _ = _load_csv_header_and_rows(ec_file)
+                            if is_cs_b_format(header):
+                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                            else:
+                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                        except Exception:
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                    if y_label_used is None:
+                        y_label_used = y_label
+                    def _mask_segments(mask, role):
+                        inds = np.where(mask)[0]
+                        if inds.size == 0:
+                            return []
+                        segs = []
+                        start, prev = inds[0], inds[0]
+                        for i in inds[1:]:
+                            if i == prev + 1:
+                                prev = i
+                            else:
+                                segs.append((start, prev, role))
+                                start, prev = i, i
+                        segs.append((start, prev, role))
+                        return segs
+                    segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
+                    segments.sort(key=lambda x: x[0])
+                    cycle_lines = {}
+                    cycle_id = 1
+                    cycle_lines[cycle_id] = {"charge": None, "discharge": None}
+                    color_offset = (file_idx * 5) % len(base_colors)
+
+                    def _append_segment(line_obj, x_new, y_new):
+                        try:
+                            x_old = np.asarray(line_obj.get_xdata(), float)
+                            y_old = np.asarray(line_obj.get_ydata(), float)
+                            x_cat = np.concatenate([x_old, np.array([np.nan]), x_new])
+                            y_cat = np.concatenate([y_old, np.array([np.nan]), y_new])
+                            line_obj.set_xdata(x_cat)
+                            line_obj.set_ydata(y_cat)
+                        except Exception:
+                            pass
+
+                    for start, end, role in segments:
+                        if end - start + 1 < 2:
+                            continue
+                        idx = np.arange(start, end + 1)
+                        x_seg, y_seg = voltage[idx], dqdv[idx]
+                        current = cycle_lines.setdefault(cycle_id, {"charge": None, "discharge": None})
+                        color = base_colors[(color_offset + cycle_id - 1) % len(base_colors)]
+                        first_seg = current['charge'] is None and current['discharge'] is None
+                        if current[role] is not None:
+                            if current['charge'] and current['discharge']:
+                                cycle_id += 1
+                                current = cycle_lines.setdefault(cycle_id, {"charge": None, "discharge": None})
+                            else:
+                                if getattr(args, 'ro', False):
+                                    _append_segment(current[role], y_seg, x_seg)
+                                else:
+                                    _append_segment(current[role], x_seg, y_seg)
+                                continue
+                        # Multi-file: label as "filename: cycle" so legend reflects data
+                        file_lbl = os.path.basename(ec_file) if len(data_files) > 1 else ""
+                        label = (f"{file_lbl}: {cycle_id}" if file_lbl else str(cycle_id)) if first_seg else '_nolegend_'
+                        if getattr(args, 'ro', False):
+                            ln, = ax.plot(y_seg, x_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                        else:
+                            ln, = ax.plot(x_seg, y_seg, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                        current[role] = ln
+                        if current['charge'] and current['discharge']:
+                            cycle_id += 1
+                    if cycle_lines.get(cycle_id) == {"charge": None, "discharge": None}:
+                        cycle_lines.pop(cycle_id, None)
+                    file_data.append({
+                        'filename': os.path.basename(ec_file),
+                        'display_name': os.path.basename(ec_file),
+                        'cycle_lines': cycle_lines,
+                        'visible': True,
+                        'filepath': ec_file,
+                    })
+                except Exception as _e:
+                    print(f"dQ/dV multi-file: skip {ec_file}: {_e}")
+            if not file_data:
+                print("dQ/dV multi-file: no files loaded.")
+                exit(1)
+            if getattr(args, 'ro', False):
+                ax.set_xlabel(y_label_used or 'dQ/dV', labelpad=8.0)
+                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            else:
+                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel(y_label_used or 'dQ/dV', labelpad=8.0)
+            ax.legend(title='Cycle')
+            fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
+            if style_cfg:
+                try:
+                    from .batch import _apply_ec_style
+                    _apply_ec_style(fig, ax, style_cfg)
+                    if hasattr(fig, 'canvas'):
+                        fig.canvas.draw()
+                except Exception as e:
+                    print(f"Warning: Error applying style file: {e}")
+            try:
+                _plt.ion()
+            except Exception:
+                pass
+            _plt.show(block=False)
+            try:
+                fig._bp_source_paths = [_os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
+            except Exception:
+                pass
+            try:
+                electrochem_interactive_menu(fig, ax, file_data=file_data)
+            except Exception as _ie:
+                print(f"Interactive menu failed: {_ie}")
+            _plt.show()
+            exit(0)
+
         for ec_file in data_files:
             if not _os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
@@ -1847,32 +2160,59 @@ def batplot_main() -> int:
                 if not res:
                     print("Failed to load EC session.")
                     exit(1)
-                fig, ax, cycle_lines = res
-                try:
-                    _plt.ion()
-                except Exception:
-                    pass
-                try:
-                    _plt.show(block=False)
-                except Exception:
-                    pass
-                # Seed last-session path so 'os' overwrite command is available immediately
-                try:
-                    fig._last_session_save_path = os.path.abspath(sess_path)
-                except Exception:
-                    pass
-                try:
-                    source_list = list(getattr(fig, '_bp_source_paths', []) or [])
-                    sess_abs = os.path.abspath(sess_path)
-                    if sess_abs not in source_list:
-                        source_list.append(sess_abs)
-                    fig._bp_source_paths = source_list
-                except Exception:
-                    pass
-                try:
-                    electrochem_interactive_menu(fig, ax, cycle_lines, file_path=sess_path)
-                except Exception as _ie:
-                    print(f"Interactive menu failed: {_ie}")
+                # Multi-file session returns (fig, ax, None, file_data); single-file returns (fig, ax, cycle_lines)
+                if len(res) == 4 and res[2] is None:
+                    fig, ax, _ignored, file_data = res
+                    try:
+                        _plt.ion()
+                    except Exception:
+                        pass
+                    try:
+                        _plt.show(block=False)
+                    except Exception:
+                        pass
+                    try:
+                        fig._last_session_save_path = os.path.abspath(sess_path)
+                    except Exception:
+                        pass
+                    try:
+                        source_list = list(getattr(fig, '_bp_source_paths', []) or [])
+                        sess_abs = os.path.abspath(sess_path)
+                        if sess_abs not in source_list:
+                            source_list.append(sess_abs)
+                        fig._bp_source_paths = source_list
+                    except Exception:
+                        pass
+                    try:
+                        electrochem_interactive_menu(fig, ax, file_data=file_data)
+                    except Exception as _ie:
+                        print(f"Interactive menu failed: {_ie}")
+                else:
+                    fig, ax, cycle_lines = res
+                    try:
+                        _plt.ion()
+                    except Exception:
+                        pass
+                    try:
+                        _plt.show(block=False)
+                    except Exception:
+                        pass
+                    try:
+                        fig._last_session_save_path = os.path.abspath(sess_path)
+                    except Exception:
+                        pass
+                    try:
+                        source_list = list(getattr(fig, '_bp_source_paths', []) or [])
+                        sess_abs = os.path.abspath(sess_path)
+                        if sess_abs not in source_list:
+                            source_list.append(sess_abs)
+                        fig._bp_source_paths = source_list
+                    except Exception:
+                        pass
+                    try:
+                        electrochem_interactive_menu(fig, ax, cycle_lines, file_path=sess_path)
+                    except Exception as _ie:
+                        print(f"Interactive menu failed: {_ie}")
                 _plt.show()
                 exit()
             except Exception as e:

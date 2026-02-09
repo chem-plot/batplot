@@ -992,6 +992,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         if family:
             mpl.rcParams['font.family'] = 'sans-serif'
             mpl.rcParams['font.sans-serif'] = [family, 'DejaVu Sans', 'Arial', 'Liberation Sans']
+            # Set mathtext.fontset to match font family
+            lf = family.lower()
+            if any(k in lf for k in ('stix', 'times', 'roman')):
+                mpl.rcParams['mathtext.fontset'] = 'stix'
+            else:
+                mpl.rcParams['mathtext.fontset'] = 'dejavusans'
         if size is not None:
             mpl.rcParams['font.size'] = size
         axes = [ax, ec_ax]
@@ -1223,6 +1229,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             op_labels = getattr(ax, '_custom_labels', {'x': ax.get_xlabel(), 'y': ax.get_ylabel()})
             fam = plt.rcParams.get('font.sans-serif', [])
             fsize = plt.rcParams.get('font.size', None)
+            mathtext_fs = plt.rcParams.get('mathtext.fontset', 'dejavusans')
             # WASD state for both panes
             op_wasd = {
                 'top':    {'spine': _get_spine_visible(ax, 'top'), 'ticks': ax.xaxis._major_tick_kw.get('tick1On', True), 
@@ -1348,7 +1355,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 'saved_time_ylim': saved_time_ylim,
                 'op_labels': dict(op_labels) if isinstance(op_labels, dict) else {'x': ax.get_xlabel(), 'y': ax.get_ylabel()},
                 'ec_labels': dict(ec_labels) if ec_labels is not None and isinstance(ec_labels, dict) else None,
-                'font': {'family': list(fam), 'size': fsize},
+                'font': {'family': list(fam), 'size': fsize, 'mathtext_fontset': mathtext_fs},
                 'op_wasd': dict(op_wasd),
                 'ec_wasd': dict(ec_wasd) if ec_wasd is not None else None,
                 'tick_lengths': getattr(fig, '_tick_lengths', None),
@@ -1444,6 +1451,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 font = snap.get('font', {})
                 fam = font.get('family')
                 size = font.get('size')
+                mathtext_fs = font.get('mathtext_fontset')
+                # Restore mathtext.fontset first
+                if mathtext_fs:
+                    try:
+                        plt.rcParams['mathtext.fontset'] = mathtext_fs
+                    except Exception:
+                        pass
                 if fam or size is not None:
                     # Convert family list back to string
                     if isinstance(fam, list) and fam:
@@ -3135,7 +3149,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         break
                     if cmd2 == 'i':
                         # Invert tick direction (toggle between 'out' and 'in')
-                        push_state("tick-direction")
+                        _snapshot("tick-direction")
                         current_dir = getattr(fig, '_tick_direction', 'out')
                         new_dir = 'in' if current_dir == 'out' else 'out'
                         setattr(fig, '_tick_direction', new_dir)
@@ -3161,7 +3175,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 print("Length must be positive.")
                                 continue
                             new_minor = new_major * 0.7  # Auto-set minor to 70%
-                            push_state("tick-length")
+                            _snapshot("tick-length")
                             # Apply to all four axes on both ax and ec_ax
                             ax.tick_params(axis='both', which='major', length=new_major)
                             ax.tick_params(axis='both', which='minor', length=new_minor)
@@ -3196,7 +3210,32 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(_colorize_inline_commands("(right spine 'd' not available for operando panel)"))
                         continue
                     if cmd2 == 'p':
-                        # Title offset menu
+                        # Title offset menu — build tick_state for both panes so _get_tick_state_for_axis can use them
+                        op_ts = getattr(ax, '_saved_tick_state', {})
+                        op_tick_state = {
+                            't_ticks': bool(op_ts.get('t_ticks', op_ts.get('tx', False))),
+                            't_labels': bool(op_ts.get('t_labels', op_ts.get('tx', False))),
+                            'b_ticks': bool(op_ts.get('b_ticks', op_ts.get('bx', True))),
+                            'b_labels': bool(op_ts.get('b_labels', op_ts.get('bx', True))),
+                            'l_ticks': bool(op_ts.get('l_ticks', op_ts.get('ly', True))),
+                            'l_labels': bool(op_ts.get('l_labels', op_ts.get('ly', True))),
+                            'r_ticks': bool(op_ts.get('r_ticks', op_ts.get('ry', False))),
+                            'r_labels': bool(op_ts.get('r_labels', op_ts.get('ry', False))),
+                        }
+                        if ec_ax is not None:
+                            ec_ts = getattr(ec_ax, '_saved_tick_state', {})
+                            ec_tick_state = {
+                                't_ticks': bool(ec_ts.get('t_ticks', ec_ts.get('tx', False))),
+                                't_labels': bool(ec_ts.get('t_labels', ec_ts.get('tx', False))),
+                                'b_ticks': bool(ec_ts.get('b_ticks', ec_ts.get('bx', True))),
+                                'b_labels': bool(ec_ts.get('b_labels', ec_ts.get('bx', True))),
+                                'l_ticks': bool(ec_ts.get('l_ticks', ec_ts.get('ly', False))),
+                                'l_labels': bool(ec_ts.get('l_labels', ec_ts.get('ly', False))),
+                                'r_ticks': bool(ec_ts.get('r_ticks', ec_ts.get('ry', True))),
+                                'r_labels': bool(ec_ts.get('r_labels', ec_ts.get('ry', True))),
+                            }
+                        else:
+                            ec_tick_state = {}
                         def _dpi():
                             try:
                                 return float(fig.dpi)
@@ -5854,6 +5893,300 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 except Exception as e:
                     print(f"Canvas resize failed: {e}")
             print_menu()
+        elif cmd == 'oe':
+            # Overwrite last exported figure
+            try:
+                import os
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if not last_figure_path:
+                    print("No previous figure export found.")
+                    print_menu(); continue
+                if not os.path.exists(last_figure_path):
+                    print(f"Previous export file not found: {last_figure_path}")
+                    print_menu(); continue
+                yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print_menu(); continue
+                
+                target = last_figure_path
+                _, ext = os.path.splitext(target)
+                if ext.lower() == '.svg':
+                    try:
+                        _fig_fc = fig.get_facecolor()
+                    except Exception:
+                        _fig_fc = None
+                    try:
+                        _ax_fc = ax.get_facecolor()
+                    except Exception:
+                        _ax_fc = None
+                    try:
+                        if getattr(fig, 'patch', None) is not None:
+                            fig.patch.set_alpha(0.0); fig.patch.set_facecolor('none')
+                        if getattr(ax, 'patch', None) is not None:
+                            ax.patch.set_alpha(0.0); ax.patch.set_facecolor('none')
+                        if getattr(ec_ax, 'patch', None) is not None:
+                            ec_ax.patch.set_alpha(0.0); ec_ax.patch.set_facecolor('none')
+                    except Exception:
+                        pass
+                    try:
+                        fig.savefig(target, dpi=300, transparent=True, facecolor='none', edgecolor='none')
+                    finally:
+                        try:
+                            if _fig_fc is not None and getattr(fig, 'patch', None) is not None:
+                                fig.patch.set_alpha(1.0); fig.patch.set_facecolor(_fig_fc)
+                        except Exception:
+                            pass
+                        try:
+                            if _ax_fc is not None and getattr(ax, 'patch', None) is not None:
+                                ax.patch.set_alpha(1.0); ax.patch.set_facecolor(_ax_fc)
+                        except Exception:
+                            pass
+                else:
+                    fig.savefig(target, dpi=300)
+                print(f"Overwritten figure to {target}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
+            print_menu(); continue
+        elif cmd == 'os':
+            # Overwrite last saved session
+            try:
+                from .session import dump_operando_session
+                import os
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if not last_session_path:
+                    print("No previous session save found.")
+                    print_menu(); continue
+                if not os.path.exists(last_session_path):
+                    print(f"Previous save file not found: {last_session_path}")
+                    print_menu(); continue
+                yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print_menu(); continue
+                dump_operando_session(last_session_path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                print(f"Overwritten session to {last_session_path}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
+            print_menu(); continue
+        elif cmd in ('ops', 'opsg'):
+            # Overwrite last exported style (ops) or style+geometry (opsg)
+            try:
+                import os
+                import json
+                last_style_path = getattr(fig, '_last_style_export_path', None)
+                if not last_style_path:
+                    print("No previous style export found.")
+                    print_menu(); continue
+                if not os.path.exists(last_style_path):
+                    print(f"Previous export file not found: {last_style_path}")
+                    print_menu(); continue
+                
+                # Verify EC panel exists
+                if ec_ax is None:
+                    print("Style export requires EC panel (dual-pane mode).")
+                    print_menu(); continue
+                
+                # Determine export type from command
+                exp_choice = 'ps' if cmd == 'ops' else 'psg'
+                
+                yn = _safe_input(f"Overwrite '{os.path.basename(last_style_path)}' with current {exp_choice.upper()} style? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print_menu(); continue
+                
+                # Rebuild config from current state (same logic as 'p' command export)
+                fig_w, fig_h = _get_fig_size(fig)
+                cb_w_in, cb_gap_in, ec_gap_in, ec_w_in, ax_w_in, ax_h_in = _ensure_fixed_params(fig, ax, cbar.ax, ec_ax)
+                fam = plt.rcParams.get('font.sans-serif', [''])[0]
+                fsize = plt.rcParams.get('font.size', None)
+                cmap_name = getattr(im, '_operando_cmap_name', None)
+                if cmap_name is None:
+                    cmap_name = getattr(im.get_cmap(), 'name', None)
+                cb_vis = bool(cbar.ax.get_visible())
+                ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
+                cb_label_text = str(getattr(cbar.ax, '_colorbar_label', cbar.ax.get_ylabel() or 'Intensity'))
+                cb_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+                
+                # Build WASD states
+                def _onoff(v): return 'ON ' if bool(v) else 'off'
+                op_ts = getattr(ax, '_saved_tick_state', {})
+                op_wasd = {
+                    'left':   {'spine': bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else False), 
+                               'ticks': bool(op_ts.get('l_ticks', op_ts.get('ly', True))), 
+                               'minor': bool(op_ts.get('mly', False)), 
+                               'labels': bool(op_ts.get('l_labels', op_ts.get('ly', True))), 
+                               'title': bool(ax.get_ylabel())},
+                    'top':    {'spine': bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False),
+                               'ticks': bool(op_ts.get('t_ticks', op_ts.get('tx', False))), 
+                               'minor': bool(op_ts.get('mtx', False)), 
+                               'labels': bool(op_ts.get('t_labels', op_ts.get('tx', False))), 
+                               'title': bool(getattr(ax, '_top_xlabel_on', False))},
+                    'bottom': {'spine': bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else False),
+                               'ticks': bool(op_ts.get('b_ticks', op_ts.get('bx', True))), 
+                               'minor': bool(op_ts.get('mbx', False)), 
+                               'labels': bool(op_ts.get('b_labels', op_ts.get('bx', True))), 
+                               'title': bool(ax.get_xlabel())},
+                    'right':  {'spine': bool(ax.spines.get('right').get_visible() if ax.spines.get('right') else False),
+                               'ticks': bool(op_ts.get('r_ticks', op_ts.get('ry', False))), 
+                               'minor': bool(op_ts.get('mry', False)), 
+                               'labels': bool(op_ts.get('r_labels', op_ts.get('ry', False))), 
+                               'title': bool(getattr(ax, '_right_ylabel_on', False))},
+                }
+                
+                ec_ts = getattr(ec_ax, '_saved_tick_state', {})
+                ec_wasd = {
+                    'left':   {'spine': bool(ec_ax.spines.get('left').get_visible() if ec_ax.spines.get('left') else False),
+                               'ticks': bool(ec_ts.get('l_ticks', ec_ts.get('ly', True))), 
+                               'minor': bool(ec_ts.get('mly', False)), 
+                               'labels': bool(ec_ts.get('l_labels', ec_ts.get('ly', True))), 
+                               'title': bool(ec_ax.get_ylabel())},
+                    'top':    {'spine': bool(ec_ax.spines.get('top').get_visible() if ec_ax.spines.get('top') else False),
+                               'ticks': bool(ec_ts.get('t_ticks', ec_ts.get('tx', False))), 
+                               'minor': bool(ec_ts.get('mtx', False)), 
+                               'labels': bool(ec_ts.get('t_labels', ec_ts.get('tx', False))), 
+                               'title': bool(getattr(ec_ax, '_top_xlabel_on', False))},
+                    'bottom': {'spine': bool(ec_ax.spines.get('bottom').get_visible() if ec_ax.spines.get('bottom') else False),
+                               'ticks': bool(ec_ts.get('b_ticks', ec_ts.get('bx', True))), 
+                               'minor': bool(ec_ts.get('mbx', False)), 
+                               'labels': bool(ec_ts.get('b_labels', ec_ts.get('bx', True))), 
+                               'title': bool(ec_ax.get_xlabel())},
+                    'right':  {'spine': bool(ec_ax.spines.get('right').get_visible() if ec_ax.spines.get('right') else False),
+                               'ticks': bool(ec_ts.get('r_ticks', ec_ts.get('ry', False))), 
+                               'minor': bool(ec_ts.get('mry', False)), 
+                               'labels': bool(ec_ts.get('r_labels', ec_ts.get('ry', False))), 
+                               'title': bool(ec_ax.get_ylabel())},
+                }
+                
+                # Gather spine properties
+                op_spines = {}
+                for name in ('bottom', 'top', 'left', 'right'):
+                    sp = ax.spines.get(name)
+                    if sp:
+                        op_spines[name] = {
+                            'linewidth': float(sp.get_linewidth()),
+                            'visible': bool(sp.get_visible()),
+                            'color': sp.get_edgecolor()
+                        }
+                ec_spines = {}
+                for name in ('bottom', 'top', 'left', 'right'):
+                    sp = ec_ax.spines.get(name)
+                    if sp:
+                        ec_spines[name] = {
+                            'linewidth': float(sp.get_linewidth()),
+                            'visible': bool(sp.get_visible()),
+                            'color': sp.get_edgecolor()
+                        }
+                
+                # Tick widths
+                def _get_tick_width(axis_obj, which_axis='x', which_tick='major'):
+                    axis = axis_obj.xaxis if which_axis == 'x' else axis_obj.yaxis
+                    return _axis_tick_width(axis, 'major' if which_tick == 'major' else 'minor')
+                
+                op_ticks = {
+                    'x_major': _get_tick_width(ax, 'x', 'major'),
+                    'x_minor': _get_tick_width(ax, 'x', 'minor'),
+                    'y_major': _get_tick_width(ax, 'y', 'major'),
+                    'y_minor': _get_tick_width(ax, 'y', 'minor'),
+                }
+                ec_ticks = {
+                    'x_major': _get_tick_width(ec_ax, 'x', 'major'),
+                    'x_minor': _get_tick_width(ec_ax, 'x', 'minor'),
+                    'y_major': _get_tick_width(ec_ax, 'y', 'major'),
+                    'y_minor': _get_tick_width(ec_ax, 'y', 'minor'),
+                }
+                
+                # EC curve properties
+                ec_curve = {}
+                ln = getattr(ec_ax, '_ec_line', None)
+                if ln is None and ec_ax.lines:
+                    ln = ec_ax.lines[0]
+                if ln is not None:
+                    try:
+                        ec_curve = {
+                            'color': ln.get_color(),
+                            'linewidth': float(ln.get_linewidth())
+                        }
+                    except Exception:
+                        pass
+                
+                # Check if Y-axes are reversed
+                op_ylim_cur = ax.get_ylim()
+                ec_ylim_cur = ec_ax.get_ylim()
+                op_reversed = bool(op_ylim_cur[0] > op_ylim_cur[1])
+                ec_reversed = bool(ec_ylim_cur[0] > ec_ylim_cur[1])
+                
+                # Capture intensity range
+                try:
+                    clim = im.get_clim()
+                    intensity_range = [float(clim[0]), float(clim[1])]
+                except Exception:
+                    intensity_range = None
+                
+                # Capture ions mode state
+                ec_y_mode = getattr(ec_ax, '_ec_y_mode', 'time')
+                ion_params = getattr(ec_ax, '_ion_params', None)
+                
+                # Capture labelpad values
+                op_labelpads = {
+                    'x': getattr(ax.xaxis, 'labelpad', None),
+                    'y': getattr(ax.yaxis, 'labelpad', None),
+                }
+                ec_labelpads = {
+                    'x': getattr(ec_ax.xaxis, 'labelpad', None),
+                    'y': getattr(ec_ax.yaxis, 'labelpad', None),
+                }
+                
+                # Capture title offsets
+                op_title_offsets = {
+                    'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+                }
+                ec_title_offsets = {
+                    'top_y': float(getattr(ec_ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    'top_x': float(getattr(ec_ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'bottom_y': float(getattr(ec_ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+                    'left_x': float(getattr(ec_ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'right_x': float(getattr(ec_ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+                    'right_y': float(getattr(ec_ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+                }
+                
+                # Build config based on choice
+                cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
+                ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0) if ec_ax is not None else None
+                
+                if exp_choice == 'ps':
+                    cfg = {
+                        'kind': 'operando_ec_style',
+                        'version': 2,
+                        'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_vis, 'cb_label_mode': cb_label_mode},
+                        'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
+                        'operando': {'cmap': cmap_name, 'wasd_state': op_wasd, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
+                        'ec': {'wasd_state': ec_wasd, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_vis, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
+                        'font': {'family': fam, 'size': fsize},
+                        'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_vis},
+                    }
+                else:  # psg
+                    cfg = {
+                        'kind': 'operando_ec_style_geom',
+                        'version': 2,
+                        'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_vis, 'cb_label_mode': cb_label_mode},
+                        'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
+                        'operando': {'cmap': cmap_name, 'wasd_state': op_wasd, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
+                        'ec': {'wasd_state': ec_wasd, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_vis, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
+                        'font': {'family': fam, 'size': fsize},
+                        'axes_geometry': _get_geometry_snapshot(ax, ec_ax),
+                        'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_vis},
+                    }
+                
+                # Write to file
+                with open(last_style_path, 'w', encoding='utf-8') as f:
+                    json.dump(cfg, f, indent=2)
+                print(f"Overwritten style to {last_style_path}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
+            print_menu(); continue
         else:
             print("Unknown command.")
             print_menu()

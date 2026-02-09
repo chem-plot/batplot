@@ -41,6 +41,7 @@ from .ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
     resize_plot_frame as _ui_resize_plot_frame,
     resize_canvas as _ui_resize_canvas,
+    set_spine_side_color as _ui_set_spine_side_color,
 )
 from .style import (
     print_style_info as _bp_print_style_info,
@@ -1467,6 +1468,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 "tick_state": tick_state.copy(),
                 "font_size": plt.rcParams.get('font.size'),
                 "font_chain": list(plt.rcParams.get('font.sans-serif', [])),
+                "mathtext_fontset": plt.rcParams.get('mathtext.fontset'),
                 "labels": list(labels),
                 "delta": delta,
                 "lines": [],
@@ -1590,6 +1592,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     plt.rcParams['font.size'] = snap["font_size"]
                 except Exception:
                     pass
+            if snap.get("mathtext_fontset"):
+                try:
+                    plt.rcParams['mathtext.fontset'] = snap["mathtext_fontset"]
+                except Exception:
+                    pass
             # Apply restored font settings to all existing text objects
             # This ensures labels, tick labels, etc. update to match restored font size/family
             try:
@@ -1685,13 +1692,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if "lw" in spec:
                         sp_obj.set_linewidth(spec["lw"])
                     if "color" in spec and spec["color"] is not None:
-                        sp_obj.set_edgecolor(spec["color"])
-                        if name in ('top', 'bottom'):
-                            ax.tick_params(axis='x', which='both', colors=spec['color'])
-                            ax.xaxis.label.set_color(spec['color'])
-                        else:
-                            ax.tick_params(axis='y', which='both', colors=spec['color'])
-                            ax.yaxis.label.set_color(spec['color'])
+                        _ui_set_spine_side_color(ax, name, spec["color"], fig=fig)
                     if "visible" in spec:
                         try:
                             sp_obj.set_visible(bool(spec["visible"]))
@@ -1951,6 +1952,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print("Unknown option.")
                 continue
             try:
+                push_state("toggle-cif-hkl")
                 # Flip visibility flag in batplot module
                 cur = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
                 new_state = not cur
@@ -2049,6 +2051,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print("Unknown option.")
                 continue
             try:
+                push_state("toggle-cif-titles")
                 # Preserve both x and y-axis limits to prevent movement
                 prev_xlim = ax.get_xlim()
                 prev_ylim = ax.get_ylim()
@@ -2075,8 +2078,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if _bp is not None:
                     setattr(_bp, 'cif_extend_suspended', prev_ext)
                 print(f"CIF title labels {'ON' if new_state else 'OFF'}.")
-                # Push state for undo
-                push_state("toggle-cif-titles")
             except Exception as e:
                 print(f"Error toggling CIF titles: {e}")
             continue
@@ -2378,9 +2379,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     pass
                 while True:
                     print("\033[1mColor menu:\033[0m")
-                    print(f"  {colorize_menu('m : set curve colors (e.g., 1 red 2:u3 or 1:red 2:#00B006)')}")
+                    print(f"  {colorize_menu('m : set curve colors (e.g., 1:red 2:u3 or 1:red 2:#00B006)')}")
                     print(f"  {colorize_menu('p : apply colormap palette to a range (e.g., 1-3 viridis)')}")
-                    print(f"  {colorize_menu('s : spine/tick colors (e.g., w red a u3 or w:red a:#4561F7)')}")
+                    print(f"  {colorize_menu('s : spine/tick colors (e.g., w:red a:#4561F7)')}")
                     if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
                         print(f"  {colorize_menu('t : change CIF tick set color (e.g., 1:red 2:#888888)')}")
                     print(f"  {colorize_menu('u : manage saved colors (use in m/p via number or u#)')}")
@@ -2403,120 +2404,102 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print("\nSaved colors (refer as number or u#):")
                             for idx, color in enumerate(user_colors, 1):
                                 print(f"  {idx}: {color_block(color)} {color}")
-                        color_input = _safe_input("Enter curve+color pairs (e.g., 1 red 2:u3) or q: ").strip()
-                        if not color_input or color_input.lower() == 'q':
-                            print("Canceled.")
-                        else:
-                            push_state("color-manual")
-                            entries = color_input.split()
-                            def _apply_manual_entries(tokens):
-                                idx_color_pairs = []
-                                i = 0
-                                while i < len(tokens):
-                                    tok = tokens[i]
-                                    if ':' in tok:
+                        while True:
+                            color_input = _safe_input("Enter curve+color pairs (e.g., 1:red 2:u3) or q: ").strip()
+                            if not color_input or color_input.lower() == 'q':
+                                break
+                            tokens = color_input.split()
+                            if any(t and ':' not in t for t in tokens):
+                                print("Use curve:color form (e.g., 1:red 2:u3).")
+                            else:
+                                push_state("color-manual")
+                                def _apply_manual_entries(tokens):
+                                    idx_color_pairs = []
+                                    for tok in tokens:
+                                        if ':' not in tok:
+                                            continue
                                         idx_str, color = tok.split(':', 1)
-                                    else:
-                                        if i + 1 >= len(tokens):
-                                            print(f"Skip incomplete entry: {tok}")
-                                            break
-                                        idx_str = tok
-                                        color = tokens[i + 1]
-                                        i += 1
-                                    idx_color_pairs.append((idx_str, color))
-                                    i += 1
-                                for idx_str, color in idx_color_pairs:
-                                    try:
-                                        line_idx = int(idx_str) - 1
-                                    except ValueError:
-                                        print(f"Bad index: {idx_str}")
-                                        continue
-                                    if not (0 <= line_idx < len(ax.lines)):
-                                        print(f"Index out of range: {idx_str}")
-                                        continue
-                                    resolved = resolve_color_token(color, fig)
-                                    ax.lines[line_idx].set_color(resolved)
-                            _apply_manual_entries(entries)
-                            # Update label colors to match new curve colors
-                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                            # Manual edits override any palette history
-                            try:
-                                fig._curve_palette_history = []
-                            except Exception:
-                                pass
-                        fig.canvas.draw()
+                                        idx_color_pairs.append((idx_str, color))
+                                    for idx_str, color in idx_color_pairs:
+                                        try:
+                                            line_idx = int(idx_str) - 1
+                                        except ValueError:
+                                            print(f"Bad index: {idx_str}")
+                                            continue
+                                        if not (0 <= line_idx < len(ax.lines)):
+                                            print(f"Index out of range: {idx_str}")
+                                            continue
+                                        resolved = resolve_color_token(color, fig)
+                                        ax.lines[line_idx].set_color(resolved)
+                                _apply_manual_entries(tokens)
+                                # Update label colors to match new curve colors
+                                update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                                # Manual edits override any palette history
+                                try:
+                                    fig._curve_palette_history = []
+                                except Exception:
+                                    pass
+                            fig.canvas.draw()
                     elif sub == 'u':
                         manage_user_colors(fig)
                         continue
                     elif sub == 's':
                         print("Set spine/tick colors (w=top, a=left, s=bottom, d=right).")
-                        print(colorize_inline_commands("Example: w red a u3  OR  w:red a:#4561F7"))
+                        print(colorize_inline_commands("Example: w:red a:#4561F7"))
                         user_colors = get_user_color_list(fig)
                         if user_colors:
                             print("\nSaved colors (enter number or u# in place of a color):")
                             for idx, color in enumerate(user_colors, 1):
                                 print(f"  {idx}: {color_block(color)} {color}")
                             print("Type 'u' to edit saved colors.")
-                        line = _safe_input("Enter mappings (e.g., w red a u3) or q: ").strip()
-                        if line.lower() == 'u':
-                            manage_user_colors(fig)
-                            continue
-                        if not line or line.lower() == 'q':
-                            print("Canceled.")
-                        else:
-                            push_state("color-spine")
-                            key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
+                        while True:
+                            line = _safe_input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
+                            if line.lower() == 'u':
+                                manage_user_colors(fig)
+                                continue
+                            if not line or line.lower() == 'q':
+                                break
                             tokens = line.split()
-                            pairs = []
-                            i = 0
-                            while i < len(tokens):
-                                tok = tokens[i]
-                                if ':' in tok:
+                            if any(t and ':' not in t for t in tokens):
+                                print("Use key:color form (e.g., w:red a:#4561F7).")
+                            else:
+                                push_state("color-spine")
+                                key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
+                                pairs = []
+                                for tok in tokens:
+                                    if ':' not in tok:
+                                        continue
                                     key_part, color = tok.split(':', 1)
-                                else:
-                                    if i + 1 >= len(tokens):
-                                        print(f"Skip incomplete entry: {tok}")
-                                        break
-                                    key_part = tok
-                                    color = tokens[i + 1]
-                                    i += 1
-                                pairs.append((key_part.lower(), color))
-                                i += 1
-                            for key_part, color in pairs:
-                                key_part = key_part.lower()
-                                if key_part not in key_to_spine:
-                                    print(f"Unknown key: {key_part} (use w/a/s/d)")
-                                    continue
-                                spine_name = key_to_spine[key_part]
-                                if spine_name not in ax.spines:
-                                    print(f"Spine '{spine_name}' not found.")
-                                    continue
-                                try:
-                                    resolved = resolve_color_token(color, fig)
-                                    ax.spines[spine_name].set_edgecolor(resolved)
-                                    if spine_name in ('top', 'bottom'):
-                                        ax.tick_params(axis='x', which='both', colors=resolved)
-                                        ax.xaxis.label.set_color(resolved)
-                                    else:
-                                        ax.tick_params(axis='y', which='both', colors=resolved)
-                                        ax.yaxis.label.set_color(resolved)
-                                    print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
-                                    if spine_name == 'top':
-                                        position_top_xlabel()
-                                    elif spine_name == 'right':
-                                        position_right_ylabel()
-                                except Exception as e:
-                                    print(f"Error setting {spine_name} color: {e}")
-                        fig.canvas.draw()
+                                    pairs.append((key_part.lower(), color))
+                                for key_part, color in pairs:
+                                    if key_part not in key_to_spine:
+                                        print(f"Unknown key: {key_part} (use w/a/s/d)")
+                                        continue
+                                    spine_name = key_to_spine[key_part]
+                                    if spine_name not in ax.spines:
+                                        print(f"Spine '{spine_name}' not found.")
+                                        continue
+                                    try:
+                                        resolved = resolve_color_token(color, fig)
+                                        print(f"Applying color to side '{spine_name}' only (spine, major/minor ticks, labels, title). Set BATPLOT_DEBUG_SPINE_COLOR=1 for details.")
+                                        _ui_set_spine_side_color(ax, spine_name, resolved, fig=fig)
+                                        if spine_name == 'top':
+                                            position_top_xlabel()
+                                        elif spine_name == 'right':
+                                            position_right_ylabel()
+                                        print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                                    except Exception as e:
+                                        print(f"Error setting {spine_name} color: {e}")
+                            fig.canvas.draw()
                     elif sub == 't' and has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
                         cts = getattr(_bp, 'cif_tick_series', [])
                         print("Current CIF tick sets:")
                         for i,(lab, fname, *_rest) in enumerate(cts):
                             print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
-                        line = _safe_input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
-                        if not line or line.lower()=='q':
-                            print("Canceled.")
-                        else:
+                        while True:
+                            line = _safe_input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
+                            if not line or line.lower() == 'q':
+                                break
                             mappings = line.split()
                             for token in mappings:
                                 if ':' not in token:
@@ -2535,7 +2518,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             setattr(_bp, 'cif_tick_series', cts)
                             if hasattr(ax,'_cif_draw_func'):
                                 ax._cif_draw_func()
-                        fig.canvas.draw()
+                            fig.canvas.draw()
                     elif sub == 'p':
                         # Show current palette if one is applied
                         history = getattr(fig, '_curve_palette_history', [])
@@ -2578,10 +2561,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             if bar:
                                 print(f"      {bar}")
                         print(colorize_inline_commands("Example: 1-4 viridis   or: all magma_r   or: 1-3,5 plasma, _r for reverse"))
-                        line = _safe_input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
-                        if not line or line.lower() == 'q':
-                            print("Canceled.")
-                        else:
+                        while True:
+                            line = _safe_input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
+                            if not line or line.lower() == 'q':
+                                break
                             parts = line.split()
                             if len(parts) < 2:
                                 print("Need range(s) and palette.")

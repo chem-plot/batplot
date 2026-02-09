@@ -23,6 +23,7 @@ from .ui import (
     position_right_ylabel as _ui_position_right_ylabel,
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
+    set_spine_side_color as _ui_set_spine_side_color,
 )
 
 
@@ -869,35 +870,6 @@ def apply_style_config(
     adjust_margins_cb: Optional[Callable[[], None]] = None,
     keep_canvas_fixed: bool = False,
 ) -> None:
-    def _apply_spine_color(spine_name: str, color) -> None:
-        if color is None:
-            return
-        try:
-            if spine_name in ('top', 'bottom'):
-                ax.tick_params(axis='x', which='both', colors=color)
-                ax.xaxis.label.set_color(color)
-                ax._stored_xlabel_color = color
-                if spine_name == 'top':
-                    ax._stored_top_xlabel_color = color
-                    artist = getattr(ax, '_top_xlabel_artist', None)
-                    if artist is not None:
-                        artist.set_color(color)
-                else:
-                    ax._stored_xlabel = ax.get_xlabel()
-            else:
-                ax.tick_params(axis='y', which='both', colors=color)
-                ax.yaxis.label.set_color(color)
-                ax._stored_ylabel_color = color
-                if spine_name == 'right':
-                    ax._stored_right_ylabel_color = color
-                    artist = getattr(ax, '_right_ylabel_artist', None)
-                    if artist is not None:
-                        artist.set_color(color)
-                else:
-                    ax._stored_ylabel = ax.get_ylabel()
-        except Exception:
-            pass
-
     try:
         with open(filename, "r", encoding="utf-8") as f:
             cfg = json.load(f)
@@ -1204,41 +1176,44 @@ def apply_style_config(
             except Exception as e:
                 print(f"Warning: Could not restore tick direction: {e}")
 
-    # Spines
+    # Tick colors (legacy axis-wide; skipped when spines have per-side color)
+        spines_cfg = cfg.get("spines", {})
+        has_per_spine_color = any(sp.get("color") for sp in spines_cfg.values())
+        if not has_per_spine_color:
+            tick_colors = cfg.get("tick_colors", {})
+            if tick_colors:
+                try:
+                    if "x" in tick_colors:
+                        ax.tick_params(axis='x', which='both', colors=tick_colors["x"])
+                    if "y" in tick_colors:
+                        ax.tick_params(axis='y', which='both', colors=tick_colors["y"])
+                except Exception as e:
+                    print(f"[DEBUG] Exception setting tick colors: {e}")
+
+    # Axis label colors (legacy; skipped when spines have per-side color)
+        if not has_per_spine_color:
+            axis_label_colors = cfg.get("axis_label_colors", {})
+            if axis_label_colors:
+                try:
+                    if "x" in axis_label_colors:
+                        ax.xaxis.label.set_color(axis_label_colors["x"])
+                    if "y" in axis_label_colors:
+                        ax.yaxis.label.set_color(axis_label_colors["y"])
+                except Exception as e:
+                    print(f"[DEBUG] Exception setting axis label colors: {e}")
+
+    # Spines (per-side color via set_spine_side_color for p/i/s/b consistency; applied after legacy tick/label colors)
         for name, sp_dict in cfg.get("spines", {}).items():
             if name in ax.spines:
                 if "linewidth" in sp_dict:
                     ax.spines[name].set_linewidth(sp_dict["linewidth"])
                 if "color" in sp_dict:
                     try:
-                        ax.spines[name].set_edgecolor(sp_dict["color"])
+                        _ui_set_spine_side_color(ax, name, sp_dict["color"], fig=fig)
                     except Exception:
                         pass
-                    _apply_spine_color(name, sp_dict.get("color"))
                 if "visible" in sp_dict:
                     ax.spines[name].set_visible(sp_dict["visible"])
-
-    # Tick colors
-        tick_colors = cfg.get("tick_colors", {})
-        if tick_colors:
-            try:
-                if "x" in tick_colors:
-                    ax.tick_params(axis='x', which='both', colors=tick_colors["x"])
-                if "y" in tick_colors:
-                    ax.tick_params(axis='y', which='both', colors=tick_colors["y"])
-            except Exception as e:
-                print(f"[DEBUG] Exception setting tick colors: {e}")
-
-    # Axis label colors
-        axis_label_colors = cfg.get("axis_label_colors", {})
-        if axis_label_colors:
-            try:
-                if "x" in axis_label_colors:
-                    ax.xaxis.label.set_color(axis_label_colors["x"])
-                if "y" in axis_label_colors:
-                    ax.yaxis.label.set_color(axis_label_colors["y"])
-            except Exception as e:
-                print(f"[DEBUG] Exception setting axis label colors: {e}")
 
     # Lines
         for entry in cfg.get("lines", []):

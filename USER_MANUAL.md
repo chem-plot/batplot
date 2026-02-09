@@ -4,7 +4,7 @@
 Batplot is a lightweight CLI tool for plotting XRD, PDF, XAS, electrochemistry, and operando data, featuring interactive and batch modes.
 The electrochemistry and operando plotting functions are inspired by the script written by Amalie, Erlend and Casper.
 
-**Supported Python versions:** 3.7–3.13
+**Supported Python versions:** 3.9–3.13
 
 ---
 

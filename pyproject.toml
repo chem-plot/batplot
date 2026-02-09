@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.8.11"
+version = "1.8.16"
 description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
 ]
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.9"
 dependencies = [
-    "numpy==2.3.4",  
-    "matplotlib==3.10.7",
+    "numpy>=1.21.0",
+    "matplotlib>=3.5.0",
     "rich>=10.0.0",
     "openpyxl>=3.0.0"
 ]
@@ -22,6 +22,10 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
@@ -41,4 +45,4 @@ batplot-manual = "batplot.manual:main"
 include = ["batplot*"]
 
 [tool.setuptools.package-data]
-"batplot" = ["data/USER_MANUAL.md"]
+"batplot" = ["data/USER_MANUAL.md", "data/CHANGELOG.md"]

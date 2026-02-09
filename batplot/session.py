@@ -30,7 +30,7 @@ This is different from style files (.bps/.bpsg):
 from __future__ import annotations
 
 import pickle
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import os
 
@@ -39,6 +39,7 @@ import numpy as np
 
 from .utils import _confirm_overwrite
 from .color_utils import ensure_colormap
+from .ui import set_spine_side_color as _set_spine_side_color
 
 
 def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
@@ -1147,13 +1148,7 @@ def load_operando_session(filename: str):
                             pass
                     if 'color' in props and props['color'] is not None:
                         try:
-                            sp.set_edgecolor(props['color'])
-                            if name in ('top', 'bottom'):
-                                ax.tick_params(axis='x', which='both', colors=props['color'])
-                                ax.xaxis.label.set_color(props['color'])
-                            else:
-                                ax.tick_params(axis='y', which='both', colors=props['color'])
-                                ax.yaxis.label.set_color(props['color'])
+                            _set_spine_side_color(ax, name, props['color'], fig=fig)
                         except Exception:
                             pass
             except Exception:
@@ -1433,13 +1428,7 @@ def load_operando_session(filename: str):
                                 pass
                         if 'color' in props and props['color'] is not None:
                             try:
-                                sp.set_edgecolor(props['color'])
-                                if name in ('top', 'bottom'):
-                                    ec_ax.tick_params(axis='x', which='both', colors=props['color'])
-                                    ec_ax.xaxis.label.set_color(props['color'])
-                                else:
-                                    ec_ax.tick_params(axis='y', which='both', colors=props['color'])
-                                    ec_ax.yaxis.label.set_color(props['color'])
+                                _set_spine_side_color(ec_ax, name, props['color'], fig=fig)
                             except Exception:
                                 pass
                 except Exception:
@@ -1565,20 +1554,96 @@ __all__ = [
  
 # --------------------- Electrochem GC session helpers ---------------------------
 
+def _ec_cycle_lines_to_lines_state(cycle_lines: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """Build serializable lines_state dict from cycle_lines (GC or CV mode)."""
+    lines_state: Dict[int, Dict[str, Any]] = {}
+    for cyc, parts in cycle_lines.items():
+        entry: Dict[str, Any] = {}
+        if isinstance(parts, dict):
+            for role in ("charge", "discharge"):
+                ln = parts.get(role)
+                if ln is None:
+                    entry[role] = None
+                    continue
+                try:
+                    x = np.asarray(ln.get_xdata(), float)
+                    y = np.asarray(ln.get_ydata(), float)
+                except Exception:
+                    x = np.array([]); y = np.array([])
+                try:
+                    color_raw = ln.get_color()
+                    try:
+                        from matplotlib.colors import to_hex
+                        color_hex = to_hex(color_raw)
+                    except Exception:
+                        try:
+                            from matplotlib.colors import to_hex, to_rgba
+                            color_hex = to_hex(to_rgba(color_raw))
+                        except Exception:
+                            color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
+                    st = {
+                        'color': color_hex,
+                        'linewidth': float(ln.get_linewidth() or 1.0),
+                        'linestyle': ln.get_linestyle() or '-',
+                        'alpha': ln.get_alpha(),
+                        'visible': bool(ln.get_visible()),
+                        'label': ln.get_label() or '',
+                    }
+                except Exception:
+                    st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
+                entry[role] = {'x': x, 'y': y, 'style': st}
+        else:
+            ln = parts
+            try:
+                x = np.asarray(ln.get_xdata(), float)
+                y = np.asarray(ln.get_ydata(), float)
+            except Exception:
+                x = np.array([]); y = np.array([])
+            try:
+                color_raw = ln.get_color()
+                try:
+                    from matplotlib.colors import to_hex
+                    color_hex = to_hex(color_raw)
+                except Exception:
+                    try:
+                        from matplotlib.colors import to_hex, to_rgba
+                        color_hex = to_hex(to_rgba(color_raw))
+                    except Exception:
+                        color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
+                st = {
+                    'color': color_hex,
+                    'linewidth': float(ln.get_linewidth() or 1.0),
+                    'linestyle': ln.get_linestyle() or '-',
+                    'alpha': ln.get_alpha(),
+                    'visible': bool(ln.get_visible()),
+                    'label': ln.get_label() or '',
+                }
+            except Exception:
+                st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
+            entry['line'] = {'x': x, 'y': y, 'style': st}
+        lines_state[int(cyc)] = entry
+    return lines_state
+
+
 def dump_ec_session(
     filename: str,
     *,
     fig,
     ax,
     cycle_lines: Dict[int, Dict[str, Any]],
+    file_data: Optional[List[Dict[str, Any]]] = None,
     skip_confirm: bool = False,
 ) -> None:
     """Serialize electrochem GC plot (capacity vs voltage) including data and styles.
 
     Stores figure size/dpi, axis labels/limits, and for each cycle the charge and
-    discharge line data (x,y) and basic line styles.
+    discharge line data (x,y) and basic line styles. When file_data is provided
+    and has more than one file, saves multi-file session (all files' curves and
+    visibility).
     
     Args:
+        file_data: Optional list of multi-file dicts (filename, filepath, visible, cycle_lines).
+            When len(file_data) > 1, session is saved as multi-file.
         skip_confirm: If True, skip overwrite confirmation (already handled by caller).
     """
     try:
@@ -1678,83 +1743,23 @@ def dump_ec_session(
             'bottom': float(sp.bottom),
             'top': float(sp.top),
         }
-        # Capture cycles
-        lines_state: Dict[int, Dict[str, Any]] = {}
-        for cyc, parts in cycle_lines.items():
-            entry: Dict[str, Any] = {}
-            # Handle both GC mode (dict with 'charge'/'discharge') and CV mode (direct Line2D)
-            if isinstance(parts, dict):
-                # GC mode: parts is a dict with 'charge' and 'discharge' Line2D objects
-                for role in ("charge", "discharge"):
-                    ln = parts.get(role)
-                    if ln is None:
-                        entry[role] = None
-                        continue
-                    try:
-                        x = np.asarray(ln.get_xdata(), float)
-                        y = np.asarray(ln.get_ydata(), float)
-                    except Exception:
-                        x = np.array([]); y = np.array([])
-                    try:
-                        # Convert color to hex for consistency with style export
-                        color_raw = ln.get_color()
-                        try:
-                            from matplotlib.colors import to_hex
-                            color_hex = to_hex(color_raw)
-                        except Exception:
-                            # Fallback: try to convert via rgba
-                            try:
-                                from matplotlib.colors import to_hex, to_rgba
-                                color_hex = to_hex(to_rgba(color_raw))
-                            except Exception:
-                                # Last resort: use as-is if it's already a string
-                                color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
-                        st = {
-                            'color': color_hex,
-                            'linewidth': float(ln.get_linewidth() or 1.0),
-                            'linestyle': ln.get_linestyle() or '-',
-                            'alpha': ln.get_alpha(),
-                            'visible': bool(ln.get_visible()),
-                            'label': ln.get_label() or '',
-                        }
-                    except Exception:
-                        st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
-                    entry[role] = {'x': x, 'y': y, 'style': st}
-            else:
-                # CV mode: parts is a Line2D object directly
-                ln = parts
-                try:
-                    x = np.asarray(ln.get_xdata(), float)
-                    y = np.asarray(ln.get_ydata(), float)
-                except Exception:
-                    x = np.array([]); y = np.array([])
-                try:
-                    # Convert color to hex for consistency with style export
-                    color_raw = ln.get_color()
-                    try:
-                        from matplotlib.colors import to_hex
-                        color_hex = to_hex(color_raw)
-                    except Exception:
-                        # Fallback: try to convert via rgba
-                        try:
-                            from matplotlib.colors import to_hex, to_rgba
-                            color_hex = to_hex(to_rgba(color_raw))
-                        except Exception:
-                            # Last resort: use as-is if it's already a string
-                            color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
-                    st = {
-                        'color': color_hex,
-                        'linewidth': float(ln.get_linewidth() or 1.0),
-                        'linestyle': ln.get_linestyle() or '-',
-                        'alpha': ln.get_alpha(),
-                        'visible': bool(ln.get_visible()),
-                        'label': ln.get_label() or '',
-                    }
-                except Exception:
-                    st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
-                # Store under 'line' key to distinguish from GC mode's 'charge'/'discharge' keys
-                entry['line'] = {'x': x, 'y': y, 'style': st}
-            lines_state[int(cyc)] = entry
+        # Capture cycles: single-file (lines_state) or multi-file (file_data with lines per file)
+        if file_data is not None and len(file_data) > 1:
+            file_data_saved: List[Dict[str, Any]] = []
+            for f in file_data:
+                cl = f.get("cycle_lines") or {}
+                lines_state_f = _ec_cycle_lines_to_lines_state(cl)
+                file_data_saved.append({
+                    "filename": f.get("filename", "Data"),
+                    "display_name": f.get("display_name", f.get("filename", "Data")),
+                    "filepath": f.get("filepath"),
+                    "visible": bool(f.get("visible", True)),
+                    "lines": lines_state_f,
+                })
+            lines_state = {}
+        else:
+            file_data_saved = None
+            lines_state = _ec_cycle_lines_to_lines_state(cycle_lines)
         legend_visible = False
         legend_xy_in = None
         try:
@@ -1773,6 +1778,8 @@ def dump_ec_session(
             'axis': axis,
             'subplot_margins': subplot_margins,
             'lines': lines_state,
+            'multi_file': file_data_saved is not None,
+            'file_data': file_data_saved if file_data_saved is not None else None,
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
@@ -1811,9 +1818,9 @@ def dump_ec_session(
 
 
 def load_ec_session(filename: str):
-    """Load an EC GC session and reconstruct figure, axes, and cycle_lines.
+    """Load an EC GC session and reconstruct figure, axes, and cycle_lines or file_data.
 
-    Returns: (fig, ax, cycle_lines)
+    Returns: (fig, ax, cycle_lines) for single-file sessions, or (fig, ax, None, file_data) for multi-file.
     """
     try:
         with open(filename, 'rb') as f:
@@ -1944,40 +1951,14 @@ def load_ec_session(filename: str):
     except Exception:
         pass
 
-    # Rebuild lines
-    raw = sess.get('lines', {})
-    cycle_lines: Dict[int, Dict[str, Any]] = {}
-    # Use a color cycle but keep saved colors primarily
-    for k in sorted(raw.keys(), key=lambda x: int(x)):
-        cyc = int(k)
-        parts = raw[k] or {}
-        
-        # Check if this is CV mode (has 'line' key) or GC mode (has 'charge'/'discharge' keys)
-        if 'line' in parts:
-            # CV mode: single line per cycle
-            rec = parts.get('line')
-            ln_obj = None
-            if isinstance(rec, dict) and isinstance(rec.get('x'), np.ndarray) and isinstance(rec.get('y'), np.ndarray):
-                x = np.asarray(rec['x'], float)
-                y = np.asarray(rec['y'], float)
-                st = rec.get('style', {})
-                color = st.get('color', 'tab:blue')
-                lw = float(st.get('linewidth', 1.0))
-                ls = st.get('linestyle', '-') or '-'
-                alpha = st.get('alpha', None)
-                label = st.get('label', f'Cycle {cyc}')
-                try:
-                    ln_obj, = ax.plot(x, y, linestyle=ls, linewidth=lw, color=color, alpha=alpha, label=label)
-                    vis = bool(st.get('visible', True))
-                    ln_obj.set_visible(vis)
-                except Exception:
-                    pass
-            cycle_lines[cyc] = ln_obj
-        else:
-            # GC mode: separate charge and discharge lines
-            cyc_entry: Dict[str, Any] = {}
-            for role in ("charge", "discharge"):
-                rec = parts.get(role)
+    # Rebuild lines (single-file or multi-file)
+    def _rebuild_lines_from_raw(raw: Dict) -> Dict[int, Dict[str, Any]]:
+        out: Dict[int, Dict[str, Any]] = {}
+        for k in sorted(raw.keys(), key=lambda x: int(x)):
+            cyc = int(k)
+            parts = raw.get(k) or {}
+            if 'line' in parts:
+                rec = parts.get('line')
                 ln_obj = None
                 if isinstance(rec, dict) and isinstance(rec.get('x'), np.ndarray) and isinstance(rec.get('y'), np.ndarray):
                     x = np.asarray(rec['x'], float)
@@ -1988,17 +1969,54 @@ def load_ec_session(filename: str):
                     ls = st.get('linestyle', '-') or '-'
                     alpha = st.get('alpha', None)
                     label = st.get('label', f'Cycle {cyc}')
-                    if role == 'discharge' and (not label or label.startswith('_')):
-                        label = f'Cycle {cyc}' if rec.get('x') is None else '_nolegend_'
-                    ln_args = {}
                     try:
                         ln_obj, = ax.plot(x, y, linestyle=ls, linewidth=lw, color=color, alpha=alpha, label=label)
-                        vis = bool(st.get('visible', True))
-                        ln_obj.set_visible(vis)
+                        ln_obj.set_visible(bool(st.get('visible', True)))
                     except Exception:
                         pass
-                cyc_entry[role] = ln_obj
-            cycle_lines[cyc] = cyc_entry
+                out[cyc] = ln_obj
+            else:
+                cyc_entry: Dict[str, Any] = {}
+                for role in ("charge", "discharge"):
+                    rec = parts.get(role)
+                    ln_obj = None
+                    if isinstance(rec, dict) and isinstance(rec.get('x'), np.ndarray) and isinstance(rec.get('y'), np.ndarray):
+                        x = np.asarray(rec['x'], float)
+                        y = np.asarray(rec['y'], float)
+                        st = rec.get('style', {})
+                        color = st.get('color', 'tab:blue')
+                        lw = float(st.get('linewidth', 1.0))
+                        ls = st.get('linestyle', '-') or '-'
+                        alpha = st.get('alpha', None)
+                        label = st.get('label', f'Cycle {cyc}')
+                        if role == 'discharge' and (not label or label.startswith('_')):
+                            label = '_nolegend_'
+                        try:
+                            ln_obj, = ax.plot(x, y, linestyle=ls, linewidth=lw, color=color, alpha=alpha, label=label)
+                            ln_obj.set_visible(bool(st.get('visible', True)))
+                        except Exception:
+                            pass
+                    cyc_entry[role] = ln_obj
+                out[cyc] = cyc_entry
+        return out
+
+    file_data_out: Optional[List[Dict[str, Any]]] = None
+    if sess.get('multi_file') and sess.get('file_data'):
+        file_data_out = []
+        for f in sess['file_data']:
+            raw_f = f.get('lines', {})
+            cl = _rebuild_lines_from_raw(raw_f)
+            file_data_out.append({
+                'filename': f.get('filename', 'Data'),
+                'display_name': f.get('display_name', f.get('filename', 'Data')),
+                'filepath': f.get('filepath'),
+                'visible': bool(f.get('visible', True)),
+                'cycle_lines': cl,
+            })
+        cycle_lines = {}
+    else:
+        raw = sess.get('lines', {})
+        cycle_lines = _rebuild_lines_from_raw(raw)
 
     # Axis labels/limits/scales
     # Store the labels first, then apply WASD state before actually setting them
@@ -2079,21 +2097,15 @@ def load_ec_session(filename: str):
                     pass
             if spec.get('color') is not None:
                 try:
-                    sp.set_edgecolor(spec['color'])
-                    if name in ('top', 'bottom'):
-                        ax.tick_params(axis='x', which='both', colors=spec['color'])
-                        ax.xaxis.label.set_color(spec['color'])
-                        if name == 'top':
-                            ax._stored_top_xlabel_color = spec['color']
-                        else:
-                            ax._stored_xlabel_color = spec['color']
-                    else:
-                        ax.tick_params(axis='y', which='both', colors=spec['color'])
-                        ax.yaxis.label.set_color(spec['color'])
-                        if name == 'left':
-                            ax._stored_ylabel_color = spec['color']
-                        else:
-                            ax._stored_right_ylabel_color = spec['color']
+                    _set_spine_side_color(ax, name, spec['color'], fig=fig)
+                    if name == 'top':
+                        ax._stored_top_xlabel_color = spec['color']
+                    elif name == 'bottom':
+                        ax._stored_xlabel_color = spec['color']
+                    elif name == 'left':
+                        ax._stored_ylabel_color = spec['color']
+                    elif name == 'right':
+                        ax._stored_right_ylabel_color = spec['color']
                 except Exception:
                     pass
     except Exception:
@@ -2398,7 +2410,9 @@ def load_ec_session(filename: str):
             fig.canvas.draw_idle()
         except Exception:
             pass
-    return fig, ax, cycle_lines
+    if file_data_out is not None:
+        return (fig, ax, None, file_data_out)
+    return (fig, ax, cycle_lines)
 
 # --------------------- CPC (Capacity-Per-Cycle) session helpers -----------------
 
@@ -2897,13 +2911,10 @@ def load_cpc_session(filename: str):
                         if 'linewidth' in props:
                             sp.set_linewidth(props['linewidth'])
                         if 'color' in props:
-                            sp.set_edgecolor(props['color'])
-                            if name in ('top','bottom'):
-                                ax.tick_params(axis='x', which='both', colors=props['color'])
-                                ax.xaxis.label.set_color(props['color'])
-                            else:
-                                ax.tick_params(axis='y', which='both', colors=props['color'])
-                                ax.yaxis.label.set_color(props['color'])
+                            try:
+                                _set_spine_side_color(ax, name, props['color'], fig=fig)
+                            except Exception:
+                                pass
                             fig._cpc_spine_colors[name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])
@@ -2914,9 +2925,10 @@ def load_cpc_session(filename: str):
                         if 'linewidth' in props:
                             sp.set_linewidth(props['linewidth'])
                         if 'color' in props:
-                            sp.set_edgecolor(props['color'])
-                            ax2.tick_params(axis='y', which='both', colors=props['color'])
-                            ax2.yaxis.label.set_color(props['color'])
+                            try:
+                                _set_spine_side_color(ax2, name, props['color'], fig=fig)
+                            except Exception:
+                                pass
                             fig._cpc_spine_colors['right' if name == 'right' else name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])

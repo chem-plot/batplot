@@ -74,6 +74,24 @@ def main(argv: Optional[list] = None) -> int:
 		print(f"   Continuing anyway, but expect potential issues...\n")
 	
 	# ====================================================================
+	# STEP 0.5: CHECK FOR DEVELOPER UPGRADE COMMAND
+	# ====================================================================
+	# Special developer-only command for upgrading batplot to PyPI.
+	# This is checked BEFORE anything else to allow quick upgrades.
+	# Only works when running from the development directory.
+	# ====================================================================
+	if '--dev-upgrade' in sys.argv:
+		try:
+			from .dev_upgrade import run_upgrade
+			return run_upgrade()
+		except ImportError:
+			print("Error: Developer upgrade module not available.")
+			return 1
+		except Exception as e:
+			print(f"Error during upgrade: {e}")
+			return 1
+	
+	# ====================================================================
 	# STEP 1: VERSION CHECK (NON-BLOCKING)
 	# ====================================================================
 	# Check PyPI for newer versions of batplot.

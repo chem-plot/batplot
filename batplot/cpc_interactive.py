@@ -44,6 +44,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator
 import random as _random
 
+from .ui import set_spine_side_color as _ui_set_spine_side_color
+
 
 class _FilterIMKWarning:
     """Filter that suppresses macOS IMKCFRunLoopWakeUpReliable warnings while preserving other errors."""
@@ -498,6 +500,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     fam = plt.rcParams.get('font.sans-serif', [''])
     fam0 = fam[0] if fam else ''
     fsize = plt.rcParams.get('font.size', None)
+    mathtext_fs = plt.rcParams.get('mathtext.fontset', 'dejavusans')
     # Tick widths helper
     def _tick_width(axis_obj, which: str):
         try:
@@ -625,7 +628,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         },
         # Track whether data axes were swapped via --ro when this style was saved
         'ro_active': bool(getattr(fig, '_ro_active', False)),
-        'font': {'family': fam0, 'size': fsize},
+        'font': {'family': fam0, 'size': fsize, 'mathtext_fontset': mathtext_fs},
         'legend': {
             'visible': legend_visible,
             'position_inches': legend_xy_in,  # [x, y] offset from canvas center in inches
@@ -784,9 +787,22 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
         font = cfg.get('font', {})
         fam = font.get('family')
         size = font.get('size')
+        mathtext_fs = font.get('mathtext_fontset')
+        # Restore mathtext.fontset first (if explicitly saved)
+        if mathtext_fs:
+            try:
+                plt.rcParams['mathtext.fontset'] = mathtext_fs
+            except Exception:
+                pass
         if fam:
             plt.rcParams['font.family'] = 'sans-serif'
             plt.rcParams['font.sans-serif'] = [fam, 'DejaVu Sans', 'Arial', 'Helvetica']
+            # Set mathtext.fontset to match font family
+            lf = fam.lower()
+            if any(k in lf for k in ('stix', 'times', 'roman')):
+                plt.rcParams['mathtext.fontset'] = 'stix'
+            else:
+                plt.rcParams['mathtext.fontset'] = 'dejavusans'
         if size is not None:
             plt.rcParams['font.size'] = float(size)
         # Apply to current axes tick labels and duplicate artists, if present
@@ -1546,21 +1562,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         for curr_ax in target_axes:
             if curr_ax is None or spine_name not in curr_ax.spines:
                 continue
-            sp = curr_ax.spines[spine_name]
             try:
-                sp.set_edgecolor(color)
-            except Exception:
-                pass
-            try:
-                if spine_name in ('top', 'bottom'):
-                    curr_ax.tick_params(axis='x', which='both', colors=color)
-                    curr_ax.xaxis.label.set_color(color)
-                elif spine_name == 'left':
-                    curr_ax.tick_params(axis='y', which='both', colors=color)
-                    curr_ax.yaxis.label.set_color(color)
-                elif spine_name == 'right':
-                    curr_ax.tick_params(axis='y', which='both', colors=color)
-                    curr_ax.yaxis.label.set_color(color)
+                _ui_set_spine_side_color(curr_ax, spine_name, color, fig=fig)
             except Exception:
                 pass
 
@@ -1892,7 +1895,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"  {idx}. {name}")
                             if bar:
                                 print(f"      {bar}")
-                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3 or 1 2 2 3) or palette/number for all, q=cancel: ").strip()
+                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3) or palette/number for all, q=cancel: ").strip()
                         if not color_input or color_input.lower() == 'q':
                             continue
                         tokens = color_input.split()
@@ -1922,54 +1925,48 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     print(f"Error setting color: {e}")
                                     pass
                         else:
-                            # Multiple tokens: parse file:color pairs
-                            def _apply_manual_entries(tokens):
-                                idx_color_pairs = []
-                                i = 0
-                                while i < len(tokens):
-                                    tok = tokens[i]
-                                    if ':' in tok:
+                            # Multiple tokens: parse file:color pairs (colon form only)
+                            if any(t and ':' not in t for t in tokens):
+                                print("Use file:color form (e.g., 1:2 2:3).")
+                            else:
+                                def _apply_manual_entries(tokens):
+                                    idx_color_pairs = []
+                                    for tok in tokens:
+                                        if ':' not in tok:
+                                            continue
                                         idx_str, color = tok.split(':', 1)
-                                    else:
-                                        if i + 1 >= len(tokens):
-                                            print(f"Skip incomplete entry: {tok}")
-                                            break
-                                        idx_str = tok
-                                        color = tokens[i + 1]
-                                        i += 1
-                                    idx_color_pairs.append((idx_str, color))
-                                    i += 1
-                                for idx_str, color in idx_color_pairs:
-                                    try:
-                                        file_idx = int(idx_str) - 1
-                                    except ValueError:
-                                        print(f"Bad index: {idx_str}")
-                                        continue
-                                    if not (0 <= file_idx < len(file_data)):
-                                        print(f"Index out of range: {idx_str}")
-                                        continue
-                                    resolved = resolve_color_token(color, fig)
-                                    charge_col = resolved if resolved else color
-                                    if not charge_col:
-                                        continue
-                                    discharge_col = _generate_similar_color(charge_col)
-                                    try:
-                                        file_data[file_idx]['color'] = charge_col
-                                        # Chg: filled square; DChg: unfilled (hollow) square
-                                        if hasattr(file_data[file_idx]['sc_charge'], 'set_facecolors'):
-                                            from matplotlib.colors import to_rgba
-                                            file_data[file_idx]['sc_charge'].set_color(charge_col)
-                                            file_data[file_idx]['sc_charge'].set_facecolors(to_rgba(charge_col))
-                                        else:
-                                            file_data[file_idx]['sc_charge'].set_color(charge_col)
-                                        if hasattr(file_data[file_idx]['sc_discharge'], 'set_facecolors'):
-                                            file_data[file_idx]['sc_discharge'].set_facecolors('none')
-                                            file_data[file_idx]['sc_discharge'].set_edgecolors(discharge_col)
-                                        else:
-                                            file_data[file_idx]['sc_discharge'].set_color(discharge_col)
-                                    except Exception:
-                                        pass
-                            _apply_manual_entries(tokens)
+                                        idx_color_pairs.append((idx_str, color))
+                                    for idx_str, color in idx_color_pairs:
+                                        try:
+                                            file_idx = int(idx_str) - 1
+                                        except ValueError:
+                                            print(f"Bad index: {idx_str}")
+                                            continue
+                                        if not (0 <= file_idx < len(file_data)):
+                                            print(f"Index out of range: {idx_str}")
+                                            continue
+                                        resolved = resolve_color_token(color, fig)
+                                        charge_col = resolved if resolved else color
+                                        if not charge_col:
+                                            continue
+                                        discharge_col = _generate_similar_color(charge_col)
+                                        try:
+                                            file_data[file_idx]['color'] = charge_col
+                                            # Chg: filled square; DChg: unfilled (hollow) square
+                                            if hasattr(file_data[file_idx]['sc_charge'], 'set_facecolors'):
+                                                from matplotlib.colors import to_rgba
+                                                file_data[file_idx]['sc_charge'].set_color(charge_col)
+                                                file_data[file_idx]['sc_charge'].set_facecolors(to_rgba(charge_col))
+                                            else:
+                                                file_data[file_idx]['sc_charge'].set_color(charge_col)
+                                            if hasattr(file_data[file_idx]['sc_discharge'], 'set_facecolors'):
+                                                file_data[file_idx]['sc_discharge'].set_facecolors('none')
+                                                file_data[file_idx]['sc_discharge'].set_edgecolors(discharge_col)
+                                            else:
+                                                file_data[file_idx]['sc_discharge'].set_color(discharge_col)
+                                        except Exception:
+                                            pass
+                                _apply_manual_entries(tokens)
                         if not is_multi_file and getattr(fig, '_cpc_spine_auto', False):
                             try:
                                 cur_col = _color_of(sc_charge)
@@ -1999,7 +1996,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"  {idx}. {name}")
                             if bar:
                                 print(f"      {bar}")
-                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3 or 1 2 2 3) or palette/number for all, q=cancel: ").strip()
+                        color_input = _safe_input("Enter file+color pairs (e.g., 1:2 2:3) or palette/number for all, q=cancel: ").strip()
                         if not color_input or color_input.lower() == 'q':
                             continue
                         tokens = color_input.split()
@@ -2021,47 +2018,41 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 except Exception:
                                     pass
                         else:
-                            # Multiple tokens: parse file:color pairs
-                            def _apply_manual_entries_eff(tokens):
-                                idx_color_pairs = []
-                                i = 0
-                                while i < len(tokens):
-                                    tok = tokens[i]
-                                    if ':' in tok:
+                            # Multiple tokens: parse file:color pairs (colon form only)
+                            if any(t and ':' not in t for t in tokens):
+                                print("Use file:color form (e.g., 1:2 2:3).")
+                            else:
+                                def _apply_manual_entries_eff(tokens):
+                                    idx_color_pairs = []
+                                    for tok in tokens:
+                                        if ':' not in tok:
+                                            continue
                                         idx_str, color = tok.split(':', 1)
-                                    else:
-                                        if i + 1 >= len(tokens):
-                                            print(f"Skip incomplete entry: {tok}")
-                                            break
-                                        idx_str = tok
-                                        color = tokens[i + 1]
-                                        i += 1
-                                    idx_color_pairs.append((idx_str, color))
-                                    i += 1
-                                for idx_str, color in idx_color_pairs:
-                                    try:
-                                        file_idx = int(idx_str) - 1
-                                    except ValueError:
-                                        print(f"Bad index: {idx_str}")
-                                        continue
-                                    if not (0 <= file_idx < len(file_data)):
-                                        print(f"Index out of range: {idx_str}")
-                                        continue
-                                    resolved = resolve_color_token(color, fig)
-                                    col = resolved if resolved else color
-                                    if not col:
-                                        continue
-                                    try:
-                                        file_data[file_idx]['sc_eff'].set_color(col)
-                                        file_data[file_idx]['eff_color'] = col
-                                        # Force update of facecolors for scatter plots
-                                        if hasattr(file_data[file_idx]['sc_eff'], 'set_facecolors'):
-                                            from matplotlib.colors import to_rgba
-                                            rgba = to_rgba(col)
-                                            file_data[file_idx]['sc_eff'].set_facecolors(rgba)
-                                    except Exception:
-                                        pass
-                            _apply_manual_entries_eff(tokens)
+                                        idx_color_pairs.append((idx_str, color))
+                                    for idx_str, color in idx_color_pairs:
+                                        try:
+                                            file_idx = int(idx_str) - 1
+                                        except ValueError:
+                                            print(f"Bad index: {idx_str}")
+                                            continue
+                                        if not (0 <= file_idx < len(file_data)):
+                                            print(f"Index out of range: {idx_str}")
+                                            continue
+                                        resolved = resolve_color_token(color, fig)
+                                        col = resolved if resolved else color
+                                        if not col:
+                                            continue
+                                        try:
+                                            file_data[file_idx]['sc_eff'].set_color(col)
+                                            file_data[file_idx]['eff_color'] = col
+                                            # Force update of facecolors for scatter plots
+                                            if hasattr(file_data[file_idx]['sc_eff'], 'set_facecolors'):
+                                                from matplotlib.colors import to_rgba
+                                                rgba = to_rgba(col)
+                                                file_data[file_idx]['sc_eff'].set_facecolors(rgba)
+                                        except Exception:
+                                            pass
+                                _apply_manual_entries_eff(tokens)
                         if not is_multi_file and getattr(fig, '_cpc_spine_auto', False):
                             try:
                                 cur_col = _color_of(sc_eff)
@@ -2093,13 +2084,13 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     if not is_multi_file:
                         auto_enabled = getattr(fig, '_cpc_spine_auto', False)
                         auto_status = "ON" if auto_enabled else "OFF"
-                        print(_colorize_inline_commands(f"  a : auto (apply capacity curve color to left y-axis, efficiency to right y-axis) [{auto_status}]"))
+                        print(_colorize_inline_commands(f"  auto : auto-apply capacity color to left y-axis, efficiency to right y-axis [{auto_status}]"))
                     print("q: back to main menu")
                     line = _safe_input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
                     if not line or line.lower() == 'q':
                         break
                     # Handle auto toggle when only one file is loaded
-                    if not is_multi_file and line.lower() == 'a':
+                    if not is_multi_file and line.lower() in ('a', 'auto'):
                         auto_enabled = getattr(fig, '_cpc_spine_auto', False)
                         fig._cpc_spine_auto = not auto_enabled
                         new_status = "ON" if fig._cpc_spine_auto else "OFF"
@@ -2124,9 +2115,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     # Map wasd to spine names
                     key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
                     tokens = line.split()
+                    manual_change_made = False
                     for token in tokens:
                         if ':' not in token:
-                            print(f"Skip malformed token: {token}")
+                            # Skip auto keyword silently (handled above)
+                            if token.lower() not in ('a', 'auto'):
+                                print(f"Skip malformed token: {token}")
                             continue
                         key_part, color = token.split(':', 1)
                         key_part = key_part.lower()
@@ -2137,6 +2131,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         resolved = resolve_color_token(color, fig)
                         _set_spine_color(spine_name, resolved)
                         print(f"Set {spine_name} spine to {resolved}")
+                        manual_change_made = True
+                    # Disable auto mode if manual changes were made
+                    if manual_change_made and not is_multi_file and getattr(fig, '_cpc_spine_auto', False):
+                        fig._cpc_spine_auto = False
+                        print("Auto mode disabled (manual spine color set)")
                     fig.canvas.draw()
             except Exception as e:
                 print(f"Error in spine color menu: {e}")
@@ -4580,6 +4579,122 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print("Inverted efficiency for current dataset.")
             except Exception as e:
                 print(f"Error in efficiency inversion: {e}")
+            _print_menu(fig); continue
+        elif key == 'oe':
+            # Overwrite last exported figure
+            try:
+                import os
+                last_figure_path = getattr(fig, '_last_figure_export_path', None)
+                if not last_figure_path:
+                    print("No previous figure export found.")
+                    _print_menu(fig); continue
+                if not os.path.exists(last_figure_path):
+                    print(f"Previous export file not found: {last_figure_path}")
+                    _print_menu(fig); continue
+                yn = _safe_input(f"Overwrite '{os.path.basename(last_figure_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    _print_menu(fig); continue
+                
+                target = last_figure_path
+                _, ext = os.path.splitext(target)
+                # Handle SVG with transparency
+                if ext.lower() == '.svg':
+                    try:
+                        fig_fc = fig.get_facecolor()
+                    except Exception:
+                        fig_fc = None
+                    try:
+                        ax_fc = ax.get_facecolor()
+                    except Exception:
+                        ax_fc = None
+                    try:
+                        if getattr(fig, 'patch', None) is not None:
+                            fig.patch.set_alpha(0.0)
+                            fig.patch.set_facecolor('none')
+                        if getattr(ax, 'patch', None) is not None:
+                            ax.patch.set_alpha(0.0)
+                            ax.patch.set_facecolor('none')
+                    except Exception:
+                        pass
+                    try:
+                        fig.savefig(target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none')
+                    finally:
+                        try:
+                            if fig_fc is not None and getattr(fig, 'patch', None) is not None:
+                                fig.patch.set_alpha(1.0)
+                                fig.patch.set_facecolor(fig_fc)
+                        except Exception:
+                            pass
+                        try:
+                            if ax_fc is not None and getattr(ax, 'patch', None) is not None:
+                                ax.patch.set_alpha(1.0)
+                                ax.patch.set_facecolor(ax_fc)
+                        except Exception:
+                            pass
+                else:
+                    fig.savefig(target, bbox_inches='tight')
+                print(f"Overwritten figure to {target}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
+            _print_menu(fig); continue
+        elif key == 'os':
+            # Overwrite last saved session
+            try:
+                from .session import dump_cpc_session
+                import os
+                last_session_path = getattr(fig, '_last_session_save_path', None)
+                if not last_session_path:
+                    print("No previous session save found.")
+                    _print_menu(fig); continue
+                if not os.path.exists(last_session_path):
+                    print(f"Previous save file not found: {last_session_path}")
+                    _print_menu(fig); continue
+                yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    _print_menu(fig); continue
+                dump_cpc_session(last_session_path, fig=fig, ax=ax, file_data=file_data, is_multi_file=is_multi_file, current_file_idx=current_file_idx, tick_state=tick_state, skip_confirm=True)
+                print(f"Overwritten session to {last_session_path}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
+            _print_menu(fig); continue
+        elif key in ('ops', 'opsg'):
+            # Overwrite last exported style (ops) or style+geometry (opsg)
+            try:
+                import os
+                import json
+                last_style_path = getattr(fig, '_last_style_export_path', None)
+                if not last_style_path:
+                    print("No previous style export found.")
+                    _print_menu(fig); continue
+                if not os.path.exists(last_style_path):
+                    print(f"Previous export file not found: {last_style_path}")
+                    _print_menu(fig); continue
+                
+                # Determine export type from command
+                exp_choice = 'ps' if key == 'ops' else 'psg'
+                label = "style-only" if key == 'ops' else "style+geometry"
+                
+                yn = _safe_input(f"Overwrite {label} file '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    print("Canceled.")
+                    _print_menu(fig); continue
+                
+                # Rebuild config from current state
+                cfg = _style_snapshot(fig, ax, file_data, is_multi_file, current_file_idx, tick_state)
+                if exp_choice == 'psg':
+                    cfg['axes_geometry'] = _get_geometry_snapshot(fig, ax)
+                    cfg['kind'] = 'cpc_style_geom'
+                else:
+                    cfg['kind'] = 'cpc_style'
+                
+                # Write to file
+                with open(last_style_path, 'w', encoding='utf-8') as f:
+                    json.dump(cfg, f, indent=2)
+                print(f"Overwritten {label} style to {last_style_path}")
+            except Exception as e:
+                print(f"Overwrite failed: {e}")
             _print_menu(fig); continue
         else:
             print("Unknown key.")

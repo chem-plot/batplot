@@ -64,42 +64,53 @@ from typing import Optional, Tuple
 # information about what's new or important in the update. This information will
 # be displayed to users when they run batplot and a newer version is available.
 #
-# EXAMPLE:
-# --------
-# UPDATE_INFO = {
-#     'custom_message': "This update includes important bug fixes and new features.",
-#     'update_notes': [
-#         "- Fixed colormap preservation issue in session files",
-#         "- Improved legend positioning when toggling visibility",
-#         "- Added superscript/subscript shortcuts for labels",
-#         "- Enhanced version check notifications"
-#     ],
-#     'show_update_notes': True,
-# }
-#
-# To disable custom messages, set 'custom_message' to None.
-# To disable update notes, set 'update_notes' to None or an empty list [].
-# ====================================================================================
-
+# (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
 UPDATE_INFO = {
     # Custom message to include in update notification
-    # Set to None or empty string to disable
-    # This will be displayed as an additional line in the update message box
-    'custom_message': "This update includes important bug fixes",  # Example: "This update includes important bug fixes."
-    
-    # Additional notes about the update (list of strings)
-    # Set to None or empty list [] to disable
-    # Each item in the list will be displayed as a separate line
-    'update_notes': None,  # Example: ["- Fixed colormap preservation issue", "- Improved legend positioning"]
-    
-    # Whether to show update notes if provided
-    # Set to False to hide update notes even if they are defined
+    # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
+    'custom_message': '- GC and dQdV modes now support multiple files',
+    # Additional notes (auto-filled from RELEASE_NOTES.txt)
+    'update_notes': [
+        '- GC and dQdV modes now support multiple files'
+    ],
     'show_update_notes': True,
 }
 
 # ====================================================================================
 # END OF UPDATE INFO CONFIGURATION
 # ====================================================================================
+# URL for release notes of the latest version (so old installs can show "what's new").
+# Updated by batplot --dev-upgrade; commit and push so users see notes.
+LATEST_RELEASE_NOTES_URL = "https://raw.githubusercontent.com/TianDai1729/batplot/main/batplot/data/latest_release_notes.json"
+
+
+def _fetch_latest_release_notes(latest_version: str) -> Optional[dict]:
+    """Fetch release notes for the given version from the project URL.
+    Returns dict with 'version' and 'update_notes' (list of str), or None on failure.
+    """
+    try:
+        import urllib.request
+        with urllib.request.urlopen(LATEST_RELEASE_NOTES_URL, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            if isinstance(data, dict) and data.get('version') == latest_version:
+                notes = data.get('update_notes')
+                if isinstance(notes, list):
+                    return data
+    except Exception:
+        pass
+    return None
+
+
+def _read_changelog_from_package() -> Optional[str]:
+    """Read full changelog from the file shipped with the package (batplot/data/CHANGELOG.md).
+    No network access. Returns None if file not found."""
+    try:
+        p = Path(__file__).resolve().parent / "data" / "CHANGELOG.md"
+        if p.exists():
+            return p.read_text(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+    return None
 
 
 def get_cache_file() -> Path:
@@ -133,6 +144,24 @@ def get_latest_version() -> Optional[str]:
             return data['info']['version']
     except Exception:
         # Silently fail - don't interrupt user's work
+        return None
+
+
+def get_all_versions_from_pypi() -> Optional[list]:
+    """Fetch all released versions from PyPI (sorted ascending).
+    
+    Returns:
+        List of version strings, or None if check fails
+    """
+    try:
+        import urllib.request
+        url = "https://pypi.org/pypi/batplot/json"
+        with urllib.request.urlopen(url, timeout=2) as response:
+            data = json.loads(response.read().decode())
+            versions = list(data.get('releases', {}).keys())
+            versions.sort(key=lambda v: parse_version(v))
+            return versions
+    except Exception:
         return None
 
 
@@ -175,7 +204,7 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
                     # Use cached result
                     latest = cache.get('latest_version')
                     if latest and parse_version(latest) > parse_version(current_version):
-                        _print_update_message(current_version, latest)
+                        _print_update_message(current_version, latest, 0)  # count unknown when from cache
                     return
         except Exception:
             # Cache read failed, continue to check
@@ -198,21 +227,39 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
     
     # Notify user if newer version available
     if latest and parse_version(latest) > parse_version(current_version):
-        _print_update_message(current_version, latest)
+        all_vers = get_all_versions_from_pypi()
+        versions_behind = 0
+        if all_vers:
+            try:
+                cur_tup = parse_version(current_version)
+                lat_tup = parse_version(latest)
+                versions_behind = sum(1 for v in all_vers if cur_tup < parse_version(v) <= lat_tup)
+            except Exception:
+                pass
+        _print_update_message(current_version, latest, versions_behind)
 
 
-def _print_update_message(current: str, latest: str) -> None:
+def _print_update_message(current: str, latest: str, versions_behind: int = 0) -> None:
     """Print update notification message.
     
     Args:
         current: Current version
         latest: Latest available version
+        versions_behind: Number of versions between current and latest (0 if unknown)
     """
+    # Prefer release notes for this latest version from URL (so old installs show what's new)
+    fetched = _fetch_latest_release_notes(latest)
+    if fetched and fetched.get('update_notes'):
+        custom_msg = (fetched.get('custom_message') or (fetched['update_notes'][0] if fetched['update_notes'] else '')) or None
+        update_notes = fetched['update_notes']
+        show_notes = True
+    else:
+        custom_msg = UPDATE_INFO.get('custom_message')
+        update_notes = UPDATE_INFO.get('update_notes')
+        show_notes = UPDATE_INFO.get('show_update_notes', True)
+    
     # Calculate box width (minimum 68, expand if needed for longer messages)
     box_width = 68
-    custom_msg = UPDATE_INFO.get('Fixed some bugs')
-    update_notes = UPDATE_INFO.get('update_notes')
-    show_notes = UPDATE_INFO.get('show_update_notes', True)
     
     # Calculate required width based on content
     max_line_len = 68  # Default minimum width
@@ -221,6 +268,8 @@ def _print_update_message(current: str, latest: str) -> None:
     if update_notes and show_notes:
         for note in update_notes:
             max_line_len = max(max_line_len, len(note) + 4)
+    # Account for "Press 'v'..." and "(X versions behind..." lines
+    max_line_len = max(max_line_len, 52, 48)
     # Ensure box width is at least the calculated width
     box_width = max(68, min(max_line_len, 100))  # Cap at 100 for readability
     
@@ -243,8 +292,27 @@ def _print_update_message(current: str, latest: str) -> None:
                 print(f"\033[93m│\033[0m  {note_text}" + " " * max(0, box_width - len(note_text) - 4) + "\033[93m│\033[0m")
     
     print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
+    if versions_behind > 1:
+        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — press 'v' for full release notes)\033[0m" + " " * max(0, box_width - 48) + "\033[93m│\033[0m")
+    else:
+        print(f"\033[93m│\033[0m  \033[1mPress 'v' for full release notes, or Enter to continue\033[0m" + " " * max(0, box_width - 48) + "\033[93m│\033[0m")
     print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * max(0, box_width - 45) + "\033[93m│\033[0m")
     print(f"\033[93m╰{'─' * box_width}╯\033[0m\n")
+    
+    # Prompt for 'v' to show full changelog
+    try:
+        choice = input("\033[93m  [v] Release notes  [Enter] Continue: \033[0m").strip().lower()
+        if choice == 'v':
+            changelog = _read_changelog_from_package()
+            if changelog:
+                print("\n\033[1m--- Full release notes (CHANGELOG) ---\033[0m\n")
+                print(changelog)
+                print("\033[1m--- End of release notes ---\033[0m\n")
+            else:
+                print("\033[91m  Could not load release notes (changelog not included in this build).\033[0m\n")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        pass
 
 
 if __name__ == '__main__':

@@ -21,11 +21,108 @@ all these elements.
 
 from __future__ import annotations
 
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator, NullFormatter
 import matplotlib.transforms as mtransforms
+
+_DEBUG_SPINE_COLOR = os.environ.get("BATPLOT_DEBUG_SPINE_COLOR", "").strip().lower() in ("1", "true", "yes")
+
+
+def _debug_spine(msg: str) -> None:
+    """Print spine color debug message when BATPLOT_DEBUG_SPINE_COLOR is set."""
+    if _DEBUG_SPINE_COLOR:
+        print(msg)
+
+
+def set_spine_side_color(ax, side: str, color, fig=None) -> None:
+    """Set color for one side only: spine, major/minor tick lines, tick labels, and axis title.
+
+    Does NOT use tick_params (which would affect both sides of the axis). Instead sets
+    the spine and the per-tick artists (tick1line/tick2line, label1/label2) for the
+    requested side only. Affects all 5 components (spine, major ticks, minor ticks,
+    labels, title) whether visible or hidden.
+
+    side: 'top' | 'bottom' | 'left' | 'right'
+    color: matplotlib color (str or RGB).
+    """
+    _debug_spine(f"[DEBUG spine] set_spine_side_color(ax, side={side!r}, color={color!r})")
+    sp = ax.spines.get(side)
+    if sp is not None:
+        try:
+            sp.set_edgecolor(color)
+            _debug_spine(f"[DEBUG spine]   spine {side}: set_edgecolor OK")
+        except Exception as e:
+            _debug_spine(f"[DEBUG spine]   spine {side}: set_edgecolor failed: {e}")
+
+    def _set_tick_side_color(axis, use_tick1: bool):
+        """Set color on tick lines and labels for one side. use_tick1=True -> tick1line/label1, else tick2line/label2."""
+        line_attr = "tick1line" if use_tick1 else "tick2line"
+        label_attr = "label1" if use_tick1 else "label2"
+        counts = {"major": 0, "minor": 0}
+        for which in ("major", "minor"):
+            try:
+                ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
+            except Exception:
+                ticks = []
+            for t in ticks:
+                try:
+                    ln = getattr(t, line_attr, None)
+                    if ln is not None:
+                        ln.set_color(color)
+                        counts[which] += 1
+                except Exception as e:
+                    _debug_spine(f"[DEBUG spine]   {which} {line_attr} set_color: {e}")
+                try:
+                    lab = getattr(t, label_attr, None)
+                    if lab is not None:
+                        lab.set_color(color)
+                except Exception as e:
+                    _debug_spine(f"[DEBUG spine]   {which} {label_attr} set_color: {e}")
+        _debug_spine(f"[DEBUG spine]   axis ticks: major={counts['major']} minor={counts['minor']} ({line_attr}/{label_attr})")
+
+    if side == "top":
+        _set_tick_side_color(ax.xaxis, use_tick1=False)
+        try:
+            ax._stored_top_xlabel_color = color
+        except Exception:
+            pass
+        art = getattr(ax, "_top_xlabel_artist", None)
+        if art is not None:
+            try:
+                art.set_color(color)
+                _debug_spine("[DEBUG spine]   top title (_top_xlabel_artist): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   top title: {e}")
+    elif side == "bottom":
+        _set_tick_side_color(ax.xaxis, use_tick1=True)
+        try:
+            ax.xaxis.label.set_color(color)
+            _debug_spine("[DEBUG spine]   bottom title (xaxis.label): set_color OK")
+        except Exception as e:
+            _debug_spine(f"[DEBUG spine]   bottom title: {e}")
+    elif side == "left":
+        _set_tick_side_color(ax.yaxis, use_tick1=True)
+        try:
+            ax.yaxis.label.set_color(color)
+            _debug_spine("[DEBUG spine]   left title (yaxis.label): set_color OK")
+        except Exception as e:
+            _debug_spine(f"[DEBUG spine]   left title: {e}")
+    elif side == "right":
+        _set_tick_side_color(ax.yaxis, use_tick1=False)
+        try:
+            ax._stored_right_ylabel_color = color
+        except Exception:
+            pass
+        art = getattr(ax, "_right_ylabel_artist", None)
+        if art is not None:
+            try:
+                art.set_color(color)
+                _debug_spine("[DEBUG spine]   right title (_right_ylabel_artist): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   right title: {e}")
 
 
 def apply_font_changes(ax, fig, label_text_objects: List, normalize_label_text, new_size=None, new_family=None):
@@ -125,20 +222,70 @@ def apply_font_changes(ax, fig, label_text_objects: List, normalize_label_text, 
 
 
 def sync_fonts(ax, fig, label_text_objects: List):
+    """Sync font size AND family from rcParams to all text objects."""
     try:
         base_size = plt.rcParams.get('font.size')
+        base_family_list = plt.rcParams.get('font.sans-serif', [])
+        base_family = base_family_list[0] if base_family_list else None
+        
+        # Set mathtext.fontset based on font family (same logic as apply_font_changes)
+        if base_family:
+            lf = base_family.lower()
+            if any(k in lf for k in ('stix', 'times', 'roman')):
+                plt.rcParams['mathtext.fontset'] = 'stix'
+            else:
+                plt.rcParams['mathtext.fontset'] = 'dejavusans'
+        
         if base_size is None:
             return
+        
+        # Update label text objects
         for txt in label_text_objects:
             txt.set_fontsize(base_size)
-        if ax.xaxis.label: ax.xaxis.label.set_fontsize(base_size)
-        if ax.yaxis.label: ax.yaxis.label.set_fontsize(base_size)
+            if base_family:
+                txt.set_fontfamily(base_family)
+        
+        # Update axis labels
+        if ax.xaxis.label:
+            ax.xaxis.label.set_fontsize(base_size)
+            if base_family:
+                ax.xaxis.label.set_fontfamily(base_family)
+        if ax.yaxis.label:
+            ax.yaxis.label.set_fontsize(base_size)
+            if base_family:
+                ax.yaxis.label.set_fontfamily(base_family)
+        
+        # Update duplicate axis labels (top/right)
         if hasattr(ax, '_top_xlabel_artist') and ax._top_xlabel_artist is not None:
             ax._top_xlabel_artist.set_fontsize(base_size)
+            if base_family:
+                ax._top_xlabel_artist.set_fontfamily(base_family)
         if hasattr(ax, '_right_ylabel_artist') and ax._right_ylabel_artist is not None:
             ax._right_ylabel_artist.set_fontsize(base_size)
+            if base_family:
+                ax._right_ylabel_artist.set_fontfamily(base_family)
+        
+        # Update tick labels
         for tl in ax.get_xticklabels() + ax.get_yticklabels():
             tl.set_fontsize(base_size)
+            if base_family:
+                tl.set_fontfamily(base_family)
+        
+        # Update top/right tick labels (label2)
+        try:
+            for t in ax.xaxis.get_major_ticks():
+                if hasattr(t, 'label2'):
+                    t.label2.set_size(base_size)
+                    if base_family:
+                        t.label2.set_family(base_family)
+            for t in ax.yaxis.get_major_ticks():
+                if hasattr(t, 'label2'):
+                    t.label2.set_size(base_size)
+                    if base_family:
+                        t.label2.set_family(base_family)
+        except Exception:
+            pass
+        
         fig.canvas.draw_idle()
     except Exception:
         pass
@@ -260,9 +407,9 @@ def position_top_xlabel(ax, fig, tick_state: Dict[str, bool]):
             off_trans = mtransforms.offset_copy(base_trans, fig=fig, x=manual_x_pts, y=dy_pts, units='points')
             art = getattr(ax, '_top_xlabel_artist', None)
             try:
-                dup_color = ax.xaxis.label.get_color()
+                dup_color = getattr(ax, '_stored_top_xlabel_color', None) or ax.xaxis.label.get_color()
             except Exception:
-                dup_color = None
+                dup_color = getattr(ax, '_stored_top_xlabel_color', None)
             if art is None:
                 ax._top_xlabel_artist = ax.text(
                     0.5, 1.0, base, ha='center', va='bottom',
@@ -354,9 +501,9 @@ def position_right_ylabel(ax, fig, tick_state: Dict[str, bool]):
             off_trans = mtransforms.offset_copy(base_trans, fig=fig, x=dx_pts, y=manual_y_pts, units='points')
             art = getattr(ax, '_right_ylabel_artist', None)
             try:
-                dup_color = ax.yaxis.label.get_color()
+                dup_color = getattr(ax, '_stored_right_ylabel_color', None) or ax.yaxis.label.get_color()
             except Exception:
-                dup_color = None
+                dup_color = getattr(ax, '_stored_right_ylabel_color', None)
             if art is None:
                 ax._right_ylabel_artist = ax.text(
                     1.0, 0.5, base,
