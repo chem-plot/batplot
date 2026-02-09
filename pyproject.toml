@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.8.16"
+version = "1.8.17"
 description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
@@ -33,9 +33,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TianDai1729/batplot"
-Repository = "https://github.com/TianDai1729/batplot"
-Issues = "https://github.com/TianDai1729/batplot/issues"
+Homepage = "https://github.com/chem-plot/batplot"
+Repository = "https://github.com/chem-plot/batplot"
+Issues = "https://github.com/chem-plot/batplot/issues"
 
 [project.scripts]
 batplot = "batplot.cli:main"

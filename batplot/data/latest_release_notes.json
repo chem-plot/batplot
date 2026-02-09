@@ -1,7 +1,7 @@
 {
-  "version": "1.8.16",
-  "custom_message": "- GC and dQdV modes now support multiple files",
+  "version": "1.8.17",
+  "custom_message": "- Add support for BatX GC plot",
   "update_notes": [
-    "- GC and dQdV modes now support multiple files"
+    "- Add support for BatX GC plot"
   ]
 }

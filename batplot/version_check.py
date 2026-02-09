@@ -68,10 +68,10 @@ from typing import Optional, Tuple
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- GC and dQdV modes now support multiple files',
+    'custom_message': '- Add support for BatX GC plot',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- GC and dQdV modes now support multiple files'
+        '- Add support for BatX GC plot'
     ],
     'show_update_notes': True,
 }

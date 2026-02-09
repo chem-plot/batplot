@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.17] - 2026-02-09
+- Add support for BatX GC plot
+
+
 ## [1.8.16] - 2026-02-08
 - GC and dQdV modes now support multiple files
 
