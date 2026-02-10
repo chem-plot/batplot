@@ -1,7 +1,7 @@
 {
-  "version": "1.8.18",
-  "custom_message": "- Add support for GC plot with only Potential vs Time",
+  "version": "1.8.19",
+  "custom_message": "- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data",
   "update_notes": [
-    "- Add support for GC plot with only Potential vs Time"
+    "- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data"
   ]
 }

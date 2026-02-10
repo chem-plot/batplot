@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.19] - 2026-02-10
+- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data
+
+
 ## [1.8.18] - 2026-02-10
 - Add support for GC plot with only Potential vs Time
 

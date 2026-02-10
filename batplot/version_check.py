@@ -68,10 +68,10 @@ from typing import Optional, Tuple
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Add support for GC plot with only Potential vs Time',
+    'custom_message': '- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Add support for GC plot with only Potential vs Time'
+        '- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data'
     ],
     'show_update_notes': True,
 }
