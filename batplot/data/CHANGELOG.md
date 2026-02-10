@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.18] - 2026-02-10
+- Add support for GC plot with only Potential vs Time
+
+
 ## [1.8.17] - 2026-02-09
 - Add support for BatX GC plot
 

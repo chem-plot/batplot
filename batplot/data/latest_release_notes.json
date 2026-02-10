@@ -1,7 +1,7 @@
 {
-  "version": "1.8.17",
-  "custom_message": "- Add support for BatX GC plot",
+  "version": "1.8.18",
+  "custom_message": "- Add support for GC plot with only Potential vs Time",
   "update_notes": [
-    "- Add support for BatX GC plot"
+    "- Add support for GC plot with only Potential vs Time"
   ]
 }
