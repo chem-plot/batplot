@@ -1,9 +1,12 @@
+# cff-version: schema version of Citation File Format (https://citation-file-format.github.io/), NOT the batplot version
 cff-version: 1.4.9
 message: "If you use this software, please cite it as below."
 authors:
 - family-names: Dai
   given-names: Tian
-orcid: https://orcid.org/0000-0002-0385-3274
-title:tiandai-chem/batplot: batplot
-version: v1.4.9
-date-released: 2025-11-04
+  orcid: https://orcid.org/0000-0002-0385-3274
+title: "batplot: Interactive command-line plotting software for battery and materials characterization"
+version: v1.8.21
+date-released: 2026-02-13
+repository-code: "https://github.com/chem-plot/batplot"
+url: "https://github.com/chem-plot/batplot"
