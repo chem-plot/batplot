@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.8.21"
+version = "1.8.22"
 description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
@@ -15,7 +15,7 @@ dependencies = [
     "numpy>=1.21.0",
     "matplotlib>=3.5.0",
     "rich>=10.0.0",
-    "openpyxl>=3.0.0"
+    "openpyxl>=3.0.0",
 ]
 license = { file = "LICENSE" }
 classifiers = [
