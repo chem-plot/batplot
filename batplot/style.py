@@ -333,87 +333,81 @@ def print_style_info(
     cif_tick_series: Optional[List[tuple]] = None,
     show_cif_hkl: Optional[bool] = None,
 ) -> None:
-    print("\n--- Style / Diagnostics ---")
+    def _onoff(v):
+        return 'ON ' if bool(v) else 'off'
+
+    print("\n" + "=" * 60)
+    print("  1D/XY STYLE SUMMARY")
+    print("=" * 60)
+    print("Commands (Styles): c, f, l, t, g, h, sm, z, j | Geometries: a, o, r, x, y, d")
+    print()
+
+    # ---- Canvas & Geometry (g) ----
     fw, fh = fig.get_size_inches()
-    print(f"Figure size (inches): {fw:.3f} x {fh:.3f}")
-    # DPI omitted from compact style print
     bbox = ax.get_position()
-    print(
-        f"Axes position (figure fraction): x0={bbox.x0:.3f}, y0={bbox.y0:.3f}, w={bbox.width:.3f}, h={bbox.height:.3f}"
-    )
     frame_w_in = bbox.width * fw
     frame_h_in = bbox.height * fh
-    print(f"Plot frame size (inches):  {frame_w_in:.3f} x {frame_h_in:.3f}")
     sp = fig.subplotpars
-    print(
-        f"Margins (subplot fractions): left={sp.left:.3f}, right={sp.right:.3f}, bottom={sp.bottom:.3f}, top={sp.top:.3f}"
-    )
-    # Omit ranges and axis labels from style print
-    # Font info
+    print("--- Canvas & Geometry ---")
+    print(f"Canvas size (g): {fw:.3f} x {fh:.3f} in")
+    print(f"Plot frame: {frame_w_in:.3f} x {frame_h_in:.3f} in")
+    print(f"Margins: left={sp.left:.3f}, right={sp.right:.3f}, bottom={sp.bottom:.3f}, top={sp.top:.3f}")
+
+    # ---- Font (f) ----
     if label_text_objects:
         fs_any = label_text_objects[0].get_fontsize()
         ff_any = label_text_objects[0].get_fontfamily()
     else:
         fs_any = plt.rcParams.get("font.size")
         ff_any = plt.rcParams.get("font.family")
-    print(f"Effective font size (labels/ticks): {fs_any}")
-    print(f"Font family chain (rcParams['font.sans-serif']): {plt.rcParams.get('font.sans-serif')}")
-    print(f"Mathtext fontset: {plt.rcParams.get('mathtext.fontset')}")
+    mathtext = plt.rcParams.get('mathtext.fontset', 'dejavusans')
+    print(f"\n--- Font (f) ---")
+    print(f"Family={ff_any}, size={fs_any}, mathtext={mathtext}")
 
-    # Report whether data axes were swapped via --ro when this figure was created
+    # ---- Data axes (--ro) ----
     try:
         ro_active = bool(getattr(fig, "_ro_active", False))
     except Exception:
         ro_active = False
-    print(f"Data axes swapped via --ro: {'YES' if ro_active else 'no'}")
-
-    # Rotation angle
+    print(f"\n--- Data axes ---")
+    print(f"Swapped via --ro: {'YES' if ro_active else 'no'}")
     rotation_angle = getattr(ax, '_rotation_angle', 0)
     if rotation_angle != 0:
-        print(f"Rotation angle (ro): {rotation_angle}°")
+        print(f"Rotation angle: {rotation_angle}°")
 
-    # Per-side matrix summary (spine, major, minor, labels, title)
-    def _onoff(v):
-        return 'ON ' if bool(v) else 'off'
-    def _label_visible(axis_obj, primary: bool) -> bool:
-        try:
-            if primary:
-                return bool(axis_obj.label.get_visible())
-            return bool(axis_obj)
-        except Exception:
-            return bool(axis_obj)
-
+    # ---- Toggle axes (t) ----
     sides = (
-        ('bottom',
+        ('s', 'bottom',
          ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else False,
          tick_state.get('b_ticks', tick_state.get('bx', True)),
          tick_state.get('mbx', False),
          tick_state.get('b_labels', tick_state.get('bx', True)),
          bool(ax.xaxis.label.get_visible())),
-        ('top',
+        ('w', 'top',
          ax.spines.get('top').get_visible() if ax.spines.get('top') else False,
          tick_state.get('t_ticks', tick_state.get('tx', False)),
          tick_state.get('mtx', False),
          tick_state.get('t_labels', tick_state.get('tx', False)),
          bool(getattr(ax, '_top_xlabel_on', False))),
-        ('left',
+        ('a', 'left',
          ax.spines.get('left').get_visible() if ax.spines.get('left') else False,
          tick_state.get('l_ticks', tick_state.get('ly', True)),
          tick_state.get('mly', False),
          tick_state.get('l_labels', tick_state.get('ly', True)),
          bool(ax.yaxis.label.get_visible())),
-        ('right',
+        ('d', 'right',
          ax.spines.get('right').get_visible() if ax.spines.get('right') else False,
          tick_state.get('r_ticks', tick_state.get('ry', False)),
          tick_state.get('mry', False),
          tick_state.get('r_labels', tick_state.get('ry', False)),
          bool(getattr(ax, '_right_ylabel_on', False))),
     )
-    print("Per-side: spine, major, minor, labels, title")
-    for name, spine, mj, mn, lbl, title in sides:
-        print(f"  {name:<6}: spine={_onoff(spine)} major={_onoff(mj)} minor={_onoff(mn)} labels={_onoff(lbl)} title={_onoff(title)}")
+    print(f"\n--- Toggle axes (t) ---")
+    print("WASD (w=top, a=left, s=bottom, d=right): 1=spine 2=ticks 3=minor 4=labels 5=title")
+    for key, _name, spine, mj, mn, lbl, title in sides:
+        print(f"  {key}1:{_onoff(spine)} {key}2:{_onoff(mj)} {key}3:{_onoff(mn)} {key}4:{_onoff(lbl)} {key}5:{_onoff(title)}")
 
-    # Tick widths helper
+    # ---- Line widths (l) ----
     def axis_tick_width(axis, which):
         ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
         for t in ticks:
@@ -426,72 +420,70 @@ def print_style_info(
     x_minor_w = axis_tick_width(ax.xaxis, "minor")
     y_major_w = axis_tick_width(ax.yaxis, "major")
     y_minor_w = axis_tick_width(ax.yaxis, "minor")
-    print(
-        f"Tick widths (major/minor): X=({x_major_w}, {x_minor_w})  Y=({y_major_w}, {y_minor_w})"
-    )
+    frame_lw = ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else 1.0
+    print(f"\n--- Line widths (l) ---")
+    print(f"Frame: {frame_lw:.2f}")
+    print(f"Ticks: X=({x_major_w}, {x_minor_w})  Y=({y_major_w}, {y_minor_w})")
 
-    # Spines
-    print("Spines:")
+    # ---- Spines ---
+    print("\n--- Spines ---")
     for name, spn in ax.spines.items():
-        print(
-            f"  {name:<5} lw={spn.get_linewidth()} color={spn.get_edgecolor()} visible={spn.get_visible()}"
-        )
-    
-    # Tick colors
+        print(f"  {name:<6} lw={spn.get_linewidth()} color={spn.get_edgecolor()} visible={spn.get_visible()}")
+
     try:
-        x_color = ax.xaxis.get_tick_params()['color'] if ax.xaxis.get_tick_params() else 'black'
-        y_color = ax.yaxis.get_tick_params()['color'] if ax.yaxis.get_tick_params() else 'black'
+        x_color = ax.xaxis.get_tick_params().get('color', 'black')
+        y_color = ax.yaxis.get_tick_params().get('color', 'black')
         print(f"Tick colors: X={x_color} Y={y_color}")
     except Exception:
         pass
-    
-    # Axis label colors
     try:
         x_label_color = ax.xaxis.label.get_color()
         y_label_color = ax.yaxis.label.get_color()
-        print(f"Axis label colors: X={x_label_color} Y={y_label_color}")
+        print(f"Label colors: X={x_label_color} Y={y_label_color}")
     except Exception:
         pass
 
-    # CIF hkl label visibility
-    if show_cif_hkl is not None:
-        print(f"CIF hkl labels: {'shown' if show_cif_hkl else 'hidden'}")
-    elif cif_tick_series:
-        # Try to read from __main__ module if not provided
-        try:
-            import sys
-            _bp_module = sys.modules.get('__main__')
-            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
-                hkl_state = bool(getattr(_bp_module, 'show_cif_hkl', False))
-                print(f"CIF hkl labels: {'shown' if hkl_state else 'hidden'}")
-        except Exception:
-            pass
-
-    # Omit non-style global flags (mode/raw/autoscale/delta)
-
-    # Curve names visibility
+    # ---- Legend & labels (h, r) ----
     names_visible = True
     if label_text_objects and len(label_text_objects) > 0:
         try:
             names_visible = bool(label_text_objects[0].get_visible())
         except Exception:
-            names_visible = True
-    print(f"Curve names (h): {'shown' if names_visible else 'hidden'}")
-    
-    # Legend/label anchor summary
+            pass
     stack_label_at_bottom = getattr(fig, '_stack_label_at_bottom', False)
     label_anchor_left = getattr(fig, '_label_anchor_left', False)
     legend_pos = f"{'bottom' if stack_label_at_bottom else 'top'}-{'left' if label_anchor_left else 'right'}"
-    print(f"Curve label anchor: {legend_pos} (stack mode={getattr(args, 'stack', False)})")
+    print(f"\n--- Legend (h) ---")
+    print(f"Curve names: {'shown' if names_visible else 'hidden'}")
+    print(f"Label anchor: {legend_pos} (stack={getattr(args, 'stack', False)})")
+    print(f"Labels (r): x='{ax.get_xlabel() or ''}', y='{ax.get_ylabel() or ''}'")
 
-    # Curves
-    print("Lines (style):")
+    # ---- CIF (z, j) ---
+    if show_cif_hkl is not None:
+        print(f"\n--- CIF (z, j) ---")
+        print(f"CIF hkl labels (z): {'shown' if show_cif_hkl else 'hidden'}")
+    elif cif_tick_series:
+        try:
+            import sys
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                hkl_state = bool(getattr(_bp_module, 'show_cif_hkl', False))
+                print(f"\n--- CIF (z, j) ---")
+                print(f"CIF hkl labels (z): {'shown' if hkl_state else 'hidden'}")
+        except Exception:
+            pass
+
+    # ---- Curves (c, o) ----
+    print("\n--- Curves (c, o) ---")
     for i, ln in enumerate(ax.lines):
         col_val = ln.get_color()
         col_hex = _color_to_hex(col_val)
         col_disp = f"{color_block(col_hex)} {col_hex}" if col_hex else str(col_val)
-        lw = ln.get_linewidth(); ls = ln.get_linestyle()
-        mk = ln.get_marker(); ms = ln.get_markersize(); a = ln.get_alpha()
+        lw = ln.get_linewidth()
+        ls = ln.get_linestyle()
+        mk = ln.get_marker()
+        ms = ln.get_markersize()
+        a = ln.get_alpha()
         base_label = labels[i] if i < len(labels) else ""
         offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
         offset_str = f" offset={offset_val:.4g}" if offset_val != 0.0 else ""
@@ -504,7 +496,8 @@ def print_style_info(
             idxs = entry.get('indices', [])
             idx_str = ", ".join(str(i) for i in idxs)
             print(f"  {palette_name or 'unknown'} -> [{idx_str}]")
-    print("--- End diagnostics ---\n")
+
+    print("=" * 60 + "\n")
 
 
 def export_style_config(

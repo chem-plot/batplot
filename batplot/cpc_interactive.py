@@ -92,9 +92,11 @@ from .utils import (
     choose_style_file,
     list_files_in_subdirectory,
     get_organized_path,
+    natural_sort_key,
 )
 import time
 from .color_utils import resolve_color_token, color_block, palette_preview, manage_user_colors, get_user_color_list, ensure_colormap
+from matplotlib.colors import to_hex as _mpl_to_hex
 
 
 def _legend_no_frame(ax, *args, **kwargs):
@@ -165,6 +167,18 @@ def _color_of(artist):
     except Exception:
         return None
     return None
+
+
+def _normalize_spine_color(color):
+    """Convert color to hex string for spine/tick/label use. Returns None if invalid."""
+    if color is None:
+        return None
+    try:
+        if isinstance(color, str) and (color.startswith('#') or color in ('black', 'white', 'red', 'blue', 'green', 'gray', 'grey')):
+            return color
+        return _mpl_to_hex(color)
+    except Exception:
+        return None
 
 
 def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
@@ -1168,6 +1182,11 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
                         pass
                 if spec.get('color') is not None:
                     _set_spine_color('right', spec['color'])
+        # Draw before spine color restore so tick objects exist (even when right was hidden)
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
         # Restore spine colors from stored dict
         spine_colors = cfg.get('spine_colors', {})
         if spine_colors:
@@ -1180,10 +1199,11 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             # If auto is enabled, apply colors immediately
             if fig._cpc_spine_auto and not (file_data and len(file_data) > 1):
                 try:
-                    charge_col = _color_of(sc_charge)
-                    eff_col = _color_of(sc_eff)
-                    _set_spine_color('left', charge_col)
-                    _set_spine_color('right', eff_col)
+                    charge_col = _normalize_spine_color(_color_of(sc_charge))
+                    eff_col = _normalize_spine_color(_color_of(sc_eff))
+                    if charge_col and eff_col:
+                        _set_spine_color('left', charge_col)
+                        _set_spine_color('right', eff_col)
                 except Exception:
                     pass
     except Exception:
@@ -1548,9 +1568,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     if not hasattr(fig, '_cpc_spine_colors') or not isinstance(getattr(fig, '_cpc_spine_colors'), dict):
         fig._cpc_spine_colors = {}
 
-    def _set_spine_color(spine_name: str, color: str):
+    def _set_spine_color(spine_name: str, color):
         if not hasattr(fig, '_cpc_spine_colors') or not isinstance(fig._cpc_spine_colors, dict):
             fig._cpc_spine_colors = {}
+        color = _normalize_spine_color(color)
+        if color is None:
+            return
         fig._cpc_spine_colors[spine_name] = color
         axes_map = {
             'top': [ax, ax2],
@@ -1639,6 +1662,11 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 ax2.tick_params(axis='y', which='minor', right=False, labelright=False)
             # Note: Do NOT call position functions during undo restore as it causes title drift
             # Title offsets are already restored from snapshot in restore_state()
+            # Draw before re-applying spine colors so tick objects exist (even when right was hidden)
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
             try:
                 for spine_name, color in getattr(fig, '_cpc_spine_colors', {}).items():
                     _set_spine_color(spine_name, color)
@@ -1722,13 +1750,17 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         pass
 
     _print_menu(fig)
-    
+    pending_key = None
     while True:
         try:
             # Update current file's scatter artists for commands that need them
             sc_charge, sc_discharge, sc_eff = _get_current_file_artists(file_data, current_file_idx)
             
-            key = _safe_input("Press a key: ").strip().lower()
+            if pending_key is not None:
+                key = pending_key
+                pending_key = None
+            else:
+                key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1784,11 +1816,14 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         
         if key == 'q':
             try:
-                confirm = _safe_input(_colorize_prompt("Quit CPC interactive? Remember to save! Quit now? (y/n): ")).strip().lower()
+                confirm = _safe_input(_colorize_prompt("Quit CPC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except Exception:
                 confirm = 'y'
             if confirm == 'y':
                 break
+            elif confirm in ('e', 's'):
+                pending_key = confirm
+                continue
             else:
                 _print_menu(fig); continue
         elif key == 'b':
@@ -2092,26 +2127,38 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     # Handle auto toggle when only one file is loaded
                     if not is_multi_file and line.lower() in ('a', 'auto'):
                         auto_enabled = getattr(fig, '_cpc_spine_auto', False)
+                        if auto_enabled:
+                            # Turning OFF: push current (auto ON) state first so undo restores it
+                            push_state("color-spine-auto")
                         fig._cpc_spine_auto = not auto_enabled
                         new_status = "ON" if fig._cpc_spine_auto else "OFF"
                         print(f"Auto mode: {new_status}")
                         if fig._cpc_spine_auto:
-                            # Apply auto colors immediately
+                            # Turning ON: push state, then apply auto colors
                             push_state("color-spine-auto")
                             try:
+                                # Draw first so tick objects exist (even when right axis was hidden)
+                                fig.canvas.draw_idle()
                                 # Get capacity curve color (charge color)
-                                charge_col = _color_of(sc_charge)
+                                charge_col = _normalize_spine_color(_color_of(sc_charge))
                                 # Get efficiency curve color
-                                eff_col = _color_of(sc_eff)
-                                # Apply to left and right spines
-                                _set_spine_color('left', charge_col)
-                                _set_spine_color('right', eff_col)
-                                print(f"Applied: left y-axis = {charge_col}, right y-axis = {eff_col}")
+                                eff_col = _normalize_spine_color(_color_of(sc_eff))
+                                if charge_col and eff_col:
+                                    _set_spine_color('left', charge_col)
+                                    _set_spine_color('right', eff_col)
+                                    print(f"Applied: left y-axis = {charge_col}, right y-axis = {eff_col}")
+                                else:
+                                    print("Could not get charge/efficiency colors from artists.")
                                 fig.canvas.draw()
                             except Exception as e:
                                 print(f"Error applying auto colors: {e}")
                         continue
                     push_state("color-spine")
+                    # Draw first so tick objects exist (even when right axis was hidden)
+                    try:
+                        fig.canvas.draw_idle()
+                    except Exception:
+                        pass
                     # Map wasd to spine names
                     key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
                     tokens = line.split()
@@ -2389,7 +2436,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     _print_menu(fig); continue
                 print(f"\nChosen path: {folder}")
                 try:
-                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
+                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')], key=natural_sort_key)
                 except Exception:
                     files = []
                 if files:
@@ -2460,56 +2507,75 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     snap = _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
                     snap['kind'] = 'cpc_style'  # Default, will be updated if psg is chosen
                     
-                    print("\n--- CPC Style (Styles column only) ---")
-                    
-                    # Figure size (g command)
+                    def _onoff(v):
+                        return 'ON ' if bool(v) else 'off'
+
+                    print("\n" + "=" * 60)
+                    print("  CPC STYLE SUMMARY")
+                    print("=" * 60)
+                    print("Commands (Styles): f, l, m, c, k, ry, t, h, g, v | Geometries: r, x, y, ie")
+                    print()
+
+                    # ---- Canvas & Geometry (g) ----
                     fig_cfg = snap.get('figure', {})
                     canvas = fig_cfg.get('canvas_size')
                     frame = fig_cfg.get('frame_size')
+                    print("--- Canvas & Geometry ---")
                     if canvas and all(v is not None for v in canvas):
-                        print(f"Canvas size (inches): {canvas[0]:.3f} x {canvas[1]:.3f}")
+                        print(f"Canvas size (g): {canvas[0]:.3f} x {canvas[1]:.3f} in")
                     if frame and all(v is not None for v in frame):
-                        print(f"Plot frame size (inches): {frame[0]:.3f} x {frame[1]:.3f}")
-                    
-                    # Font (f command)
+                        print(f"Plot frame: {frame[0]:.3f} x {frame[1]:.3f} in")
+
+                    # ---- Font (f) ----
                     ft = snap.get('font', {})
-                    print(f"Font: family='{ft.get('family', '')}', size={ft.get('size', '')}")
-                    
-                    # Line widths (l command)
+                    print(f"\n--- Font (f) ---")
+                    print(f"Family='{ft.get('family', '')}', size={ft.get('size', '')}")
+
+                    # ---- Toggle axes (t) ----
+                    wasd = snap.get('wasd_state', {})
+                    if wasd:
+                        print(f"\n--- Toggle axes (t) ---")
+                        print("WASD (w=top, a=left, s=bottom, d=right): 1=spine 2=ticks 3=minor 4=labels 5=title")
+                        for side_key, side_label in [('top', 'w'), ('left', 'a'), ('bottom', 's'), ('right', 'd')]:
+                            s = wasd.get(side_key, {})
+                            print(f"  {side_label}1:{_onoff(s.get('spine', False))} {side_label}2:{_onoff(s.get('ticks', False))} {side_label}3:{_onoff(s.get('minor', False))} {side_label}4:{_onoff(s.get('labels', False))} {side_label}5:{_onoff(s.get('title', False))}")
+
+                    # ---- Line widths (l) ----
                     spines = snap.get('spines', {})
+                    ticks = snap.get('ticks', {})
+                    frame_lw = spines.get('bottom', {}).get('linewidth', '?') if spines else '?'
+                    print(f"\n--- Line widths (l) ---")
+                    print(f"Frame: {frame_lw}")
+                    print(f"Ticks: x=({ticks.get('x_major_width')}, {ticks.get('x_minor_width')})  ly=({ticks.get('ly_major_width')}, {ticks.get('ly_minor_width')})  ry=({ticks.get('ry_major_width')}, {ticks.get('ry_minor_width')})")
+                    print(f"Tick direction: {ticks.get('direction', 'out')}")
+
+                    # ---- Spines (k) ----
                     if spines:
-                        print("Spines:")
+                        print("\n--- Spines (k) ---")
                         for name in ('bottom', 'top', 'left', 'right'):
                             props = spines.get(name, {})
                             lw = props.get('linewidth', '?')
                             vis = props.get('visible', False)
                             col = props.get('color')
                             print(f"  {name:<6} lw={lw} visible={vis} color={col}")
-                    # Spine colors (k command)
                     spine_colors = snap.get('spine_colors', {})
                     if spine_colors:
-                        print("Spine colors:")
+                        print("Spine colors (k):")
                         for name, color in spine_colors.items():
                             print(f"  {name}: {color}")
                     spine_auto = snap.get('spine_colors_auto', False)
                     if spine_auto:
-                        print(f"Spine colors auto: ON (capacity → left y-axis, efficiency → right y-axis)")
-                    
-                    ticks = snap.get('ticks', {})
-                    print(f"Tick widths: x_major={ticks.get('x_major_width')}, x_minor={ticks.get('x_minor_width')}")
-                    print(f"             ly_major={ticks.get('ly_major_width')}, ly_minor={ticks.get('ly_minor_width')}")
-                    print(f"             ry_major={ticks.get('ry_major_width')}, ry_minor={ticks.get('ry_minor_width')}")
-                    tick_direction = ticks.get('direction', 'out')
-                    print(f"Tick direction: {tick_direction}")
-                    
-                    # Grid
+                        print(f"  Auto: ON (capacity→left, efficiency→right)")
+
+                    # ---- Grid ----
                     grid_enabled = snap.get('grid', False)
-                    print(f"Grid: {'enabled' if grid_enabled else 'disabled'}")
+                    print(f"\n--- Grid ---")
+                    print(f"Grid: {'on' if grid_enabled else 'off'}")
                     
-                    # Multi-file colors (c command) - if available
+                    # ---- Multi-file (v) ----
                     multi_files = snap.get('multi_files', [])
                     if multi_files:
-                        print("\nMulti-file colors:")
+                        print("\n--- Multi-file visibility (v) ---")
                         for i, finfo in enumerate(multi_files, 1):
                             vis_mark = "●" if finfo.get('visible', True) else "○"
                             fname = finfo.get('filename', 'unknown')
@@ -2518,47 +2584,31 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             ef_col = finfo.get('efficiency_color', 'N/A')
                             print(f"  {i}. {vis_mark} {fname}")
                             print(f"     charge={ch_col}, discharge={dh_col}, efficiency={ef_col}")
-                    
-                    # Marker sizes (m command) and Colors (c command) for single-file or default
+
+                    # ---- Series (c, m, ry) ----
                     s = snap.get('series', {})
                     ch = s.get('charge', {}); dh = s.get('discharge', {}); ef = s.get('efficiency', {})
+                    print(f"\n--- Series (c, m, ry) ---")
                     if not multi_files:
-                        # Only show single-file series info if not multi-file
                         print(f"Charge: color={ch.get('color')}, markersize={ch.get('markersize')}, alpha={ch.get('alpha')}")
                         print(f"Discharge: color={dh.get('color')}, markersize={dh.get('markersize')}, alpha={dh.get('alpha')}")
                         print(f"Efficiency: color={ef.get('color')}, markersize={ef.get('markersize')}, alpha={ef.get('alpha')}, visible={ef.get('visible')}")
                     else:
-                        # Show marker sizes (common across all files in multi-mode)
-                        print(f"\nMarker sizes (all files): charge={ch.get('markersize')}, discharge={dh.get('markersize')}, efficiency={ef.get('markersize')}")
-                        print(f"Alpha (all files): charge={ch.get('alpha')}, discharge={dh.get('alpha')}, efficiency={ef.get('alpha')}")
-                        print(f"Efficiency visible: {ef.get('visible')}")
-                    
-                    # Legend (h command)
+                        print(f"Marker sizes (m): charge={ch.get('markersize')}, discharge={dh.get('markersize')}, efficiency={ef.get('markersize')}")
+                        print(f"Alpha: charge={ch.get('alpha')}, discharge={dh.get('alpha')}, efficiency={ef.get('alpha')}")
+                        print(f"Efficiency visible (ry): {ef.get('visible')}")
+
+                    # ---- Legend (h) ----
                     leg_cfg = snap.get('legend', {})
                     leg_vis = leg_cfg.get('visible', False)
                     leg_pos = leg_cfg.get('position_inches')
+                    print(f"\n--- Legend (h) ---")
                     if leg_pos:
-                        print(f"Legend: visible={leg_vis}, position (inches from center)=({leg_pos[0]:.3f}, {leg_pos[1]:.3f})")
+                        print(f"Visible: {leg_vis}, position=({leg_pos[0]:.3f}, {leg_pos[1]:.3f}) in (rel. center)")
                     else:
-                        print(f"Legend: visible={leg_vis}, position=auto")
-                    
-                    # Toggle axes (t command) - Per-side matrix (20 parameters)
-                    def _onoff(v):
-                        return 'ON ' if bool(v) else 'off'
-                    
-                    wasd = snap.get('wasd_state', {})
-                    if wasd:
-                        print("Per-side: spine, major, minor, labels, title")
-                        for side in ('bottom', 'top', 'left', 'right'):
-                            s = wasd.get(side, {})
-                            spine_val = _onoff(s.get('spine', False))
-                            major_val = _onoff(s.get('ticks', False))
-                            minor_val = _onoff(s.get('minor', False))
-                            labels_val = _onoff(s.get('labels', False))
-                            title_val = _onoff(s.get('title', False))
-                            print(f"  {side:<6}: spine={spine_val} major={major_val} minor={minor_val} labels={labels_val} title={title_val}")
-                    
-                    print("--- End Style ---\n")
+                        print(f"Visible: {leg_vis}, position=auto")
+
+                    print("=" * 60 + "\n")
                     
                     # List available style files (.bps, .bpsg, .bpcfg) in Styles/ subdirectory
                     style_file_list = list_files_in_subdirectory(('.bps', '.bpsg', '.bpcfg'), 'style')

@@ -285,6 +285,7 @@ def handle_cv_mode(args) -> int:
             ax.set_ylabel('Current (mA)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
+        fig._ec_legend_title = "Cycle"
         # Adjust margins to prevent label clipping
         fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
         
@@ -704,6 +705,7 @@ def handle_gc_mode(args) -> int:
             ax.set_ylabel('Voltage (V)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
+        fig._ec_legend_title = "Cycle"
         fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
 
         # Save if requested

@@ -13,6 +13,7 @@ This will:
 3. Update version in __init__.py and pyproject.toml
 4. Build the package
 5. Upload to PyPI
+6. Commit and push changes to GitHub (with confirmation prompt)
 """
 
 import os
@@ -178,6 +179,221 @@ def write_latest_release_notes_json(project_root: Path, new_version: str, update
     payload = {"version": new_version, "custom_message": custom_message, "update_notes": update_notes_list}
     out_file.write_text(json.dumps(payload, indent=2), encoding='utf-8')
     print("\033[0;32m✓ Wrote batplot/data/latest_release_notes.json (commit & push so users see notes)\033[0m")
+
+
+def git_commit_and_push(project_root: Path, new_version: str, update_notes: str) -> bool:
+    """Commit version changes and push to GitHub.
+    
+    Returns:
+        True if successful or skipped, False if failed
+    """
+    GREEN = "\033[0;32m"
+    YELLOW = "\033[0;33m"
+    RED = "\033[0;31m"
+    BLUE = "\033[0;34m"
+    NC = "\033[0m"
+    
+    # Check if we're in a git repo
+    if not (project_root / ".git").exists():
+        print(f"\n{YELLOW}Skipping git push: not a git repository{NC}")
+        return True
+    
+    try:
+        # Check git status
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_root,
+            capture_output=True,
+            text=True
+        )
+        
+        if not result.stdout.strip():
+            print(f"\n{YELLOW}No changes to commit{NC}")
+            return True
+        
+        print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
+        print(f"  Files to commit:")
+        print(f"    - batplot/__init__.py (version)")
+        print(f"    - pyproject.toml (version)")
+        print(f"    - batplot/version_check.py (UPDATE_INFO)")
+        print(f"    - batplot/data/latest_release_notes.json")
+        print(f"    - CITATION.cff")
+        print(f"    - RELEASE_NOTES.txt, CHANGELOG.md, BUGFIXES.md")
+        print(f"    - batplot/data/CHANGELOG.md")
+        
+        try:
+            choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{YELLOW}Skipped git push{NC}")
+            return True
+        
+        if choice != 'y':
+            print(f"{YELLOW}Skipped git push{NC}")
+            return True
+        
+        # Stage the files: release metadata + release notes and changelog so GitHub reflects the release.
+        # Use -f so files listed in .gitignore (e.g. RELEASE_NOTES, CHANGELOG) are still committed and pull won't abort.
+        files_to_commit = [
+            "batplot/__init__.py",
+            "pyproject.toml",
+            "batplot/version_check.py",
+            "batplot/data/latest_release_notes.json",
+            "CITATION.cff",
+            "RELEASE_NOTES.txt",
+            "CHANGELOG.md",
+            "BUGFIXES.md",
+            "batplot/data/CHANGELOG.md",
+        ]
+        
+        for f in files_to_commit:
+            file_path = project_root / f
+            if file_path.exists():
+                subprocess.run(["git", "add", "-f", f], cwd=project_root, check=True)
+        
+        # Optionally include all other modified and new files (batplot source, etc.) so GitHub has the full release
+        try:
+            include_all = input(f"{YELLOW}Also include all other modified and new files (e.g. batplot/ source)? (y/n): {NC}").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            include_all = "n"
+        if include_all in ("y", "yes"):
+            subprocess.run(["git", "add", "-A"], cwd=project_root, capture_output=True)
+            print(f"{GREEN}✓ Staged all modified and new tracked files{NC}")
+        
+        # Create commit message
+        commit_msg = f"Release v{new_version}\n\n"
+        if update_notes:
+            commit_msg += f"{update_notes}\n"
+        
+        # Commit
+        subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=project_root,
+            check=True
+        )
+        print(f"{GREEN}✓ Committed changes{NC}")
+        
+        # Stash unstaged changes if any (git pull --rebase refuses to run with uncommitted changes)
+        stashed = False
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_root,
+            capture_output=True,
+            text=True
+        )
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            # Has uncommitted changes; stash them
+            print(f"\n{BLUE}Stashing unstaged changes...{NC}")
+            stash_result = subprocess.run(
+                ["git", "stash", "push", "-m", "batplot dev-upgrade: temporary stash"],
+                cwd=project_root,
+                capture_output=True,
+                text=True
+            )
+            if stash_result.returncode == 0:
+                stashed = True
+                print(f"{GREEN}✓ Stashed{NC}")
+            else:
+                print(f"{YELLOW}Could not stash. Pull may fail if you have unstaged changes.{NC}")
+        
+        # Pull first to integrate any remote changes (e.g. from another machine or GitHub UI)
+        print(f"\n{BLUE}Pulling from GitHub...{NC}")
+        pull_result = subprocess.run(
+            ["git", "pull", "--rebase", "origin", "main"],
+            cwd=project_root,
+            capture_output=True,
+            text=True
+        )
+        if pull_result.returncode != 0:
+            # Try without specifying branch (uses upstream)
+            pull_result = subprocess.run(
+                ["git", "pull", "--rebase"],
+                cwd=project_root,
+                capture_output=True,
+                text=True
+            )
+        if pull_result.returncode != 0:
+            if stashed:
+                subprocess.run(["git", "stash", "pop"], cwd=project_root, capture_output=True)
+            print(f"{YELLOW}Could not pull (remote may have diverged):{NC}")
+            print(pull_result.stderr or pull_result.stdout)
+            print(f"{YELLOW}Resolve manually (e.g. git pull --rebase, then git push), or push later.{NC}")
+            return False
+        
+        # Push
+        print(f"\n{BLUE}Pushing to GitHub...{NC}")
+        result = subprocess.run(
+            ["git", "push"],
+            cwd=project_root,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print(f"{GREEN}✓ Pushed to GitHub successfully{NC}")
+            
+            # Restore stashed changes if any
+            if stashed:
+                print(f"\n{BLUE}Restoring stashed changes...{NC}")
+                pop_result = subprocess.run(
+                    ["git", "stash", "pop"],
+                    cwd=project_root,
+                    capture_output=True,
+                    text=True
+                )
+                if pop_result.returncode == 0:
+                    print(f"{GREEN}✓ Restored{NC}")
+                else:
+                    print(f"{YELLOW}Stash pop had conflicts. Resolve with: git stash pop{NC}")
+                    print(pop_result.stderr or pop_result.stdout)
+            
+            # Try to get the remote URL to show the user
+            remote_result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=project_root,
+                capture_output=True,
+                text=True
+            )
+            if remote_result.returncode == 0:
+                remote_url = remote_result.stdout.strip()
+                # Convert SSH to HTTPS for display
+                if remote_url.startswith("git@github.com:"):
+                    remote_url = remote_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
+                elif remote_url.endswith(".git"):
+                    remote_url = remote_url[:-4]
+                print(f"  {remote_url}")
+            
+            return True
+        else:
+            if stashed:
+                print(f"\n{BLUE}Restoring stashed changes...{NC}")
+                subprocess.run(["git", "stash", "pop"], cwd=project_root, capture_output=True)
+            print(f"{RED}✗ Git push failed:{NC}")
+            print(result.stderr)
+            print(f"{YELLOW}You can manually push later with: git push{NC}")
+            return False
+            
+    except subprocess.CalledProcessError as e:
+        print(f"{RED}✗ Git operation failed: {e}{NC}")
+        print(f"{YELLOW}You can manually commit and push later{NC}")
+        return False
+    except Exception as e:
+        print(f"{RED}✗ Unexpected error during git operations: {e}{NC}")
+        return False
+
+
+def update_citation_cff(project_root: Path, new_version: str) -> None:
+    """Update version and date-released in CITATION.cff to match the release."""
+    cff_file = project_root / "CITATION.cff"
+    if not cff_file.exists():
+        return
+    import re
+    from datetime import datetime
+    content = cff_file.read_text()
+    today = datetime.now().strftime("%Y-%m-%d")
+    content = re.sub(r'^version:\s*.+$', f'version: v{new_version}', content, flags=re.MULTILINE)
+    content = re.sub(r'^date-released:\s*.+$', f'date-released: {today}', content, flags=re.MULTILINE)
+    cff_file.write_text(content)
+    print(f"✓ Updated CITATION.cff (version v{new_version}, date {today})")
 
 
 def update_version_files(project_root: Path, new_version: str):
@@ -389,6 +605,7 @@ def run_upgrade():
         # Step 2: Update versions
         print(f"\n{GREEN}[2/5]{NC} Updating version numbers...")
         update_version_files(project_root, new_version)
+        update_citation_cff(project_root, new_version)
         
         # Verification
         print(f"\n{YELLOW}Verification:{NC}")
@@ -447,6 +664,9 @@ def run_upgrade():
         print(f"{GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{NC}")
         
         # RELEASE_NOTES.txt is left unchanged so you can keep adding ## VERSION blocks for future releases.
+        
+        # Commit and push to GitHub
+        git_commit_and_push(project_root, new_version, update_notes)
         
         if update_notes:
             print(f"\n{BLUE}What's new:{NC}")

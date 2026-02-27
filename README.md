@@ -22,6 +22,9 @@ pip install batplot
 
 ## Quick Start
 
+Tutorial
+https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
+
 ### XRD / PDF / XAS and much more
 
 ```bash
@@ -90,18 +93,21 @@ batplot --all geom.bpsg --cpc --mass 5.4    # Apply style+geometry to all CPC fi
 # Correlate in-situ XRD with electrochemistry
 # (Place both .xye and .mpt files in same directory)
 batplot --operando --i
+# or: batplot --contour --i  (same as --operando)
 
 # Operando mode without electrochemistry data
 # (Only .xye files, no .mpt file)
 batplot --operando --i
 ```
 
+Interactive menu: (Styles) | (Operando) | (Side Panel) | (Options) — Side Panel for the time/voltage trace when .mpt is present.
+
 ## Supported File Formats
 
 | Type | Formats |
 |------|---------|
 | **Electrochemistry** | `.csv` (Neware raw data; summary format for CPC), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe summary for CPC) |
-| **XRD / PDF** | `.xye`, `.xy`, `.qye`, `.dat` |
+| **XRD / PDF** | Any text-based file (`.xye`, `.xy`, `.qye`, `.dat`, `.csv`, `.txt`, etc.); use `--readcol` and `--xaxis` as needed. Bruker `.brml` and `.raw` are read natively. |
 | **XAS** | `.nor`, `.chik`, `.chir` |
 | **Others** | `user defined` (skip the header lines and plot first two columns as x and y, alternatively using --readcol flag) |
 
@@ -122,16 +128,13 @@ After installing from PyPI you can read the packaged manual straight from a
 terminal:
 
 ```bash
-# Stream the manual through your $PAGER (defaults to less/more)
-batplot-manual
-
-# Alternative when the console script is unavailable
-python -m batplot.manual
+# Stream the manual (.txt)
+batplot -m
 ```
 
 ## Requirements
 
-- Python ≥ 3.7
+- Python ≥ 3.9
 - numpy
 - matplotlib
 
@@ -145,5 +148,6 @@ Tian Dai
 tianda@uio.no
 University of Oslo
 https://www.mn.uio.no/kjemi/english/people/aca/tianda/
+https://github.com/chem-plot/
 
 **Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback. If you are not from UiO, send an email to sympa@kjemi.uio.no with the exact subject line with your name: "subscribe batplot-lab@kjemi.uio.no your-name"

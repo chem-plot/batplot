@@ -17,8 +17,8 @@ from __future__ import annotations
 from typing import Tuple, Dict, Optional, Any
 import json
 import os
-import time
 import sys
+import time
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -38,8 +38,10 @@ from .color_utils import (
     color_block,
     resolve_color_token,
     manage_user_colors,
+    ensure_colormap,
 )
-from .utils import choose_style_file, convert_label_shortcuts
+from matplotlib import colors as mcolors
+from .utils import choose_style_file, convert_label_shortcuts, natural_sort_key
 
 
 class _FilterIMKWarning:
@@ -173,12 +175,14 @@ def _colorize_prompt(text):
 
 
 def _colorize_inline_commands(text):
-    """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
+    """Colorize inline command examples in help text. Colors quoted examples and x=desc / x: desc subcommands."""
     import re
     # Color quoted command examples (like 's2 w5 a4', 'w2 w5')
     text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
-    # Color specific known commands: q, i, l, list, help, all
-    text = re.sub(r'\b(q|i|l|list|help|all)\b(?=\s*[=,]|\s*$)', lambda m: f"\033[96m{m.group(1)}\033[0m", text)
+    # Color subcommand keys in "x=desc" format (e.g. t=toggle, a=alpha, q=back)
+    text = re.sub(r'\b([a-z0-9])=', lambda m: f"\033[96m{m.group(1)}\033[0m=", text)
+    # Color subcommand keys in "x: desc" format (e.g. f: change family, q: back)
+    text = re.sub(r'\b([a-z0-9]): ', lambda m: f"\033[96m{m.group(1)}\033[0m: ", text)
     return text
 
 
@@ -255,7 +259,7 @@ def _get_geometry_snapshot(ax, ec_ax) -> Dict:
     return snapshot
 
 
-def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='normal'):
+def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='highlow'):
     """Draw a custom colorbar in the given axes using a plot frame.
     
     This replaces matplotlib's Colorbar with a custom implementation that:
@@ -370,7 +374,7 @@ def _update_custom_colorbar(cbar_ax, im=None, label=None, label_mode=None):
         label = getattr(cbar_ax, '_colorbar_label', 'Intensity')
     
     if label_mode is None:
-        label_mode = getattr(cbar_ax, '_colorbar_label_mode', 'normal')
+        label_mode = getattr(cbar_ax, '_colorbar_label_mode', 'highlow')
     
     # Redraw the colorbar
     _draw_custom_colorbar(cbar_ax, im, label, label_mode)
@@ -573,6 +577,32 @@ def _ensure_fixed_params(fig, ax, cbar_ax, ec_ax):
             axes_width_in, axes_height_in)
 
 
+def _redraw_operando_cif_if_present(fig, ax):
+    """Redraw CIF tick labels if present. Call after xlim or layout changes."""
+    try:
+        if not getattr(ax, '_operando_cif_tick_series', None):
+            return
+        from .operando import _draw_operando_cif_ticks
+        cif_series = ax._operando_cif_tick_series
+        cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
+        axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
+        wl = getattr(fig, '_operando_wl', None)
+        show_hkl = getattr(fig, '_operando_cif_show_hkl', False)
+        show_titles = getattr(fig, '_operando_cif_show_titles', True)
+        placement = getattr(fig, '_operando_cif_placement', 'below')
+        y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
+        ax_pos = ax.get_position()
+        y_base = ax_pos.ymin - 0.02 if placement == 'below' else ax_pos.ymax + 0.02
+        dy = -0.025 if placement == 'below' else 0.025
+        while len(y_positions) < len(cif_series):
+            y_positions.append(y_base + len(y_positions) * dy)
+        fig._operando_cif_y_positions = y_positions
+        _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl,
+                                show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+    except Exception:
+        pass
+
+
 def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
                                ax_width_in: float, ax_height_in: float,
                                colorbar_width_in: float, colorbar_gap_in: float,
@@ -625,7 +655,6 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
         total_width_frac = colorbar_width_frac + colorbar_gap_frac + ax_width_frac
     
     # Center the group horizontally and vertically
-    # Calculate base positions without offsets first
     group_left_edge = 0.5 - total_width_frac / 2.0
     vertical_center = 0.5 - ax_height_frac / 2.0
 
@@ -635,9 +664,8 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
     colorbar_height_frac = ax_height_frac  # Match colorbar height to axes
 
     # Apply horizontal offsets independently to each element
-    # Offsets are relative to the element's base position within the centered group
     colorbar_x0 = base_colorbar_x0 + cb_h_offset_frac
-    operando_x0 = base_operando_x0  # Operando stays in centered position
+    operando_x0 = base_operando_x0
     if ec_ax is not None:
         base_ec_x0 = base_operando_x0 + ax_width_frac + ec_gap_frac
         ec_x0 = base_ec_x0 + ec_h_offset_frac
@@ -669,6 +697,9 @@ def _apply_group_layout_inches(fig, ax, cbar_ax, ec_ax,
     except Exception:
         pass
     
+    # Redraw CIF tick labels if present (y-positions depend on axes bbox)
+    _redraw_operando_cif_if_present(fig, ax)
+
     # Redraw the canvas
     try:
         fig.canvas.draw()
@@ -833,13 +864,15 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "oy: Y range",
                 "oz: intensity range",
                 "or: rename",
+                "c: CIF ticks",
                 "pk: peak search"
             ]
             col3 = [
                 "et: time range",
                 "ex: x range",
                 "ey: y axis type",
-                "er: rename"
+                "er: rename",
+                "eg: grid"
             ]
             col4 = [
                 "n: crosshair",
@@ -864,11 +897,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # Dynamic column widths
             w1 = max(len("(Styles)"), *(len(s) for s in col1), 12)
             w2 = max(len("(Operando)"), *(len(s) for s in col2), 14)
-            w3 = max(len("(EC)"), *(len(s) for s in col3), 14)
+            w3 = max(len("(Side Panel)"), *(len(s) for s in col3), 14)
             w4 = max(len("(Options)"), *(len(s) for s in col4), 16)
             rows = max(len(col1), len(col2), len(col3), len(col4))
             print("\n\033[1mInteractive menu:\033[0m")  # Bold title
-            print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Operando)':<{w2}}\033[0m \033[93m{'(EC)':<{w3}}\033[0m \033[93m{'(Options)':<{w4}}\033[0m")  # Yellow headers
+            print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Operando)':<{w2}}\033[0m \033[93m{'(Side Panel)':<{w3}}\033[0m \033[93m{'(Options)':<{w4}}\033[0m")  # Yellow headers
             for i in range(rows):
                 p1 = _colorize_menu(col1[i]) if i < len(col1) else ""
                 p2 = _colorize_menu(col2[i]) if i < len(col2) else ""
@@ -898,6 +931,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "oy: Y range",
                 "oz: intensity range",
                 "or: rename",
+                "c: CIF ticks",
                 "pk: peak search"
             ]
             col3 = [
@@ -975,11 +1009,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         # Dynamic column widths
         w1 = max(len("(Styles)"), *(len(s) for s in col1), 12)
         w2 = max(len("(Operando)"), *(len(s) for s in col2), 14)
-        w3 = max(len("(EC)"), *(len(s) for s in col3), 14)
+        w3 = max(len("(Side Panel)"), *(len(s) for s in col3), 14)
         w4 = max(len("(Options)"), *(len(s) for s in col4), 16)
         rows = max(len(col1), len(col2), len(col3), len(col4))
         print("\nInteractive menu:")
-        print(f"  {'(Styles)':<{w1}} {'(Operando)':<{w2}} {'(EC)':<{w3}} {'(Options)':<{w4}}")
+        print(f"  {'(Styles)':<{w1}} {'(Operando)':<{w2}} {'(Side Panel)':<{w3}} {'(Options)':<{w4}}")
         for i in range(rows):
             p1 = col1[i] if i < len(col1) else ""
             p2 = col2[i] if i < len(col2) else ""
@@ -1123,7 +1157,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
     
     # Initialize custom colorbar (replaces matplotlib's colorbar)
     cbar_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
-    cbar_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+    cbar_label_mode = getattr(fig, '_colorbar_label_mode', 'highlow')
     # If we were given a real Matplotlib Colorbar (e.g. from session load),
     # detach it from `im` before we clear/redraw the axes for the custom colorbar.
     _detach_mpl_colorbar_callbacks(cbar, im)
@@ -1389,6 +1423,19 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 'ec_spines': ec_spines_snap,
                 'ec_ticks': ec_ticks_snap,
                 'ec_line_style': ec_line_style,
+                'ec_grid': dict(getattr(ec_ax, '_ec_grid', None) or {}) if ec_ax is not None else None,
+                'operando_cif': {
+                    'tick_series': list(getattr(ax, '_operando_cif_tick_series', [])),
+                    'show_hkl': bool(getattr(fig, '_operando_cif_show_hkl', False)),
+                    'show_titles': bool(getattr(fig, '_operando_cif_show_titles', True)),
+                    'placement': str(getattr(fig, '_operando_cif_placement', 'below')),
+                    'y_positions': list(getattr(fig, '_operando_cif_y_positions', [])),
+                    'colormap': getattr(fig, '_operando_cif_colormap', None),
+                    'highlight': bool(getattr(fig, '_operando_cif_highlight', False)),
+                    'title_font': dict(getattr(fig, '_operando_cif_title_font', None) or {}),
+                    'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
+                    'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
+                } if getattr(ax, '_operando_cif_tick_series', None) else None,
             })
             if len(state_history) > 40:
                 state_history.pop(0)
@@ -1832,6 +1879,27 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             ln.set_linewidth(float(ec_line_style['linewidth']))
             except Exception:
                 pass
+            # Restore EC grid
+            try:
+                ec_grid_snap = snap.get('ec_grid')
+                if ec_grid_snap and ec_ax is not None:
+                    g = dict(ec_grid_snap)
+                    g.setdefault('visible', False)
+                    g.setdefault('alpha', 0.3)
+                    g.setdefault('linestyle', '--')
+                    g.setdefault('color', '0.6')
+                    g.setdefault('which', 'major')
+                    ec_ax._ec_grid = g
+                    ec_ax.grid(
+                        g['visible'],
+                        which=g['which'],
+                        axis='both',
+                        alpha=float(g['alpha']),
+                        color=str(g['color']),
+                        linestyle=str(g['linestyle']),
+                    )
+            except Exception:
+                pass
             # Restore visibility states
             try:
                 cb_vis = snap.get('cb_visible')
@@ -1843,6 +1911,39 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 ec_vis = snap.get('ec_visible')
                 if ec_vis is not None and ec_ax is not None:
                     ec_ax.set_visible(bool(ec_vis))
+            except Exception:
+                pass
+            # Restore operando CIF tick state
+            try:
+                cif_snap = snap.get('operando_cif')
+                if cif_snap and getattr(ax, '_operando_cif_tick_series', None):
+                    from .operando import _draw_operando_cif_ticks
+                    fig._operando_cif_show_hkl = bool(cif_snap.get('show_hkl', False))
+                    fig._operando_cif_show_titles = bool(cif_snap.get('show_titles', True))
+                    fig._operando_cif_placement = str(cif_snap.get('placement', 'below'))
+                    y_pos = cif_snap.get('y_positions', [])
+                    fig._operando_cif_y_positions = list(y_pos) if y_pos else []
+                    fig._operando_cif_colormap = cif_snap.get('colormap')
+                    fig._operando_cif_highlight = bool(cif_snap.get('highlight', False))
+                    fig._operando_cif_title_font = dict(cif_snap.get('title_font') or {})
+                    fig._operando_cif_title_visible = list(cif_snap.get('title_visible') or [])
+                    fig._operando_cif_set_visible = list(cif_snap.get('set_visible') or [])
+                    # Restore tick_series (includes colors)
+                    tick_series_restore = cif_snap.get('tick_series')
+                    if tick_series_restore is not None:
+                        ax._operando_cif_tick_series = list(tick_series_restore)
+                    axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
+                    wl = getattr(fig, '_operando_wl', None)
+                    cif_series = getattr(ax, '_operando_cif_tick_series', [])
+                    cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
+                    ax_pos = ax.get_position()
+                    y_base = ax_pos.ymin - 0.02 if fig._operando_cif_placement == 'below' else ax_pos.ymax + 0.02
+                    dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
+                    while len(fig._operando_cif_y_positions) < len(cif_series):
+                        fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl,
+                                             show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
+                                             placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions)
             except Exception:
                 pass
             # Restore label pads (critical for maintaining title positions)
@@ -1871,6 +1972,98 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print("Undo: restored previous state.")
         except Exception as e:
             print(f"Undo failed: {e}")
+
+    def _run_save_operando_session():
+        """Run the operando session save flow. Returns without printing menus."""
+        from .session import dump_operando_session
+        from .utils import choose_save_path
+        folder = choose_save_path(file_paths, purpose="operando session save")
+        if not folder:
+            return
+        print(f"\nChosen path: {folder}")
+        if not os.path.isdir(folder):
+            print(f"Error: path is not a directory or does not exist: {folder}")
+            return
+        try:
+            all_names = os.listdir(folder)
+            files = sorted([f for f in all_names if f.lower().endswith('.pkl')], key=natural_sort_key)
+        except OSError as e:
+            print(f"Cannot list directory (check permissions or path): {e}")
+            return
+        except Exception as e:
+            print(f"Error listing directory: {e}")
+            return
+        if files:
+            print("Existing .pkl files:")
+            for i, f in enumerate(files, 1):
+                filepath = os.path.join(folder, f)
+                timestamp = _format_file_timestamp(filepath)
+                if timestamp:
+                    print(f"  {i}: {f}  ({timestamp})")
+                else:
+                    print(f"  {i}: {f}")
+            print("Enter a number above to overwrite, or a new filename to create.")
+        else:
+            print("No .pkl files in this directory. Enter a new filename to create.")
+        last_session_path = getattr(fig, '_last_session_save_path', None)
+        if last_session_path:
+            prompt = _colorize_inline_commands("Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): ")
+        else:
+            prompt = _colorize_inline_commands("Enter new filename (no ext needed) or number to overwrite (q=cancel): ")
+        choice = _safe_input(prompt).strip()
+        if not choice or choice.lower() == 'q':
+            return
+        if choice.lower() == 'o':
+            if not last_session_path:
+                print("No previous save found.")
+                return
+            if not os.path.exists(last_session_path):
+                print(f"Previous save file not found: {last_session_path}")
+                return
+            yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
+            if yn != 'y':
+                return
+            dump_operando_session(last_session_path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+            print(f"Overwritten session to {last_session_path}")
+            return
+        if choice.isdigit() and files:
+            idx = int(choice)
+            if 1 <= idx <= len(files):
+                name = files[idx - 1]
+                yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                if yn != 'y':
+                    return
+                target = os.path.join(folder, name)
+                dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+                fig._last_session_save_path = target
+                print(f"Operando session saved to {target}")
+                return
+            else:
+                print("Invalid number.")
+                return
+        name = choice
+        root, ext = os.path.splitext(name)
+        if ext == '':
+            name = name + '.pkl'
+        target = name if os.path.isabs(name) else os.path.join(folder, name)
+        if os.path.exists(target):
+            yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+            if yn != 'y':
+                return
+        dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
+        fig._last_session_save_path = target
+        actual_name = os.path.basename(target)
+        if os.path.exists(target):
+            try:
+                dir_files = os.listdir(folder)
+                for f in dir_files:
+                    if f.lower() == actual_name.lower():
+                        actual_name = f
+                        break
+            except Exception:
+                pass
+        print(f"Operando session saved to {os.path.join(folder, actual_name)}")
+
     cross = {
         'active': False,
         'vline': None, 'hline': None,
@@ -2029,7 +2222,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             continue
         if cmd == 'q':
             try:
-                ans = _safe_input("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ").strip().lower()
+                ans = _safe_input(_colorize_inline_commands("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except Exception:
                 ans = 'y'
             if ans == 'y':
@@ -2039,6 +2232,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 except Exception:
                     pass
                 break
+            elif ans in ('e', 's'):
+                cmd = ans  # Fall through to export/save handler
             else:
                 print_menu()
                 continue
@@ -2072,9 +2267,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 
                 last_figure_path = getattr(fig, '_last_figure_export_path', None)
                 if last_figure_path:
-                    fname = _safe_input("Export filename (default .svg if no extension), number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                    fname = _safe_input(_colorize_inline_commands("Export filename (default .svg if no extension), number to overwrite, or o to overwrite last (q=cancel): ")).strip()
                 else:
-                    fname = _safe_input("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ").strip()
+                    fname = _safe_input(_colorize_inline_commands("Export filename (default .svg if no extension) or number to overwrite (q=cancel): ")).strip()
                 if not fname or fname.lower() == 'q':
                     print_menu(); continue
                 
@@ -2176,7 +2371,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     # Dual-panel mode: toggle both colorbar and EC, or change colorbar labels
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0)
-                    print(f"Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\", ec:{ec_h_offset:.3f}\"), q=cancel")
+                    print(_colorize_inline_commands(f"Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\", ec:{ec_h_offset:.3f}\"), q=cancel"))
                     choice = _safe_input("v> ").strip().lower()
                     if choice == '1':
                         # Toggle colorbar
@@ -2198,8 +2393,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         print(f"Colorbar & EC panel: {'shown' if new_vis else 'hidden'}")
                     elif choice == '4':
                         # Toggle colorbar label mode: normal ticks vs High/Low
-                        current_mode = getattr(fig, '_colorbar_label_mode', 'normal')
-                        new_mode = 'highlow' if current_mode == 'normal' else 'normal'
+                        current_mode = getattr(fig, '_colorbar_label_mode', 'highlow')
+                        new_mode = 'normal' if current_mode == 'highlow' else 'highlow'
                         fig._colorbar_label_mode = new_mode
                         # Redraw colorbar with new label mode
                         try:
@@ -2231,7 +2426,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"  Colorbar offset: {cb_h_offset:.3f}\" (positive=right, negative=left)")
                             if ec_ax is not None:
                                 print(f"  EC panel offset: {ec_h_offset:.3f}\" (positive=right, negative=left)")
-                            print("Commands: c=colorbar, e=EC panel, q=back")
+                            print(_colorize_inline_commands("Commands: c=colorbar, e=EC panel, q=back"))
                             sub = _safe_input("m> ").strip().lower()
                             if not sub or sub == 'q':
                                 break
@@ -2282,7 +2477,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 else:
                     # Operando-only mode: toggle colorbar or change label mode
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
-                    print(f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=cancel")
+                    print(_colorize_inline_commands(f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=cancel"))
                     choice = _safe_input("v> ").strip().lower()
                     if choice == '1':
                         cb_vis = cbar.ax.get_visible()
@@ -2290,8 +2485,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         print(f"Colorbar: {'hidden' if cb_vis else 'shown'}")
                     elif choice == '2':
                         # Toggle colorbar label mode
-                        current_mode = getattr(fig, '_colorbar_label_mode', 'normal')
-                        new_mode = 'highlow' if current_mode == 'normal' else 'normal'
+                        current_mode = getattr(fig, '_colorbar_label_mode', 'highlow')
+                        new_mode = 'normal' if current_mode == 'highlow' else 'highlow'
                         fig._colorbar_label_mode = new_mode
                         # Redraw colorbar with new label mode
                         try:
@@ -2320,7 +2515,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                             print(f"\nHorizontal position (relative to canvas center):")
                             print(f"  Colorbar offset: {cb_h_offset:.3f}\" (positive=right, negative=left)")
-                            print("Commands: c=colorbar, q=back")
+                            print(_colorize_inline_commands("Commands: c=colorbar, q=back"))
                             sub = _safe_input("m> ").strip().lower()
                             if not sub or sub == 'q':
                                 break
@@ -2355,88 +2550,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             _restore(); print_menu(); continue
         if cmd == 's':
             try:
-                from .session import dump_operando_session
-                import os
-                from .utils import choose_save_path
-
-                folder = choose_save_path(file_paths, purpose="operando session save")
-                if not folder:
-                    print_menu(); continue
-                print(f"\nChosen path: {folder}")
-                try:
-                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
-                except Exception:
-                    files = []
-                if files:
-                    print("Existing .pkl files:")
-                    for i, f in enumerate(files, 1):
-                        filepath = os.path.join(folder, f)
-                        timestamp = _format_file_timestamp(filepath)
-                        if timestamp:
-                            print(f"  {i}: {f}  ({timestamp})")
-                        else:
-                            print(f"  {i}: {f}")
-                last_session_path = getattr(fig, '_last_session_save_path', None)
-                if last_session_path:
-                    prompt = "Enter new filename (no ext needed), number to overwrite, or o to overwrite last (q=cancel): "
-                else:
-                    prompt = "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
-                choice = _safe_input(prompt).strip()
-                if not choice or choice.lower() == 'q':
-                    print_menu(); continue
-                if choice.lower() == 'o':
-                    # Overwrite last saved session
-                    if not last_session_path:
-                        print("No previous save found.")
-                        print_menu(); continue
-                    if not os.path.exists(last_session_path):
-                        print(f"Previous save file not found: {last_session_path}")
-                        print_menu(); continue
-                    yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
-                    if yn != 'y':
-                        print_menu(); continue
-                    dump_operando_session(last_session_path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
-                    print(f"Overwritten session to {last_session_path}")
-                    print_menu(); continue
-                if choice.isdigit() and files:
-                    idx = int(choice)
-                    if 1 <= idx <= len(files):
-                        name = files[idx-1]
-                        yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
-                        if yn != 'y':
-                            print_menu(); continue
-                        target = os.path.join(folder, name)
-                        dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
-                        fig._last_session_save_path = target
-                        print_menu(); continue
-                    else:
-                        print("Invalid number.")
-                        print_menu(); continue
-                if choice.lower() != 'o':
-                    name = choice
-                    root, ext = os.path.splitext(name)
-                    if ext == '':
-                        name = name + '.pkl'
-                    target = name if os.path.isabs(name) else os.path.join(folder, name)
-                    if os.path.exists(target):
-                        yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
-                        if yn != 'y':
-                            print_menu(); continue
-                    dump_operando_session(target, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax, skip_confirm=True)
-                    fig._last_session_save_path = target
-                    # Show the actual filename that was saved (in case of case differences on macOS)
-                    actual_name = os.path.basename(target)
-                    if os.path.exists(target):
-                        # Get the actual filename as stored on disk (for case-sensitive display)
-                        try:
-                            dir_files = os.listdir(folder)
-                            for f in dir_files:
-                                if f.lower() == actual_name.lower():
-                                    actual_name = f
-                                    break
-                        except Exception:
-                            pass
-                    print(f"Operando session saved to {os.path.join(folder, actual_name)}")
+                _run_save_operando_session()
             except Exception as e:
                 print(f"Save failed: {e}")
             print_menu(); continue
@@ -2710,7 +2824,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
             cur_size = plt.rcParams.get('font.size', None)
             print(f"\nFont submenu (current: family='{cur_family}', size={cur_size})")
-            print("  f: change family  |  s: change size  |  q: back")
+            print(_colorize_inline_commands("  f: change family  |  s: change size  |  q: back"))
             while True:
                 sub = _safe_input("Font> ").strip().lower()
                 if not sub:
@@ -3285,7 +3399,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 current_y_px = _px_value('_top_xlabel_manual_offset_y_pts', target)
                                 current_x_px = _px_value('_top_xlabel_manual_offset_x_pts', target)
                                 print(f"Top title offset: Y={current_y_px:+.2f} px (positive=up), X={current_x_px:+.2f} px (positive=right)")
-                                sub = _safe_input(_colorize_prompt("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_inline_commands("top (w=up, s=down, a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -3322,7 +3436,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             while True:
                                 current_y_px = _px_value('_bottom_xlabel_manual_offset_y_pts', target)
                                 print(f"Bottom title offset: Y={current_y_px:+.2f} px (positive=down)")
-                                sub = _safe_input(_colorize_prompt("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_inline_commands("bottom (s=down, w=up, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -3352,7 +3466,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             while True:
                                 current_x_px = _px_value('_left_ylabel_manual_offset_x_pts', target)
                                 print(f"Left title offset: X={current_x_px:+.2f} px (positive=left)")
-                                sub = _safe_input(_colorize_prompt("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_inline_commands("left (a=left, d=right, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -3389,7 +3503,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 current_x_px = _px_value('_right_ylabel_manual_offset_x_pts', target)
                                 current_y_px = _px_value('_right_ylabel_manual_offset_y_pts', target)
                                 print(f"Right title offset: X={current_x_px:+.2f} px (positive=right), Y={current_y_px:+.2f} px (positive=up)")
-                                sub = _safe_input(_colorize_prompt("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
+                                sub = _safe_input(_colorize_inline_commands("right (d=right, a=left, w=up, s=down, 0=reset, q=back): ")).strip().lower()
                                 if not sub:
                                     continue
                                 if sub == 'q':
@@ -3541,10 +3655,371 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception:
                             fig.canvas.draw_idle()
             print_menu()
+        elif cmd == 'c':
+            # CIF tick labels submenu (only when CIF data is present)
+            cif_series = getattr(ax, '_operando_cif_tick_series', None)
+            if not cif_series:
+                print("No CIF tick labels. Add CIF files when launching: batplot folder phase.cif:1.54 --operando -i")
+                print_menu()
+                continue
+            from .operando import _draw_operando_cif_ticks
+            axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
+            wl = getattr(fig, '_operando_wl', None)
+            cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
+            show_hkl = getattr(fig, '_operando_cif_show_hkl', False)
+            show_titles = getattr(fig, '_operando_cif_show_titles', True)
+            placement = getattr(fig, '_operando_cif_placement', 'below')
+            y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
+            n_sets = len(cif_series)
+            ax_pos = ax.get_position()
+            y_base = ax_pos.ymin - 0.02 if placement == 'below' else ax_pos.ymax + 0.02
+            dy = -0.025 if placement == 'below' else 0.025
+            while len(y_positions) < n_sets:
+                y_positions.append(y_base + len(y_positions) * dy)
+            while True:
+                print(_colorize_inline_commands("CIF tick labels:"))
+                print("  " + _colorize_menu(f"z: toggle hkl labels (currently {'on' if show_hkl else 'off'})"))
+                print("  " + _colorize_menu(f"t: toggle CIF titles (currently {'on' if show_titles else 'off'})"))
+                show_highlight = getattr(fig, '_operando_cif_highlight', False)
+                print("  " + _colorize_menu(f"h: highlight for overlay (currently {'on' if show_highlight else 'off'})"))
+                print("  " + _colorize_menu(f"p: placement (currently {placement})"))
+                print("  " + _colorize_menu("v: vertical position (per CIF set)"))
+                print("  " + _colorize_inline_commands("o: color (per CIF set)  m: colormap (all sets)"))
+                cif_font = getattr(fig, '_operando_cif_title_font', None) or {}
+                rc_fam = plt.rcParams.get('font.family', ['sans-serif'])
+                if isinstance(rc_fam, list):
+                    rc_fam = rc_fam[0] if rc_fam else 'sans-serif'
+                rc_sz = max(8, int(0.55 * plt.rcParams.get('font.size', 12)))
+                fam_disp = cif_font.get('family') or rc_fam
+                sz_disp = cif_font.get('size') if cif_font.get('size') is not None else rc_sz
+                font_desc = f"family={fam_disp}, size={sz_disp}"
+                print("  " + _colorize_inline_commands(f"f: font (currently {font_desc})"))
+                print("  " + _colorize_inline_commands("r: rename (per set)  n: hide/show name (per set)"))
+                print("  " + _colorize_menu("x: show/hide CIF set (per set)"))
+                print("  " + _colorize_menu("b: undo"))
+                print("  " + _colorize_menu("q: back"))
+                sub = _safe_input(_colorize_prompt("c> ")).strip().lower()
+                if not sub or sub == 'q':
+                    break
+                if sub == 'z':
+                    _snapshot("cif-hkl")
+                    fig._operando_cif_show_hkl = not show_hkl
+                    show_hkl = fig._operando_cif_show_hkl
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                    print(f"CIF hkl labels: {'on' if show_hkl else 'off'}")
+                elif sub == 't':
+                    _snapshot("cif-titles")
+                    fig._operando_cif_show_titles = not show_titles
+                    show_titles = fig._operando_cif_show_titles
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                    print(f"CIF titles: {'on' if show_titles else 'off'}")
+                elif sub == 'h':
+                    _snapshot("cif-highlight")
+                    fig._operando_cif_highlight = not getattr(fig, '_operando_cif_highlight', False)
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                    print(f"CIF highlight: {'on' if fig._operando_cif_highlight else 'off'} (visible when overlaid on contour)")
+                elif sub == 'p':
+                    _snapshot("cif-placement")
+                    placement = 'above' if placement == 'below' else 'below'
+                    fig._operando_cif_placement = placement
+                    ax_pos = ax.get_position()
+                    y_base = ax_pos.ymin - 0.02 if placement == 'below' else ax_pos.ymax + 0.02
+                    dy = -0.025 if placement == 'below' else 0.025
+                    y_positions = [y_base + i * dy for i in range(len(cif_series))]
+                    fig._operando_cif_y_positions = y_positions
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                    print(f"CIF placement: {placement}")
+                elif sub == 'v':
+                    print(f"CIF sets: {list(range(1, len(cif_series) + 1))}")
+                    for i, (lab, *_ ) in enumerate(cif_series):
+                        print(f"  {i+1}: {lab}  y={y_positions[i]:.2f}" if i < len(y_positions) else f"  {i+1}: {lab}")
+                    idx_s = _safe_input(_colorize_inline_commands("Set index to adjust (q=back): ")).strip().lower()
+                    if idx_s == 'q':
+                        continue
+                    try:
+                        idx = int(idx_s) - 1
+                        if 0 <= idx < len(cif_series):
+                            while True:
+                                cur_y = y_positions[idx] if idx < len(y_positions) else 0
+                                val_s = _safe_input(_colorize_inline_commands(f"New y for set {idx+1} (current {cur_y:.3f}, w=up s=down, q=back): ")).strip().lower()
+                                if not val_s or val_s == 'q':
+                                    break
+                                delta = None
+                                target_y = None
+                                if val_s == 'w':
+                                    delta = 0.02
+                                elif val_s == 's':
+                                    delta = -0.02
+                                elif val_s:
+                                    try:
+                                        target_y = float(val_s)
+                                    except ValueError:
+                                        print("Invalid value.")
+                                        continue
+                                if delta is None and target_y is None:
+                                    continue
+                                _snapshot("cif-y-position")
+                                y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
+                                ax_pos = ax.get_position()
+                                y_base = ax_pos.ymin - 0.02 if placement == 'below' else ax_pos.ymax + 0.02
+                                dy = -0.025 if placement == 'below' else 0.025
+                                while len(y_positions) < len(cif_series):
+                                    y_positions.append(y_base + len(y_positions) * dy)
+                                if delta is not None:
+                                    y_positions[idx] = (y_positions[idx] if idx < len(y_positions) else 0) + delta
+                                else:
+                                    y_positions[idx] = target_y
+                                fig._operando_cif_y_positions = y_positions
+                                _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                fig.canvas.draw_idle()
+                                print(f"Set {idx+1} y = {y_positions[idx]:.2f}")
+                        else:
+                            print("Invalid index.")
+                    except ValueError:
+                        print("Invalid index.")
+                elif sub == 'o':
+                    while True:
+                        print("CIF color (per set). Use color name or hex, e.g. red, #FF0000")
+                        for i, (lab, fname, *rest) in enumerate(cif_series):
+                            col = rest[-1] if rest else 'k'
+                            print(f"  {i+1}: {lab}  color={col}")
+                        idx_s = _safe_input(_colorize_inline_commands("Set index (q=back): ")).strip().lower()
+                        if not idx_s or idx_s == 'q':
+                            break
+                        try:
+                            idx = int(idx_s) - 1
+                            if 0 <= idx < len(cif_series):
+                                new_col = _safe_input(f"New color for set {idx+1}: ").strip()
+                                if new_col:
+                                    _snapshot("cif-color")
+                                    try:
+                                        resolved = resolve_color_token(new_col) if resolve_color_token else new_col
+                                    except Exception:
+                                        resolved = new_col
+                                    lab, fname, peaksQ, wl_e, qmax, _ = cif_series[idx]
+                                    cif_series = list(cif_series)
+                                    cif_series[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
+                                    fig._operando_cif_colormap = None  # custom per-set colors
+                                    ax._operando_cif_tick_series = cif_series
+                                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                    fig.canvas.draw_idle()
+                                    print(f"Set {idx+1} color: {resolved}")
+                            else:
+                                print("Invalid index.")
+                        except ValueError:
+                            print("Invalid index.")
+                elif sub == 'f':
+                    _snapshot("cif-font")
+                    cur = getattr(fig, '_operando_cif_title_font', None) or {}
+                    rc_family = plt.rcParams.get('font.family', ['sans-serif'])
+                    if isinstance(rc_family, list):
+                        rc_family = rc_family[0] if rc_family else 'sans-serif'
+                    rc_size = max(8, int(0.55 * plt.rcParams.get('font.size', 12)))
+                    fam_display = cur.get('family') or rc_family
+                    sz_display = cur.get('size') if cur.get('size') is not None else rc_size
+                    while True:
+                        print(_colorize_inline_commands("CIF title font submenu:"))
+                        print("  " + _colorize_inline_commands(f"f: family (current: {fam_display})"))
+                        print("  " + _colorize_inline_commands(f"s: size (current: {sz_display})"))
+                        print("  " + _colorize_inline_commands("q: back"))
+                        font_sub = _safe_input(_colorize_prompt("f> ")).strip().lower()
+                        if not font_sub or font_sub == 'q':
+                            break
+                        if font_sub == 'f':
+                            print(_colorize_inline_commands("Common: Arial, DejaVu Sans, Times New Roman, Courier New"))
+                            new_fam = _safe_input(f"Font family (current: {fam_display}, Enter to keep): ").strip()
+                            if new_fam:
+                                font_dict = dict(cur)
+                                font_dict['family'] = new_fam
+                                fig._operando_cif_title_font = font_dict
+                                cur = font_dict
+                                fam_display = new_fam
+                                _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                fig.canvas.draw_idle()
+                                print(f"CIF title font family: {fam_display}")
+                        elif font_sub == 's':
+                            new_sz = _safe_input(f"Font size (current: {sz_display}, Enter to keep): ").strip()
+                            if new_sz:
+                                try:
+                                    val = max(6, int(float(new_sz)))
+                                    font_dict = dict(cur)
+                                    font_dict['size'] = val
+                                    fig._operando_cif_title_font = font_dict
+                                    cur = font_dict
+                                    sz_display = val
+                                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                    fig.canvas.draw_idle()
+                                    print(f"CIF title font size: {sz_display}")
+                                except (ValueError, TypeError):
+                                    print("Invalid font size.")
+                elif sub == 'r':
+                    while True:
+                        print(_colorize_inline_commands("CIF sets (q=back)"))
+                        for i, (lab, *_ ) in enumerate(cif_series):
+                            print(f"  {i+1}: {lab}")
+                        print("Tip: Use LaTeX/mathtext for special characters:")
+                        print("  " + _colorize_inline_commands("Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²"))
+                        print("  " + _colorize_inline_commands("Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å"))
+                        print("  " + _colorize_inline_commands("Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O"))
+                        idx_s = _safe_input(_colorize_inline_commands("Set index to rename (q=back): ")).strip().lower()
+                        if not idx_s or idx_s == 'q':
+                            break
+                        try:
+                            idx = int(idx_s) - 1
+                            if 0 <= idx < len(cif_series):
+                                lab, fname, peaksQ, wl_e, qmax, col = cif_series[idx]
+                                new_lab = _safe_input(f"New label for set {idx+1} (current: {lab}, blank=cancel): ").strip()
+                                if new_lab:
+                                    new_lab = convert_label_shortcuts(new_lab)
+                                    _snapshot("cif-rename")
+                                    cif_series = list(cif_series)
+                                    cif_series[idx] = (new_lab, fname, peaksQ, wl_e, qmax, col)
+                                    ax._operando_cif_tick_series = cif_series
+                                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                    fig.canvas.draw_idle()
+                                    print(f"Set {idx+1} renamed to: {new_lab}")
+                            else:
+                                print("Invalid index.")
+                        except ValueError:
+                            print("Invalid index.")
+                elif sub == 'n':
+                    title_visible = list(getattr(fig, '_operando_cif_title_visible', None) or [True] * len(cif_series))
+                    while len(title_visible) < len(cif_series):
+                        title_visible.append(True)
+                    while True:
+                        print("CIF sets - hide/show name (per set):")
+                        for i, (lab, *_ ) in enumerate(cif_series):
+                            vis = "show" if (i < len(title_visible) and title_visible[i]) else "hide"
+                            lab_s = str(lab)
+                            print(f"  {i+1}: {lab_s[:40]}... ({vis})" if len(lab_s) > 40 else f"  {i+1}: {lab_s} ({vis})")
+                        idx_s = _safe_input(_colorize_inline_commands("Set index to toggle (q=back): ")).strip().lower()
+                        if not idx_s or idx_s == 'q':
+                            break
+                        try:
+                            idx = int(idx_s) - 1
+                            if 0 <= idx < len(cif_series):
+                                _snapshot("cif-hide-name")
+                                if idx < len(title_visible):
+                                    title_visible[idx] = not title_visible[idx]
+                                else:
+                                    title_visible.extend([True] * (idx - len(title_visible) + 1))
+                                    title_visible[idx] = False
+                                fig._operando_cif_title_visible = title_visible
+                                _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                fig.canvas.draw_idle()
+                                v = "shown" if title_visible[idx] else "hidden"
+                                print(f"Set {idx+1} name: {v}")
+                            else:
+                                print("Invalid index.")
+                        except ValueError:
+                            print("Invalid index.")
+                elif sub == 'x':
+                    set_visible = list(getattr(fig, '_operando_cif_set_visible', None) or [True] * len(cif_series))
+                    while len(set_visible) < len(cif_series):
+                        set_visible.append(True)
+                    while True:
+                        print("CIF sets - show/hide entire set (ticks + labels):")
+                        for i, (lab, *_ ) in enumerate(cif_series):
+                            lab_s = str(lab)
+                            vis = "show" if (i < len(set_visible) and set_visible[i]) else "hide"
+                            print(f"  {i+1}: {lab_s[:40]}... ({vis})" if len(lab_s) > 40 else f"  {i+1}: {lab_s} ({vis})")
+                        idx_s = _safe_input(_colorize_inline_commands("Set index to toggle (q=back): ")).strip().lower()
+                        if not idx_s or idx_s == 'q':
+                            break
+                        try:
+                            idx = int(idx_s) - 1
+                            if 0 <= idx < len(cif_series):
+                                _snapshot("cif-set-visibility")
+                                if idx < len(set_visible):
+                                    set_visible[idx] = not set_visible[idx]
+                                else:
+                                    set_visible.extend([True] * (idx - len(set_visible) + 1))
+                                    set_visible[idx] = False
+                                fig._operando_cif_set_visible = set_visible
+                                _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                                fig.canvas.draw_idle()
+                                v = "shown" if set_visible[idx] else "hidden"
+                                print(f"Set {idx+1}: {v}")
+                            else:
+                                print("Invalid index.")
+                        except ValueError:
+                            print("Invalid index.")
+                elif sub == 'm':
+                    # Apply colormap to all CIF sets
+                    try:
+                        _ensure_operando_colormap('tab10')
+                        _ensure_operando_colormap('viridis')
+                        _ensure_operando_colormap('plasma')
+                    except Exception:
+                        pass
+                    rec_palettes = [
+                        ("tab10", "Distinct categorical (10 colors)"),
+                        ("viridis", "Perceptually uniform (blue→yellow)"),
+                        ("plasma", "Perceptually uniform (purple→yellow)"),
+                        ("Set2", "Pastel categorical"),
+                        ("Dark2", "Dark categorical"),
+                    ]
+                    print("Apply colormap to all CIF sets:")
+                    for idx, (name, desc) in enumerate(rec_palettes, 1):
+                        bar = palette_preview(name, steps=max(1, min(8, len(cif_series)))) if palette_preview else ""
+                        print(f"  {idx}. {name} - {desc}" + (f"  {bar}" if bar else ""))
+                    choice = _safe_input(_colorize_inline_commands("Palette name or number (1-5), q=back: ")).strip().lower()
+                    if not choice or choice == 'q':
+                        continue
+                    palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
+                    pal_name = palette_map.get(choice, choice)
+                    if not ensure_colormap(pal_name.split('_r')[0] if pal_name.lower().endswith('_r') else pal_name):
+                        print(f"Unknown colormap '{pal_name}'.")
+                        continue
+                    _snapshot("cif-colormap")
+                    default_tab10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                    n = len(cif_series)
+                    try:
+                        import matplotlib.cm as cm
+                        base = pal_name[:-2] if pal_name.lower().endswith('_r') else pal_name
+                        if base.lower() == 'tab10':
+                            colors = [default_tab10[i % len(default_tab10)] for i in range(n)]
+                        else:
+                            cmap = cm.get_cmap(pal_name)
+                            colors = [mcolors.to_hex(cmap(i / max(n - 1, 1))) for i in range(n)]
+                    except Exception as e:
+                        print(f"Could not apply colormap: {e}")
+                        continue
+                    cif_series = list(cif_series)
+                    for i, (lab, fname, peaksQ, wl_e, qmax, _) in enumerate(cif_series):
+                        cif_series[i] = (lab, fname, peaksQ, wl_e, qmax, colors[i] if i < len(colors) else 'k')
+                    ax._operando_cif_tick_series = cif_series
+                    fig._operando_cif_colormap = pal_name
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                    print(f"Applied '{pal_name}' to all {n} CIF sets.")
+                elif sub == 'b':
+                    _restore()
+                    show_hkl = getattr(fig, '_operando_cif_show_hkl', False)
+                    show_titles = getattr(fig, '_operando_cif_show_titles', True)
+                    placement = getattr(fig, '_operando_cif_placement', 'below')
+                    y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
+                    cif_series = getattr(ax, '_operando_cif_tick_series', cif_series)
+                    ax_pos = ax.get_position()
+                    y_base = ax_pos.ymin - 0.02 if placement == 'below' else ax_pos.ymax + 0.02
+                    dy = -0.025 if placement == 'below' else 0.025
+                    while len(y_positions) < len(cif_series):
+                        y_positions.append(y_base + len(y_positions) * dy)
+                    fig._operando_cif_y_positions = y_positions
+                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                    fig.canvas.draw_idle()
+                else:
+                    print("Unknown choice.")
+            print_menu()
         elif cmd == 'ox':
             while True:
                 cur = ax.get_xlim(); print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input(_colorize_inline_commands("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -3552,7 +4027,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_xlim()
                         print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new upper X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new upper X limit (current lower: {cur[0]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3562,6 +4037,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-xrange")
                         ax.set_xlim(cur[0], new_upper)
+                        _redraw_operando_cif_if_present(fig, ax)
                         fig.canvas.draw_idle()
                         print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
                 if line.lower() == 'w':
@@ -3571,7 +4047,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_xlim()
                         print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new lower X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new lower X limit (current upper: {cur[1]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3581,6 +4057,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                         _snapshot("operando-xrange")
                         ax.set_xlim(new_lower, cur[1])
+                        _redraw_operando_cif_if_present(fig, ax)
                         fig.canvas.draw_idle()
                         print(f"Operando X range updated: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
                 if line.lower() == 's':
@@ -3597,6 +4074,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 orig_min = min(extent[0], extent[1])
                                 orig_max = max(extent[0], extent[1])
                                 ax.set_xlim(orig_min, orig_max)
+                                _redraw_operando_cif_if_present(fig, ax)
                                 fig.canvas.draw_idle()
                                 print(f"Operando X range restored to original: {ax.get_xlim()[0]:.4g} {ax.get_xlim()[1]:.4g}")
                             else:
@@ -3610,6 +4088,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 try:
                     lo, hi = map(float, line.split())
                     ax.set_xlim(lo, hi)
+                    _redraw_operando_cif_if_present(fig, ax)
                     fig.canvas.draw_idle()
                 except Exception as e:
                     print(f"Invalid range: {e}")
@@ -3617,7 +4096,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'oy':
             while True:
                 cur = ax.get_ylim(); print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input(_colorize_inline_commands("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -3625,7 +4104,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_ylim()
                         print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new upper Y limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new upper Y limit (current lower: {cur[0]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3644,7 +4123,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ax.get_ylim()
                         print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new lower Y limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new lower Y limit (current upper: {cur[1]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3747,9 +4226,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     auto_available = False
                 
                 if auto_available:
-                    line = _safe_input("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ").strip()
+                    line = _safe_input(_colorize_inline_commands("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ")).strip()
                 else:
-                    line = _safe_input("New intensity range (min max, w=upper only, s=lower only, q=back): ").strip()
+                    line = _safe_input(_colorize_inline_commands("New intensity range (min max, w=upper only, s=lower only, q=back): ")).strip()
                 
                 if not line or line.lower() == 'q':
                     break
@@ -3763,7 +4242,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception:
                             print("Could not retrieve current color scale range")
                             break
-                        val = _safe_input(f"Enter new upper intensity limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new upper intensity limit (current lower: {cur[0]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3789,7 +4268,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception:
                             print("Could not retrieve current color scale range")
                             break
-                        val = _safe_input(f"Enter new lower intensity limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new lower intensity limit (current upper: {cur[1]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -3840,7 +4319,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ax_w_in = getattr(ax, '_fixed_ax_w_in', ax_w_in)
                 print(f"Current operando width: {ax_w_in:.2f} in")
-                val = _safe_input("New width (inches, q=back): ").strip()
+                val = _safe_input(_colorize_inline_commands("New width (inches, q=back): ")).strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("operando-width")
@@ -3860,7 +4339,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ec_w_in = getattr(ec_ax, '_fixed_ec_w_in', ec_w_in)
                 print(f"Current EC width: {ec_w_in:.2f} in")
-                val = _safe_input("New EC width (inches, q=back): ").strip()
+                val = _safe_input(_colorize_inline_commands("New EC width (inches, q=back): ")).strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("ec-width")
@@ -3999,55 +4478,88 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     cb_vis = bool(cbar.ax.get_visible())
                     ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
                     cb_label_text = str(getattr(cbar.ax, '_colorbar_label', cbar.ax.get_ylabel() or 'Intensity'))
-                    cb_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+                    cb_label_mode = getattr(fig, '_colorbar_label_mode', 'highlow')
                     
                     # Print header based on mode
                     if ec_ax is not None:
-                        print("\n--- Operando+EC Style ---")
-                        print("Commands (Styles): oc(colormap), ow(op width), ew(ec width), h(height), el(EC curve), v(toggle colorbar/ec), t(toggle axes), l(line widths), f(fonts), g(canvas), r(reverse)")
-                        print("Commands (Operando): ox(X range), oy(Y range), oz(intensity range), or(rename)")
-                        print("Commands (EC): et(time range), ex(EC X range), ey(Y-axis type), er(rename)")
-                        print(f"Canvas size (g): {fig_w:.3f} x {fig_h:.3f}")
-                        print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\", colorbar width={cb_w_in:.3f}\", EC width (ew)={ec_w_in:.3f}\"")
+                        print("\n" + "=" * 60)
+                        print("  OPERANDO+EC STYLE SUMMARY")
+                        print("=" * 60)
+                        print("Commands: oc ow ew h el v t l f g r | ox oy oz or c | et ex ey er eg")
+                        print()
                     else:
-                        print("\n--- Operando-Only Style ---")
-                        print("Commands (Styles): oc(colormap), ow(op width), v(toggle colorbar), t(toggle axes), l(line widths), h(height), f(fonts), g(canvas), r(reverse)")
-                        print("Commands (Operando): ox(X range), oy(Y range), oz(intensity range), or(rename)")
-                        print(f"Canvas size (g): {fig_w:.3f} x {fig_h:.3f}")
-                        print(f"Geometry: operando width (ow)={ax_w_in:.3f}\", height (h)={ax_h_in:.3f}\", colorbar width={cb_w_in:.3f}\"")
+                        print("\n" + "=" * 60)
+                        print("  OPERANDO-ONLY STYLE SUMMARY")
+                        print("=" * 60)
+                        print("Commands: oc ow v t l h f g r | ox oy oz or c")
+                        print()
                     
-                    # Visibility state
+                    # ---- Canvas & Geometry ----
+                    print("--- Canvas & Geometry ---")
+                    print(f"Canvas size (g): {fig_w:.3f} x {fig_h:.3f} in")
+                    print(f"Geometry: ow={ax_w_in:.3f}\", h={ax_h_in:.3f}\", colorbar={cb_w_in:.3f}\"", end="")
                     if ec_ax is not None:
-                        print(f"Visibility (v): colorbar={'shown' if cb_vis else 'hidden'}, EC panel={'shown' if ec_vis else 'hidden'}")
+                        print(f", ew={ec_w_in:.3f}\"")
+                    else:
+                        print()
+                    cb_off = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
+                    if abs(cb_off) > 0.001:
+                        print(f"  Colorbar horizontal offset: {cb_off:+.3f}\"")
+                    if ec_ax is not None:
+                        ec_off = getattr(ec_ax, '_ec_h_offset_in', 0.0)
+                        if abs(ec_off) > 0.001:
+                            print(f"  EC panel horizontal offset: {ec_off:+.3f}\"")
+                    
+                    # ---- Visibility & Colorbar ----
+                    print("\n--- Visibility & Colorbar ---")
+                    if ec_ax is not None:
+                        print(f"Visibility (v): colorbar={'shown' if cb_vis else 'hidden'}, EC={'shown' if ec_vis else 'hidden'}")
                     else:
                         print(f"Visibility (v): colorbar={'shown' if cb_vis else 'hidden'}")
                     mode_label = "High/Low" if cb_label_mode == 'highlow' else 'Normal'
-                    print(f"Colorbar label: \"{cb_label_text}\" (mode: {mode_label})")
+                    print(f"Colorbar: label=\"{cb_label_text}\", mode={mode_label}")
+                    cb_ticks_pos = cbar.ax.yaxis.get_ticks_position()
+                    cb_label_pos = cbar.ax.yaxis.get_label_position()
+                    print(f"  Ticks: {cb_ticks_pos}, label: {cb_label_pos}")
                     
-                    # Check if Y-axes are reversed (ylim[0] > ylim[1])
-                    op_ylim = ax.get_ylim()
-                    op_reversed = bool(op_ylim[0] > op_ylim[1])
-                    if ec_ax is not None:
-                        ec_ylim = ec_ax.get_ylim()
-                        ec_reversed = bool(ec_ylim[0] > ec_ylim[1])
-                        print(f"Reverse (r): operando={'YES' if op_reversed else 'no'}, EC={'YES' if ec_reversed else 'no'}")
-                    else:
-                        print(f"Reverse (r): operando={'YES' if op_reversed else 'no'}")
+                    # ---- Font ----
+                    mathtext = plt.rcParams.get('mathtext.fontset', 'dejavusans')
+                    print(f"\n--- Font (f) ---")
+                    print(f"Family='{fam}', size={fsize}, mathtext={mathtext}")
                     
-                    print(f"Font (f): family='{fam}', size={fsize}")
-                    print(f"Operando colormap (oc): {cmap_name}")
-                    
-                    # Display intensity range (oz command)
+                    # ---- Operando ----
+                    print("\n--- Operando ---")
+                    print(f"Colormap (oc): {cmap_name}")
                     try:
                         clim = im.get_clim()
-                        print(f"Operando intensity range (oz): {clim[0]:.4g} to {clim[1]:.4g}")
+                        print(f"Intensity range (oz): {clim[0]:.4g} to {clim[1]:.4g}")
                     except Exception:
-                        print("Operando intensity range (oz): N/A")
+                        print("Intensity range (oz): N/A")
+                    op_xlim = ax.get_xlim()
+                    op_ylim = ax.get_ylim()
+                    print(f"X range (ox): {op_xlim[0]:.4g} to {op_xlim[1]:.4g}")
+                    print(f"Y range (oy): {op_ylim[0]:.4g} to {op_ylim[1]:.4g}")
+                    op_reversed = bool(op_ylim[0] > op_ylim[1])
+                    print(f"Labels (or): x='{ax.get_xlabel() or ''}', y='{ax.get_ylabel() or ''}'")
+                    print(f"Reverse Y (r): {'YES' if op_reversed else 'no'}")
                     
-                    # Display EC Y-axis mode (ey command) - only if EC panel exists
+                    # CIF ticks (c)
+                    cif_series = getattr(ax, '_operando_cif_tick_series', None)
+                    if cif_series:
+                        n_sets = len(cif_series)
+                        show_hkl = bool(getattr(fig, '_operando_cif_show_hkl', False))
+                        show_titles = bool(getattr(fig, '_operando_cif_show_titles', True))
+                        placement = str(getattr(fig, '_operando_cif_placement', 'below'))
+                        highlight = bool(getattr(fig, '_operando_cif_highlight', False))
+                        print(f"CIF ticks (c): {n_sets} set(s), hkl={'on' if show_hkl else 'off'}, titles={'on' if show_titles else 'off'}, placement={placement}, highlight={'on' if highlight else 'off'}")
+                    else:
+                        print("CIF ticks (c): none")
+                    
+                    # ---- EC Panel (Side Panel) ----
                     if ec_ax is not None:
+                        print("\n--- EC Panel ---")
                         ec_y_mode = getattr(ec_ax, '_ec_y_mode', 'time')
-                        print(f"EC Y-axis mode (ey): {ec_y_mode}")
+                        print(f"Y-axis mode (ey): {ec_y_mode}")
                         if ec_y_mode == 'ions':
                             ion_params = getattr(ec_ax, '_ion_params', {})
                             if ion_params:
@@ -4055,8 +4567,53 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 cap_per_ion = ion_params.get('cap_per_ion_mAh_g', 'N/A')
                                 start_ions = ion_params.get('start_ions', 'N/A')
                                 print(f"  Ion params: mass={mass_mg} mg, cap/ion={cap_per_ion} mAh/g, start={start_ions}")
+                        ec_xlim = ec_ax.get_xlim()
+                        ec_ylim = ec_ax.get_ylim()
+                        print(f"X range (et/ex): {ec_xlim[0]:.4g} to {ec_xlim[1]:.4g}")
+                        print(f"Y range: {ec_ylim[0]:.4g} to {ec_ylim[1]:.4g}")
+                        ec_reversed = bool(ec_ylim[0] > ec_ylim[1])
+                        ec_ylabel = ec_ax.get_ylabel() or getattr(ec_ax, '_stored_ylabel', '') or ''
+                        print(f"Labels (er): x='{ec_ax.get_xlabel() or ''}', y='{ec_ylabel}'")
+                        print(f"Reverse Y (r): {'YES' if ec_reversed else 'no'}")
+                        ec_grid = getattr(ec_ax, '_ec_grid', None) or {}
+                        grid_visible = ec_grid.get('visible', False)
+                        print(f"Grid (eg): {'on' if grid_visible else 'off'}", end="")
+                        if grid_visible:
+                            print(f" (alpha={ec_grid.get('alpha', 0.3):.2f}, ls='{ec_grid.get('linestyle', '--')}', which={ec_grid.get('which', 'major')})")
+                        else:
+                            print()
+                        ln = getattr(ec_ax, '_ec_line', None)
+                        if ln is None and ec_ax.lines:
+                            ln = ec_ax.lines[0]
+                        if ln is not None:
+                            try:
+                                print(f"Curve (el): color={ln.get_color()}, linewidth={ln.get_linewidth():.2f}")
+                            except Exception:
+                                print("Curve (el): (unable to read)")
+                        else:
+                            print("Curve (el): (no line)")
                     
-                    # Display operando pane tick visibility
+                    # ---- Line widths & Ticks (l, t) ----
+                    print("\n--- Line widths (l) ---")
+                    op_frame_lw = ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else 1.0
+                    op_tick_lw = _axis_tick_width(ax.xaxis, 'major') or 1.0
+                    print(f"Operando: frame={op_frame_lw:.2f}, ticks={op_tick_lw:.2f}")
+                    if ec_ax is not None:
+                        ec_frame_lw = ec_ax.spines.get('bottom').get_linewidth() if ec_ax.spines.get('bottom') else 1.0
+                        ec_tick_lw = _axis_tick_width(ec_ax.xaxis, 'major') or 1.0
+                        print(f"EC: frame={ec_frame_lw:.2f}, ticks={ec_tick_lw:.2f}")
+                    tick_dir = getattr(fig, '_tick_direction', 'out')
+                    print(f"Tick direction (t>i): {tick_dir}")
+                    tick_len = getattr(fig, '_tick_lengths', None)
+                    if tick_len and isinstance(tick_len, dict):
+                        maj = tick_len.get('major')
+                        minor = tick_len.get('minor')
+                        if maj is not None:
+                            mn_str = str(minor) if minor is not None else 'auto'
+                            print(f"Tick length (t>l): major={maj}, minor={mn_str}")
+                    
+                    # Toggle axes (t) - WASD visibility
+                    print("\n--- Toggle axes (t) ---")
                     def _onoff(v): return 'ON ' if bool(v) else 'off'
                     op_ts = getattr(ax, '_saved_tick_state', {})
                     op_wasd = {
@@ -4083,13 +4640,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     }
                     if ec_ax is not None:
                         # Dual pane mode: operando has a/w/s, EC has w/s/d
-                        print("Operando pane (t>o: a=left, w=top, s=bottom; 'd' not available):")
+                        print(_colorize_inline_commands("Operando pane (t>o: a=left, w=top, s=bottom; 'd' not available):"))
                         for side_key, side_name in [('left', 'a'), ('top', 'w'), ('bottom', 's')]:
                             s = op_wasd[side_key]
                             print(f"  {side_name}1:{_onoff(s['spine'])} {side_name}2:{_onoff(s['ticks'])} {side_name}3:{_onoff(s['minor'])} {side_name}4:{_onoff(s['labels'])} {side_name}5:{_onoff(s['title'])}")
                     else:
                         # Operando-only mode: all four sides available
-                        print("Operando pane (t>o: a=left, w=top, s=bottom, d=right):")
+                        print(_colorize_inline_commands("Operando pane (t>o: a=left, w=top, s=bottom, d=right):"))
                         for side_key, side_name in [('left', 'a'), ('top', 'w'), ('bottom', 's'), ('right', 'd')]:
                             s = op_wasd[side_key]
                             print(f"  {side_name}1:{_onoff(s['spine'])} {side_name}2:{_onoff(s['ticks'])} {side_name}3:{_onoff(s['minor'])} {side_name}4:{_onoff(s['labels'])} {side_name}5:{_onoff(s['title'])}")
@@ -4114,41 +4671,14 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                        'labels': bool(ec_ts.get('r_labels', ec_ts.get('ry', False))), 
                                        'title': bool(ec_ax.get_ylabel())},  # Use actual ylabel for EC
                         }
-                        print("EC pane (t>e: w=top, s=bottom, d=right; 'a' not available):")
+                        print(_colorize_inline_commands("EC pane (t>e: w=top, s=bottom, d=right; 'a' not available):"))
                         for side_key, side_name in [('top', 'w'), ('bottom', 's'), ('right', 'd')]:
                             s = ec_wasd[side_key]
                             print(f"  {side_name}1:{_onoff(s['spine'])} {side_name}2:{_onoff(s['ticks'])} {side_name}3:{_onoff(s['minor'])} {side_name}4:{_onoff(s['labels'])} {side_name}5:{_onoff(s['title'])}")
                     else:
                         ec_wasd = None
                     
-                    # Line widths (l command: frame and tick widths)
-                    print("\nLine widths (l command):")
-                    op_frame_lw = ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else 1.0
-                    op_tick_lw = _axis_tick_width(ax.xaxis, 'major') or 1.0
-                    print(f"  Operando: frame={op_frame_lw:.2f}, ticks={op_tick_lw:.2f}")
-                    
-                    if ec_ax is not None:
-                        ec_frame_lw = ec_ax.spines.get('bottom').get_linewidth() if ec_ax.spines.get('bottom') else 1.0
-                        ec_tick_lw = _axis_tick_width(ec_ax.xaxis, 'major') or 1.0
-                        print(f"  EC: frame={ec_frame_lw:.2f}, ticks={ec_tick_lw:.2f}")
-                    
-                    # EC curve properties (el command, only if EC panel exists)
-                    if ec_ax is not None:
-                        print("\nEC curve (el command):")
-                        ln = getattr(ec_ax, '_ec_line', None)
-                        if ln is None and ec_ax.lines:
-                            ln = ec_ax.lines[0]
-                        if ln is not None:
-                            try:
-                                ec_color = ln.get_color()
-                                ec_lw = ln.get_linewidth()
-                                print(f"  Color: {ec_color}, Linewidth: {ec_lw:.2f}")
-                            except Exception:
-                                print("  (unable to read EC line properties)")
-                        else:
-                            print("  (no EC line found)")
-                    
-                    print("-------------------------\n")
+                    print("=" * 60 + "\n")
                     
                     # List available style files (.bps, .bpsg, .bpcfg) in Styles/ subdirectory
                     from .utils import list_files_in_subdirectory
@@ -4166,7 +4696,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     last_style_path = getattr(fig, '_last_style_export_path', None)
                     if ec_ax is None:
                         print("\nNote: Style export (.bps/.bpsg) is only available in dual-pane mode (with EC file).")
-                        sub = _safe_input("Style submenu: (q=return, r=refresh): ").strip().lower()
+                        sub = _safe_input(_colorize_inline_commands("Style submenu: (q=return, r=refresh): ")).strip().lower()
                         if sub == 'q':
                             break
                         if sub == 'r' or sub == '':
@@ -4176,9 +4706,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             continue
                     else:
                         if last_style_path:
-                            sub = _safe_input("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ").strip().lower()
+                            sub = _safe_input(_colorize_inline_commands("Style submenu: (e=export, o=overwrite last, q=return, r=refresh): ")).strip().lower()
                         else:
-                            sub = _safe_input("Style submenu: (e=export, q=return, r=refresh): ").strip().lower()
+                            sub = _safe_input(_colorize_inline_commands("Style submenu: (e=export, q=return, r=refresh): ")).strip().lower()
                         if sub == 'q':
                             break
                         if sub == 'r' or sub == '':
@@ -4212,7 +4742,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print("Export options:")
                             print("  ps  = style only (.bps)")
                             print("  psg = style + geometry (.bpsg)")
-                            exp_choice = _safe_input("Export choice (ps/psg, q=cancel): ").strip().lower()
+                            exp_choice = _safe_input(_colorize_inline_commands("Export choice (ps/psg, q=cancel): ")).strip().lower()
                             if not exp_choice or exp_choice == 'q':
                                 print("Style export canceled.")
                                 continue
@@ -4347,31 +4877,63 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             if exp_choice == 'ps':
                                 cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                                 ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0) if ec_ax is not None else None
+                                cif_cfg = None
+                                if getattr(ax, '_operando_cif_tick_series', None):
+                                    cif_cfg = {
+                                        'show_hkl': bool(getattr(fig, '_operando_cif_show_hkl', False)),
+                                        'show_titles': bool(getattr(fig, '_operando_cif_show_titles', True)),
+                                        'placement': str(getattr(fig, '_operando_cif_placement', 'below')),
+                                        'y_positions': list(getattr(fig, '_operando_cif_y_positions', [])),
+                                        'colors': [entry[-1] for entry in ax._operando_cif_tick_series],
+                                        'colormap': getattr(fig, '_operando_cif_colormap', None),
+                                        'highlight': bool(getattr(fig, '_operando_cif_highlight', False)),
+                                        'title_font': dict(getattr(fig, '_operando_cif_title_font', None) or {}),
+                                        'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
+                                        'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
+                                    }
                                 cfg = {
                                     'kind': 'operando_ec_style',
                                     'version': 2,
                                     'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_visible, 'cb_label_mode': cb_label_mode},
                                     'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
                                     'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
-                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
+                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'grid': dict(getattr(ec_ax, '_ec_grid', None) or {}), 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
                                     'font': {'family': fam, 'size': fsize},
                                     'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
                                 }
+                                if cif_cfg is not None:
+                                    cfg['cif'] = cif_cfg
                                 default_ext = '.bps'
                             else:  # psg
                                 cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                                 ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0) if ec_ax is not None else None
+                                cif_cfg = None
+                                if getattr(ax, '_operando_cif_tick_series', None):
+                                    cif_cfg = {
+                                        'show_hkl': bool(getattr(fig, '_operando_cif_show_hkl', False)),
+                                        'show_titles': bool(getattr(fig, '_operando_cif_show_titles', True)),
+                                        'placement': str(getattr(fig, '_operando_cif_placement', 'below')),
+                                        'y_positions': list(getattr(fig, '_operando_cif_y_positions', [])),
+                                        'colors': [entry[-1] for entry in ax._operando_cif_tick_series],
+                                        'colormap': getattr(fig, '_operando_cif_colormap', None),
+                                        'highlight': bool(getattr(fig, '_operando_cif_highlight', False)),
+                                        'title_font': dict(getattr(fig, '_operando_cif_title_font', None) or {}),
+                                        'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
+                                        'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
+                                    }
                                 cfg = {
                                     'kind': 'operando_ec_style_geom',
                                     'version': 2,
                                     'figure': {'canvas_size': [fig_w, fig_h], 'cb_visible': cb_visible, 'cb_label_mode': cb_label_mode},
                                     'geometry': {'op_w_in': ax_w_in, 'op_h_in': ax_h_in, 'ec_w_in': ec_w_in, 'cb_h_offset': float(cb_h_offset), 'ec_h_offset': float(ec_h_offset) if ec_h_offset is not None else None},
                                     'operando': {'cmap': cmap_name, 'wasd_state': op_wasd_state, 'spines': op_spines, 'ticks': {'widths': op_ticks}, 'y_reversed': op_reversed, 'intensity_range': intensity_range, 'labelpads': op_labelpads, 'title_offsets': op_title_offsets},
-                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
+                                    'ec': {'wasd_state': ec_wasd_state, 'spines': ec_spines, 'ticks': {'widths': ec_ticks}, 'curve': ec_curve, 'grid': dict(getattr(ec_ax, '_ec_grid', None) or {}), 'y_reversed': ec_reversed, 'y_mode': ec_y_mode, 'ion_params': ion_params, 'visible': ec_visible, 'labelpads': ec_labelpads, 'title_offsets': ec_title_offsets},
                                     'font': {'family': fam, 'size': fsize},
                                     'axes_geometry': _get_geometry_snapshot(ax, ec_ax),
                                     'colorbar': {'label': cb_label_text, 'mode': cb_label_mode, 'visible': cb_visible},
                                 }
+                                if cif_cfg is not None:
+                                    cfg['cif'] = cif_cfg
                                 default_ext = '.bpsg'
                                 # Print geometry info
                                 geom = cfg['axes_geometry']
@@ -4406,7 +4968,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             else:
                                 print(f"  {_i}: {fname}")
                     
-                    choice_name = _safe_input("Enter new filename or number to overwrite (q=cancel): ").strip()
+                    choice_name = _safe_input(_colorize_inline_commands("Enter new filename or number to overwrite (q=cancel): ")).strip()
                     if not choice_name or choice_name.lower() == 'q':
                         print("Style export canceled.")
                         continue
@@ -4842,6 +5404,44 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     except Exception as e:
                         print(f"Warning: Could not apply intensity range: {e}")
                     
+                    # Apply CIF tick config (c command) if present and CIF data exists
+                    try:
+                        cif_cfg = cfg.get('cif', {})
+                        if cif_cfg and getattr(ax, '_operando_cif_tick_series', None):
+                            from .operando import _draw_operando_cif_ticks
+                            fig._operando_cif_show_hkl = bool(cif_cfg.get('show_hkl', False))
+                            fig._operando_cif_show_titles = bool(cif_cfg.get('show_titles', True))
+                            fig._operando_cif_placement = str(cif_cfg.get('placement', 'below'))
+                            y_pos = cif_cfg.get('y_positions', [])
+                            fig._operando_cif_y_positions = list(y_pos) if y_pos else []
+                            fig._operando_cif_colormap = cif_cfg.get('colormap')
+                            fig._operando_cif_highlight = bool(cif_cfg.get('highlight', False))
+                            fig._operando_cif_title_font = dict(cif_cfg.get('title_font') or {})
+                            fig._operando_cif_title_visible = list(cif_cfg.get('title_visible') or [])
+                            fig._operando_cif_set_visible = list(cif_cfg.get('set_visible') or [])
+                            colors = cif_cfg.get('colors', [])
+                            if colors:
+                                cif_series = list(ax._operando_cif_tick_series)
+                                for idx, col in enumerate(colors):
+                                    if idx < len(cif_series):
+                                        lab, fname, peaksQ, wl_e, qmax, _ = cif_series[idx]
+                                        cif_series[idx] = (lab, fname, peaksQ, wl_e, qmax, col)
+                                ax._operando_cif_tick_series = cif_series
+                            axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
+                            wl = getattr(fig, '_operando_wl', None)
+                            cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
+                            ax_pos = ax.get_position()
+                            y_base = ax_pos.ymin - 0.02 if fig._operando_cif_placement == 'below' else ax_pos.ymax + 0.02
+                            dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
+                            while len(fig._operando_cif_y_positions) < len(ax._operando_cif_tick_series):
+                                fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+                            _draw_operando_cif_ticks(ax, fig, ax._operando_cif_tick_series, cif_hkl_map, axis_mode=axis_mode, wl=wl,
+                                                     show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
+                                                     placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions)
+                            print("Applied CIF tick config.")
+                    except Exception as e:
+                        print(f"Warning: Could not apply CIF config: {e}")
+                    
                     # Apply ions mode (ey command)
                     try:
                         ec_cfg = cfg.get('ec', {})
@@ -4948,9 +5548,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             cbar.ax.set_visible(bool(cb_visible))
                         
                         # Restore colorbar label text and mode
-                        cb_label_mode = colorbar_cfg.get('mode', fig_cfg.get('cb_label_mode', 'normal'))
+                        cb_label_mode = colorbar_cfg.get('mode', fig_cfg.get('cb_label_mode', 'highlow'))
                         if cb_label_mode not in ('normal', 'highlow'):
-                            cb_label_mode = 'normal'
+                            cb_label_mode = 'highlow'
                         fig._colorbar_label_mode = cb_label_mode
                         cb_label_text = colorbar_cfg.get('label')
                         if cb_label_text is not None:
@@ -4971,6 +5571,23 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         ec_visible = ec_cfg.get('visible')
                         if ec_visible is not None and ec_ax is not None:
                             ec_ax.set_visible(bool(ec_visible))
+                        ec_grid = ec_cfg.get('grid') or {}
+                        if ec_grid and ec_ax is not None:
+                            g = dict(ec_grid)
+                            g.setdefault('visible', False)
+                            g.setdefault('alpha', 0.3)
+                            g.setdefault('linestyle', '--')
+                            g.setdefault('color', '0.6')
+                            g.setdefault('which', 'major')
+                            ec_ax._ec_grid = g
+                            ec_ax.grid(
+                                g['visible'],
+                                which=g['which'],
+                                axis='both',
+                                alpha=float(g['alpha']),
+                                color=str(g['color']),
+                                linestyle=str(g['linestyle']),
+                            )
                     except Exception:
                         pass
                 
@@ -5127,7 +5744,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 if not hasattr(ax, '_custom_labels'):
                     ax._custom_labels = {'x': None, 'y': None}
-                print("Rename Operando Axes: x=rename X label, y=rename Y label, q=back")
+                print(_colorize_inline_commands("Rename Operando Axes: x=rename X label, y=rename Y label, q=back"))
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
@@ -5182,7 +5799,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 if not hasattr(ec_ax, '_custom_labels'):
                     ec_ax._custom_labels = {'x': None, 'y_time': None, 'y_ions': None}
-                print("Rename EC Axes: x=rename X label, y=rename Y label (mode-aware), q=back")
+                print(_colorize_inline_commands("Rename EC Axes: x=rename X label, y=rename Y label (mode-aware), q=back"))
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
@@ -5231,6 +5848,104 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             except Exception as e:
                 print(f"Rename failed: {e}")
             print_menu()
+        elif cmd == 'eg':
+            # EC grid submenu: toggle, alpha, linestyle, color, which
+            if ec_ax is None:
+                print("EC panel not available (no .mpt file in folder).")
+                print_menu()
+                continue
+            def _get_ec_grid_state():
+                g = getattr(ec_ax, '_ec_grid', None) or {}
+                return {
+                    'visible': g.get('visible', False),
+                    'alpha': float(g.get('alpha', 0.3)),
+                    'linestyle': str(g.get('linestyle', '--')),
+                    'color': str(g.get('color', '0.6')),
+                    'which': str(g.get('which', 'major')),
+                }
+            def _apply_ec_grid(state):
+                ec_ax._ec_grid = dict(state)
+                ec_ax.grid(
+                    state['visible'],
+                    which=state['which'],
+                    axis='both',
+                    alpha=state['alpha'],
+                    color=state['color'],
+                    linestyle=state['linestyle'],
+                )
+            try:
+                gstate = _get_ec_grid_state()
+                print(_colorize_inline_commands("EC grid: t=toggle, a=alpha, s=linestyle, c=color, w=which (major/both), q=back"))
+                while True:
+                    print(f"  Grid: {'on' if gstate['visible'] else 'off'}, alpha={gstate['alpha']}, ls={gstate['linestyle']}, which={gstate['which']}")
+                    sub = _safe_input(_colorize_prompt("eg> ")).strip().lower()
+                    if not sub:
+                        continue
+                    if sub == 'q':
+                        break
+                    if sub == 't':
+                        _snapshot("ec-grid")
+                        gstate['visible'] = not gstate['visible']
+                        _apply_ec_grid(gstate)
+                        print(f"Grid: {'on' if gstate['visible'] else 'off'}")
+                    elif sub == 'a':
+                        val = _safe_input(f"Alpha (0-1, current={gstate['alpha']}): ").strip()
+                        if val:
+                            try:
+                                a = max(0.0, min(1.0, float(val)))
+                                _snapshot("ec-grid")
+                                gstate['alpha'] = a
+                                _apply_ec_grid(gstate)
+                                print(f"Alpha: {a}")
+                            except ValueError:
+                                print("Invalid value.")
+                    elif sub == 's':
+                        styles = [('-', 'solid'), ('--', 'dashed'), (':', 'dotted'), ('-.', 'dashdot')]
+                        print(_colorize_inline_commands("Linestyle: 1=solid, 2=dashed, 3=dotted, 4=dashdot"))
+                        val = _safe_input(f"Choice (current={gstate['linestyle']}): ").strip()
+                        if val:
+                            if val.isdigit() and 1 <= int(val) <= 4:
+                                ls = styles[int(val)-1][0]
+                                _snapshot("ec-grid")
+                                gstate['linestyle'] = ls
+                                _apply_ec_grid(gstate)
+                                print(f"Linestyle: {ls}")
+                            elif val in ('-', '--', ':', '-.'):
+                                _snapshot("ec-grid")
+                                gstate['linestyle'] = val
+                                _apply_ec_grid(gstate)
+                                print(f"Linestyle: {val}")
+                            else:
+                                print("Invalid choice.")
+                    elif sub == 'c':
+                        cur = gstate['color']
+                        print(f"Current color: {color_block(cur)} {cur}")
+                        val = _safe_input(f"Color (blank=cancel): ").strip()
+                        if val:
+                            resolved = resolve_color_token(val, fig)
+                            if resolved:
+                                _snapshot("ec-grid")
+                                gstate['color'] = resolved
+                                _apply_ec_grid(gstate)
+                                print(f"Color: {resolved}")
+                            else:
+                                print("Could not resolve color.")
+                    elif sub == 'w':
+                        val = _safe_input(f"Which: major | both (current={gstate['which']}): ").strip().lower()
+                        if val in ('major', 'both'):
+                            _snapshot("ec-grid")
+                            gstate['which'] = val
+                            _apply_ec_grid(gstate)
+                            print(f"Which: {val}")
+                        elif val:
+                            print("Use 'major' or 'both'.")
+                    try:
+                        fig.canvas.draw_idle()
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Grid failed: {e}")
+            print_menu()
         elif cmd == 'el':
             # EC line style submenu: color and linewidth
             if ec_ax is None:
@@ -5245,7 +5960,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 if ln is None:
                     print("No EC line found to style.")
                     print_menu(); continue
-                print("EC line submenu: c=color, l=linewidth, q=back")
+                print(_colorize_inline_commands("EC line submenu: c=color, l=linewidth, q=back"))
                 while True:
                     sub = _safe_input("el> ").strip().lower()
                     if not sub:
@@ -5305,7 +6020,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 continue
             while True:
                 cur = ec_ax.get_ylim(); print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input(_colorize_inline_commands("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -5313,7 +6028,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_ylim()
                         print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new upper time limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new upper time limit (current lower: {cur[0]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -5331,7 +6046,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_ylim()
                         print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new lower time limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new lower time limit (current upper: {cur[1]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -5445,7 +6160,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print("The .mpt file must contain the '<I>/mA' column to use this feature.")
                     print_menu(); continue
                 while True:
-                    sub = _safe_input("ey submenu: n=ions, t=time, q=back: ").strip().lower()
+                    sub = _safe_input(_colorize_inline_commands("ey submenu: n=ions, t=time, q=back: ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -5459,9 +6174,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         material = params.get('material', 'cathode')
                         need_input = (mass_mg is None or cap_per_ion is None or start_ions is None)
                         if need_input:
-                            prompt = "Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=cancel: "
+                            prompt = _colorize_inline_commands("Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=cancel: ")
                         else:
-                            prompt = f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=cancel): "
+                            prompt = _colorize_inline_commands(f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=cancel): ")
                         s = _safe_input(prompt).strip()
                         if not s:
                             if need_input:
@@ -5748,7 +6463,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 cur = ec_ax.get_xlim()
                 print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                line = _safe_input(_colorize_inline_commands("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -5756,7 +6471,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_xlim()
                         print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new upper EC X limit (current lower: {cur[0]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new upper EC X limit (current lower: {cur[0]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -5775,7 +6490,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     while True:
                         cur = ec_ax.get_xlim()
                         print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                        val = _safe_input(f"Enter new lower EC X limit (current upper: {cur[1]:.4g}, q=back): ").strip()
+                        val = _safe_input(_colorize_inline_commands(f"Enter new lower EC X limit (current upper: {cur[1]:.4g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -5837,7 +6552,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             cur_w, cur_h = _get_fig_size(fig)
             print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
             print("Canvas: only figure size will change; panel widths/gaps are not altered.")
-            line = _safe_input("New canvas size 'W H' (blank=cancel): ").strip()
+            line = _safe_input(_colorize_inline_commands("New canvas size 'W H' (blank=cancel): ")).strip()
             if line:
                 _snapshot("canvas-size")
                 try:
@@ -6003,7 +6718,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 cb_vis = bool(cbar.ax.get_visible())
                 ec_vis = bool(ec_ax.get_visible()) if ec_ax is not None else None
                 cb_label_text = str(getattr(cbar.ax, '_colorbar_label', cbar.ax.get_ylabel() or 'Intensity'))
-                cb_label_mode = getattr(fig, '_colorbar_label_mode', 'normal')
+                cb_label_mode = getattr(fig, '_colorbar_label_mode', 'highlow')
                 
                 # Build WASD states
                 def _onoff(v): return 'ON ' if bool(v) else 'off'

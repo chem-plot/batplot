@@ -39,3 +39,10 @@ coverage.xml
 *.swp
 *.swo
 batplot_new.py
+
+# Local/dev only (optional; remove to track and push to GitHub)
+# RELEASE_NOTES.txt
+# CHANGELOG.md
+# BUGFIXES.md
+# batplot/data/CHANGELOG.md
+RELEASE_NOTES_README.md

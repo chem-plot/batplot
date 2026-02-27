@@ -33,6 +33,7 @@ from .utils import (
     list_files_in_subdirectory,
     get_organized_path,
     convert_label_shortcuts,
+    natural_sort_key,
 )
 import time
 from .color_utils import (
@@ -1821,9 +1822,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         except Exception:
             pass
     current_file_idx = 0
+    pending_key = None
     while True:
         try:
-            key = _safe_input("Press a key: ").strip().lower()
+            if pending_key is not None:
+                key = pending_key
+                pending_key = None
+            else:
+                key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1876,6 +1882,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 confirm = 'y'
             if confirm == 'y':
                 break
+            elif confirm in ('e', 's'):
+                pending_key = confirm
+                continue
             else:
                 _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
                 continue
@@ -3540,7 +3549,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file); continue
                 print(f"\nChosen path: {folder}")
                 try:
-                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
+                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')], key=natural_sort_key)
                 except Exception:
                     files = []
                 if files:
@@ -5403,21 +5412,37 @@ def _apply_cycle_styles(cycle_lines: Dict[int, Dict[str, Optional[object]]], sty
 
 
 def _print_style_snapshot(cfg: Dict):
-    """Prints the style configuration in a user-friendly format matching XY plot."""
-    print("\n--- Style / Diagnostics ---")
-    
-    # Geometry
+    """Prints the style configuration in a user-friendly format matching operando style."""
+    def _onoff(v):
+        return 'ON ' if bool(v) else 'off'
+
+    print("\n" + "=" * 60)
+    print("  EC STYLE SUMMARY")
+    print("=" * 60)
+    print("Commands (Styles): f, l, k, t, h, g, sm | Geometries: c, r, x, y, a")
+    print()
+
+    # ---- Canvas & Geometry (g) ----
     canvas_size = cfg.get('figure', {}).get('canvas_size', ['?', '?'])
     frame_size = cfg.get('figure', {}).get('frame_size', ['?', '?'])
-    print(f"Figure size (inches): {canvas_size[0]:.3f} x {canvas_size[1]:.3f}")
-    print(f"Plot frame size (inches):  {frame_size[0]:.3f} x {frame_size[1]:.3f}")
+    print("--- Canvas & Geometry ---")
+    print(f"Canvas size (g): {canvas_size[0]:.3f} x {canvas_size[1]:.3f} in")
+    print(f"Plot frame: {frame_size[0]:.3f} x {frame_size[1]:.3f} in")
 
-    # Font
+    # ---- Font (f) ----
     font = cfg.get('font', {})
-    print(f"Effective font size (labels/ticks): {font.get('size', '?')}")
-    print(f"Font family chain (rcParams['font.sans-serif']): ['{font.get('family', '?')}']")
+    print(f"\n--- Font (f) ---")
+    print(f"Family='{font.get('family', '')}', size={font.get('size', '')}")
 
-    # Legend state
+    # ---- Data axes (--ro) ----
+    ro_active = bool(cfg.get('ro_active', False))
+    rotation_angle = cfg.get('rotation_angle', 0)
+    print(f"\n--- Data axes ---")
+    print(f"Swapped via --ro: {'YES' if ro_active else 'no'}")
+    if rotation_angle != 0:
+        print(f"Rotation angle: {rotation_angle}°")
+
+    # ---- Legend (h) ----
     leg_cfg = cfg.get('legend', {})
     if leg_cfg:
         leg_vis = bool(leg_cfg.get('visible', False))
@@ -5426,31 +5451,22 @@ def _print_style_snapshot(cfg: Dict):
             try:
                 lx = float(leg_pos[0])
                 ly = float(leg_pos[1])
-                print(f"Legend: {'ON' if leg_vis else 'off'} at x={lx:.3f} in, y={ly:.3f} in (relative to canvas center)")
+                pos_str = f"position=({lx:.3f}, {ly:.3f}) in (rel. center)"
             except Exception:
-                print(f"Legend: {'ON' if leg_vis else 'off'}; position stored but unreadable")
+                pos_str = "position=stored"
         else:
-            print(f"Legend: {'ON' if leg_vis else 'off'}; position=auto")
+            pos_str = "position=auto"
+        print(f"\n--- Legend (h) ---")
+        print(f"Visible: {'ON' if leg_vis else 'off'}, {pos_str}")
         legend_title = leg_cfg.get('title')
         if legend_title:
             print(f"Legend title: {legend_title}")
 
-    # Rotation angle
-    rotation_angle = cfg.get('rotation_angle', 0)
-    if rotation_angle != 0:
-        print(f"Rotation angle: {rotation_angle}°")
-
-    # ro / axis-swap state
-    ro_active = bool(cfg.get('ro_active', False))
-    print(f"Data axes swapped via --ro: {'YES' if ro_active else 'no'}")
-
-    # Per-side matrix summary (spine, major, minor, labels, title)
-    def _onoff(v):
-        return 'ON ' if bool(v) else 'off'
-    
+    # ---- Toggle axes (t) ----
     wasd = cfg.get('wasd_state', {})
     if wasd:
-        print("Per-side (w=top, a=left, s=bottom, d=right): spine, major, minor, labels, title")
+        print(f"\n--- Toggle axes (t) ---")
+        print("WASD (w=top, a=left, s=bottom, d=right): 1=spine 2=ticks 3=minor 4=labels 5=title")
         for side_key, side_label in [('top', 'w'), ('left', 'a'), ('bottom', 's'), ('right', 'd')]:
             s = wasd.get(side_key, {})
             spine_val = _onoff(s.get('spine', False))
@@ -5460,26 +5476,23 @@ def _print_style_snapshot(cfg: Dict):
             title_val = _onoff(s.get('title', False))
             print(f"  {side_label}1:{spine_val} {side_label}2:{major_val} {side_label}3:{minor_val} {side_label}4:{labels_val} {side_label}5:{title_val}")
 
-    # Tick widths
+    # ---- Line widths (l) ----
     tick_widths = cfg.get('ticks', {}).get('widths', {})
     x_maj = tick_widths.get('x_major')
     x_min = tick_widths.get('x_minor')
     y_maj = tick_widths.get('y_major')
     y_min = tick_widths.get('y_minor')
-    print(f"Tick widths (major/minor): X=({x_maj}, {x_min})  Y=({y_maj}, {y_min})")
-    
-    # Tick direction
+    spines = cfg.get('spines', {})
+    frame_lw = spines.get('bottom', {}).get('linewidth', '?') if spines else '?'
     tick_direction = cfg.get('ticks', {}).get('direction', 'out')
+    print(f"\n--- Line widths (l) ---")
+    print(f"Frame: {frame_lw}")
+    print(f"Ticks: X=({x_maj}, {x_min})  Y=({y_maj}, {y_min})")
     print(f"Tick direction: {tick_direction}")
 
-    # Grid
-    grid_enabled = cfg.get('grid', False)
-    print(f"Grid: {'enabled' if grid_enabled else 'disabled'}")
-
-    # Spines
-    spines = cfg.get('spines', {})
+    # ---- Spines (k) ----
     if spines:
-        print("Spines:")
+        print("\n--- Spines (k) ---")
         for name in ('bottom', 'top', 'left', 'right'):
             props = spines.get(name, {})
             lw = props.get('linewidth', '?')
@@ -5487,22 +5500,27 @@ def _print_style_snapshot(cfg: Dict):
             col = props.get('color')
             print(f"  {name:<6} lw={lw} visible={vis} color={col}")
 
-    # Curve linewidth
-    curve_linewidth = cfg.get('curve_linewidth')
-    if curve_linewidth is not None:
-        print(f"Curve linewidth (all curves): {curve_linewidth:.3g}")
+    # ---- Grid ----
+    grid_enabled = cfg.get('grid', False)
+    print(f"\n--- Grid ---")
+    print(f"Grid: {'on' if grid_enabled else 'off'}")
 
-    # Curve markers
+    # ---- Curves (c, l) ----
+    curve_linewidth = cfg.get('curve_linewidth')
     curve_markers = cfg.get('curve_markers', {})
-    if curve_markers:
-        ls = curve_markers.get('linestyle', '-')
-        mk = curve_markers.get('marker', 'None')
-        ms = curve_markers.get('markersize', 0)
-        print(f"Curve style: linestyle={ls} marker={mk} markersize={ms}")
+    if curve_linewidth is not None or curve_markers:
+        print(f"\n--- Curves (c, l) ---")
+        if curve_linewidth is not None:
+            print(f"Curve linewidth: {curve_linewidth:.3g}")
+        if curve_markers:
+            ls = curve_markers.get('linestyle', '-')
+            mk = curve_markers.get('marker', 'None')
+            ms = curve_markers.get('markersize', 0)
+            print(f"Curve style: linestyle={ls} marker={mk} markersize={ms}")
 
     cycle_styles = cfg.get('cycle_styles', {})
     if cycle_styles:
-        print("Cycle colors:")
+        print("\n--- Cycle colors (c) ---")
         def _cycle_sort_key(key):
             try:
                 return int(key)
@@ -5526,7 +5544,7 @@ def _print_style_snapshot(cfg: Dict):
             if segments:
                 print(f"  Cycle {cyc_key}: {', '.join(segments)}")
 
-    print("--- End diagnostics ---\n")
+    print("=" * 60 + "\n")
 
 
 def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Optional[str] = None):

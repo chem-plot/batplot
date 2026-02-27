@@ -110,6 +110,11 @@ def set_spine_side_color(ax, side: str, color, fig=None) -> None:
             _debug_spine("[DEBUG spine]   left title (yaxis.label): set_color OK")
         except Exception as e:
             _debug_spine(f"[DEBUG spine]   left title: {e}")
+        # tick_params ensures colors persist for ticks created after visibility toggle
+        try:
+            ax.tick_params(axis="y", which="both", colors=color)
+        except Exception:
+            pass
     elif side == "right":
         _set_tick_side_color(ax.yaxis, use_tick1=False)
         try:
@@ -123,6 +128,18 @@ def set_spine_side_color(ax, side: str, color, fig=None) -> None:
                 _debug_spine("[DEBUG spine]   right title (_right_ylabel_artist): set_color OK")
             except Exception as e:
                 _debug_spine(f"[DEBUG spine]   right title: {e}")
+        # For twin axes (e.g. CPC), y-axis label is ax.yaxis.label when positioned on right
+        try:
+            if ax.yaxis.get_label_position() == "right":
+                ax.yaxis.label.set_color(color)
+                _debug_spine("[DEBUG spine]   right title (yaxis.label): set_color OK")
+        except Exception:
+            pass
+        # tick_params ensures colors persist for ticks created after visibility toggle (right=True)
+        try:
+            ax.tick_params(axis="y", which="both", colors=color)
+        except Exception:
+            pass
 
 
 def apply_font_changes(ax, fig, label_text_objects: List, normalize_label_text, new_size=None, new_family=None):

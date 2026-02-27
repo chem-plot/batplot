@@ -850,6 +850,7 @@ def dump_operando_session(
                 'title_offsets': ec_title_offsets,
                 'stored_ylabel': getattr(ec_ax, '_stored_ylabel', None),  # Save hidden ylabel text
                 'visible': bool(ec_ax.get_visible()),
+                'grid': dict(getattr(ec_ax, '_ec_grid', None) or {}),
             }
 
         # Get horizontal offsets if they exist
@@ -889,7 +890,7 @@ def dump_operando_session(
                 'label': cb_label,
                 'clim': cb_clim,
                 'visible': bool(cbar.ax.get_visible()),
-                'label_mode': getattr(fig, '_colorbar_label_mode', 'normal'),
+                'label_mode': getattr(fig, '_colorbar_label_mode', 'highlow'),
             },
             'ec': ec_state,
             'font': {
@@ -897,6 +898,23 @@ def dump_operando_session(
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
             },
         }
+        # CIF tick labels for operando (if present)
+        if getattr(ax, '_operando_cif_tick_series', None):
+            sess['cif'] = {
+                'tick_series': list(ax._operando_cif_tick_series),
+                'hkl_label_map': dict(getattr(ax, '_operando_cif_hkl_label_map', {})),
+                'show_hkl': bool(getattr(fig, '_operando_cif_show_hkl', False)),
+                'show_titles': bool(getattr(fig, '_operando_cif_show_titles', True)),
+                'placement': str(getattr(fig, '_operando_cif_placement', 'below')),
+                'y_positions': list(getattr(fig, '_operando_cif_y_positions', [])),
+                'colormap': getattr(fig, '_operando_cif_colormap', None),
+                'highlight': bool(getattr(fig, '_operando_cif_highlight', False)),
+                'title_font': dict(getattr(fig, '_operando_cif_title_font', None) or {}),
+                'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
+                'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
+                'axis_mode': str(getattr(fig, '_operando_axis_mode', '2theta')),
+                'wl': getattr(fig, '_operando_wl', None),
+            }
         if skip_confirm:
             target = filename
         else:
@@ -1173,7 +1191,7 @@ def load_operando_session(filename: str):
     try:
         cb_meta = sess.get('colorbar', {})
         label_text = cb_meta.get('label')
-        label_mode = cb_meta.get('label_mode', 'normal')
+        label_mode = cb_meta.get('label_mode', 'highlow')
         # Set label on the colorbar's axes for better compatibility
         try:
             cbar.ax.set_ylabel(label_text or '')
@@ -1509,6 +1527,53 @@ def load_operando_session(filename: str):
             ec = sess.get('ec') or {}
             ec_visible = ec.get('visible', True)  # Default to visible if not saved
             ec_ax.set_visible(bool(ec_visible))
+            ec_grid = ec.get('grid') or {}
+            if ec_grid:
+                g = dict(ec_grid)
+                g.setdefault('visible', False)
+                g.setdefault('alpha', 0.3)
+                g.setdefault('linestyle', '--')
+                g.setdefault('color', '0.6')
+                g.setdefault('which', 'major')
+                ec_ax._ec_grid = g
+                ec_ax.grid(
+                    g['visible'],
+                    which=g['which'],
+                    axis='both',
+                    alpha=float(g['alpha']),
+                    color=str(g['color']),
+                    linestyle=str(g['linestyle']),
+                )
+    except Exception:
+        pass
+
+    # Restore CIF tick labels (operando) if present
+    try:
+        cif = sess.get('cif')
+        if cif and cif.get('tick_series'):
+            from .operando import _draw_operando_cif_ticks
+            ax._operando_cif_tick_series = cif['tick_series']
+            ax._operando_cif_hkl_label_map = cif.get('hkl_label_map', {})
+            fig._operando_cif_show_hkl = bool(cif.get('show_hkl', False))
+            fig._operando_cif_show_titles = bool(cif.get('show_titles', True))
+            fig._operando_cif_placement = str(cif.get('placement', 'below'))
+            fig._operando_cif_y_positions = list(cif.get('y_positions', []) or [])
+            fig._operando_cif_colormap = cif.get('colormap')
+            fig._operando_cif_highlight = bool(cif.get('highlight', False))
+            fig._operando_cif_title_font = dict(cif.get('title_font') or {})
+            fig._operando_cif_title_visible = list(cif.get('title_visible') or [])
+            fig._operando_cif_set_visible = list(cif.get('set_visible') or [])
+            fig._operando_axis_mode = str(cif.get('axis_mode', '2theta'))
+            fig._operando_wl = cif.get('wl')
+            ax_pos = ax.get_position()
+            y_base = ax_pos.ymin - 0.02 if fig._operando_cif_placement == 'below' else ax_pos.ymax + 0.02
+            dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
+            while len(fig._operando_cif_y_positions) < len(ax._operando_cif_tick_series):
+                fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+            _draw_operando_cif_ticks(ax, fig, ax._operando_cif_tick_series, ax._operando_cif_hkl_label_map,
+                                    axis_mode=fig._operando_axis_mode, wl=fig._operando_wl,
+                                    show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
+                                    placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions)
     except Exception:
         pass
 
@@ -1787,7 +1852,7 @@ def dump_ec_session(
             'legend': {
                 'visible': legend_visible,
                 'position_inches': legend_xy_in,
-                'title': getattr(fig, '_ec_legend_title', None),
+                'title': getattr(fig, '_ec_legend_title', None) or "Cycle",
             },
             'wasd_state': wasd_state,
             'tick_state': tick_state,

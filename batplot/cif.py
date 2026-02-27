@@ -789,9 +789,10 @@ def list_reflections_with_hkl(fname, Qmax=10.0, wavelength=1.5406,
 
 
 def build_hkl_label_map_from_list(hkl_list):
-    """Build a dict Q-> "(h k l), (h k l), ..." using canonical positive indices if present.
+    """Build a dict Q-> "(h k l)" with one major representative plane per Q.
 
-    This mirrors the prior UI labeling convention.
+    When multiple reflections share the same Q (symmetry equivalents or overlap),
+    only the first canonical one is shown (lowest indices, non-negative preferred).
     """
     by_q = {}
 
@@ -808,7 +809,9 @@ def build_hkl_label_map_from_list(hkl_list):
         nonneg_all = [t for t in ordered
                       if t[0] >= 0 and t[1] >= 0 and t[2] >= 0]
         use_list = nonneg_all if nonneg_all else ordered
-        label_map[q] = ", ".join(f"({h} {k} {l})" for h, k, l in use_list)
+        # Show only 1 major representative plane per tick (first in canonical order)
+        h, k, l = use_list[0]
+        label_map[q] = f"({h} {k} {l})"
 
     return label_map
 

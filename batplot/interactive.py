@@ -27,6 +27,7 @@ from .utils import (
     list_files_in_subdirectory,
     convert_label_shortcuts,
     get_organized_path,
+    natural_sort_key,
 )
 import time
 from .session import dump_session as _bp_dump_session
@@ -1913,10 +1914,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             print(f"Error restoring state: {e}")
 
 
+    pending_key = None
     while True:
         try:
             print_main_menu()
-            key = _safe_input("Press a key: ").strip().lower()
+            if pending_key is not None:
+                key = pending_key
+                pending_key = None
+            else:
+                key = _safe_input("Press a key: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1937,6 +1943,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 break
             if confirm == 'y':
                 break
+            elif confirm in ('e', 's'):
+                pending_key = confirm
+                continue
             else:
                 continue
         elif key == 'z':  # toggle hkl labels on CIF ticks (non-blocking)
@@ -2235,7 +2244,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print(f"\nChosen path: {folder}")
                 files = []
                 try:
-                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')])
+                    files = sorted([f for f in os.listdir(folder) if f.lower().endswith('.pkl')], key=natural_sort_key)
                 except Exception:
                     files = []
                 if files:

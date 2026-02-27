@@ -34,11 +34,29 @@ return None and calling code can fall back to manual input.
 """
 
 import os
+import re
 import sys
 import shutil
 import subprocess
 import time
 from typing import Optional, List, Tuple
+
+
+def natural_sort_key(name: str) -> list:
+    """Generate a natural sorting key for filenames with numbers.
+
+    Converts 'file_10.xy' to ['file_', 10, '.xy'] so numerical parts are sorted numerically.
+    This ensures file_2.xy comes before file_10.xy (natural/human order).
+    Works with strings (e.g. from os.listdir or Path.name).
+    """
+    parts = []
+    for match in re.finditer(r'(\d+|\D+)', name):
+        text = match.group(0)
+        if text.isdigit():
+            parts.append(int(text))
+        else:
+            parts.append(text.lower())
+    return parts
 
 
 def _ask_directory_dialog(initialdir: Optional[str] = None) -> Optional[str]:
@@ -142,10 +160,17 @@ def _ask_directory_dialog_macos(initialdir: str) -> Optional[str]:
         
         # Check return code
         if res.returncode == 0:
-            selection = res.stdout.strip()
+            selection = (res.stdout or "").strip()
             # Empty string means user canceled (error -128 was caught and returned "")
             if not selection:
                 return None
+            # Normalize: resolve symlinks and ensure canonical form (critical for OneDrive/cloud paths)
+            try:
+                selection = os.path.normpath(os.path.abspath(selection))
+                if os.path.isdir(selection):
+                    selection = os.path.realpath(selection)
+            except (OSError, ValueError):
+                pass
             # Validate that the selected path exists and is a directory
             if os.path.isdir(selection):
                 return selection
@@ -536,8 +561,8 @@ def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: str
         # Don't crash - user can still work without listing files
         pass
     
-    # Sort alphabetically by filename for consistent display
-    return sorted(files, key=lambda x: x[0])
+    # Sort by filename using natural order (file2 before file10)
+    return sorted(files, key=lambda x: natural_sort_key(x[0]))
 
 
 def convert_label_shortcuts(text: str) -> str:
@@ -758,6 +783,12 @@ def choose_save_path(file_paths: list, purpose: str = "saving") -> Optional[str]
                 return None
             
             if not choice:
+                try:
+                    cwd = os.path.normpath(os.path.abspath(cwd))
+                    if os.path.isdir(cwd):
+                        cwd = os.path.realpath(cwd)
+                except (OSError, ValueError):
+                    pass
                 return cwd
             
             low = choice.lower()
@@ -774,8 +805,11 @@ def choose_save_path(file_paths: list, purpose: str = "saving") -> Optional[str]
                     dialog_path = None
                 
                 if dialog_path:
-                    # User selected a folder via dialog
+                    # User selected a folder via dialog - normalize for consistent listing
                     try:
+                        dialog_path = os.path.normpath(os.path.abspath(dialog_path.strip()))
+                        if os.path.isdir(dialog_path):
+                            dialog_path = os.path.realpath(dialog_path)
                         os.makedirs(dialog_path, exist_ok=True)
                         return dialog_path
                     except Exception as e:
@@ -791,8 +825,10 @@ def choose_save_path(file_paths: list, purpose: str = "saving") -> Optional[str]
                     return None
                 if not manual or manual.lower() == 'q':
                     continue
-                manual_path = os.path.abspath(os.path.expanduser(manual))
+                manual_path = os.path.normpath(os.path.abspath(os.path.expanduser(manual.strip())))
                 try:
+                    if os.path.isdir(manual_path):
+                        manual_path = os.path.realpath(manual_path)
                     os.makedirs(manual_path, exist_ok=True)
                 except Exception as e:
                     print(f"Could not use directory: {e}")
@@ -801,12 +837,21 @@ def choose_save_path(file_paths: list, purpose: str = "saving") -> Optional[str]
             if choice.isdigit():
                 num = int(choice)
                 if 1 <= num <= max_choice:
-                    return options[num - 1]['path']
+                    path = options[num - 1]['path']
+                    try:
+                        path = os.path.normpath(os.path.abspath(path))
+                        if os.path.isdir(path):
+                            path = os.path.realpath(path)
+                    except (OSError, ValueError):
+                        pass
+                    return path
                 print(f"Invalid number. Enter between 1 and {max_choice}.")
                 continue
             # Treat any other input as a manual path entry
-            manual_path = os.path.abspath(os.path.expanduser(choice))
+            manual_path = os.path.normpath(os.path.abspath(os.path.expanduser(choice.strip())))
             try:
+                if os.path.isdir(manual_path):
+                    manual_path = os.path.realpath(manual_path)
                 os.makedirs(manual_path, exist_ok=True)
             except Exception as e:
                 print(f"Could not use directory: {e}")
@@ -920,7 +965,7 @@ def choose_style_file(file_paths: List[str], purpose: str = "style import", exte
         if not os.path.isdir(directory):
             return
         try:
-            entries = sorted(os.listdir(directory))
+            entries = sorted(os.listdir(directory), key=natural_sort_key)
         except Exception:
             return
         for entry in entries:

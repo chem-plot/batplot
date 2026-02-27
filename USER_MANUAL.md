@@ -154,6 +154,30 @@ batplot file1.xy --1d --xrange 10 80
 
 **Note:** The derivative is calculated using numpy's gradient function, which automatically handles non-uniform spacing in your X-axis data. The derivative calculation is applied after data loading and axis conversion, but before any transformations (EXAFS k-weighting, normalization, etc.).
 
+### Column Selection (`--readcol`)
+
+By default, batplot reads the first two columns as x and y. Use `--readcol` to select different columns (1-indexed). Three modes are supported:
+
+1. **Per-file**: Assign different x,y columns to different files.
+   ```bash
+   batplot file1.xy --readcol 2 3 file2.xye --readcol 4 5
+   # file1: columns 2 (x) and 3 (y); file2: columns 4 (x) and 5 (y)
+   ```
+
+2. **Multi-curve**: Plot multiple curves from the same file using alternate x,y column pairs.
+   ```bash
+   batplot data.xy --readcol 1 2 1 3
+   # Two curves: (cols 1,2) and (cols 1,3) on the same figure
+   ```
+
+3. **With wavelength**: When a file has per-file wavelength (e.g. `file.xy:1.54`), the x column is treated as 2θ and converted to Q using that wavelength.
+   ```bash
+   batplot scan.xy:1.54 --readcol 2 3
+   # Column 2 = 2θ, converted to Q using λ=1.54 Å; column 3 = intensity
+   ```
+
+**Extension-specific**: Use `--readcolxy`, `--readcolxye`, `--readcolqye`, etc. for per-extension defaults, or `--readcol<ext>` for custom extensions (e.g. `--readcolafes 2 3` for `.afes` files).
+
 ### Wavelength Specification
 
 Batplot supports flexible wavelength specification for XRD data conversion and CIF tick calculation. You can specify wavelengths globally using `--wl` or per-file using colon syntax.
@@ -232,6 +256,7 @@ batplot file1.chik file2.chik --k2chik --stack --interactive
 
 - Neware `.csv` (GC, dQdV, CPC - both raw data and summary format)
 - Biologic `.mpt` (GC, CV, CPC)
+- **Custom voltage–time `.mpt` (potential window)** — Two columns: voltage (V), time (h). Use `--pw V_MIN V_MAX --cd current_density` to plot as GC.
 - **Landt/Lanhe `.xlsx` (CPC)** - Chinese battery tester Excel files
 - **Summary CSV format (CPC)** - Cycle-level capacity data
 
@@ -285,6 +310,26 @@ batplot --cpc summary.csv summary.xlsx neware_raw.csv biologic.mpt --mass 5.4 --
 **dQdV**: Differential capacity analysis (dQ/dV vs. voltage).
 
 **CPC (Capacity Per Cycle)**: Plot charge/discharge capacity and coulombic efficiency vs. cycle number. Supports multiple files with individual color customization.
+
+### Potential window mode (`--pw`, custom voltage–time to GC)
+
+For **custom .mpt files** that contain only two columns — **voltage (V)** and **time (hours)** — you can plot them as galvanostatic cycling (capacity vs. voltage) by converting time to capacity and using a potential window to separate charge and discharge.
+
+**File format:** Plain text, tab- or space-separated: column 1 = voltage (V), column 2 = time (h). No header required.
+
+**Flags:**
+- `--pw V_MIN V_MAX` — Potential window (V). Data near these values are used to separate charge/discharge (e.g. `--pw 0.01 3`).
+- `--cd VALUE` — Current density in mA/g. Capacity (mAh/g) = current density × time (h). Required when using `--pw`.
+- `--b TOL_UPPER TOL_LOWER` — Optional. Tolerance in V for detecting the upper and lower voltage boundaries (default 0.05 and 0.005). Example: `--b 0.05 0.005`.
+
+**Examples:**
+```bash
+# Basic: plot custom voltage–time .mpt as GC (capacity vs. voltage)
+batplot file.mpt --gc --cd 0.2 --pw 0.01 3
+
+# With custom boundary tolerances and interactive menu
+batplot file.mpt --gc --cd 0.2 --pw 0.01 3 --b 0.05 0.005 --interactive
+```
 
 ### Example Usage
 
@@ -450,11 +495,43 @@ batplot file1.csv file2.mpt ./Style/style.bpsg --cpc --mass 6.0
 
 ## 4. Operando Mode
 
+Use `--operando` or `--contour` (identical behavior).
+
 ### Requirements
 
 - Place operando files (`.xye`, `.qye`, `.xy`, `.dat`) in the directory.
-- Optionally include EC file (`.mpt`) for dual-panel mode with electrochemistry.
+- Optionally include a `.mpt` file for dual-panel mode (side panel: time/voltage/temperature etc.).
+- Optionally add CIF files for phase tick labels (below or above the operando panel).
 - Navigate to the folder before running Batplot.
+
+### CIF Tick Labels in Operando Mode
+
+You can overlay CIF reflection tick labels on the operando contour, using the same x-axis (2θ or Q, via `--wl` as in 1D mode):
+
+```bash
+batplot folder phase.cif:1.54 --operando --interactive
+# Add CIF tick labels below the operando panel (λ=1.54 Å for 2θ mode)
+
+batplot folder phase1.cif:1.54 phase2.cif:0.71 --operando --wl 1.54 -i
+# Multiple CIF phases with different wavelengths
+
+batplot folder phase.cif:0.71 --operando --wl 0.709 --xaxis 2theta -i
+# Operando data (e.g. .qye in Q) is converted to 2θ using --wl; CIF tick positions
+# are converted to 2θ from the CIF reflections using the same wavelength
+```
+
+In the interactive menu, press **c** to open the CIF submenu:
+- **z**: Toggle hkl labels on/off
+- **t**: Toggle CIF titles (phase names)
+- **h**: Toggle highlight for overlay (makes ticks readable when overlaid on the contour)
+- **p**: Toggle placement (below or above the operando panel)
+- **v**: Adjust vertical position of each CIF set
+- **o**: Change color per CIF set
+- **m**: Apply colormap to all CIF sets (tab10 is the initial palette)
+- **f**: Change font (family and size) of CIF titles
+- **r**: Rename CIF set labels
+- **n**: Hide or show name per CIF set
+- **x**: Show or hide entire CIF set (ticks + labels) per set
 
 ### Example Usage
 
@@ -463,9 +540,16 @@ batplot --operando --interactive
 # Launch operando mode with interactive editing
 # Shows dual-panel view if .mpt file is present, single panel otherwise
 
+batplot --contour --interactive [FOLDER]
+# Same as --operando (alias)
+
 batplot --operando --wl 0.25995 --interactive
 # Launch operando mode with interactive editing, converting x axis from 2theta to Q space
 ```
+
+### Interactive Menu
+
+The operando interactive menu has four columns: **(Styles)**, **(Operando)**, **(Side Panel)**, **(Options)**. The Side Panel column contains commands for the optional time/voltage (or other) trace when a `.mpt` file is present: **et** (time range), **ex** (X range), **ey** (Y-axis type), **er** (rename), **eg** (grid lines).
 
 ### Operando-Only Mode
 

@@ -26,10 +26,10 @@ import sys
 import re
 
 # ====================================================================
-# COLORED HELP OUTPUT
+# HELP OUTPUT
 # ====================================================================
 # The 'rich' library provides colored terminal output. If available,
-# we use it to make help text more readable by highlighting:
+# it is used to make help text more readable by highlighting:
 # - Command-line flags in cyan
 # - File extensions in yellow
 # - Example commands in green
@@ -172,7 +172,8 @@ def _print_general_help() -> None:
         "    batplot --cv FILE.txt                  # EC CV (cyclic voltammetry) from .txt\n"
         "    batplot --cv --all                     # Batch: all .mpt/.txt in directory (CV mode)\n\n"
         "  [Operando]\n"
-        "    batplot --operando --i [FOLDER]        # Operando contour (with or without .mpt file)\n\n"
+        "    batplot --operando --i [FOLDER]        # Operando contour (with or without .mpt file)\n"
+        "    batplot --contour --i [FOLDER]         # Same as --operando (alias)\n\n"
             "Features:\n"
         "  • Quick plotting with sensible defaults, no config files needed\n"
         "  • Supports many common file formats (see -h xy/ec/op)\n"
@@ -183,17 +184,19 @@ def _print_general_help() -> None:
         "  • Format option: use --format png/pdf/jpg/etc to change export format\n\n"
         
         "More help:\n"
-        "  batplot -h xy   # XY file plotting guide\n"
-        "  batplot -h ec   # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
-        "  batplot -h op   # Operando guide\n"
+        "  batplot -h xy       # XY file plotting guide\n"
+        "  batplot -h ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
+        "  batplot -h op       # Operando contour guide (also: batplot -h contour)\n"
         "  batplot -m      # Open the illustrated txt manual with highlights\n\n"
 
         "Contact & Updates:\n"
         "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
         "  (If you are not from UiO, send an email to sympa@kjemi.uio.no with the subject line \"subscribe batplot-lab@kjemi.uio.no your-name\")\n"
-        "  Kindly cite the pypi package page (https://pypi.org/project/batplot/) if the plot is used for publication\n"
+        "  Author name: Tian Dai\n"
         "  Email: tianda@uio.no\n"
         "  Personal page: https://www.mn.uio.no/kjemi/english/people/aca/tianda/\n"
+        "  GitHub: https://github.com/chem-plot/batplot\n"
+        "  Kindly cite Tian's github page if the plot is used for publication\n"
         )
     _print_help(msg)
 
@@ -201,7 +204,7 @@ def _print_general_help() -> None:
 def _print_xy_help() -> None:
     msg = (
         "XY plots (XRD/PDF/XAS and many more)\n\n"
-        "Supported files: .xye .xy .qye .dat .csv .gr .nor .chik .chir .txt and other user specified formats. CIF overlays supported.\n\n"
+        "Supported files: .xye .xy .qye .dat .csv .gr .nor .chik .chir .txt .brml .raw .xrdml .rasx and other formats. CIF overlays supported.\n\n"
         "Axis detection: .qye→Q, .gr→r, .nor→energy, .chik→k, .chir→r, else use --xaxis (Q, 2theta, r, k, energy, time or user defined).\n"
         "If mixing 2θ data in Q, give wavelength per-file (file.xye:1.5406) or global flag --wl.\n"
         "A wavelength can be converted into a different wave length by file.xye:1.54:0.709.\n"
@@ -268,7 +271,10 @@ def _print_xy_help() -> None:
         "                                batplot data.xye:1.5406 --xaxis 2theta\n"
         "                                batplot data.xye:0.25:1.54 --xaxis 2theta\n"
         "                                batplot data.xye pattern.cif:0.25448 --xaxis 2theta\n"
-        "  --readcol <x_col> <y_col> : specify which columns to read as x and y (1-indexed), e.g. --readcol 2 3\n"
+        "  --readcol <x_col> <y_col> : specify which columns to read as x and y (1-indexed)\n"
+        "    Per-file:  file1.xy --readcol 2 3 file2.xy --readcol 4 5  (different cols per file)\n"
+        "    Multi-curve: file.xy --readcol 1 2 1 3  (plot cols 1,2 and 1,3 as two curves)\n"
+        "    With wavelength: file.xy:1.54 --readcol 2 3  (col 2 as 2θ, convert to Q using λ=1.54 Å)\n"
         "  --readcolxy <x> <y>       : read columns for .xy files only\n"
         "  --readcolxye <x> <y>      : read columns for .xye files only\n"
         "  --readcolqye <x> <y>      : read columns for .qye files only\n"
@@ -341,21 +347,22 @@ def _print_ec_help() -> None:
 
 def _print_op_help() -> None:
     msg = (
-        "Operando contour plots\n\n"
+        "Operando contour plots (--operando or --contour, same behavior)\n\n"
         "Example usage:\n"
         "  batplot --operando --interactive --wl 0.25995  # Interactive mode with Q conversion\n"
+        "  batplot --contour --interactive [FOLDER]      # Same as --operando\n"
         "  batplot --operando --xaxis 2theta              # Using 2theta axis\n"
         "  batplot --operando --1d --interactive           # Plot derivatives as contour with interactive menu\n"
         "  batplot --operando --2d --interactive          # Plot derivatives (alias for --1d)\n\n"
         "  • Folder should contain XY files (.xy/.xye/.qye/.dat).\n"
         "  • Intensity scale is auto-adjusted between min/max values.\n"
         "  • If no .qye present, provide --xaxis 2theta or set --wl for Q conversion.\n"
-        "  • If a .mpt file is present, an EC side panel is added for dual-panel mode.\n"
+        "  • If a .mpt file is present, a side panel is added for dual-panel mode (time/voltage/temp/etc.).\n"
         "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n"
         "  • --1d / --2d: plot the first derivative (dy/dx) of each scan as a contour plot.\n\n"
-        "Interactive (--interactive): resize axes/canvas, change colormap, set intensity range (oz),\n"
-        "EC y-axis options (time ↔ ions), geometry tweaks, toggle spines/ticks/labels,\n"
-        "print/export/import style, save session.\n"
+        "Interactive (--interactive): menu has (Styles), (Operando), (Side Panel), (Options) columns.\n"
+        "Resize axes/canvas, change colormap, set intensity range (oz), side-panel options,\n"
+        "geometry tweaks, toggle spines/ticks/labels, print/export/import style, save session.\n"
     )
     _print_help(msg)
 
@@ -443,12 +450,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-i", "--interactive", action="store_true", dest="interactive", help=argparse.SUPPRESS)
     parser.add_argument("--savefig", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--stack", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--operando", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
+    parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mass", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pw", nargs=2, type=float, metavar=('V_MIN', 'V_MAX'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--cd", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--b", nargs=2, type=float, metavar=('TOL_UPPER', 'TOL_LOWER'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--anode", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cathode", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ro", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--all", type=str, nargs='?', const='all', help=argparse.SUPPRESS)
     parser.add_argument("--format", type=str, default='svg', 
@@ -542,6 +557,42 @@ def parse_args(argv=None):
         i += 1
     
     # ====================================================================
+    # STEP 1b: PRE-PARSE --readcol FOR PER-FILE AND MULTI-CURVE
+    # ====================================================================
+    # When pattern is "file --readcol m n" or "file --readcol x1 y1 x2 y2 ...",
+    # associate readcol with the preceding file. Remove from argv so argparse
+    # does not consume it. When --readcol appears before any file (global),
+    # leave it for argparse.
+    # Keys use the exact file token (e.g. "file.xy:1.54") for wavelength match.
+    # ====================================================================
+    readcol_by_file = {}
+    filtered_argv = []
+    last_file_token = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        # Track non-option tokens as potential file specs
+        if not arg.startswith('-'):
+            last_file_token = arg
+        if arg == '--readcol' and i + 1 < len(argv):
+            # Collect consecutive integers
+            ints = []
+            j = i + 1
+            while j < len(argv) and argv[j].lstrip('-').isdigit():
+                ints.append(int(argv[j]))
+                j += 1
+            # Need even count >= 2 for valid pairs
+            if len(ints) >= 2 and len(ints) % 2 == 0 and last_file_token is not None:
+                pairs = [(ints[k], ints[k + 1]) for k in range(0, len(ints), 2)]
+                readcol_by_file[last_file_token] = pairs[0] if len(pairs) == 1 else pairs
+                i = j
+                continue
+        filtered_argv.append(arg)
+        i += 1
+    
+    argv = filtered_argv
+    
+    # ====================================================================
     # STEP 2: BUILD PARSER AND ADD DYNAMIC ARGUMENTS
     # ====================================================================
     # Create the base parser (with all standard arguments)
@@ -595,7 +646,7 @@ def parse_args(argv=None):
             _print_xy_help()  # XY mode help
         elif t in ("ec", "gc", "dqdv"):
             _print_ec_help()  # EC mode help (GC, dQ/dV, CV, CPC)
-        elif t in ("op", "operando"):
+        elif t in ("op", "operando", "contour"):
             _print_op_help()  # Operando mode help
         else:
             # Unknown topic, show general help with warning
@@ -636,6 +687,11 @@ def parse_args(argv=None):
             if val is not None:
                 # Store with dot prefix (e.g., '.xy' not 'xy') for easy matching
                 args.readcol_by_ext[f'.{ext}'] = val
+    
+    # Attach per-file readcol from pre-parse (file --readcol m n or multi-curve)
+    args.readcol_by_file = readcol_by_file
+    
+    # args.readcol is (x_col, y_col) tuple from argparse when global --readcol used
     
     return args
 

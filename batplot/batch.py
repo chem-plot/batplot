@@ -8,13 +8,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from .readers import (
-    read_gr_file, 
+    read_gr_file,
+    read_xrd_vendor_file,
+    is_bruker_raw,
     robust_loadtxt_skipheader,
     read_mpt_file,
     read_ec_csv_file,
     read_ec_csv_dqdv_file,
 )
-from .utils import _confirm_overwrite
+from .utils import _confirm_overwrite, natural_sort_key
 
 
 def _load_style_file(style_path: str) -> dict | None:
@@ -457,7 +459,7 @@ def batch_process(directory: str, args):
     known_axis_ext = {'.qye', '.gr', '.nor', '.chik', '.chir'}
     
     # All acceptable data file extensions (includes both auto-detect and generic)
-    known_ext = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt'}
+    known_ext = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt', '.brml', '.raw', '.xrdml', '.rasx'}
     
     # Extensions to exclude (not data files, or require special handling)
     excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat', '.mpt'}
@@ -511,7 +513,7 @@ def batch_process(directory: str, args):
     # Collect all files, including those with unknown extensions
     files = []
     unknown_ext_files = []
-    for f in sorted(os.listdir(directory)):
+    for f in sorted(os.listdir(directory), key=natural_sort_key):
         if not os.path.isfile(os.path.join(directory, f)):
             continue
         ext = os.path.splitext(f)[1].lower()
@@ -588,18 +590,59 @@ def batch_process(directory: str, args):
                 if data.shape[1] < 2: raise ValueError("Invalid .chir data")
                 x, y = data[:,0], data[:,1]; e = data[:,2] if data.shape[1] >= 3 else None
                 axis_mode = 'rft'
+            elif ext in ('.brml', '.xrdml', '.rasx') or (ext == '.raw' and is_bruker_raw(fpath)):
+                x, y, e, wl_from_file = read_xrd_vendor_file(fpath)
+                axis_mode = '2theta'
+                if args.wl is None and wl_from_file is not None:
+                    args.wl = wl_from_file
+            elif ext == '.raw':
+                # .raw from non-Bruker instrument: load as generic text
+                data = robust_loadtxt_skipheader(fpath)
+                if data.ndim == 1:
+                    data = data.reshape(1, -1)
+                if data.shape[1] < 2:
+                    raise ValueError("Invalid 2-column data")
+                readcol_spec = None
+                if hasattr(args, 'readcol_by_file') and args.readcol_by_file:
+                    for key in (fpath, fname):
+                        if key in args.readcol_by_file:
+                            rc = args.readcol_by_file[key]
+                            readcol_spec = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+                            break
+                if readcol_spec is None and hasattr(args, 'readcol_by_ext') and ext in args.readcol_by_ext:
+                    readcol_spec = args.readcol_by_ext[ext]
+                if readcol_spec is None and args.readcol:
+                    rc = args.readcol
+                    readcol_spec = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+                if readcol_spec:
+                    x_col, y_col = readcol_spec
+                    x_col_idx, y_col_idx = x_col - 1, y_col - 1
+                    if x_col_idx < 0 or x_col_idx >= data.shape[1] or y_col_idx < 0 or y_col_idx >= data.shape[1]:
+                        raise ValueError(f"Columns {x_col},{y_col} out of range (has {data.shape[1]} columns)")
+                    x, y = data[:, x_col_idx], data[:, y_col_idx]
+                    e = None
+                else:
+                    x, y = data[:, 0], data[:, 1]
+                    e = data[:, 2] if data.shape[1] >= 3 else None
+                axis_mode = args.xaxis if args.xaxis else '2theta'
             else:
                 data = robust_loadtxt_skipheader(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
                 if data.shape[1] < 2: raise ValueError("Invalid 2-column data")
-                # Handle --readcol flag to select specific columns
-                # Check for extension-specific readcol first, then fall back to general --readcol
+                # Handle --readcol: per-file > per-ext > global (batch uses first pair when multi-curve)
                 readcol_spec = None
-                if hasattr(args, 'readcol_by_ext') and ext in args.readcol_by_ext:
+                if hasattr(args, 'readcol_by_file') and args.readcol_by_file:
+                    for key in (fpath, fname):
+                        if key in args.readcol_by_file:
+                            rc = args.readcol_by_file[key]
+                            readcol_spec = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+                            break
+                if readcol_spec is None and hasattr(args, 'readcol_by_ext') and ext in args.readcol_by_ext:
                     readcol_spec = args.readcol_by_ext[ext]
-                elif args.readcol:
-                    readcol_spec = args.readcol
-                
+                if readcol_spec is None and args.readcol:
+                    rc = args.readcol
+                    readcol_spec = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+
                 if readcol_spec:
                     x_col, y_col = readcol_spec
                     # Convert from 1-indexed to 0-indexed
@@ -849,7 +892,7 @@ def batch_process_ec(directory: str, args):
     from .utils import ensure_subdirectory
     out_dir = ensure_subdirectory('Figures', directory)
     
-    files = [f for f in sorted(os.listdir(directory))
+    files = [f for f in sorted(os.listdir(directory), key=natural_sort_key)
              if os.path.splitext(f)[1].lower() in supported_ext 
              and os.path.isfile(os.path.join(directory, f))]
     

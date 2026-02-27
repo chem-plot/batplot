@@ -19,12 +19,14 @@ from .session import (
 )
 from .operando import plot_operando_folder
 from .plotting import update_labels
-from .utils import _confirm_overwrite, normalize_label_text
+from .utils import _confirm_overwrite, normalize_label_text, natural_sort_key
 from .readers import (
-    read_csv_file, 
-    read_fullprof_rowwise, 
-    robust_loadtxt_skipheader, 
+    read_csv_file,
+    read_fullprof_rowwise,
+    robust_loadtxt_skipheader,
     read_gr_file,
+    read_xrd_vendor_file,
+    is_bruker_raw,
     read_mpt_file,
     read_ec_csv_file,
     read_ec_csv_dqdv_file,
@@ -107,24 +109,8 @@ except ImportError:
 keep_canvas_fixed = False
 
 
-ALLFILES_KNOWN_EXTENSIONS = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt', '.mpt'}
+ALLFILES_KNOWN_EXTENSIONS = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt', '.mpt', '.brml', '.raw', '.xrdml', '.rasx'}
 ALLFILES_EXCLUDED_EXTENSIONS = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat'}
-
-
-def _natural_sort_key(filename: str) -> list:
-    """Generate a natural sorting key for filenames with numbers.
-    
-    Converts 'file_10.xy' to ['file_', 10, '.xy'] so numerical parts are sorted numerically.
-    This ensures file_2.xy comes before file_10.xy (natural order).
-    """
-    parts = []
-    for match in re.finditer(r'(\d+|\D+)', filename):
-        text = match.group(0)
-        if text.isdigit():
-            parts.append(int(text))
-        else:
-            parts.append(text.lower())
-    return parts
 
 
 def _prepare_allfiles_directory(target_dir: str, args, use_relative_paths: bool = False,
@@ -134,7 +120,7 @@ def _prepare_allfiles_directory(target_dir: str, args, use_relative_paths: bool 
     unknown_ext_files = [] if allowed_exts is None else None
 
     try:
-        entries = sorted(os.listdir(target_dir), key=_natural_sort_key)
+        entries = sorted(os.listdir(target_dir), key=natural_sort_key)
     except Exception as exc:
         print(f"Failed to list directory '{target_dir}': {exc}")
         exit(1)
@@ -473,6 +459,7 @@ def batplot_main() -> int:
                     except Exception:
                         pass
                 legend.get_title().set_fontsize('medium')
+                fig._ec_legend_title = "Cycle"
                 # Match GC/dQdV: consistent label/title displacement and canvas
                 fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
                 
@@ -562,7 +549,7 @@ def batplot_main() -> int:
             argv = []
         # Trigger if interactive is requested OR when operando/GC plotting likely calls show()
         wants_interactive = any(flag in argv for flag in ("--interactive",))
-        wants_interactive = wants_interactive or ("--operando" in argv)
+        wants_interactive = wants_interactive or ("--operando" in argv or "--contour" in argv)
         wants_interactive = wants_interactive or ("--gc" in argv)
         if not wants_interactive:
             return
@@ -844,6 +831,7 @@ def batplot_main() -> int:
                 ax.set_xlabel(x_label_gc, labelpad=8.0)
                 ax.set_ylabel('Voltage (V)', labelpad=8.0)
             ax.legend(title='Cycle')
+            fig._ec_legend_title = "Cycle"
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
             if style_cfg:
                 try:
@@ -875,20 +863,50 @@ def batplot_main() -> int:
                 continue
             
             try:
-                # Branch by extension
-                if ec_file.lower().endswith('.mpt'):
-                    # For .mpt, mass is required to compute specific capacity
-                    mass_mg = getattr(args, 'mass', None)
-                    if mass_mg is None:
-                        print("GC mode (.mpt): --mass parameter is required (active material mass in milligrams).")
-                        print("Example: batplot file.mpt --gc --mass 7.0")
+                # Check for potential-window mode first (custom voltage-time format)
+                if getattr(args, 'pw', None) is not None:
+                    v_min, v_max = args.pw
+                    current_density = getattr(args, 'cd', None)
+                    if current_density is None:
+                        print("Potential-window mode: --cd parameter is required (current density in mA/g).")
+                        print("Example: batplot file.mpt --pw 0.01 3 --cd 0.2")
                         if len(data_files) > 1:
                             continue
                         else:
                             exit(1)
-                    specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
+                    # Import the potential-window (voltage-time to GC) reader
+                    from .readers import read_batx_file
+                    b_tol = getattr(args, 'b', None)
+                    tol_upper = b_tol[0] if b_tol is not None and len(b_tol) >= 2 else 0.05
+                    tol_lower = b_tol[1] if b_tol is not None and len(b_tol) >= 2 else 0.005
+                    cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_batx_file(ec_file, v_min, v_max, current_density, tol_upper=tol_upper, tol_lower=tol_lower)
                     x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
-                    cap_x = specific_capacity
+                # Branch by extension
+                elif ec_file.lower().endswith('.mpt'):
+                    # If anode/cathode flags are set, try indexed voltage-time format first
+                    if getattr(args, 'anode', False) or getattr(args, 'cathode', False):
+                        from .readers import read_indexed_voltage_time_file
+                        is_anode = bool(getattr(args, 'anode', False))
+                        cd = getattr(args, 'cd', None)
+                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_indexed_voltage_time_file(
+                            ec_file,
+                            is_anode=is_anode,
+                            current_density=cd,
+                        )
+                        x_label_gc = r'Specific Capacity (mAh g$^{-1}$)' if cd is not None else "Relative Capacity (h)"
+                    else:
+                        # For standard .mpt, mass is required to compute specific capacity
+                        mass_mg = getattr(args, 'mass', None)
+                        if mass_mg is None:
+                            print("GC mode (.mpt): --mass parameter is required (active material mass in milligrams).")
+                            print("Example: batplot file.mpt --gc --mass 7.0")
+                            if len(data_files) > 1:
+                                continue
+                            else:
+                                exit(1)
+                        specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
+                        x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+                        cap_x = specific_capacity
                 elif ec_file.lower().endswith('.csv'):
                     # Check if this is CS-B format
                     try:
@@ -1084,6 +1102,7 @@ def batplot_main() -> int:
                     except Exception:
                         pass
                 legend.get_title().set_fontsize('medium')
+                fig._ec_legend_title = "Cycle"
                 # No background grid by default for GC plots
             
                 # Adjust layout to ensure top and bottom labels/titles are visible
@@ -1691,6 +1710,7 @@ def batplot_main() -> int:
                 ax.set_xlabel('Voltage (V)', labelpad=8.0)
                 ax.set_ylabel(y_label_used or 'dQ/dV', labelpad=8.0)
             ax.legend(title='Cycle')
+            fig._ec_legend_title = "Cycle"
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
             if style_cfg:
                 try:
@@ -1842,6 +1862,7 @@ def batplot_main() -> int:
                     except Exception:
                         pass
                 legend.get_title().set_fontsize('medium')
+                fig._ec_legend_title = "Cycle"
                 # No background grid by default (same as GC)
             
                 # Adjust layout to ensure top and bottom labels/titles are visible (same as GC/CPC)
@@ -1969,20 +1990,33 @@ def batplot_main() -> int:
         import os as _os
         import matplotlib.pyplot as _plt
         try:
-            # Determine target folder: explicit folder arg or current directory
-            if len(args.files) == 0:
-                folder = os.getcwd()
-            elif len(args.files) == 1 and _os.path.isdir(args.files[0]):
-                folder = _os.path.abspath(args.files[0])
-            elif len(args.files) == 1 and not _os.path.isdir(args.files[0]):
-                print("Operando mode expects a folder (or no argument to use current folder).")
-                exit(1)
-            else:
-                print("Operando mode: provide at most one folder or no argument.")
-                exit(1)
+            # Determine target folder and optional CIF files
+            # Usage: batplot folder [phase.cif:1.54 ...] --operando -i
+            folder = None
+            cif_files = []
+            for f in args.files:
+                if _os.path.isdir(f):
+                    if folder is None:
+                        folder = _os.path.abspath(f)
+                    else:
+                        print("Operando mode: provide at most one folder.")
+                        exit(1)
+                else:
+                    # CIF file (optionally with :wl), e.g. phase.cif:1.54
+                    parts = f.split(":")
+                    if len(parts) >= 1:
+                        fname = parts[0]
+                        if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
+                            # Windows drive letter: C:\path\to\file.cif:1.54
+                            fname = parts[0] + ":" + parts[1]
+                            parts = [fname] + (parts[2:] if len(parts) > 2 else [])
+                        if _os.path.splitext(fname)[1].lower() == '.cif':
+                            cif_files.append(f)
+            if folder is None:
+                folder = _os.getcwd()
 
-            # Build plot
-            fig, ax, meta = plot_operando_folder(folder, args)
+            # Build plot (pass cif_files for CIF tick labels)
+            fig, ax, meta = plot_operando_folder(folder, args, cif_files=cif_files)
             im = meta.get('imshow')
             cbar = meta.get('colorbar')
             has_ec = bool(meta.get('has_ec'))
@@ -3101,6 +3135,7 @@ def batplot_main() -> int:
         any_chir = any("chir" in _ext_token(f) for f in args.files)
         any_txt = any(f.lower().endswith(".txt") for f in args.files)
         any_cif = any(f.lower().endswith(".cif") for f in args.files)
+        any_xrd_vendor = any(f.lower().endswith((".raw", ".brml", ".xrdml", ".rasx")) for f in args.files)
         non_cif_count = sum(0 if f.lower().endswith('.cif') else 1 for f in args.files)
         cif_only = any_cif and non_cif_count == 0
         # Check for wavelength parameters (file:wl), but exclude Windows drive letters (C:\...)
@@ -3116,7 +3151,7 @@ def batplot_main() -> int:
         any_lambda = any(has_wavelength_param(f) for f in args.files) or args.wl is not None
 
         # Incompatibilities (no mixing of fundamentally different axis domains)
-        if sum(bool(x) for x in (any_gr, any_nor, any_chik, any_chir, (any_qye or any_lambda or any_cif))) > 1:
+        if sum(bool(x) for x in (any_gr, any_nor, any_chik, any_chir, (any_qye or any_lambda or any_cif or any_xrd_vendor))) > 1:
             raise ValueError("Cannot mix .gr (r), .nor (energy), .chik (k), .chir (FT-EXAFS R), and Q/2θ/CIF data together. Split runs.")
 
         # Automatic axis selection based on file extensions
@@ -3137,13 +3172,18 @@ def batplot_main() -> int:
                 axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
             else:
                 raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
-        elif any_lambda or any_cif:
+        elif any_lambda or any_cif or any_xrd_vendor:
+            # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies 2theta
             if args.xaxis and args.xaxis.lower() in ("2theta","two_theta","tth"):
                 axis_mode = "2theta"
-            else:
-                # If wavelength is provided, user wants to convert to Q
-                # CIF files are in Q space
+            elif args.xaxis and args.xaxis.upper() == "Q":
                 axis_mode = "Q"
+            elif getattr(args, 'wl', None) is not None:
+                # User gave --wl: default to Q and convert using file metadata or --wl
+                axis_mode = "Q"
+            else:
+                # No --wl and no explicit --xaxis: use 2theta so x-axis scale/label are correct
+                axis_mode = "2theta"
         elif args.xaxis:
             # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
             axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
@@ -3290,14 +3330,10 @@ def batplot_main() -> int:
                 label += f" (λ₁={original_wavelength:.5f}→λ₂={conversion_wavelength:.5f} Å)"
             else:
                 label += f" (λ={wavelength_file:.5f} Å)"
-        # Store wavelength info for this file
-        file_wavelength_info.append({
-            'original_wl': original_wavelength,
-            'conversion_wl': conversion_wavelength,
-            'final_wl': wavelength_file
-        })
+        # Wavelength info for this file (appended per curve in loop below for alignment)
 
         # ---- Read data (time mode for CSV/MPT or regular mode) ----
+        curves_to_plot = None  # Set by each branch that produces plottable curves
         if use_time and file_ext in ('.csv', '.mpt'):
             # Time mode: read time (h) vs voltage (V) for electrochemistry files
             try:
@@ -3306,6 +3342,7 @@ def batplot_main() -> int:
                 elif file_ext == '.mpt':
                     x, y = read_mpt_time_voltage(fname)
                 e = None
+                curves_to_plot = [(x, y, e, label)]
             except Exception as e_read:
                 print(f"Error reading {fname} in time mode: {e_read}")
                 continue
@@ -3336,9 +3373,59 @@ def batplot_main() -> int:
                 continue
         elif file_ext == ".gr":
             try:
-                x, y = read_gr_file(fname); e = None
+                x, y = read_gr_file(fname)
+                e = None
+                curves_to_plot = [(x, y, e, label)]
             except Exception as e_read:
-                print(f"Error reading {fname}: {e_read}"); continue
+                print(f"Error reading {fname}: {e_read}")
+                continue
+        elif file_ext in (".brml", ".xrdml", ".rasx") or (file_ext == ".raw" and is_bruker_raw(fname)):
+            # Bruker .raw (magic RAW4.00) and .brml; .xrdml/.rasx raise in read_xrd_vendor_file
+            try:
+                x, y, e, wl_from_file = read_xrd_vendor_file(fname)
+                if wavelength_file is None and wl_from_file is not None:
+                    wavelength_file = wl_from_file
+                    original_wavelength = wl_from_file
+                curves_to_plot = [(x, y, e, label)]
+            except Exception as e_read:
+                print(f"Error reading {fname}: {e_read}")
+                continue
+        elif file_ext == ".raw":
+            # .raw from non-Bruker instrument: load as generic text (use --xaxis/--readcol if needed)
+            try:
+                data = robust_loadtxt_skipheader(fname)
+            except Exception as e_read:
+                print(f"Error reading {fname}: {e_read}")
+                continue
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            if data.shape[1] < 2:
+                print(f"Invalid data format in {fname}: expected at least 2 columns, got {data.shape[1]}")
+                continue
+            readcol_spec = None
+            if hasattr(args, 'readcol_by_file') and file_entry in args.readcol_by_file:
+                readcol_spec = args.readcol_by_file[file_entry]
+            elif hasattr(args, 'readcol_by_ext') and file_ext in args.readcol_by_ext:
+                readcol_spec = args.readcol_by_ext[file_ext]
+            elif args.readcol:
+                readcol_spec = args.readcol
+            if readcol_spec:
+                pairs = [tuple(readcol_spec)] if isinstance(readcol_spec[0], int) else list(readcol_spec)
+            else:
+                pairs = [(1, 2)]
+            xy_curves = []
+            for (x_col, y_col) in pairs:
+                x_col_idx, y_col_idx = x_col - 1, y_col - 1
+                if x_col_idx < 0 or x_col_idx >= data.shape[1] or y_col_idx < 0 or y_col_idx >= data.shape[1]:
+                    print(f"Error: Columns {x_col},{y_col} out of range in {fname} (has {data.shape[1]} columns)")
+                    continue
+                ec = None if readcol_spec else (data[:, 2] if data.shape[1] >= 3 else None)
+                xy_curves.append((data[:, x_col_idx].copy(), data[:, y_col_idx].copy(), ec,
+                                  label + (f" (cols {x_col},{y_col})" if len(pairs) > 1 else "")))
+            if xy_curves:
+                curves_to_plot = xy_curves
+            else:
+                curves_to_plot = [(data[:, 0], data[:, 1], data[:, 2] if data.shape[1] >= 3 else None, label)]
         elif file_ext in [".nor", ".xy", ".xye", ".qye", ".dat", ".csv"] or is_chik or is_chir:
             try:
                 data = robust_loadtxt_skipheader(fname)
@@ -3347,17 +3434,22 @@ def batplot_main() -> int:
             if data.ndim == 1: data = data.reshape(1, -1)
             if data.shape[1] < 2:
                 print(f"Invalid data format in {fname}"); continue
-            # Handle --readcol flag to select specific columns
-            # Check for extension-specific readcol first, then fall back to general --readcol
+            # Handle --readcol flag: per-file (readcol_by_file) > per-ext > global
+            # Supports multi-curve: readcol_spec can be (x,y) or [(x1,y1),(x2,y2),...]
             readcol_spec = None
-            if hasattr(args, 'readcol_by_ext') and file_ext in args.readcol_by_ext:
+            if hasattr(args, 'readcol_by_file') and file_entry in args.readcol_by_file:
+                readcol_spec = args.readcol_by_file[file_entry]
+            elif hasattr(args, 'readcol_by_ext') and file_ext in args.readcol_by_ext:
                 readcol_spec = args.readcol_by_ext[file_ext]
             elif args.readcol:
                 readcol_spec = args.readcol
-            
+            # Normalize to list of (x_col, y_col) pairs for multi-curve support
             if readcol_spec:
-                x_col, y_col = readcol_spec
-                # Convert from 1-indexed to 0-indexed
+                pairs = [tuple(readcol_spec)] if isinstance(readcol_spec[0], int) else list(readcol_spec)
+            else:
+                pairs = [(1, 2)]  # Default: cols 1 and 2 (1-indexed)
+            xy_curves = []  # List of (x, y, e, curve_label) for this file
+            for (x_col, y_col) in pairs:
                 x_col_idx = x_col - 1
                 y_col_idx = y_col - 1
                 if x_col_idx < 0 or x_col_idx >= data.shape[1]:
@@ -3366,12 +3458,14 @@ def batplot_main() -> int:
                 if y_col_idx < 0 or y_col_idx >= data.shape[1]:
                     print(f"Error: Y column {y_col} out of range in {fname} (has {data.shape[1]} columns)")
                     continue
-                x, y = data[:, x_col_idx], data[:, y_col_idx]
-                e = None  # Error bars not supported with custom column selection
-            else:
-                x, y = data[:, 0], data[:, 1]
-                e = data[:, 2] if data.shape[1] >= 3 else None
-            # For .csv, .dat, .xy, .xye, .qye, .nor, .chik, .chir, this robustly skips headers
+                xc = data[:, x_col_idx].copy()
+                yc = data[:, y_col_idx].copy()
+                ec = None  # Error bars not supported with custom column selection
+                cl = label + (f" (cols {x_col},{y_col})" if len(pairs) > 1 else "")
+                xy_curves.append((xc, yc, ec, cl))
+            if not xy_curves:
+                continue
+            curves_to_plot = xy_curves
         elif args.fullprof and file_ext == ".dat":
             try:
                 y_plot, n_rows = read_fullprof_rowwise(fname)
@@ -3396,30 +3490,32 @@ def batplot_main() -> int:
             if data.shape[1] < 2:
                 print(f"Invalid data format in {fname}: expected at least 2 columns, got {data.shape[1]}")
                 continue
-            # Handle --readcol flag to select specific columns
-            # Check for extension-specific readcol first, then fall back to general --readcol
+            # Handle --readcol: per-file > per-ext > global, supports multi-curve
             readcol_spec = None
-            if hasattr(args, 'readcol_by_ext') and file_ext in args.readcol_by_ext:
+            if hasattr(args, 'readcol_by_file') and file_entry in args.readcol_by_file:
+                readcol_spec = args.readcol_by_file[file_entry]
+            elif hasattr(args, 'readcol_by_ext') and file_ext in args.readcol_by_ext:
                 readcol_spec = args.readcol_by_ext[file_ext]
             elif args.readcol:
                 readcol_spec = args.readcol
-            
             if readcol_spec:
-                x_col, y_col = readcol_spec
-                # Convert from 1-indexed to 0-indexed
-                x_col_idx = x_col - 1
-                y_col_idx = y_col - 1
-                if x_col_idx < 0 or x_col_idx >= data.shape[1]:
-                    print(f"Error: X column {x_col} out of range in {fname} (has {data.shape[1]} columns)")
-                    continue
-                if y_col_idx < 0 or y_col_idx >= data.shape[1]:
-                    print(f"Error: Y column {y_col} out of range in {fname} (has {data.shape[1]} columns)")
-                    continue
-                x, y = data[:, x_col_idx], data[:, y_col_idx]
-                e = None  # Error bars not supported with custom column selection
+                pairs = [tuple(readcol_spec)] if isinstance(readcol_spec[0], int) else list(readcol_spec)
             else:
-                x, y = data[:, 0], data[:, 1]
-                e = data[:, 2] if data.shape[1] >= 3 else None
+                pairs = [(1, 2)]
+            xy_curves = []
+            for (x_col, y_col) in pairs:
+                x_col_idx, y_col_idx = x_col - 1, y_col - 1
+                if x_col_idx < 0 or x_col_idx >= data.shape[1] or y_col_idx < 0 or y_col_idx >= data.shape[1]:
+                    print(f"Error: Columns {x_col},{y_col} out of range in {fname} (has {data.shape[1]} columns)")
+                    continue
+                ec = None if readcol_spec else (data[:, 2] if data.shape[1] >= 3 else None)
+                xy_curves.append((data[:, x_col_idx].copy(), data[:, y_col_idx].copy(), ec,
+                                  label + (f" (cols {x_col},{y_col})" if len(pairs) > 1 else "")))
+            if xy_curves:
+                curves_to_plot = xy_curves
+            else:
+                # Fallback: default columns 1 and 2
+                curves_to_plot = [(data[:, 0], data[:, 1], data[:, 2] if data.shape[1] >= 3 else None, label)]
             # Warn once per unknown extension type
             if not hasattr(args, '_warned_extensions'):
                 args._warned_extensions = set()
@@ -3427,161 +3523,147 @@ def batplot_main() -> int:
                 args._warned_extensions.add(file_ext)
                 print(f"Note: Reading '{file_ext}' file as 2-column (x, y) data. Use --xaxis to specify x-axis type if needed.")
 
-        # ---- X-axis conversion logic updated (no conversion for energy or time) ----
-        if use_time:
-            # Time mode: data already in hours, no conversion needed
-            x_plot = x
-        elif use_2th and original_wavelength is not None and conversion_wavelength is not None:
-            # Dual wavelength conversion: 2theta -> Q (wl1) -> 2theta (wl2)
-            # Step 1: Convert original 2theta to Q using first wavelength
-            theta_rad = np.radians(x / 2.0)
-            Q = 4 * np.pi * np.sin(theta_rad) / original_wavelength
-            # Step 2: Convert Q back to 2theta using second wavelength
-            # Q = 4π sin(θ) / λ => sin(θ) = Qλ / (4π) => θ = arcsin(Qλ / (4π))
-            sin_theta = Q * conversion_wavelength / (4 * np.pi)
-            # Check for physically impossible Q values (would require sin(θ) > 1)
-            valid_mask = np.abs(sin_theta) <= 1.0
-            if not np.all(valid_mask):
-                # Some Q values are too high for the target wavelength
-                n_invalid = np.sum(~valid_mask)
-                q_max_possible = 4 * np.pi / conversion_wavelength
-                print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={conversion_wavelength} Å")
-                print(f"         Truncating data to physically accessible range.")
-            # Truncate to valid range instead of clipping (which creates artificial data)
-            x = x[valid_mask]
-            y = y[valid_mask]
-            sin_theta = sin_theta[valid_mask]
-            theta_new_rad = np.arcsin(sin_theta)
-            x_plot = np.degrees(2 * theta_new_rad)
-        elif use_2th and file_ext == ".qye" and wavelength_file:
-            # Convert Q to 2theta for .qye files when wavelength is provided
-            # Q = 4π sin(θ) / λ => sin(θ) = Qλ / (4π) => θ = arcsin(Qλ / (4π))
-            sin_theta = x * wavelength_file / (4 * np.pi)
-            # Check for physically impossible Q values
-            valid_mask = np.abs(sin_theta) <= 1.0
-            if not np.all(valid_mask):
-                n_invalid = np.sum(~valid_mask)
-                q_max_possible = 4 * np.pi / wavelength_file
-                print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={wavelength_file} Å")
-                print(f"         Truncating data to physically accessible range.")
-            # Truncate to valid range
-            x = x[valid_mask]
-            y = y[valid_mask]
-            sin_theta = sin_theta[valid_mask]
-            theta_rad = np.arcsin(sin_theta)
-            x_plot = np.degrees(2 * theta_rad)
-        elif use_Q and file_ext not in (".qye", ".gr", ".nor"):
-            if original_wavelength is not None:
-                # Use first wavelength for Q conversion
-                theta_rad = np.radians(x/2)
-                x_plot = 4*np.pi*np.sin(theta_rad)/original_wavelength
-            elif wavelength_file:
-                theta_rad = np.radians(x/2)
-                x_plot = 4*np.pi*np.sin(theta_rad)/wavelength_file
-            else:
+        if not curves_to_plot:
+            continue
+
+        for (x, y, e, curve_label) in curves_to_plot:
+            file_wavelength_info.append({
+                'original_wl': original_wavelength,
+                'conversion_wl': conversion_wavelength,
+                'final_wl': wavelength_file
+            })
+            # ---- X-axis conversion logic updated (no conversion for energy or time) ----
+            if use_time:
+                # Time mode: data already in hours, no conversion needed
                 x_plot = x
-        else:
-            # r, energy, k, rft, or already Q: direct
-            x_plot = x
-
-        # ---- Store full (converted) arrays BEFORE cropping ----
-        x_full = x_plot.copy()
-        y_full_raw = y.copy()
-        
-        # ---- Calculate first derivative if requested ----
-        if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
-            # Calculate dy/dx using numpy gradient
-            # numpy.gradient handles non-uniform spacing automatically
-            if len(y_full_raw) > 1:
-                dy_dx = np.gradient(y_full_raw, x_full)
-                y_full_raw = dy_dx
-            else:
-                # Single point or empty - cannot calculate derivative
-                print(f"Warning: Cannot calculate derivative for {fname}: insufficient data points")
-                continue
-        
-        raw_y_full_list.append(y_full_raw)
-        x_full_list.append(x_full)
-
-        # ---- Apply xrange (for initial display only; full data kept above) ----
-        y_plot = y_full_raw
-        e_plot = e
-        if args.xrange:
-            mask = (x_full>=args.xrange[0]) & (x_full<=args.xrange[1])
-            ax.set_xlim(args.xrange[0], args.xrange[1])
-            x_plot = x_full[mask]
-            y_plot = y_full_raw[mask]
-            if e_plot is not None:
-                e_plot = e_plot[mask]
-        else:
-            x_plot = x_full
-
-        # ---- Apply EXAFS k-weighting transformation if requested ----
-        if getattr(args, 'k3chik', False):
-            # Multiply y by x³ for EXAFS k³χ(k) plots
-            y_plot = y_plot * (x_plot ** 3)
-            y_full_raw = y_full_raw * (x_full ** 3)
-            raw_y_full_list[-1] = y_full_raw
-        elif getattr(args, 'k2chik', False):
-            # Multiply y by x² for EXAFS k²χ(k) plots
-            y_plot = y_plot * (x_plot ** 2)
-            y_full_raw = y_full_raw * (x_full ** 2)
-            raw_y_full_list[-1] = y_full_raw
-        elif getattr(args, 'kchik', False):
-            # Multiply y by x for EXAFS kχ(k) plots
-            y_plot = y_plot * x_plot
-            y_full_raw = y_full_raw * x_full
-            raw_y_full_list[-1] = y_full_raw
-        # elif getattr(args, 'chik', False): no multiplication needed, just label change
-
-        # ---- Normalize (display subset) ----
-        # Auto-normalize for --stack mode, or explicit --norm flag
-        should_normalize = args.stack or getattr(args, 'norm', False)
-        if should_normalize:
-            # Min–max normalization to 0..1 within the currently displayed (cropped) segment
-            if y_plot.size:
-                y_min = float(y_plot.min())
-                y_max = float(y_plot.max())
-                span = y_max - y_min
-                if span > 0:
-                    y_norm = (y_plot - y_min) / span
+            elif use_2th and original_wavelength is not None and conversion_wavelength is not None:
+                # Dual wavelength conversion: 2theta -> Q (wl1) -> 2theta (wl2)
+                theta_rad = np.radians(x / 2.0)
+                Q = 4 * np.pi * np.sin(theta_rad) / original_wavelength
+                sin_theta = Q * conversion_wavelength / (4 * np.pi)
+                valid_mask = np.abs(sin_theta) <= 1.0
+                if not np.all(valid_mask):
+                    n_invalid = np.sum(~valid_mask)
+                    q_max_possible = 4 * np.pi / conversion_wavelength
+                    print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={conversion_wavelength} Å")
+                    print(f"         Truncating data to physically accessible range.")
+                x = x[valid_mask]
+                y = y[valid_mask]
+                sin_theta = sin_theta[valid_mask]
+                theta_new_rad = np.arcsin(sin_theta)
+                x_plot = np.degrees(2 * theta_new_rad)
+            elif use_2th and file_ext == ".qye" and wavelength_file:
+                # Convert Q to 2theta for .qye files when wavelength is provided
+                sin_theta = x * wavelength_file / (4 * np.pi)
+                valid_mask = np.abs(sin_theta) <= 1.0
+                if not np.all(valid_mask):
+                    n_invalid = np.sum(~valid_mask)
+                    q_max_possible = 4 * np.pi / wavelength_file
+                    print(f"Warning: {n_invalid} data points exceed Q_max={q_max_possible:.2f} Å⁻¹ for λ={wavelength_file} Å")
+                    print(f"         Truncating data to physically accessible range.")
+                x = x[valid_mask]
+                y = y[valid_mask]
+                sin_theta = sin_theta[valid_mask]
+                theta_rad = np.arcsin(sin_theta)
+                x_plot = np.degrees(2 * theta_rad)
+            elif use_Q and file_ext not in (".qye", ".gr", ".nor"):
+                if original_wavelength is not None:
+                    theta_rad = np.radians(x/2)
+                    x_plot = 4*np.pi*np.sin(theta_rad)/original_wavelength
+                elif wavelength_file:
+                    theta_rad = np.radians(x/2)
+                    x_plot = 4*np.pi*np.sin(theta_rad)/wavelength_file
                 else:
-                    # Flat line -> all zeros
-                    y_norm = np.zeros_like(y_plot)
+                    x_plot = x
+            else:
+                # r, energy, k, rft, or already Q: direct
+                x_plot = x
+
+            # ---- Store full (converted) arrays BEFORE cropping ----
+            x_full = x_plot.copy()
+            y_full_raw = y.copy()
+
+            # ---- Calculate first derivative if requested ----
+            if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
+                if len(y_full_raw) > 1:
+                    dy_dx = np.gradient(y_full_raw, x_full)
+                    y_full_raw = dy_dx
+                else:
+                    print(f"Warning: Cannot calculate derivative for {fname}: insufficient data points")
+                    continue
+
+            raw_y_full_list.append(y_full_raw)
+            x_full_list.append(x_full)
+
+            # ---- Apply xrange (for initial display only; full data kept above) ----
+            y_plot = y_full_raw
+            e_plot = e
+            if args.xrange:
+                mask = (x_full>=args.xrange[0]) & (x_full<=args.xrange[1])
+                ax.set_xlim(args.xrange[0], args.xrange[1])
+                x_plot = x_full[mask]
+                y_plot = y_full_raw[mask]
+                if e_plot is not None:
+                    e_plot = e_plot[mask]
+            else:
+                x_plot = x_full
+
+            # ---- Apply EXAFS k-weighting transformation if requested ----
+            if getattr(args, 'k3chik', False):
+                y_plot = y_plot * (x_plot ** 3)
+                y_full_raw = y_full_raw * (x_full ** 3)
+                raw_y_full_list[-1] = y_full_raw
+            elif getattr(args, 'k2chik', False):
+                y_plot = y_plot * (x_plot ** 2)
+                y_full_raw = y_full_raw * (x_full ** 2)
+                raw_y_full_list[-1] = y_full_raw
+            elif getattr(args, 'kchik', False):
+                y_plot = y_plot * x_plot
+                y_full_raw = y_full_raw * x_full
+                raw_y_full_list[-1] = y_full_raw
+
+            # ---- Normalize (display subset) ----
+            should_normalize = args.stack or getattr(args, 'norm', False)
+            if should_normalize:
+                if y_plot.size:
+                    y_min = float(y_plot.min())
+                    y_max = float(y_plot.max())
+                    span = y_max - y_min
+                    if span > 0:
+                        y_norm = (y_plot - y_min) / span
+                    else:
+                        y_norm = np.zeros_like(y_plot)
+                else:
+                    y_norm = y_plot
             else:
                 y_norm = y_plot
-        else:
-            y_norm = y_plot
 
-        # ---- Apply offset (waterfall vs stack) ----
-        if args.stack:
-            y_plot_offset = y_norm + offset
-            y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
-            gap = y_range + (args.delta * (y_range if args.autoscale else 1.0))
-            offsets_list.append(offset)
-            offset -= gap
-        else:
-            increment = (y_norm.max() - y_norm.min()) * args.delta if (args.autoscale and y_norm.size) else args.delta
-            y_plot_offset = y_norm + offset
-            offsets_list.append(offset)
-            offset += increment
+            # ---- Apply offset (waterfall vs stack) ----
+            if args.stack:
+                y_plot_offset = y_norm + offset
+                y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
+                gap = y_range + (args.delta * (y_range if args.autoscale else 1.0))
+                offsets_list.append(offset)
+                offset -= gap
+            else:
+                increment = (y_norm.max() - y_norm.min()) * args.delta if (args.autoscale and y_norm.size) else args.delta
+                y_plot_offset = y_norm + offset
+                offsets_list.append(offset)
+                offset += increment
 
-        # ---- Plot curve ----
-        # Swap x and y if --ro flag is set (and keep lists aligned once)
-        if getattr(args, 'ro', False):
-            x_plotted = y_plot_offset    # goes on x-axis when rotated
-            y_plotted = x_plot           # goes on y-axis when rotated
-        else:
-            x_plotted = x_plot
-            y_plotted = y_plot_offset
+            # ---- Plot curve ----
+            if getattr(args, 'ro', False):
+                x_plotted = y_plot_offset
+                y_plotted = x_plot
+            else:
+                x_plotted = x_plot
+                y_plotted = y_plot_offset
 
-        ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
-        x_data_list.append(x_plotted)
-        y_data_list.append(y_plotted.copy())
-        labels_list.append(label)
-        # Store current normalized (subset) (used by rearrange logic)
-        # Keep orig_y aligned with the plotted y data to avoid length mismatch on undo/relabel.
-        orig_y.append(y_plotted.copy())
+            ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
+            x_data_list.append(x_plotted)
+            y_data_list.append(y_plotted.copy())
+            labels_list.append(curve_label)
+            orig_y.append(y_plotted.copy())
 
     # ---------------- Force axis to fit all data before labels ----------------
     ax.relim()

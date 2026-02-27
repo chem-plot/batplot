@@ -29,13 +29,16 @@ HOW IT WORKS:
 AXIS MODE DETECTION:
 -------------------
 The X-axis type is determined automatically:
-- If --xaxis Q specified → Use Q-space
-- If files are .qye → Use Q-space (already in Q)
-- If --wl specified → Convert 2θ to Q using wavelength
-- Other operando data (such as PDF/XAS or others) → Plot the first two columns as X and Y
+- If --xaxis Q specified → Use Q-space (convert .xy/.xye to Q via --wl if needed)
+- If --xaxis 2theta specified → Use 2θ (degrees); convert .qye to 2θ via --wl if needed
+- If files are .qye and no --xaxis → Use Q-space (already in Q)
+- If --wl specified and no --xaxis → Convert 2θ to Q using wavelength
+- With CIF files: tick positions are always computed in Q from the CIF, then converted
+  to 2θ when axis_mode is 2theta (using --wl or per-file wavelength)
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
@@ -44,7 +47,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from .converters import convert_to_qye
-from .readers import robust_loadtxt_skipheader, read_mpt_file
+from .readers import robust_loadtxt_skipheader, read_mpt_file, is_bruker_raw
+from .cif import cif_reflection_positions, list_reflections_with_hkl, build_hkl_label_map_from_list
+from .utils import natural_sort_key
 
 # Import colorbar drawing function for non-interactive mode
 try:
@@ -53,11 +58,11 @@ except ImportError:
     # Fallback if interactive module not available
     _draw_custom_colorbar = None
 
-SUPPORTED_EXT = {".xy", ".xye", ".qye", ".dat"}
+SUPPORTED_EXT = {".xy", ".xye", ".qye", ".dat", ".brml", ".raw", ".xrdml", ".rasx"}
 # Standard diffraction file extensions that have known x-axis meanings
-KNOWN_DIFFRACTION_EXT = {".xy", ".xye", ".qye", ".dat", ".nor", ".chik", ".chir"}
+KNOWN_DIFFRACTION_EXT = {".xy", ".xye", ".qye", ".dat", ".nor", ".chik", ".chir", ".brml", ".raw", ".xrdml", ".rasx"}
 # File types to exclude from operando data (system/session files and electrochemistry)
-EXCLUDED_EXT = {".mpt", ".pkl", ".json", ".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".DS_Store"}
+EXCLUDED_EXT = {".mpt", ".pkl", ".json", ".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".DS_Store", ".xlsx", ".xls", ".csv"}
 
 # Keep the colorbar width deterministic (in inches) so interactive tweaks or saved
 # sessions never pick up whatever Matplotlib auto-sized for the current figure.
@@ -66,21 +71,6 @@ DEFAULT_COLORBAR_WIDTH_IN = 0.23
 _two_theta_re = re.compile(r"2[tT]heta|2th", re.IGNORECASE)
 _q_re = re.compile(r"^q$", re.IGNORECASE)
 _r_re = re.compile(r"^r(adial)?$", re.IGNORECASE)
-
-def _natural_sort_key(path: Path) -> list:
-    """Generate a natural sorting key for filenames with numbers.
-    
-    Converts 'file_10.xy' to ['file_', 10, '.xy'] so numerical parts are sorted numerically.
-    This ensures file_2.xy comes before file_10.xy (natural order).
-    """
-    parts = []
-    for match in re.finditer(r'(\d+|\D+)', path.name):
-        text = match.group(0)
-        if text.isdigit():
-            parts.append(int(text))
-        else:
-            parts.append(text.lower())
-    return parts
 
 def _infer_axis_mode(args, any_qye: bool, has_unknown_ext: bool):
     # Priority: explicit --xaxis, else .qye presence (Q), else wavelength (Q), else default 2theta with warning
@@ -105,6 +95,12 @@ def _infer_axis_mode(args, any_qye: bool, has_unknown_ext: bool):
     return "2theta"
 
 def _load_curve(path: Path, readcol=None):
+    suffix = path.suffix.lower()
+    if suffix in ('.brml', '.xrdml', '.rasx') or (suffix == '.raw' and is_bruker_raw(str(path))):
+        from .readers import read_xrd_vendor_file
+        x, y, _, _ = read_xrd_vendor_file(str(path))
+        return np.asarray(x, float), np.asarray(y, float)
+
     data = robust_loadtxt_skipheader(str(path))
     if data.ndim == 1:
         if data.size < 2:
@@ -135,7 +131,166 @@ def _maybe_convert_to_Q(x, wl):
     theta = np.radians(x/2.0)
     return 4.0 * np.pi * np.sin(theta) / wl
 
-def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
+
+def _maybe_convert_Q_to_2theta(x, wl):
+    """Convert Q (Å⁻¹) array to 2θ (degrees). Q = 4π sin(θ)/λ → 2θ = 2 arcsin(Qλ/(4π))."""
+    if wl is None:
+        return x
+    s = np.asarray(x, float) * wl / (4 * np.pi)
+    with np.errstate(invalid='ignore'):
+        out = np.degrees(2 * np.arcsin(np.clip(s, 0, 1)))
+    return np.where(np.isfinite(out), out, np.nan)
+
+
+def _Q_to_2theta_operando(peaksQ, wl):
+    """Convert Q positions to 2θ (degrees) for operando CIF ticks."""
+    out = []
+    if wl is None:
+        return out
+    for q in peaksQ:
+        s = q * wl / (4 * np.pi)
+        if 0 <= s < 1:
+            out.append(np.degrees(2 * np.arcsin(s)))
+    return out
+
+
+def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
+                            axis_mode, wl, show_hkl=False, show_titles=True,
+                            placement='below', y_positions=None, highlight=None,
+                            title_font=None, title_visible=None, set_visible=None):
+    """Draw CIF tick labels as figure annotations (no separate axis).
+    
+    Tick lines and labels are drawn using a blended transform: x from operando
+    data coords (aligned with 2θ/Q), y from figure coords (below operando panel).
+    
+    If highlight=True, adds bbox and path_effects so ticks remain visible when
+    overlaid on the operando contour.
+    
+    title_font: dict with 'family' and/or 'size' for title text (None = use default)
+    title_visible: list of bool, one per set; if None, all visible when show_titles
+    set_visible: list of bool, one per set; if False, skip drawing that CIF set entirely
+    """
+    from matplotlib.transforms import blended_transform_factory
+    from matplotlib.lines import Line2D
+
+    if highlight is None:
+        highlight = getattr(fig, '_operando_cif_highlight', False)
+    if title_font is None:
+        title_font = getattr(fig, '_operando_cif_title_font', None) or {}
+    if title_visible is None:
+        title_visible = getattr(fig, '_operando_cif_title_visible', None)
+    if set_visible is None:
+        set_visible = getattr(fig, '_operando_cif_set_visible', None)
+    default_title_fontsize = max(8, int(0.55 * plt.rcParams.get('font.size', 12)))
+    title_fs = title_font.get('size')
+    if title_fs is not None:
+        try:
+            default_title_fontsize = max(6, int(float(title_fs)))
+        except (ValueError, TypeError):
+            pass
+    title_family = title_font.get('family')
+    use_2th = (axis_mode == '2theta')
+    pe = []
+    if highlight:
+        try:
+            from matplotlib import patheffects
+            pe = [patheffects.withStroke(linewidth=2.5, foreground='white')]
+        except Exception:
+            pass
+    title_bbox = dict(boxstyle='round,pad=0.2', fc='white', ec='0.7', alpha=0.85) if highlight else None
+    default_wl = wl if wl is not None else 1.5406
+
+    xlow, xhigh = op_ax.get_xlim()
+    trans = blended_transform_factory(op_ax.transData, fig.transFigure)
+
+    for art in getattr(fig, '_operando_cif_tick_art', []):
+        try:
+            art.remove()
+        except Exception:
+            pass
+    new_art = []
+
+    ax_pos = op_ax.get_position()
+    if placement == 'below':
+        y_base = ax_pos.ymin - 0.02
+        dy = -0.025
+    else:
+        y_base = ax_pos.ymax + 0.02
+        dy = 0.025
+
+    n_sets = len(cif_tick_series)
+    if y_positions is not None and len(y_positions) == n_sets:
+        y_figs = list(y_positions)
+    else:
+        y_figs = [y_base + i * dy for i in range(n_sets)]
+
+    tick_height = 0.015
+    # Title baseline aligns with tick baseline (y_fig): va='baseline' places text baseline at y
+
+    for i, (lab, fname, peaksQ, wl_entry, qmax_sim, color) in enumerate(cif_tick_series):
+        if set_visible is not None and i < len(set_visible) and not set_visible[i]:
+            continue
+        y_fig = y_figs[i] if i < len(y_figs) else (y_base + i * dy)
+        show_this_title = show_titles
+        if title_visible is not None and i < len(title_visible):
+            show_this_title = show_titles and title_visible[i]
+        txt_kw = dict(fontsize=default_title_fontsize, color=color, bbox=title_bbox, path_effects=pe if pe else None)
+        if title_family:
+            txt_kw['fontfamily'] = title_family
+
+        if use_2th:
+            wl_use = wl_entry if wl_entry is not None else default_wl
+            domain_peaks = _Q_to_2theta_operando(peaksQ, wl_use)
+        else:
+            domain_peaks = list(peaksQ)
+
+        domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
+        if not domain_peaks:
+            if show_this_title:
+                txt = fig.text(xlow, y_fig, f" {lab}", transform=trans, ha='left', va='baseline', **txt_kw)
+                new_art.append(txt)
+            continue
+
+        label_map = cif_hkl_label_map.get(fname, {}) if show_hkl else {}
+        effective_show_hkl = show_hkl and peaksQ and label_map and len(domain_peaks) <= 4000
+        lbl_bbox = dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.85) if highlight else None
+
+        for p in domain_peaks:
+            ln = Line2D([p, p], [y_fig, y_fig + tick_height], color=color, lw=1.2 if highlight else 1.0, alpha=0.95 if highlight else 0.9,
+                        transform=trans, clip_on=False, zorder=5 if highlight else 3)
+            if pe:
+                try:
+                    ln.set_path_effects(pe)
+                except Exception:
+                    pass
+            fig.add_artist(ln)
+            new_art.append(ln)
+            if effective_show_hkl:
+                if use_2th and wl_entry:
+                    theta_rad = np.radians(p / 2.0)
+                    Qp = 4 * np.pi * np.sin(theta_rad) / wl_entry
+                else:
+                    Qp = p
+                lbl = label_map.get(round(Qp, 6))
+                if lbl:
+                    t_hkl = fig.text(p, y_fig + tick_height + 0.005, lbl, transform=trans,
+                                     ha='center', va='bottom', fontsize=7, rotation=90, color=color, clip_on=False,
+                                     bbox=lbl_bbox, path_effects=pe if pe else None)
+                    new_art.append(t_hkl)
+
+        if show_this_title:
+            txt = fig.text(xlow, y_fig, f" {lab}", transform=trans, ha='left', va='baseline', **txt_kw)
+            new_art.append(txt)
+
+    fig._operando_cif_tick_art = new_art
+    fig._operando_cif_y_positions = y_figs
+    try:
+        fig.canvas.draw_idle()
+    except Exception:
+        pass
+
+
+def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
     """
     Plot operando contour from a folder of diffraction files.
     
@@ -174,6 +329,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     Args:
         folder: Path to directory containing diffraction data files
         args: Argument namespace with attributes:
+        cif_files: Optional list of CIF file paths (with optional :wl suffix, e.g. phase.cif:1.54)
             - xaxis: X-axis type ('Q', '2theta', 'r', etc.)
             - wl: Wavelength for 2θ→Q conversion (if needed)
             - raw: Whether to use raw intensity (no processing)
@@ -205,7 +361,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
                     and f.suffix.lower() not in EXCLUDED_EXT 
                     and f.name != ".DS_Store"
                     and not f.name.startswith("._")], 
-                   key=_natural_sort_key)
+                   key=lambda p: natural_sort_key(p.name))
     if not files:
         raise FileNotFoundError("No data files found in folder (excluding system/session files)")
     
@@ -218,14 +374,27 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
 
     x_arrays = []
     y_arrays = []
-    readcol = getattr(args, 'readcol', None)
+    loaded_filenames = []  # track which files made it into the contour (some may be skipped)
     for f in files:
+        readcol = None
+        if hasattr(args, 'readcol_by_file') and args.readcol_by_file:
+            for key in (str(f), f.name):
+                if key in args.readcol_by_file:
+                    rc = args.readcol_by_file[key]
+                    readcol = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+                    break
+        if readcol is None and hasattr(args, 'readcol_by_ext') and f.suffix.lower() in args.readcol_by_ext:
+            readcol = args.readcol_by_ext[f.suffix.lower()]
+        if readcol is None:
+            readcol = getattr(args, 'readcol', None)
+            if readcol and isinstance(readcol, list) and readcol and isinstance(readcol[0], (tuple, list)):
+                readcol = readcol[0]
         try:
             x, y = _load_curve(f, readcol=readcol)
         except Exception as e:
             print(f"Skip {f.name}: {e}")
             continue
-        # Convert to Q if needed (but not for user_defined mode)
+        # Convert axis if needed (but not for user_defined mode)
         if axis_mode == "Q":
             if f.suffix.lower() == ".qye":
                 pass  # already Q
@@ -235,9 +404,16 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
                     print(f"Skip {f.name}: need wavelength (--wl) for Q conversion")
                     continue
                 x = _maybe_convert_to_Q(x, wl)
+        elif axis_mode == "2theta" and f.suffix.lower() == ".qye":
+            # .qye files are in Q; user wants 2theta → convert Q to 2theta
+            if wl is None:
+                print(f"Skip {f.name}: need wavelength (--wl) for Q→2theta conversion")
+                continue
+            x = _maybe_convert_Q_to_2theta(x, wl)
         # No normalization - keep raw intensity values
         x_arrays.append(x)
         y_arrays.append(y)
+        loaded_filenames.append(f.name)
 
     if not x_arrays:
         raise RuntimeError("No curves loaded after filtering/conversion.")
@@ -296,7 +472,13 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     # Result shape: (n_scans, n_x_points)
     # Example: 50 scans × 1000 points = (50, 1000) array
     Z = np.vstack(stack)  # shape (n_scans, n_x)
-    
+
+    # Debug: show scan index -> filename mapping (--debug or BATPLOT_OPERANDO_DEBUG=1)
+    if getattr(args, 'debug', False) or os.environ.get('BATPLOT_OPERANDO_DEBUG', '0') == '1':
+        print("[operando] Scan index -> filename:")
+        for idx, fname in enumerate(loaded_filenames):
+            print(f"  Scan {idx}: {fname}")
+
     # STEP 5.5: Apply first derivative if --1d or --2d flag is set
     # This calculates dy/dx for each scan using np.gradient
     if getattr(args, 'derivative_1d', False) or getattr(args, 'derivative_2d', False):
@@ -321,7 +503,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
 
     # Detect an electrochemistry .mpt file in the same folder (if any)
     # Filter out macOS resource fork files (starting with ._)
-    mpt_files = sorted([f for f in p.iterdir() if f.suffix.lower() == ".mpt" and not f.name.startswith("._")], key=_natural_sort_key)  # pick first if present
+    mpt_files = sorted([f for f in p.iterdir() if f.suffix.lower() == ".mpt" and not f.name.startswith("._")], key=lambda p: natural_sort_key(p.name))  # pick first if present
     has_ec = len(mpt_files) > 0
     ec_ax = None
 
@@ -512,6 +694,8 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
         except Exception as e:
             print(f"[operando] Failed to attach electrochem plot: {e}")
 
+    cif_files_provided = cif_files and len(cif_files) > 0
+
     # --- Default layout: set operando plot width to 5 inches (centered) ---
     try:
         fig_w_in, fig_h_in = fig.get_size_inches()
@@ -570,7 +754,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
         cb_x0_new = group_left
         ax_x0_new = cb_x0_new + cb_wf_new + cb_gap_f
         ec_x0_new = ax_x0_new + ax_wf_new + ec_gap_f if ec_ax is not None else None
-        # Apply
+        # Apply (operando, cbar, ec – CIF ticks drawn as figure annotations, no separate axis)
         ax.set_position([ax_x0_new, y0, ax_wf_new, ax_hf_new])
         cbar.ax.set_position([cb_x0_new, y0, cb_wf_new, ax_hf_new])
         if ec_ax is not None and ec_x0_new is not None:
@@ -580,7 +764,7 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
         if _draw_custom_colorbar is not None:
             try:
                 cbar_label = getattr(cbar.ax, '_colorbar_label', 'Intensity')
-                _draw_custom_colorbar(cbar.ax, im, cbar_label, 'normal')
+                _draw_custom_colorbar(cbar.ax, im, cbar_label, 'highlow')
             except Exception:
                 pass
         
@@ -610,6 +794,67 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
         # Non-fatal: keep Matplotlib's default layout
         pass
 
+    # CIF tick labels: load and draw if cif_files provided (figure annotations, no axis)
+    cif_tick_series = []
+    cif_hkl_label_map = {}
+    if cif_files and len(cif_files) > 0:
+        xmin_g, xmax_g = float(grid_x.min()), float(grid_x.max())
+        qmax_sim = max(xmax_g * 1.1, 10.0) if axis_mode == 'Q' else 10.0
+        use_2th = (axis_mode == '2theta')
+        default_wl = wl if wl is not None else 1.5406
+        for i, entry in enumerate(cif_files):
+            parts = entry.split(":")
+            if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
+                fname = parts[0] + ":" + parts[1]
+                parts = [fname] + parts[2:]
+            else:
+                fname = parts[0]
+            wl_file = default_wl
+            if len(parts) >= 2:
+                try:
+                    wl_file = float(parts[1])
+                except ValueError:
+                    pass
+            if not Path(fname).is_file():
+                print(f"[operando] CIF not found: {fname}")
+                continue
+            try:
+                refl_wl = wl_file if use_2th else None
+                refl = cif_reflection_positions(fname, Qmax=qmax_sim, wavelength=refl_wl)
+                hkl_list = list_reflections_with_hkl(fname, Qmax=qmax_sim, wavelength=refl_wl)
+                cif_hkl_label_map[fname] = build_hkl_label_map_from_list(hkl_list)
+                label = Path(fname).name
+                if wl_file and use_2th:
+                    label += f" (λ={wl_file:.5f} Å)"
+                # Use tab10 cycle for distinct default colors
+                try:
+                    tab10 = plt.get_cmap('tab10')
+                    default_col = tab10(i % 10)
+                except Exception:
+                    default_col = 'k'
+                cif_tick_series.append((label, str(Path(fname).resolve()), refl, wl_file if use_2th else None, qmax_sim, default_col))
+            except Exception as e:
+                print(f"[operando] CIF error {fname}: {e}")
+        if cif_tick_series:
+            _draw_operando_cif_ticks(
+                ax, fig, cif_tick_series, cif_hkl_label_map,
+                axis_mode=axis_mode, wl=wl,
+                show_hkl=False, show_titles=True, placement='below',
+            )
+            ax._operando_cif_tick_series = cif_tick_series
+            ax._operando_cif_hkl_label_map = cif_hkl_label_map
+            fig._operando_cif_show_hkl = False
+            fig._operando_cif_show_titles = True
+            fig._operando_cif_colormap = 'tab10'
+            fig._operando_cif_highlight = False
+            fig._operando_cif_title_font = {}
+            fig._operando_cif_title_visible = None
+            fig._operando_cif_set_visible = None
+            fig._operando_cif_placement = 'below'
+            fig._operando_cif_y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
+            fig._operando_axis_mode = axis_mode
+            fig._operando_wl = wl
+
     meta = {
         'files': [f.name for f in files],
         'axis_mode': axis_mode,
@@ -620,6 +865,9 @@ def plot_operando_folder(folder: str, args) -> Tuple[plt.Figure, plt.Axes, Dict[
     }
     if ec_ax is not None:
         meta['ec_ax'] = ec_ax
+    if cif_tick_series:
+        meta['cif_tick_series'] = cif_tick_series
+        meta['cif_hkl_label_map'] = cif_hkl_label_map
     return fig, ax, meta
 
 __all__ = ["plot_operando_folder"]
