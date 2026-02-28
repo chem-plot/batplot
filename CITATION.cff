@@ -6,7 +6,7 @@ authors:
   given-names: Tian
   orcid: https://orcid.org/0000-0002-0385-3274
 title: "batplot: Interactive command-line plotting software for battery and materials characterization"
-version: v1.8.22
-date-released: 2026-02-27
+version: v1.8.23
+date-released: 2026-02-28
 repository-code: "https://github.com/chem-plot/batplot"
 url: "https://github.com/chem-plot/batplot"

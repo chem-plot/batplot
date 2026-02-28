@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.23] - 2026-02-28
+- Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files (still testing)
+- .brml and .raw are also supported in operando mode
+- Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file
+    e.g. batplot file1.xy --readcol 1 2 file2.xy --readcol 4 6 this will plot col 1 as x and col 2 as y for file1, and col 4 as x and col 6 as y for file2
+         batplot file.xy --readcol 1 2 1 3 1 4 1 5 this will plot 4 curves with col 1 as x and col 2, 3, 4, 5 as y
+
+
 ## [1.8.22] - 2026-02-27
 - Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files
 - Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file
