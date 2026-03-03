@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Tuple, cast
+
 # Import all dependencies at module level
 from .electrochem_interactive import electrochem_interactive_menu
 from .args import parse_args as _bp_parse_args
@@ -1407,7 +1409,10 @@ def batplot_main() -> int:  # type: ignore
                     if mass_mg is None:
                         print(f"Skipped {file_basename}: CPC mode (.mpt) requires --mass parameter.")
                         continue
-                    cyc_nums, cap_charge, cap_discharge, eff = read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg)
+                    cyc_nums, cap_charge, cap_discharge, eff = cast(
+                        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                        read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg),
+                    )
                 else:
                     print(f"Skipped {file_basename}: unsupported format (must be .csv, .xlsx, or .mpt)")
                     continue

@@ -6,7 +6,7 @@ Provides a minimal interactive loop when running:
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import json
 import os
 import sys
@@ -245,7 +245,7 @@ def _savgol_smooth(y: np.ndarray, window: int = 9, poly: int = 3) -> np.ndarray:
     return smoothed
 
 
-def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[object]]], fig) -> None:
+def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]]], fig) -> None:
     """Apply stored smooth settings to newly visible cycles that haven't been smoothed yet."""
     if not hasattr(fig, '_dqdv_smooth_settings'):
         return
@@ -376,13 +376,14 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         col1.append("v: show/hide files")
     col2 = [
         "c: cycles/colors",
+        "d: display (charge/discharge)",
         "r: rename",
         "x: x-scale",
         "y: y-scale",
     ]
     # Only show capacity/ion option when NOT in dQdV mode
     if not is_dqdv:
-        col2.insert(1, "a: capacity/ion")
+        col2.insert(2, "a: capacity/ion")
     
     col3 = [
         "p: print(export) style/geom",
@@ -423,7 +424,7 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         print(f"  {p1:<{pad1}} {p2:<{pad2}} {p3:<{pad3}}")
 
 
-def _iter_cycle_lines(cycle_lines: Dict[int, Dict[str, Optional[object]]]):
+def _iter_cycle_lines(cycle_lines: Dict[int, Dict[str, Optional[Any]]]):
     """Iterate over all Line2D objects in cycle_lines, handling both GC and CV modes.
     
     Yields: (cyc, role_or_None, Line2D) tuples
@@ -621,7 +622,7 @@ def _rebuild_legend(ax):
                 pass
 
 
-def _apply_curve_linewidth(fig, cycle_lines: Dict[int, Dict[str, Optional[object]]]):
+def _apply_curve_linewidth(fig, cycle_lines: Dict[int, Dict[str, Optional[Any]]]):
     """Apply stored curve linewidth to all curves.
     
     Handles both GC mode (dict with 'charge'/'discharge' keys) and CV mode (direct Line2D).
@@ -635,7 +636,7 @@ def _apply_curve_linewidth(fig, cycle_lines: Dict[int, Dict[str, Optional[object
                 pass
 
 
-def _apply_colors(cycle_lines: Dict[int, Dict[str, Optional[object]]], mapping: Dict[int, object]):
+def _apply_colors(cycle_lines: Dict[int, Dict[str, Optional[Any]]], mapping: Dict[int, object]):
     """Apply color mapping to charge/discharge lines for the given cycles.
     
     Handles both GC mode (dict with 'charge'/'discharge' keys) and CV mode (direct Line2D).
@@ -650,7 +651,7 @@ def _apply_colors(cycle_lines: Dict[int, Dict[str, Optional[object]]], mapping: 
                 pass
 
 
-def _set_visible_cycles(cycle_lines: Dict[int, Dict[str, Optional[object]]], show: Iterable[int]):
+def _set_visible_cycles(cycle_lines: Dict[int, Dict[str, Optional[Any]]], show: Iterable[int]):
     """Set visibility for specified cycles.
     
     Handles both GC mode (dict with 'charge'/'discharge' keys) and CV mode (direct Line2D).
@@ -712,7 +713,7 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
     # Check explicit mapping mode first
     if any(":" in t for t in tokens):
         cycles: List[int] = []
-        mapping = {}
+        mapping: Dict[int, object] = {}
         for t in tokens:
             if ":" not in t:
                 continue
@@ -772,7 +773,7 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
         pass
 
     # Numbers only
-    cycles: List[int] = []
+    cycles = []
     for t in tokens:
         try:
             cycles.append(int(t))
@@ -938,7 +939,8 @@ def _apply_font_size(ax, size: float):
         pass
 
 
-def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[str, Optional[object]]]] = None, file_path=None, file_data: Optional[List[Dict]] = None):
+# pyright: ignore[reportGeneralTypeIssues]
+def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[str, Optional[Any]]]] = None, file_path=None, file_data: Optional[List[Dict]] = None):
     # --- Multi-file: normalize to file_data list; single file keeps existing behavior ---
     if file_data is None:
         if cycle_lines is None:
@@ -1005,6 +1007,47 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 continue
             for item in _iter_cycle_lines(f.get("cycle_lines") or {}):
                 yield item
+
+    def _apply_display_mode(mode: str) -> None:
+        """Apply charge/discharge display mode across all visible files.
+
+        mode:
+            'both'      -> show both charge and discharge (no filtering)
+            'charge'    -> show only charge curves (hide discharge)
+            'discharge' -> show only discharge curves (hide charge)
+
+        CV curves (no separate charge/discharge) are always shown.
+        """
+        valid_modes = {"both", "charge", "discharge"}
+        if mode not in valid_modes:
+            return
+
+        for f in file_data:
+            if not f.get("visible", True):
+                continue
+            cl = f.get("cycle_lines") or {}
+            for cyc, parts in cl.items():
+                if isinstance(parts, dict):
+                    chg = parts.get("charge")
+                    dch = parts.get("discharge")
+                    # Charge
+                    if chg is not None:
+                        try:
+                            chg.set_visible(mode in ("both", "charge"))
+                        except Exception:
+                            pass
+                    # Discharge
+                    if dch is not None:
+                        try:
+                            dch.set_visible(mode in ("both", "discharge"))
+                        except Exception:
+                            pass
+                else:
+                    # CV-style single line: always visible regardless of mode
+                    try:
+                        parts.set_visible(True)
+                    except Exception:
+                        pass
 
     # --- Tick/label state and helpers (similar to normal XY menu) ---
     tick_state = getattr(ax, '_saved_tick_state', {
@@ -1937,6 +1980,42 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             restore_state()
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
             continue
+        elif key == 'd':
+            # Display mode: charge-only / discharge-only / both
+            try:
+                print("\nDisplay mode for GC/dQdV/CV/CPC:")
+                print("  " + _colorize_menu("c: show only charge curves (hide discharge)"))
+                print("  " + _colorize_menu("d: show only discharge curves (hide charge)"))
+                print("  " + _colorize_menu("b: show both charge and discharge"))
+                print("  " + _colorize_menu("q: cancel (no change)"))
+                sub = _safe_input(_colorize_prompt("Display (c/d/b/q): ")).strip().lower()
+                if not sub or sub == 'q':
+                    _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
+                    if is_multi_file:
+                        _print_file_list(file_data, current_file_idx)
+                    continue
+                if sub == 'c':
+                    push_state("display-charge")
+                    _apply_display_mode("charge")
+                elif sub == 'd':
+                    push_state("display-discharge")
+                    _apply_display_mode("discharge")
+                elif sub == 'b':
+                    push_state("display-both")
+                    _apply_display_mode("both")
+                else:
+                    print("Unknown choice (use c, d, b, or q).")
+                try:
+                    _rebuild_legend(ax)
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+            except Exception as e:
+                print(f"Display mode change failed: {e}")
+            _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
+            if is_multi_file:
+                _print_file_list(file_data, current_file_idx)
+            continue
         elif key == 'e':
             # Export current figure to a file; default extension .svg if missing
             try:
@@ -2328,8 +2407,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     if sub == 'e':
                         # Ask for ps or psg
                         print("Export options:")
-                        print("  ps  = style only (.bps)")
-                        print("  psg = style + geometry (.bpsg)")
+                        print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
+                        print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
                         exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                         if not exp_choice or exp_choice == 'q':
                             print("Style export canceled.")
@@ -2740,15 +2819,23 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             
                             # Define conversion functions
                             if swapped:
-                                def bottom_to_top(ions):
+                                def _bottom_to_top_ions(ions):
                                     return ions * c_th
-                                def top_to_bottom(capacity):
+
+                                def _top_to_bottom_capacity(capacity):
                                     return capacity / c_th
+
+                                bottom_to_top = _bottom_to_top_ions
+                                top_to_bottom = _top_to_bottom_capacity
                             else:
-                                def bottom_to_top(capacity):
+                                def _bottom_to_top_capacity(capacity):
                                     return capacity / c_th
-                                def top_to_bottom(ions):
+
+                                def _top_to_bottom_ions(ions):
                                     return ions * c_th
+
+                                bottom_to_top = _bottom_to_top_capacity
+                                top_to_bottom = _top_to_bottom_ions
                             
                             # Create secondary axis
                             try:
@@ -4036,14 +4123,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     top_label = "Capacity" if swapped else "Ions"
                     print(f"  Bottom: {bottom_label}, Top: {top_label}")
                 print("\nOptions:")
-                print("  c : capacity only (bottom)")
-                print("  n : number of ions only (bottom)")
-                print("  d : dual mode (capacity bottom, ions top)")
+                print("  " + _colorize_menu("c : capacity only (bottom)"))
+                print("  " + _colorize_menu("n : number of ions only (bottom)"))
+                print("  " + _colorize_menu("d : dual mode (capacity bottom, ions top)"))
                 if current_mode == 'dual':
-                    print("  s : swap axes (switch top/bottom)")
+                    print("  " + _colorize_menu("s : swap axes (switch top/bottom)"))
                 if c_th:
-                    print("  u : update theoretical capacity")
-                print("  q : back to main menu")
+                    print("  " + _colorize_menu("u : update theoretical capacity"))
+                print("  " + _colorize_menu("q : back to main menu"))
                 
                 sub = _safe_input("X> ").strip().lower()
                 if not sub:
@@ -4353,16 +4440,24 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     # Define conversion functions
                     if new_swapped:
                         # Bottom = ions, Top = capacity
-                        def bottom_to_top(ions):
+                        def _bottom_to_top_ions(ions):
                             return ions * c_th
-                        def top_to_bottom(capacity):
+
+                        def _top_to_bottom_capacity(capacity):
                             return capacity / c_th
+
+                        bottom_to_top = _bottom_to_top_ions
+                        top_to_bottom = _top_to_bottom_capacity
                     else:
                         # Bottom = capacity, Top = ions
-                        def bottom_to_top(capacity):
+                        def _bottom_to_top_capacity(capacity):
                             return capacity / c_th
-                        def top_to_bottom(ions):
+
+                        def _top_to_bottom_ions(ions):
                             return ions * c_th
+
+                        bottom_to_top = _bottom_to_top_capacity
+                        top_to_bottom = _top_to_bottom_ions
                     
                     # Create new secondary axis
                     try:
@@ -4502,15 +4597,23 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         
                         # Define conversion functions with new capacity
                         if swapped:
-                            def bottom_to_top(ions):
+                            def _bottom_to_top_ions_new(ions):
                                 return ions * new_c_th
-                            def top_to_bottom(capacity):
+
+                            def _top_to_bottom_capacity_new(capacity):
                                 return capacity / new_c_th
+
+                            bottom_to_top = _bottom_to_top_ions_new
+                            top_to_bottom = _top_to_bottom_capacity_new
                         else:
-                            def bottom_to_top(capacity):
+                            def _bottom_to_top_capacity_new(capacity):
                                 return capacity / new_c_th
-                            def top_to_bottom(ions):
+
+                            def _top_to_bottom_ions_new(ions):
                                 return ions * new_c_th
+
+                            bottom_to_top = _bottom_to_top_capacity_new
+                            top_to_bottom = _top_to_bottom_ions_new
                         
                         # Create new secondary axis
                         try:
@@ -4856,11 +4959,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             while True:
                 print("\n\033[1mdQ/dV Data Filtering (Neware method)\033[0m")
                 print("Commands:")
-                print("  a: apply voltage step filter (removes small ΔV points)")
-                print("  d: DiffCap smooth (≥1 mV ΔV + Savitzky–Golay, order 3, window 9)")
-                print("  o: remove outliers (removes abrupt dQ/dV spikes)")
-                print("  r: reset to original data")
-                print("  q: back to main menu")
+                print("  " + _colorize_menu("a: apply voltage step filter (removes small ΔV points)"))
+                print("  " + _colorize_menu("d: DiffCap smooth (≥1 mV ΔV + Savitzky–Golay, order 3, window 9)"))
+                print("  " + _colorize_menu("o: remove outliers (removes abrupt dQ/dV spikes)"))
+                print("  " + _colorize_menu("r: reset to original data"))
+                print("  " + _colorize_menu("q: back to main menu"))
                 sub = _safe_input("sm> ").strip().lower()
                 if not sub:
                     continue
@@ -5083,8 +5186,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     continue
                 if sub == 'o':
                     print("Outlier removal methods:")
-                    print("  1: Z-score (enter standard deviation threshold, default 5.0)")
-                    print("  2: MAD (median absolute deviation, default factor 6.0)")
+                    print("  " + _colorize_menu("1: Z-score (enter standard deviation threshold, default 5.0)"))
+                    print("  " + _colorize_menu("2: MAD (median absolute deviation, default factor 6.0)"))
                     while True:
                         method = _safe_input("Method (1/2, blank=cancel, 'q'=quit, 'e'=explain): ").strip()
                         if not method or method.lower() == 'q':
@@ -5597,7 +5700,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
     return result
 
 
-def _apply_cycle_styles(cycle_lines: Dict[int, Dict[str, Optional[object]]], style_cfg: Optional[Dict]) -> None:
+def _apply_cycle_styles(cycle_lines: Dict[int, Dict[str, Optional[Any]]], style_cfg: Optional[Dict]) -> None:
     if not isinstance(style_cfg, dict):
         return
     for cyc_key, entry in style_cfg.items():

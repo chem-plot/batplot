@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import json
-import matplotlib.cm as cm
-import numpy as np
-import matplotlib.pyplot as plt
+from typing import Tuple, cast
+
+import matplotlib.cm as cm  # type: ignore[import]
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
 
 from .readers import (
     read_gr_file,
@@ -979,8 +981,10 @@ def batch_process_ec(directory: str, args):
                         print(f"  Skipped {fname}: GC mode (.mpt) requires --mass parameter")
                         plt.close(fig_b)
                         continue
-                    specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = \
-                        read_mpt_file(fpath, mode='gc', mass_mg=mass_mg)
+                    specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = cast(
+                        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                        read_mpt_file(fpath, mode='gc', mass_mg=mass_mg),
+                    )
                     cap_x = specific_capacity
                     x_label = r'Specific Capacity (mAh g$^{-1}$)'
                 elif ext == '.csv':
@@ -1005,14 +1009,19 @@ def batch_process_ec(directory: str, args):
                 
                 # Generate color palette for the number of cycles
                 cycle_colors = get_color_palette(len(cycles_present))
+
+                # Ensure masks are boolean numpy arrays for safe logical operations
+                charge_mask_arr = np.asarray(charge_mask, dtype=bool)
+                discharge_mask_arr = np.asarray(discharge_mask, dtype=bool)
                 
                 for idx, cyc in enumerate(cycles_present):  # Plot all cycles
                     if cycle_numbers is not None:
-                        mask_c = (cyc_int == cyc) & charge_mask
-                        mask_d = (cyc_int == cyc) & discharge_mask
+                        cyc_eq = (cyc_int == cyc)
+                        mask_c = cyc_eq & charge_mask_arr
+                        mask_d = cyc_eq & discharge_mask_arr
                     else:
-                        mask_c = charge_mask
-                        mask_d = discharge_mask
+                        mask_c = charge_mask_arr
+                        mask_d = discharge_mask_arr
                     
                     color = cycle_colors[idx]
                     
@@ -1042,7 +1051,10 @@ def batch_process_ec(directory: str, args):
                 if ext == '.txt':
                     voltage, current, cycles = read_biologic_txt_file(fpath, mode='cv')
                 elif ext == '.mpt':
-                    voltage, current, cycles = read_mpt_file(fpath, mode='cv')
+                    voltage, current, cycles = cast(
+                        Tuple[np.ndarray, np.ndarray, np.ndarray],
+                        read_mpt_file(fpath, mode='cv'),
+                    )
                 else:
                     raise ValueError("CV mode requires .mpt or .txt file")
                 
@@ -1137,8 +1149,10 @@ def batch_process_ec(directory: str, args):
                         print(f"  Skipped {fname}: CPC mode (.mpt) requires --mass parameter")
                         plt.close(fig_b)
                         continue
-                    cyc_nums, cap_charge, cap_discharge, eff = \
-                        read_mpt_file(fpath, mode='cpc', mass_mg=mass_mg)
+                    cyc_nums, cap_charge, cap_discharge, eff = cast(
+                        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                        read_mpt_file(fpath, mode='cpc', mass_mg=mass_mg),
+                    )
                     x_label = r'Specific Capacity (mAh g$^{-1}$)'
                 elif ext == '.csv':
                     # For CSV CPC, read as GC-like data

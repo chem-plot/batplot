@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np  # type: ignore[import]
 import re
+from typing import cast
 
 
 def _atomic_number_table():
@@ -110,8 +111,10 @@ def _parse_cif_basic(fname):
         - 'sym_ops': List of symmetry operation strings
     """
     # Initialize data structures to store parsed information
-    # cell: Unit cell parameters (lengths and angles)
-    cell = {
+    # cell: Unit cell parameters (lengths and angles) plus space group symbol.
+    # Values are filled in as floats (for lengths/angles) or strings (for space group),
+    # but start as None until parsed from the CIF file.
+    cell: dict[str, float | str | None] = {
         'a': None, 'b': None, 'c': None,  # Unit cell lengths (in Angstroms)
         'alpha': None, 'beta': None, 'gamma': None,  # Unit cell angles (in degrees)
         'space_group': None  # Space group symbol (e.g., "Fm-3m")
@@ -171,32 +174,38 @@ def _parse_cif_basic(fname):
             if low.startswith('_cell_length_a'):
                 try:
                     cell['a'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
             elif low.startswith('_cell_length_b'):
                 try:
                     cell['b'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
             elif low.startswith('_cell_length_c'):
                 try:
                     cell['c'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
             elif low.startswith('_cell_angle_alpha'):
                 try:
                     cell['alpha'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
             elif low.startswith('_cell_angle_beta'):
                 try:
                     cell['beta'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
             elif low.startswith('_cell_angle_gamma'):
                 try:
                     cell['gamma'] = float(_clean_num(line.split()[1]))
-                except Exception:
+                except (ValueError, IndexError):
+                    # Ignore malformed or incomplete numeric values
                     pass
 
             # ====================================================================
@@ -416,10 +425,14 @@ def simulate_cif_pattern_Q(fname, Qmax=10.0, dQ=0.002, peak_width=0.01,
     if space_group_hint is None:
         space_group_hint = cell.get('space_group')
 
-    a, b, c = cell['a'], cell['b'], cell['c']
-    alpha = np.deg2rad(cell['alpha'])
-    beta = np.deg2rad(cell['beta'])
-    gamma = np.deg2rad(cell['gamma'])
+    # At this point _parse_cif_basic has validated that all cell entries are non-None.
+    # Use typing.cast so the type checker treats them as concrete floats.
+    a = cast(float, cell['a'])
+    b = cast(float, cell['b'])
+    c = cast(float, cell['c'])
+    alpha = np.deg2rad(cast(float, cell['alpha']))
+    beta = np.deg2rad(cast(float, cell['beta']))
+    gamma = np.deg2rad(cast(float, cell['gamma']))
 
     # Build unit cell vectors
     a_vec = np.array([a, 0, 0], dtype=float)
@@ -598,7 +611,7 @@ def simulate_cif_pattern_Q(fname, Qmax=10.0, dQ=0.002, peak_width=0.01,
     return Q_grid, intens
 
 
-def cif_reflection_positions(fname, Qmax=10.0, wavelength=1.5406,
+def cif_reflection_positions(fname, Qmax=10.0, wavelength: float | None = 1.5406,
                              space_group_hint=None):
     """Get list of reflection Q positions from CIF file."""
     cell, atoms = _parse_cif_basic(fname)
@@ -606,10 +619,12 @@ def cif_reflection_positions(fname, Qmax=10.0, wavelength=1.5406,
     if space_group_hint is None:
         space_group_hint = cell.get('space_group')
 
-    a, b, c = cell['a'], cell['b'], cell['c']
-    alpha = np.deg2rad(cell['alpha'])
-    beta = np.deg2rad(cell['beta'])
-    gamma = np.deg2rad(cell['gamma'])
+    a = cast(float, cell['a'])
+    b = cast(float, cell['b'])
+    c = cast(float, cell['c'])
+    alpha = np.deg2rad(cast(float, cell['alpha']))
+    beta = np.deg2rad(cast(float, cell['beta']))
+    gamma = np.deg2rad(cast(float, cell['gamma']))
 
     # Build unit cell vectors
     a_vec = np.array([a, 0, 0])
@@ -687,7 +702,7 @@ def cif_reflection_positions(fname, Qmax=10.0, wavelength=1.5406,
 
 # --- New helpers for hkl labeling ---
 
-def list_reflections_with_hkl(fname, Qmax=10.0, wavelength=1.5406,
+def list_reflections_with_hkl(fname, Qmax=10.0, wavelength: float | None = 1.5406,
                               space_group_hint=None):
     """Return a list of (Q_rounded, h, k, l) for reflections up to Qmax.
 
@@ -699,10 +714,12 @@ def list_reflections_with_hkl(fname, Qmax=10.0, wavelength=1.5406,
     if space_group_hint is None:
         space_group_hint = cell.get('space_group')
 
-    a, b, c = cell['a'], cell['b'], cell['c']
-    alpha = np.deg2rad(cell['alpha'])
-    beta = np.deg2rad(cell['beta'])
-    gamma = np.deg2rad(cell['gamma'])
+    a = cast(float, cell['a'])
+    b = cast(float, cell['b'])
+    c = cast(float, cell['c'])
+    alpha = np.deg2rad(cast(float, cell['alpha']))
+    beta = np.deg2rad(cast(float, cell['beta']))
+    gamma = np.deg2rad(cast(float, cell['gamma']))
 
     # Build unit cell vectors
     a_vec = np.array([a, 0, 0])
@@ -816,7 +833,7 @@ def build_hkl_label_map_from_list(hkl_list):
     return label_map
 
 
-def build_hkl_label_map(fname, Qmax=10.0, wavelength=1.5406,
+def build_hkl_label_map(fname, Qmax=10.0, wavelength: float | None = 1.5406,
                         space_group_hint=None):
     """Convenience: compute label map directly from a CIF file."""
     hkl_list = list_reflections_with_hkl(

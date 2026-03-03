@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.8.26] - 2026-03-03
+- Improved interactive menu functionality for ec mode
+- Bug fixes
+
+
 ## [1.8.25] - 2026-03-03
 - Improved interactive menu functionality for colors/ticks
 - Bug fixes

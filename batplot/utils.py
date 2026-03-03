@@ -417,7 +417,7 @@ def _ask_file_dialog_zenity(initialdir: str, filetypes: Optional[Tuple[str, ...]
         return None
 
 
-def ensure_subdirectory(subdir_name: str, base_path: str = None) -> str:
+def ensure_subdirectory(subdir_name: str, base_path: Optional[str] = None) -> str:
     """Ensure subdirectory exists and return its path.
     
     Creates a subdirectory if it doesn't exist. Used to organize output files
@@ -453,7 +453,7 @@ def ensure_subdirectory(subdir_name: str, base_path: str = None) -> str:
     return subdir_path
 
 
-def get_organized_path(filename: str, file_type: str, base_path: str = None) -> str:
+def get_organized_path(filename: str, file_type: str, base_path: Optional[str] = None) -> str:
     """Get the appropriate path for a file based on its type.
     
     This function helps organize output files into subdirectories:
@@ -504,7 +504,7 @@ def get_organized_path(filename: str, file_type: str, base_path: str = None) -> 
 STYLE_FILE_EXTENSIONS = ('.bps', '.bpsg', '.bpcfg')
 
 
-def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: str = None) -> list:
+def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: Optional[str] = None) -> list:
     """List files with given extensions in the appropriate subdirectory.
     
     Used by interactive menus to show available files for import/load operations.

@@ -43,17 +43,16 @@ import re
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
-import numpy as np
-import matplotlib.pyplot as plt
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
 
 from .converters import convert_to_qye
-from .readers import robust_loadtxt_skipheader, read_mpt_file, is_bruker_raw
+from .readers import robust_loadtxt_skipheader, read_mpt_file, is_bruker_raw, read_xrd_vendor_file
 from .cif import cif_reflection_positions, list_reflections_with_hkl, build_hkl_label_map_from_list
 from .utils import natural_sort_key
-from .readers import read_xrd_vendor_file
-from matplotlib.transforms import blended_transform_factory
-from matplotlib.lines import Line2D
-from matplotlib import patheffects
+from matplotlib.transforms import blended_transform_factory  # type: ignore[import]
+from matplotlib.lines import Line2D  # type: ignore[import]
+from matplotlib import patheffects  # type: ignore[import]
 
 # Import colorbar drawing function for non-interactive mode
 try:
@@ -642,9 +641,10 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                         y_data = np.asarray(y_data, float)
                 else:
                     # Old format compatibility (shouldn't happen anymore)
-                    x_data, y_data, current_mA = result
-                    x_data = np.asarray(y_data, float)
-                    y_data = np.asarray(x_data, float) / 3600.0
+                    # Support both 3-tuple and 4+/5-tuple returns by ignoring any extra elements.
+                    x_data, y_data, current_mA, *_ = result
+                    x_data = np.asarray(x_data, float)
+                    y_data = np.asarray(y_data, float) / 3600.0
                     x_label, y_label = 'Voltage (V)', 'Time (h)'
             
             # Add the EC axes on the right

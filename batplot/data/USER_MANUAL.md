@@ -508,6 +508,17 @@ batplot file1.csv file2.mpt ./Style/style.bpsg --cpc --mass 6.0
 4. Apply to all files: `batplot --all mystyle.bps --gc --mass 7.0`
 5. All files in directory now have identical, publication-ready formatting!
 
+**Charge/Discharge Display (EC interactive)**
+
+- In EC interactive mode (GC, dQ/dV, CV, CPC), press `d` to open the **display** submenu.
+- Choose:
+  - `c` → show only **charge** curves (hide discharge)
+  - `d` → show only **discharge** curves (hide charge)
+  - `b` → show **both** charge and discharge curves
+  - `q` → cancel without changing visibility
+
+This affects only the electrochemistry plot; CV-style single curves (without separate charge/discharge) always remain visible.
+
 **Style Files:**
 - `.bps` files contain style settings: fonts, colors, line widths, tick parameters, spines
 - `.bpsg` files contain style + geometry: everything in `.bps` plus axis labels and limits

@@ -29,32 +29,29 @@ This is different from style files (.bps/.bpsg):
 
 from __future__ import annotations
 
-import pickle
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-
 import os
-
-import matplotlib.pyplot as plt
-import numpy as np
-
-from .utils import _confirm_overwrite
-from .color_utils import ensure_colormap
-from .ui import set_spine_side_color as _set_spine_side_color
-import numpy
+import pickle
 import subprocess
 import sys
-from matplotlib.ticker import MultipleLocator, AutoMinorLocator
-from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator
-from .utils import ensure_exact_case_filename
+import traceback
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy
+import numpy as np
 import numpy as _np
 from numpy import ma as _ma
-from matplotlib.ticker import AutoMinorLocator, NullFormatter
+import matplotlib.pyplot as plt
 from matplotlib.colorbar import Colorbar as _Colorbar
-from matplotlib.ticker import FuncFormatter, MaxNLocator
-from .operando import _draw_operando_cif_ticks
-from matplotlib.colors import to_hex
 from matplotlib.colors import to_hex, to_rgba
-import traceback
+from matplotlib.ticker import (
+    MultipleLocator, AutoLocator, AutoMinorLocator,
+    NullFormatter, FuncFormatter, MaxNLocator,
+)
+
+from .utils import _confirm_overwrite, ensure_exact_case_filename
+from .color_utils import ensure_colormap
+from .ui import set_spine_side_color as _set_spine_side_color
+from .operando import _draw_operando_cif_ticks
 
 
 def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
@@ -1877,8 +1874,9 @@ def dump_ec_session(
             'top': float(sp.top),
         }
         # Capture cycles: single-file (lines_state) or multi-file (file_data with lines per file)
+        file_data_saved: Optional[List[Dict[str, Any]]]
         if file_data is not None and len(file_data) > 1:
-            file_data_saved: List[Dict[str, Any]] = []
+            file_data_saved = []
             for f in file_data:
                 cl = f.get("cycle_lines") or {}
                 lines_state_f = _ec_cycle_lines_to_lines_state(cl)
@@ -2086,8 +2084,8 @@ def load_ec_session(filename: str):
         pass
 
     # Rebuild lines (single-file or multi-file)
-    def _rebuild_lines_from_raw(raw: Dict) -> Dict[int, Dict[str, Any]]:
-        out: Dict[int, Dict[str, Any]] = {}
+    def _rebuild_lines_from_raw(raw: Dict) -> Dict[int, Any]:
+        out: Dict[int, Any] = {}
         for k in sorted(raw.keys(), key=lambda x: int(x)):
             cyc = int(k)
             parts = raw.get(k) or {}

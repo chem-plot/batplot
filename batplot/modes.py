@@ -29,10 +29,10 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, cast
 
-import numpy as np
-import matplotlib.pyplot as plt
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
 
 from .readers import read_mpt_file, read_ec_csv_file, read_ec_csv_dqdv_file, read_biologic_txt_file
 from .electrochem_interactive import electrochem_interactive_menu
@@ -95,7 +95,10 @@ def handle_cv_mode(args) -> int:
         if ec_file.lower().endswith('.txt'):
             voltage, current, cycles = read_biologic_txt_file(ec_file, mode='cv')
         else:
-            voltage, current, cycles = read_mpt_file(ec_file, mode='cv')
+            voltage, current, cycles = cast(
+                Tuple[np.ndarray, np.ndarray, np.ndarray],
+                read_mpt_file(ec_file, mode='cv'),
+            )
         
         # ====================================================================
         # CYCLE NORMALIZATION
@@ -447,7 +450,10 @@ def handle_gc_mode(args) -> int:
                 print("GC mode (.mpt): --mass parameter is required (active material mass in milligrams).")
                 print("Example: batplot file.mpt --gc --mass 7.0")
                 return 1
-            specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
+            specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = cast(
+                Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg),
+            )
             x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
             cap_x = specific_capacity
         elif ec_file.lower().endswith('.csv'):
@@ -629,13 +635,18 @@ def handle_gc_mode(args) -> int:
             cycles_present = list(range(1, max(len(ch_blocks), len(dch_blocks)) + 1)) if (ch_blocks or dch_blocks) else [1]
 
         base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
         cycle_lines = {}
 
+        # Ensure masks are boolean numpy arrays for safe logical operations
+        charge_mask_arr = np.asarray(charge_mask, dtype=bool)
+        discharge_mask_arr = np.asarray(discharge_mask, dtype=bool)
+
         if not inferred and cycle_numbers is not None:
             for cyc in cycles_present:
-                mask_c = (cyc_int == cyc) & charge_mask
+                cyc_eq = (cyc_int == cyc)
+                mask_c = cyc_eq & charge_mask_arr
                 idx = np.where(mask_c)[0]
                 if idx.size >= 2:
                     x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
@@ -648,7 +659,7 @@ def handle_gc_mode(args) -> int:
                                         linewidth=2.0, label=str(cyc), alpha=0.8)
                 else:
                     ln_c = None
-                mask_d = (cyc_int == cyc) & discharge_mask
+                mask_d = cyc_eq & discharge_mask_arr
                 idxd = np.where(mask_d)[0]
                 if idxd.size >= 2:
                     xd_b, yd_b = _broken_arrays_from_indices(idxd, cap_x, voltage)
@@ -676,11 +687,25 @@ def handle_gc_mode(args) -> int:
                     x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
                     # Swap x and y if --ro flag is set
                     if getattr(args, 'ro', False):
-                        ln_c, = ax.plot(y_b, x_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                        linewidth=2.0, label=str(cyc), alpha=0.8)
+                        ln_c, = ax.plot(
+                            y_b,
+                            x_b,
+                            '-',
+                            color=base_colors[(cyc - 1) % len(base_colors)],
+                            linewidth=2.0,
+                            label=str(cyc),
+                            alpha=0.8,
+                        )
                     else:
-                    ln_c, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                    linewidth=2.0, label=str(cyc), alpha=0.8)
+                        ln_c, = ax.plot(
+                            x_b,
+                            y_b,
+                            '-',
+                            color=base_colors[(cyc - 1) % len(base_colors)],
+                            linewidth=2.0,
+                            label=str(cyc),
+                            alpha=0.8,
+                        )
                 ln_d = None
                 if i < len(dch_blocks):
                     a, b = dch_blocks[i]

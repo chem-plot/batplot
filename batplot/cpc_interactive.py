@@ -39,12 +39,54 @@ import os
 import sys
 import contextlib
 from io import StringIO
-
-import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
 import random as _random
+import time
+import re
+import traceback
 
-from .ui import set_spine_side_color as _ui_set_spine_side_color
+import matplotlib.pyplot as plt  # type: ignore[import]
+from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator  # type: ignore[import]
+from matplotlib.colors import (  # type: ignore[import]
+    to_hex as _mpl_to_hex,
+    to_hex,
+    to_rgb,
+    rgb_to_hsv,
+    hsv_to_rgb,
+    to_rgba,
+)  # type: ignore[import]
+import numpy as np  # type: ignore[import]
+import numpy as _np  # type: ignore[import]
+import matplotlib.cm as cm  # type: ignore[import]
+import matplotlib.colors as mcolors  # type: ignore[import]
+
+from .ui import (
+    set_spine_side_color as _ui_set_spine_side_color,
+    resize_plot_frame, resize_canvas,
+    update_tick_visibility as _ui_update_tick_visibility,
+    position_top_xlabel as _ui_position_top_xlabel,
+    position_right_ylabel as _ui_position_right_ylabel,
+    position_bottom_xlabel as _ui_position_bottom_xlabel,
+    position_left_ylabel as _ui_position_left_ylabel,
+)
+from .utils import (
+    _confirm_overwrite,
+    choose_save_path,
+    convert_label_shortcuts,
+    choose_style_file,
+    list_files_in_subdirectory,
+    get_organized_path,
+    natural_sort_key,
+    ensure_exact_case_filename,
+)
+from .color_utils import (
+    resolve_color_token,
+    color_block,
+    palette_preview,
+    manage_user_colors,
+    get_user_color_list,
+    ensure_colormap,
+)
+from .session import dump_cpc_session
 
 
 class _FilterIMKWarning:
@@ -76,40 +118,6 @@ def _safe_input(prompt: str = "") -> str:
         raise
     finally:
         sys.stderr = original_stderr
-
-from .ui import (
-    resize_plot_frame, resize_canvas,
-    update_tick_visibility as _ui_update_tick_visibility,
-    position_top_xlabel as _ui_position_top_xlabel,
-    position_right_ylabel as _ui_position_right_ylabel,
-    position_bottom_xlabel as _ui_position_bottom_xlabel,
-    position_left_ylabel as _ui_position_left_ylabel,
-)
-from .utils import (
-    _confirm_overwrite,
-    choose_save_path,
-    convert_label_shortcuts,
-    choose_style_file,
-    list_files_in_subdirectory,
-    get_organized_path,
-    natural_sort_key,
-)
-import time
-from .color_utils import resolve_color_token, color_block, palette_preview, manage_user_colors, get_user_color_list, ensure_colormap
-from matplotlib.colors import to_hex as _mpl_to_hex
-from matplotlib.colors import to_hex
-import re
-from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
-import numpy as np
-from matplotlib.colors import to_rgb
-import numpy as _np
-import matplotlib.cm as cm
-import matplotlib.colors as mcolors
-from matplotlib.colors import to_rgba
-from .utils import ensure_exact_case_filename
-from .session import dump_cpc_session
-import traceback
-from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
 
 
 def _legend_no_frame(ax, *args, **kwargs):
@@ -408,7 +416,7 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
                         fx, fy = fig.transFigure.inverted().transform((cx, cy))
                         fw, fh = fig.get_size_inches()
                         offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
-                        offset = _sanitize_legend_offset(offset)
+                        offset = _sanitize_legend_offset(offset)  # type: ignore[name-defined]
                         if offset is not None:
                             fig._cpc_legend_xy_in = offset
                             xy_in = offset
@@ -492,9 +500,12 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             # Prefer explicit color if available
             if hasattr(artist, 'get_color'):
                 c = artist.get_color()
-                if isinstance(c, (list, tuple)) and c and not isinstance(c, str):
-                    return c[0]
-                return c
+                # Normalize to a single hex/string value
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, (list, tuple)) and c:
+                    return to_hex(c[0])
+                return None
             # Fall back to facecolors / edgecolors for scatter
             face_arr = None
             edge_arr = None
@@ -794,7 +805,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     
     return cfg
 
-
+# pyright: ignore[reportGeneralTypeIssues]
 def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_data=None):
     """Apply style configuration to CPC plot.
     
@@ -1453,7 +1464,7 @@ def _format_file_timestamp(filepath: str) -> str:
     except Exception:
         return ""
 
-
+# pyright: ignore[reportGeneralTypeIssues]
 def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None):
     """
     Interactive menu for Capacity-Per-Cycle (CPC) plots.
@@ -2710,8 +2721,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     if sub == 'e':
                         # Ask for ps or psg
                         print("Export options:")
-                        print("  ps  = style only (.bps)")
-                        print("  psg = style + geometry (.bpsg)")
+                        print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
+                        print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
                         exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                         if not exp_choice or exp_choice == 'q':
                             print("Style export canceled.")

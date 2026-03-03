@@ -53,3 +53,7 @@
 ## 1.8.25
 - Improved interactive menu functionality for colors/ticks
 - Bug fixes
+
+## 1.8.26
+- Improved interactive menu functionality for ec mode
+- Bug fixes

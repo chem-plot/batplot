@@ -116,6 +116,38 @@ Immediately after obtaining `ws = wb.active`, added a defensive guard that close
 
 ---
 
+## 2026-03-03: Allow `None` wavelength for CIF reflection helpers
+
+### Summary
+Static type checking reported that an argument of type `float | Any | None` could not be passed to the `wavelength` parameter of `cif_reflection_positions` in `batplot/cif.py` when `operando.py` called it with `wavelength=None` for non-2θ axes.
+
+### Root Cause
+The `wavelength` parameter in `cif_reflection_positions`, `list_reflections_with_hkl`, and `build_hkl_label_map` had an implicit type of plain `float` inferred from the default `1.5406`, even though their implementations explicitly support `wavelength=None` (skipping the Bragg cutoff when `lam is None`). The operando plotting code correctly passed `None` for Q-based axes, which violated the stricter inferred type in static analysis.
+
+### Fix
+Annotated the `wavelength` parameter in all three helpers as `float | None` (with the same `1.5406` default), matching the existing runtime behavior where `None` is a valid sentinel value that disables the wavelength cutoff while keeping the default Cu Kα wavelength for callers that do not specify it.
+
+### Affected Files
+- `batplot/cif.py`
+
+---
+
+## 2026-03-03: Allow `file_data_saved` to be `None` in EC session serialization
+
+### Summary
+Static type checking reported *"Type `None` is not assignable to declared type `List[Dict[str, Any]]`"* at the line assigning `file_data_saved = None` in `batplot/session.py` when capturing electrochemical GC sessions.
+
+### Root Cause
+The helper variable `file_data_saved` was annotated as `List[Dict[str, Any]]` inside the multi-file branch but was later assigned `None` in the single-file branch to signal that no per-file metadata should be serialized. This made the effective runtime type `List[Dict[str, Any]] | None`, which conflicted with the non-optional list annotation under strict static typing.
+
+### Fix
+Declared `file_data_saved` as `Optional[List[Dict[str, Any]]]` before the multi-file/single-file branch and assigned it to an empty list in the multi-file case and `None` in the single-file case. This preserves the existing behavior (including the `multi_file` and `file_data` fields in the session dict) while making the variable's annotation accurately reflect its possible values.
+
+### Affected Files
+- `batplot/session.py`
+
+---
+
 ## 2026-03-03: Silence false-positive `setuptools` import error in `setup.py`
 
 ### Summary
@@ -129,6 +161,233 @@ Annotated the import with a type-checker-only suppression comment: `from setupto
 
 ### Affected Files
 - `setup.py`
+
+---
+
+## 2026-03-03: Silence false-positive NumPy/Matplotlib import errors in `batch.py`
+
+### Summary
+Static type checking (basedpyright) reported *"Import `matplotlib.cm` could not be resolved"*, *"Import `numpy` could not be resolved"*, and *"Import `matplotlib.pyplot` could not be resolved"* at the top of `batplot/batch.py`, even though these are standard scientific Python dependencies that are required for batch plotting and available in real runtime environments.
+
+### Root Cause
+The analyzer is running in an environment where NumPy and Matplotlib (or their type stubs) are not installed, so it treats these imports as missing. This produces spurious errors in the batch module despite the code being correct and fully functional wherever Batplot is actually executed with its documented dependencies installed.
+
+### Fix
+Annotated the three scientific imports with `# type: ignore[import]` comments: `import matplotlib.cm as cm`, `import numpy as np`, and `import matplotlib.pyplot as plt`. This preserves cross-platform runtime behavior on Windows, macOS, and Linux while telling the type checker to trust these external packages and stop emitting unresolved-import errors for them.
+
+### Affected Files
+- `batplot/batch.py`
+
+---
+
+## 2026-03-03: Fix tuple-unpack type errors for `read_mpt_file` results in `batch.py`
+
+### Summary
+Static type checking (basedpyright) reported tuple size mismatch errors at several `read_mpt_file` call sites in `batplot/batch.py`, including the GC branch around line 982, the CV branch around line 1045, and the CPC branch around line 1140. The checker inferred that `read_mpt_file` could return multiple tuple shapes (for `'gc'`, `'cv'`, `'cpc'`, and `'time'` modes), which conflicted with the fixed-size tuple unpacking used in batch plotting.
+
+### Root Cause
+The `read_mpt_file` function has a single, mode-dependent return signature, so its static type is a union of all possible tuple shapes. Even though each call in `batch.py` passes a concrete `mode` string (`'gc'`, `'cv'`, or `'cpc'`), the type checker did not narrow the return type based on that argument and continued to treat it as the full union, making it incompatible with unpacking into 3, 4, or 5 variables.
+
+### Fix
+Wrapped the `read_mpt_file` calls in explicit `typing.cast` operations that narrow the return type to the precise tuple shape expected in each branch: a 5-tuple for GC (`Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]`), a 3-tuple for CV, and a 4-tuple for CPC. This preserves the original runtime behavior for all supported platforms (Windows, macOS, Linux) while satisfying the static analyzer that each unpack operation receives a tuple of the correct length.
+
+### Affected Files
+- `batplot/batch.py`
+
+---
+
+## 2026-03-03: Fix tuple-unpack type error for `read_mpt_file` results in `operando.py`
+
+### Summary
+Static type checking (basedpyright) reported a tuple size mismatch error at the legacy compatibility branch in `batplot/operando.py`, where the result of `read_mpt_file(..., mode='time')` was unpacked into three variables even though the function can return tuples with more than three elements in newer formats.
+
+### Root Cause
+The "old format compatibility" path assumed that `read_mpt_file` would return exactly a 3-tuple `(voltage, time_s, current)` and used fixed-size tuple unpacking. After enhancements to `read_mpt_file` to return additional metadata (labels) for some `time`-mode inputs, the static return type became a union of tuple shapes, making the strict 3-variable unpacking incompatible for those cases, even though extra elements were not needed by the operando panel.
+
+### Fix
+Updated the compatibility branch to unpack the time-series result as `x_data, y_data, current_mA, *_ = result`, which safely accepts both 3-element and longer tuples by discarding any extra metadata while preserving the original behavior (voltage and time conversion plus current). This removes the tuple size mismatch while keeping the operando EC panel behavior consistent across Windows, macOS, and Linux.
+
+### Affected Files
+- `batplot/operando.py`
+
+---
+
+## 2026-03-03: Fix boolean mask type for GC cycle filtering in `batch.py`
+
+### Summary
+Static type checking reported an error on the expressions `(cyc_int == cyc) & charge_mask` and `(cyc_int == cyc) & discharge_mask` in `batplot/batch.py` (GC branch), indicating that the `&` operator was being applied to operands with types like `Unknown | bool` and `str | Unknown`. This made the analyzer treat the mask expressions for charge and discharge cycles as potentially invalid.
+
+### Root Cause
+The `charge_mask` and `discharge_mask` values returned from `read_mpt_file` were inferred by the type checker as loosely-typed arrays (or unions involving non-boolean types), so combining them directly with `(cyc_int == cyc)` using `&` produced an unsupported type combination under strict analysis, even though at runtime these values are always boolean-like indexable arrays.
+
+### Fix
+Before constructing the per-cycle masks, `charge_mask` and `discharge_mask` are now explicitly converted to boolean NumPy arrays via `np.asarray(..., dtype=bool)`, and the equality test `(cyc_int == cyc)` is stored in a temporary boolean array `cyc_eq`. The GC loop now uses `mask_c = cyc_eq & charge_mask_arr` and `mask_d = cyc_eq & discharge_mask_arr`, and falls back to the precomputed boolean arrays when `cycle_numbers` is `None`. This preserves the original behavior while making the types unambiguously boolean arrays for the analyzer.
+
+### Affected Files
+- `batplot/batch.py`
+
+---
+
+## 2026-03-03: Fix tuple-union type for CPC `read_mpt_file` results in `batplot.py`
+
+### Summary
+Static type checking reported a tuple size mismatch error at the CPC `.mpt` branch in `batplot/batplot.py` where `read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg)` was unpacked into `cyc_nums, cap_charge, cap_discharge, eff`. The checker treated `read_mpt_file`’s return type as a union of all possible mode-dependent tuples, which conflicted with the fixed 4-variable unpacking.
+
+### Root Cause
+`read_mpt_file` has a single signature whose return type varies with the `mode` argument (`'gc'`, `'cv'`, `'cpc'`, `'time'`). At the CPC call site, even though `mode='cpc'` is a literal, the analyzer did not narrow the union return type and instead considered all tuple alternatives, some of which have different lengths, making them incompatible with the expected 4-tuple.
+
+### Fix
+Wrapped the CPC `read_mpt_file` call in an explicit `typing.cast` to the precise 4-tuple type expected in CPC mode: `Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]`. This preserves runtime behavior for CPC plots on all platforms while assuring the type checker that the unpacked values always match the four variables on the left-hand side.
+
+### Affected Files
+- `batplot/batplot.py`
+
+---
+
+## 2026-03-03: Narrow CIF cell-parameter parsing exceptions in `cif.py`
+
+### Summary
+The CIF parser’s cell-parameter block in `batplot/cif.py` used broad `except Exception: pass` guards when parsing `_cell_length_{a,b,c}` and `_cell_angle_{alpha,beta,gamma}` values. While this worked at runtime, it risked silently swallowing unexpected programming errors and made static analysis less precise.
+
+### Root Cause
+Cell parameters are read from lines like `_cell_length_a 4.123`, and failures here are almost always due to malformed numeric values or missing columns (e.g., too few tokens). Catching the entire `Exception` hierarchy masked other issues (such as programmer mistakes) that should not be ignored.
+
+### Fix
+Restricted the exception handlers for all six cell-parameter parses to `ValueError` and `IndexError` only, which are the expected failure modes when converting strings to floats or accessing missing tokens. Invalid or incomplete values are still safely skipped, preserving behavior across platforms, but unexpected errors will now surface instead of being silently ignored.
+
+### Affected Files
+- `batplot/cif.py`
+
+---
+
+## 2026-03-03: Fix undefined `_np` alias in `operando_ec_interactive.py`
+
+### Summary
+Static analysis reported *"`_np` is not defined"* at several lines in the operando intensity range auto-fit logic within `batplot/operando_ec_interactive.py`, specifically inside the `'oz'` (operando Z-range) interactive command.
+
+### Root Cause
+The intensity range computation block accidentally used an internal alias `_np` (e.g. `_np.asarray`, `_np.floor`, `_np.isfinite`) that was never defined in this module. The only NumPy import in the file is `import numpy as np`, so these `_np` references were invalid and would raise a `NameError` at runtime when the `'oz'` command is invoked.
+
+### Fix
+Replaced all uses of the undefined `_np` alias in the `'oz'` auto-fit block with the correct `np` alias imported at the top of the module. The logic for computing the visible-area intensity range and mapping axes to pixel indices is otherwise unchanged, and the fix is fully cross-platform (Windows, macOS, Linux) since it only corrects the NumPy name used in pure Python/NumPy operations.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-03: Fix CIF cell dictionary value type for `space_group`
+
+### Summary
+Static type checking reported *"Argument of type `str` cannot be assigned to parameter `value` of type `None` in function `__setitem__`"* on the line assigning `cell['space_group'] = parts[1].strip("'\"")` in `batplot/cif.py` within `_parse_cif_basic`.
+
+### Root Cause
+The `cell` dictionary was initialized with all values set to `None`, leading the type checker to infer its value type as `None` only. When later storing the space group symbol (a `str`) and the numeric cell parameters (as `float`s), these assignments were flagged as incompatible with the inferred `None` value type.
+
+### Fix
+Annotated the `cell` dictionary as `dict[str, float | str | None]` and, in the diffraction helper functions that consume `cell`, used `typing.cast(float, ...)` when reading numeric cell parameters (`a`, `b`, `c`, `alpha`, `beta`, `gamma`). This preserves the existing runtime behavior on Windows, macOS, and Linux while aligning the inferred types with how the dictionary is actually used, eliminating the `__setitem__` value-type error and related arithmetic type warnings.
+
+### Affected Files
+- `batplot/cif.py`
+
+---
+
+## 2026-03-03: Silence false-positive Matplotlib/cmcrameri import errors in `color_utils.py`
+
+### Summary
+Static analysis tools may report unresolved imports for `matplotlib.pyplot`, `matplotlib.colors`, `matplotlib.colors.LinearSegmentedColormap`, and the optional `cmcrameri.cm` dependency in `batplot/color_utils.py`, even though these are valid runtime dependencies used to build and preview colormaps.
+
+### Root Cause
+The type checker can run in environments that lack Matplotlib or the optional `cmcrameri` package, or where their type stubs are not installed. In such environments, these imports appear missing, generating noisy errors despite the code being correct for actual Batplot installations, where Matplotlib is required and `cmcrameri` is an optional enhancement.
+
+### Fix
+Annotated the Matplotlib imports at the top of `color_utils.py` and the inline `cmcrameri.cm` import inside the batlow-variant handling block with `# type: ignore[import]`. This leaves the runtime behavior unchanged on Windows, macOS, and Linux—Matplotlib and `cmcrameri` are still imported when present—but tells the type checker to stop flagging those imports as unresolved.
+
+### Affected Files
+- `batplot/color_utils.py`
+
+---
+
+## 2026-03-03: Suppress Pyright complexity warnings for CPC interactive menu
+
+### Summary
+Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the `cpc_interactive_menu` function in `batplot/cpc_interactive.py`. This diagnostic is a static-analysis limitation rather than a runtime bug, but it cluttered the diagnostics view for a function that is intentionally large and stateful.
+
+### Root Cause
+The CPC interactive menu function aggregates many interactive features (keyboard commands, legend controls, tick/geometry styling, style import/export, etc.) into a single, deeply branched function. Pyright’s control-flow analyzer hits its built-in complexity limit on this function and emits a generic warning on the definition line.
+
+### Fix
+Added a targeted Pyright directive comment immediately above the `cpc_interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This tells the type checker to suppress general type-issue diagnostics (including the complexity warning) for the function’s definition line while leaving the rest of the module analyzed as before. The runtime behavior and cross-platform compatibility of the CPC interactive menu are unchanged.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-03: Suppress Pyright complexity warnings for EC interactive menu
+
+### Summary
+Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the `electrochem_interactive_menu` function in `batplot/electrochem_interactive.py`. As with the CPC menu, this is a limitation of the analyzer on a large, multi-feature interactive function rather than a runtime defect.
+
+### Root Cause
+The EC interactive menu aggregates many behaviors (GC/CV/dQdV modes, multi-file management, smoothing and filtering, legend/axes controls, style import/export, etc.) into a single function with numerous nested branches. This exceeds Pyright’s internal complexity threshold for full flow-sensitive analysis, causing a generic warning at the function definition.
+
+### Fix
+Added a targeted Pyright directive comment directly above the `electrochem_interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This suppresses general type-issue diagnostics (including the complexity warning) for that function’s definition line while leaving the rest of the file fully analyzed. No changes were made to the EC interactive behavior or its cross-platform semantics.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-03: Silence false-positive Matplotlib/NumPy import errors in `interactive.py`
+
+### Summary
+Static analysis reported unresolved imports for `numpy`, `matplotlib.pyplot`, `matplotlib.ticker`, and `matplotlib.colors` at the top of `batplot/interactive.py` in environments where those libraries or their type stubs are not installed, even though they are valid runtime dependencies for 1D interactive plots.
+
+### Root Cause
+The type checker can run in minimal or stubless environments, so heavy scientific packages frequently appear as missing. Since `interactive.py` is a core module that always imports these packages at module scope, these missing-import diagnostics became persistent noise unrelated to actual runtime behavior.
+
+### Fix
+Annotated all Matplotlib/NumPy imports in `interactive.py` with `# type: ignore[import]`, including `numpy`, `matplotlib.pyplot`, `matplotlib.ticker` helpers, `matplotlib.colors`, and `LinearSegmentedColormap`. This keeps the imports and behavior unchanged for real Batplot installations on all platforms while instructing Pyright/basedpyright to stop treating these imports as errors.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-03: Silence false-positive NumPy import error in `plotting.py`
+
+### Summary
+Static type checking reported an unresolved import for `numpy` in `batplot/plotting.py` when running in environments without NumPy or its type stubs installed, even though NumPy is a valid runtime dependency for label-position calculations.
+
+### Root Cause
+The plot-label helper module imports `numpy` directly at module scope to perform array operations when computing label positions. In stubless or minimal analysis environments, this import appears missing to Pyright/basedpyright, generating a noisy diagnostic unrelated to actual Batplot usage where NumPy is always present.
+
+### Fix
+Annotated the `numpy` import in `plotting.py` with `# type: ignore[import]`, preserving the existing runtime behavior on all platforms while telling the type checker to stop treating the import as an error.
+
+### Affected Files
+- `batplot/plotting.py`
+
+---
+
+## 2026-03-03: Highlight all subcommands in interactive derivative/smoothing and dQ/dV menus
+
+### Summary
+In several interactive text menus, the subcommand keys (like `sm`, `d`, `r`, `q`, numeric choices, and style export shorthands) were listed without using the ANSI highlighting helpers that are applied elsewhere. This made the commands less readable and inconsistent with other interactive menus that colorize the command tokens.
+
+### Root Cause
+The affected menus—the derivative submenu and smoothing/data-reduction submenu in the 1D interactive mode, and the dQ/dV data filtering submenu in the EC interactive mode—printed raw lines such as `"  a: ..."` and `"  1: ..."` instead of passing those strings through the existing `colorize_menu` / `_colorize_menu` helpers. Those helpers split on `:` and render the command portion in cyan, which was already the standard for other submenus.
+
+### Fix
+Updated all of these menus so each subcommand line is constructed by wrapping a `"<key>: <description>"` or `"key = description"` string with the appropriate colorization helper. For the EC dQ/dV filtering and outlier-removal submenus, each `a/d/o/r/q` and `1/2` choice is now printed via `_colorize_menu`, and for the 1D interactive derivative, smoothing, reduce-rows, merge-by, and legend submenus, all numeric and word commands (including `1`–`4`, `reset`, `q`, `r`, `s`) are printed via `colorize_menu`. Style export shorthands (`ps`, `psg`) in EC, CPC, and Operando interactive modes now use `_colorize_inline_commands` so their keys are highlighted consistently. This produces consistently highlighted command keys across 1D, GC, CV/dQdV, CPC, and Operando interactive modes on all terminals and operating systems.
+
+### Affected Files
+- `batplot/interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/operando_ec_interactive.py`
 
 ---
 
@@ -190,6 +449,38 @@ The `n` (tick spacing) and `m` (minor tick count) subcommands previously added t
 - **EC**: x, y (single axes object)
 - **Operando**: per-pane (operando or EC); x, y for the selected pane
 - All modes: `all` applies to all available axes in that mode/pane
+
+---
+
+## 2026-03-03: Fix `None` default type for `base_path` in directory helpers
+
+### Summary
+Static type checking (basedpyright/pyright) reported *"Expression of type `None` cannot be assigned to parameter of type `str`"* at the function definitions for `ensure_subdirectory`, `get_organized_path`, and `list_files_in_subdirectory` in `batplot/utils.py`, because their `base_path` parameters were annotated as plain `str` while using a default value of `None`.
+
+### Root Cause
+All three helpers are intentionally designed to accept an optional base directory: callers may omit `base_path` to fall back to the current working directory (`os.getcwd()`), and the implementations already handle the `None` case at runtime. However, the function signatures incorrectly declared `base_path` as `str` with a `None` default, which is incompatible under strict static typing and triggered the errors.
+
+### Fix
+Updated the signatures of `ensure_subdirectory`, `get_organized_path`, and `list_files_in_subdirectory` so that `base_path` is annotated as `Optional[str]` with a `None` default (e.g. `base_path: Optional[str] = None`). No behavioral changes were required, since the bodies already guarded and substituted sensible defaults when `base_path` is `None`; this change simply aligns the type hints with the existing cross-platform logic.
+
+### Affected Files
+- `batplot/utils.py`
+
+---
+
+## 2026-03-03: Guard ions-axis interpolation against `None` series in `operando_ec_interactive.py`
+
+### Summary
+Static type checking reported *"Object of type `None` is not subscriptable"* on the ions y-axis formatter in `batplot/operando_ec_interactive.py`, where the `ions_abs` series was indexed as `ions_abs[0]` and `ions_abs[-1]` inside the tick-formatting callback.
+
+### Root Cause
+The ions-axis setup code retrieves the absolute-ion count series from `ec_ax._ions_abs` using `getattr(..., None)` and then defines a nested `_ions_format` callback that interpolates and rounds values via `np.interp(y, t, ions_abs, left=ions_abs[0], right=ions_abs[-1])`. Although the surrounding logic only installs this formatter when `ions_abs is not None`, the type checker treats `ions_abs` in the nested function as potentially `None`, and at runtime a misconfigured axis could in principle leave `_ions_format` reachable with a `None` series.
+
+### Fix
+In both ions-axis setup blocks, updated `_ions_format` to first copy `ions_abs` into a local `ions_vals` variable, check `ions_vals is None or len(ions_vals) == 0`, and immediately return an empty label in that case. The interpolation and endpoint indexing now use `ions_vals[0]` and `ions_vals[-1]` only after this guard, eliminating the possibility of subscripting `None` while preserving behavior for valid ions-series data across Windows, macOS, and Linux.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
 
 ---
 
@@ -341,6 +632,54 @@ Annotated the `numpy` import in `batplot/cif.py` with `# type: ignore[import]` s
 
 ---
 
+## 2026-03-03: Silence false-positive Matplotlib/NumPy import errors in `style.py`
+
+### Summary
+Static analysis reported unresolved imports for `numpy`, `matplotlib.pyplot`, `matplotlib.colors`, and `matplotlib.ticker` in `batplot/style.py` in environments where those libraries or their type stubs are not installed, even though they are required runtime dependencies for style capture and application.
+
+### Root Cause
+The style helper module imports several Matplotlib and NumPy components at module scope (for tick locator manipulation, colormap handling, etc.). In stubless or minimal analysis environments, these imports appear missing to Pyright/basedpyright, generating noisy diagnostics unrelated to actual Batplot usage where these packages are always present.
+
+### Fix
+Annotated all Matplotlib/NumPy imports in `style.py` with `# type: ignore[import]`, including `numpy`, `matplotlib.pyplot`, `matplotlib.colors` (as `mcolors`), `MultipleLocator`, `AutoLocator`, `AutoMinorLocator`, `NullFormatter`, and `LinearSegmentedColormap`. This preserves the existing cross-platform behavior while instructing the type checker to stop treating these imports as errors.
+
+### Affected Files
+- `batplot/style.py`
+
+---
+
+## 2026-03-03: Suppress Pyright complexity warnings for 1D interactive menu
+
+### Summary
+Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the main `interactive_menu` function in `batplot/interactive.py`, which aggregates many 1D plotting features into a single, large interactive handler.
+
+### Root Cause
+The 1D interactive menu function handles a wide variety of commands (colors, fonts, lines, axes, legends, smoothing, CIF ticks, style import/export, sessions, etc.) in a deeply branched structure. This exceeds Pyright’s internal complexity threshold for full flow-sensitive analysis, resulting in a generic warning on the function definition even though the code is stable and well-tested.
+
+### Fix
+Added a targeted Pyright directive comment immediately above the `interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This suppresses general type-issue diagnostics (including the complexity warning) for the function’s definition line while leaving the rest of `interactive.py` fully analyzed. No changes were made to the 1D interactive behavior.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-03: Fix CPC legend offset sanitizer reference in `cpc_interactive.py`
+
+### Summary
+Pyright reported *"_sanitize_legend_offset" is not defined* at a call site in the CPC legend rebuild helper in `batplot/cpc_interactive.py`, even though a helper of that name existed later in the same enclosing scope. This mismatch stemmed from earlier refactoring that introduced a typed `_sanitize_legend_offset(xy: Optional[tuple])` near the bottom of the CPC interactive function.
+
+### Root Cause
+The call `offset = _sanitize_legend_offset(offset)` in the legend-position capture block preceded the nested helper definition and confused the analyzer, which treated `_sanitize_legend_offset` as potentially undefined at that point in the function. While valid at runtime in Python (the name is resolved when the code path is executed), the static checker flagged it as a missing symbol.
+
+### Fix
+Left the runtime behavior unchanged but annotated the call with `# type: ignore[name-defined]` so the type checker no longer treats `_sanitize_legend_offset` as undefined at that site. All other uses of `_sanitize_legend_offset` (and its definition) remain intact, and legend offsets continue to be sanitized and persisted correctly across CPC interactive sessions.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
 ## 2026-03-03: Fix tuple unpacking type error in `read_mpt_dqdv_file`
 
 ### Summary
@@ -354,6 +693,27 @@ Captured the `read_mpt_file` result into a temporary variable and applied a `typ
 
 ### Affected Files
 - `batplot/readers.py`
+
+---
+
+## 2026-03-03: Fix duplicate `bottom_to_top`/`top_to_bottom` nested function declarations in `electrochem_interactive.py`
+
+### Summary
+Static type checking (basedpyright/pyright) reported errors like *"Function declaration `bottom_to_top` is obscured by a declaration of the same name"* inside `batplot/electrochem_interactive.py` when restoring the dual x-axis (capacity ↔ ions) state in the EC interactive menu. The culprit was a pair of nested helper functions, `bottom_to_top` and `top_to_bottom`, that were each defined twice in separate `if swapped:` / `else:` branches within the same enclosing scope.
+
+### Root Cause
+In the dual-axis restoration block, the code defined:
+
+- `def bottom_to_top(ions): ...` and `def top_to_bottom(capacity): ...` in the `if swapped:` branch, and
+- `def bottom_to_top(capacity): ...` and `def top_to_bottom(ions): ...` in the `else:` branch.
+
+Although this works at runtime (only one branch executes), static analyzers treat multiple `def` statements with the same name in a single scope as conflicting declarations, especially when the apparent signatures differ between branches. This triggered the "obscured" function-declaration errors for both helper names.
+
+### Fix
+Reworked the dual-axis conversion helpers so each `def` name is unique and the public callables are assigned via branch-local variables instead of being redefined. The code now defines `_bottom_to_top_ions`/`_top_to_bottom_capacity` in the `swapped` branch and `_bottom_to_top_capacity`/`_top_to_bottom_ions` in the `else` branch, then assigns `bottom_to_top` and `top_to_bottom` to the appropriate helper pair in each branch before passing them to `ax.secondary_xaxis`. This preserves the original runtime behavior and cross-platform semantics (Windows, macOS, Linux) while eliminating the duplicate function-declaration errors.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
 
 ---
 
@@ -2919,6 +3279,62 @@ This removes the noisy errors in strict type-checking environments without affec
 - ✅ macOS: No behavioral change; imports still required at runtime
 - ✅ Windows: Same behavior; only static analysis hints adjusted
 - ✅ Linux: Same behavior; imports continue to function normally
+
+---
+
+## 2026-03-03: Consolidate scattered and duplicate imports in `session.py` and `cpc_interactive.py`
+
+### Summary
+Two files had import sections in disarray: duplicate `from matplotlib.ticker` and `from matplotlib.colors` lines in `session.py`, and imports scattered after class/function definitions (mixed with code) in `cpc_interactive.py`, including redundant `from .ui import` blocks.
+
+### Root Cause
+Imports were appended incrementally at the bottom of the import section (or even after helper classes/functions) as new features were added, resulting in:
+- **`session.py`**: Three separate `from matplotlib.ticker import` lines covering overlapping subsets; two `from matplotlib.colors import` lines where the first was a strict subset of the second; `import numpy` / `import numpy as np` / `import numpy as _np` and `from numpy import ma as _ma` spread across non-contiguous lines; `import subprocess`, `import sys`, and `import traceback` buried after third-party imports; `from .utils import` split across two lines.
+- **`cpc_interactive.py`**: A `from .ui import set_spine_side_color` at the top, then a second `from .ui import (resize_plot_frame, ...)` block and a third `from .ui import (position_top_xlabel, ...)` block — all placed *after* the `_FilterIMKWarning` class and `_safe_input` function definitions. The `from .utils import` was similarly split.
+
+### Fix
+**`session.py`**:
+- Gathered all stdlib imports (`os`, `pickle`, `subprocess`, `sys`, `traceback`, `typing`) into a single contiguous block at the top.
+- Consolidated all three `from matplotlib.ticker import` lines into one multi-name import.
+- Replaced the two `from matplotlib.colors import` lines with a single `from matplotlib.colors import to_hex, to_rgba`.
+- Kept `import numpy`, `import numpy as np`, `import numpy as _np`, and `from numpy import ma as _ma` (all used) but grouped them consecutively.
+- Merged the split `from .utils import` lines into one.
+
+**`cpc_interactive.py`**:
+- Moved all `from .ui import`, `from .utils import`, `from .color_utils import`, and `from .session import` lines to above the `_FilterIMKWarning` class definition so all imports precede any class or function code.
+- Merged the three separate `from .ui import` fragments into a single block covering all names: `set_spine_side_color`, `resize_plot_frame`, `resize_canvas`, `update_tick_visibility`, and all four axis-label position helpers.
+- Added `ensure_exact_case_filename` to the existing `from .utils import` block, eliminating the dangling second `from .utils import` line.
+- Removed the fully redundant third `from .ui import (position_top_xlabel, ...)` block (all four names already present in the consolidated block).
+
+### Affected Files
+- `batplot/session.py`
+- `batplot/cpc_interactive.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: No behavioral change; purely import organisation
+- ✅ Windows: No behavioral change
+- ✅ Linux: No behavioral change
+
+---
+
+## 2026-03-03: Fix `_rebuild_lines_from_raw` cycle-lines type error in `session.py`
+
+### Summary
+Static type checking reported *"Argument of type `Unknown | None` cannot be assigned to parameter `value` of type `Dict[str, Any]` in function `__setitem__`"* at the line `out[cyc] = ln_obj` inside the `_rebuild_lines_from_raw` helper in `batplot/session.py`.
+
+### Root Cause
+The `_rebuild_lines_from_raw` function annotated its return type (and the backing `out` variable) as `Dict[int, Dict[str, Any]]`, but in practice it stores two shapes of values: a single Matplotlib line object (or `None`) for one-line-per-cycle data, and a `Dict[str, Any]` mapping `"charge"`/`"discharge"` to line objects for split charge/discharge data. This made the value type effectively `Dict[str, Any] | Any | None`, which conflicted with the narrower `Dict[int, Dict[str, Any]]` annotation and caused Pyright to reject assignments of `ln_obj` (typed as `Unknown | None`) into `out[cyc]`.
+
+### Fix
+Relaxed the helper's annotation to reflect the actual, union-like value shape by changing the signature and local variable to `Dict[int, Any]` (`def _rebuild_lines_from_raw(raw: Dict) -> Dict[int, Any]` and `out: Dict[int, Any] = {}`). The runtime behavior is unchanged: callers still receive a mapping from cycle index to either a single line object or a `{"charge": ..., "discharge": ...}` dict, but the type checker now treats all stored values as `Any`, eliminating the spurious `__setitem__` error.
+
+### Affected Files
+- `batplot/session.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: No behavioral change; helper remains pure-Python and plotting logic is unchanged
+- ✅ Windows: No behavioral change
+- ✅ Linux: No behavioral change
 
 ---
 

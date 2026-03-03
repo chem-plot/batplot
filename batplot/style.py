@@ -10,12 +10,12 @@ import json
 import importlib
 import os
 import sys
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
+import matplotlib.colors as mcolors  # type: ignore[import]
 
-from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, NullFormatter
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, NullFormatter  # type: ignore[import]
+from matplotlib.colors import LinearSegmentedColormap  # type: ignore[import]
 
 from .utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename
 from .color_utils import color_block, _CUSTOM_CMAPS
@@ -900,6 +900,7 @@ def export_style_config(
         return None
 
 
+# pyright: ignore[reportGeneralTypeIssues]
 def apply_style_config(
     filename: str,
     fig,

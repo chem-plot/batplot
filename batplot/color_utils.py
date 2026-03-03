@@ -43,9 +43,9 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-import matplotlib.pyplot as plt
-from matplotlib import colors as mcolors
-from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.pyplot as plt  # type: ignore[import]
+from matplotlib import colors as mcolors  # type: ignore[import]
+from matplotlib.colors import LinearSegmentedColormap, Colormap  # type: ignore[import]
 
 from .config import get_user_colors as _cfg_get_user_colors
 from .config import save_user_colors as _cfg_save_user_colors
@@ -224,6 +224,7 @@ def palette_preview(name: str, steps: int = 8) -> str:
     ensure_colormap(name)
     
     # Try to get the colormap from matplotlib
+    cmap: Optional[Colormap]
     try:
         cmap = plt.get_cmap(name)
     except Exception:
@@ -232,7 +233,7 @@ def palette_preview(name: str, steps: int = 8) -> str:
         lower = name.lower()
         if lower.startswith('batlow'):
             try:
-                import cmcrameri.cm as cmc
+                import cmcrameri.cm as cmc  # type: ignore[import]
                 if hasattr(cmc, lower):
                     cmap = getattr(cmc, lower)
                 elif hasattr(cmc, 'batlow'):
@@ -241,6 +242,10 @@ def palette_preview(name: str, steps: int = 8) -> str:
                 return ""
         else:
             return ""
+
+    # If we still don't have a colormap, bail out
+    if cmap is None:
+        return ""
     
     # Ensure steps is at least 1 (avoid division by zero)
     if steps < 1:

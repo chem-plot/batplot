@@ -7,7 +7,7 @@ Labels are the text annotations that identify each curve (e.g., file names).
 from __future__ import annotations
 
 from typing import List
-import numpy as np
+import numpy as np  # type: ignore[import]
 
 
 def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: bool, stack_label_at_bottom: bool = False):

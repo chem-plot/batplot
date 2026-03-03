@@ -13,14 +13,14 @@ import random
 import sys
 from typing import List, Optional, Tuple, Dict, Any
 
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import (
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
+from matplotlib.ticker import (  # type: ignore[import]
     AutoMinorLocator, AutoLocator, MultipleLocator,
     NullFormatter, NullLocator,
 )
-from matplotlib import colors as mcolors
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib import colors as mcolors  # type: ignore[import]
+from matplotlib.colors import LinearSegmentedColormap  # type: ignore[import]
 
 from .plotting import update_labels
 from .utils import (
@@ -105,7 +105,7 @@ def _safe_input(prompt: str = "") -> str:
     finally:
         sys.stderr = original_stderr
 
-
+# pyright: ignore[reportGeneralTypeIssues]
 def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                      label_text_objects, delta, x_label, args,
                      x_full_list, raw_y_full_list, offsets_list,
@@ -1366,7 +1366,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         else:
             return y.copy()
 
-    def _update_ylabel_for_derivative(order: int, current_label: str = None, is_reversed: bool = False) -> str:
+    def _update_ylabel_for_derivative(order: int, current_label: Optional[str] = None, is_reversed: bool = False) -> str:
         """Generate appropriate y-axis label for derivative.
         
         Args:
@@ -2306,7 +2306,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     if palette_name not in available and not ensure_colormap(palette_name):
                                         print(f"Unknown palette '{palette_name}'.")
                                         continue
-                                    def _parse_ranges(spec: str, total: int):
+                                    def _parse_palette_ranges(spec: str, total: int):
                                         spec = spec.lower()
                                         if spec == 'all':
                                             return list(range(total))
@@ -2338,7 +2338,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                                 except ValueError:
                                                     print(f"Bad index token: {tok}")
                                         return sorted(result)
-                                    indices = _parse_ranges(range_part, len(cts))
+                                    indices = _parse_palette_ranges(range_part, len(cts))
                                     if not indices:
                                         print("No valid indices parsed.")
                                         continue
@@ -2483,10 +2483,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print(f"Curve name labels {'ON' if new_state else 'OFF'}.")
                     elif sub_key == 's':
                         print("\nChoose legend position:")
-                        print("  1: top-right")
-                        print("  2: top-left")
-                        print("  3: bottom-right")
-                        print("  4: bottom-left")
+                        print("  " + colorize_menu("1: top-right"))
+                        print("  " + colorize_menu("2: top-left"))
+                        print("  " + colorize_menu("3: bottom-right"))
+                        print("  " + colorize_menu("4: bottom-left"))
                         choice = _safe_input("Position (1-4, q=cancel): ").strip().lower()
                         options = {
                             '1': (False, False),
@@ -3982,12 +3982,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     print("\n\033[1mDerivative Menu\033[0m")
                     print("Commands:")
-                    print("  1: Calculate 1st derivative (dy/dx)")
-                    print("  2: Calculate 2nd derivative (d²y/dx²)")
-                    print("  3: Calculate reversed 1st derivative (dx/dy)")
-                    print("  4: Calculate reversed 2nd derivative (d²x/dy²)")
-                    print("  reset: Reset to data before derivative")
-                    print("  q: back to main menu")
+                    print("  " + colorize_menu("1: Calculate 1st derivative (dy/dx)"))
+                    print("  " + colorize_menu("2: Calculate 2nd derivative (d²y/dx²)"))
+                    print("  " + colorize_menu("3: Calculate reversed 1st derivative (dx/dy)"))
+                    print("  " + colorize_menu("4: Calculate reversed 2nd derivative (d²x/dy²)"))
+                    print("  " + colorize_menu("reset: Reset to data before derivative"))
+                    print("  " + colorize_menu("q: back to main menu"))
                     sub = _safe_input(colorize_prompt("d> ")).strip().lower()
                     if not sub or sub == 'q':
                         break
@@ -4609,10 +4609,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             # Legend submenu
             try:
                 while True:
-                    print("\nLegend submenu:")
-                    print("  v: show/hide curve names")
+                    print("\n\033[1mLegend submenu:\033[0m")
+                    print("  " + colorize_menu("v: show/hide curve names"))
                     current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
-                    print(f"  s: legend position (current: {current_pos})")
+                    print("  " + colorize_menu(f"s: legend position (current: {current_pos})"))
                     print("  q: back to main menu")
                     sub_key = _safe_input("Choose: ").strip().lower()
                     
@@ -5338,10 +5338,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             while True:
                 print("\n\033[1mSmoothing and Data Reduction\033[0m")
                 print("Commands:")
-                print("  r: reduce rows (delete/merge rows based on pattern)")
-                print("  s: smooth data (various smoothing methods)")
-                print("  reset: reset all curves to original data")
-                print("  q: back to main menu")
+                print("  " + colorize_menu("r: reduce rows (delete/merge rows based on pattern)"))
+                print("  " + colorize_menu("s: smooth data (various smoothing methods)"))
+                print("  " + colorize_menu("reset: reset all curves to original data"))
+                print("  " + colorize_menu("q: back to main menu"))
                 sub = _safe_input(colorize_prompt("sm> ")).strip().lower()
                 if not sub:
                     continue
@@ -5361,10 +5361,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     while True:
                         print("\n\033[1mReduce Rows\033[0m")
                         print("Methods:")
-                        print("  1: Delete N rows, then skip M rows")
-                        print("  2: Delete rows with missing values")
-                        print("  3: Reduce N rows with merged values (average/sum/min/max)")
-                        print("  q: back to smooth menu")
+                        print("  " + colorize_menu("1: Delete N rows, then skip M rows"))
+                        print("  " + colorize_menu("2: Delete rows with missing values"))
+                        print("  " + colorize_menu("3: Reduce N rows with merged values (average/sum/min/max)"))
+                        print("  " + colorize_menu("q: back to smooth menu"))
                         method = _safe_input(colorize_prompt("sm>r> ")).strip().lower()
                         if not method or method == 'q':
                             break
@@ -5579,12 +5579,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                             print("N must be >= 2.")
                                             continue
                                         print("Merge by:")
-                                        print("  1: First point")
-                                        print("  2: Last point")
-                                        print("  3: Average")
-                                        print("  4: Min")
-                                        print("  5: Max")
-                                        print("  6: Sum")
+                                        print("  " + colorize_menu("1: First point"))
+                                        print("  " + colorize_menu("2: Last point"))
+                                        print("  " + colorize_menu("3: Average"))
+                                        print("  " + colorize_menu("4: Min"))
+                                        print("  " + colorize_menu("5: Max"))
+                                        print("  " + colorize_menu("6: Sum"))
                                         merge_by_in = _safe_input(f"Choose (1-6, default {last_merge_by}): ").strip()
                                         merge_by = merge_by_in if merge_by_in else last_merge_by
                                         start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
@@ -5600,12 +5600,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                             print("N must be >= 2.")
                                             continue
                                         print("Merge by:")
-                                        print("  1: First point")
-                                        print("  2: Last point")
-                                        print("  3: Average")
-                                        print("  4: Min")
-                                        print("  5: Max")
-                                        print("  6: Sum")
+                                        print("  " + colorize_menu("1: First point"))
+                                        print("  " + colorize_menu("2: Last point"))
+                                        print("  " + colorize_menu("3: Average"))
+                                        print("  " + colorize_menu("4: Min"))
+                                        print("  " + colorize_menu("5: Max"))
+                                        print("  " + colorize_menu("6: Sum"))
                                         merge_by_in = _safe_input(f"Choose (1-6, default {last_merge_by}): ").strip()
                                         merge_by = merge_by_in if merge_by_in else last_merge_by
                                         start_in = _safe_input(f"Starting row (1-based, default {last_start_row+1}): ").strip()
@@ -5617,12 +5617,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         print("N must be >= 2.")
                                         continue
                                     print("Merge by:")
-                                    print("  1: First point")
-                                    print("  2: Last point")
-                                    print("  3: Average")
-                                    print("  4: Min")
-                                    print("  5: Max")
-                                    print("  6: Sum")
+                                    print("  " + colorize_menu("1: First point"))
+                                    print("  " + colorize_menu("2: Last point"))
+                                    print("  " + colorize_menu("3: Average"))
+                                    print("  " + colorize_menu("4: Min"))
+                                    print("  " + colorize_menu("5: Max"))
+                                    print("  " + colorize_menu("6: Sum"))
                                     merge_by_in = _safe_input("Choose (1-6, default 3): ").strip()
                                     merge_by = merge_by_in if merge_by_in else '3'
                                     start_in = _safe_input("Starting row (1-based, default 1): ").strip()

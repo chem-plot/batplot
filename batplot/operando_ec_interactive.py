@@ -4391,7 +4391,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 
                 # Calculate actual intensity range in the visible (current X/Y) area
                 try:
-                    arr = _np.asarray(im.get_array(), dtype=float)
+                    arr = np.asarray(im.get_array(), dtype=float)
                     if arr.ndim == 2 and arr.size > 0:
                         H, W = arr.shape
                         x0, x1, y0, y1 = im.get_extent()
@@ -4403,13 +4403,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         
                         # Map to pixel indices
                         if xmax > xmin:
-                            c0 = int(_np.floor((xlo - xmin) / (xmax - xmin) * (W - 1)))
-                            c1 = int(_np.ceil((xhi - xmin) / (xmax - xmin) * (W - 1)))
+                            c0 = int(np.floor((xlo - xmin) / (xmax - xmin) * (W - 1)))
+                            c1 = int(np.ceil((xhi - xmin) / (xmax - xmin) * (W - 1)))
                         else:
                             c0, c1 = 0, W - 1
                         if ymax > ymin:
-                            r0 = int(_np.floor((ylo - ymin) / (ymax - ymin) * (H - 1)))
-                            r1 = int(_np.ceil((yhi - ymin) / (ymax - ymin) * (H - 1)))
+                            r0 = int(np.floor((ylo - ymin) / (ymax - ymin) * (H - 1)))
+                            r1 = int(np.ceil((yhi - ymin) / (ymax - ymin) * (H - 1)))
                         else:
                             r0, r1 = 0, H - 1
                         
@@ -4418,10 +4418,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         if c1 < c0: c0, c1 = c1, c0
                         if r1 < r0: r0, r1 = r1, r0
                         view = arr[r0:r1+1, c0:c1+1]
-                        finite = view[_np.isfinite(view)]
+                        finite = view[np.isfinite(view)]
                         if finite.size:
-                            auto_lo = float(_np.min(finite))
-                            auto_hi = float(_np.max(finite))
+                            auto_lo = float(np.min(finite))
+                            auto_hi = float(np.max(finite))
                             print(f"Actual intensity range in visible area: {auto_lo:.4g} to {auto_hi:.4g}")
                             auto_available = True
                         else:
@@ -4947,8 +4947,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         if sub == 'e':
                             # Ask for ps or psg
                             print("Export options:")
-                            print("  ps  = style only (.bps)")
-                            print("  psg = style + geometry (.bpsg)")
+                            print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
+                            print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
                             exp_choice = _safe_input(_colorize_inline_commands("Export choice (ps/psg, q=cancel): ")).strip().lower()
                             if not exp_choice or exp_choice == 'q':
                                 print("Style export canceled.")
@@ -6314,8 +6314,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                     return step * (10**exp)
                                 step = _nice_step(rng)
                                 def _ions_format(y, pos):
+                                    ions_vals = ions_abs
+                                    if ions_vals is None or len(ions_vals) == 0:
+                                        return ""
                                     try:
-                                        val = float(np.interp(y, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
+                                        val = float(np.interp(y, t, ions_vals, left=ions_vals[0], right=ions_vals[-1]))
                                         if step > 0:
                                             val = round(val / step) * step
                                         s = ("%f" % val).rstrip('0').rstrip('.')
@@ -6492,8 +6495,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             return step * (10**exp)
                         step = _nice_step(rng)
                         def _ions_format(y, pos):
+                            ions_vals = ions_abs
+                            if ions_vals is None or len(ions_vals) == 0:
+                                return ""
                             try:
-                                val = float(np.interp(y, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
+                                val = float(np.interp(y, t, ions_vals, left=ions_vals[0], right=ions_vals[-1]))
                                 if step > 0:
                                     val = round(val / step) * step
                                 # Trim trailing zeros nicely

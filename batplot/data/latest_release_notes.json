@@ -1,8 +1,8 @@
 {
-  "version": "1.8.25",
-  "custom_message": "- Improved interactive menu functionality for colors/ticks",
+  "version": "1.8.26",
+  "custom_message": "- Improved interactive menu functionality for ec mode",
   "update_notes": [
-    "- Improved interactive menu functionality for colors/ticks",
+    "- Improved interactive menu functionality for ec mode",
     "- Bug fixes"
   ]
 }
