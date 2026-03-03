@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import matplotlib.cm as cm
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -15,8 +16,9 @@ from .readers import (
     read_mpt_file,
     read_ec_csv_file,
     read_ec_csv_dqdv_file,
+    read_biologic_txt_file,
 )
-from .utils import _confirm_overwrite, natural_sort_key
+from .utils import _confirm_overwrite, natural_sort_key, ensure_subdirectory
 
 
 def _load_style_file(style_path: str) -> dict | None:
@@ -465,7 +467,6 @@ def batch_process(directory: str, args):
     excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat', '.mpt'}
     
     # Create output directory for saved plots
-    from .utils import ensure_subdirectory
     out_dir = ensure_subdirectory('Figures', directory)
     
     # Check if --all flag was used with a style file
@@ -750,7 +751,7 @@ def batch_process(directory: str, args):
             elif axis_mode == 'rft':
                 ax_b.set_xlabel("Radial distance (Å)")
             else:
-                ax_b.set_xlabel(r"$2\theta\ (\mathrm{deg})$")
+                ax_b.set_xlabel("2θ (deg)")
             ax_b.set_ylabel("Normalized intensity (a.u.)" if getattr(args, 'norm', False) else "Intensity")
             ax_b.set_title(fname)
             fig_b.subplots_adjust(left=0.18, right=0.97, bottom=0.16, top=0.90)
@@ -889,7 +890,6 @@ def batch_process_ec(directory: str, args):
         print("EC batch mode requires one of: --gc, --cv, --dqdv, or --cpc")
         return
     
-    from .utils import ensure_subdirectory
     out_dir = ensure_subdirectory('Figures', directory)
     
     files = [f for f in sorted(os.listdir(directory), key=natural_sort_key)
@@ -916,7 +916,6 @@ def batch_process_ec(directory: str, args):
         if n_colors <= len(base_colors):
             return base_colors[:n_colors]
         else:
-            import matplotlib.cm as cm
             colors = list(base_colors)  # Start with base colors
             remaining = n_colors - len(base_colors)
             
@@ -1041,7 +1040,6 @@ def batch_process_ec(directory: str, args):
             # ---- CV Mode ----
             elif mode == 'cv':
                 if ext == '.txt':
-                    from .readers import read_biologic_txt_file
                     voltage, current, cycles = read_biologic_txt_file(fpath, mode='cv')
                 elif ext == '.mpt':
                     voltage, current, cycles = read_mpt_file(fpath, mode='cv')

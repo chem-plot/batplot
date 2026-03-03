@@ -38,7 +38,7 @@ import re
 # If rich is not installed, we fall back to plain text (still works fine).
 # ====================================================================
 try:
-    from rich.console import Console
+    from rich.console import Console 
     from rich.markup import escape
     _console = Console()
     _HAS_RICH = True
@@ -184,10 +184,12 @@ def _print_general_help() -> None:
         "  • Format option: use --format png/pdf/jpg/etc to change export format\n\n"
         
         "More help:\n"
-        "  batplot -h xy       # XY file plotting guide\n"
-        "  batplot -h ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
-        "  batplot -h op       # Operando contour guide (also: batplot -h contour)\n"
-        "  batplot -m      # Open the illustrated txt manual with highlights\n\n"
+        "  batplot -v         # Version and release info (with option to show full release notes)\n"
+        "  batplot -h         # This help\n"
+        "  batplot -h xy      # XY file plotting guide\n"
+        "  batplot -h ec      # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
+        "  batplot -h op      # Operando contour guide (also: batplot -h contour)\n"
+        "  batplot -m         # Open the illustrated txt manual with highlights\n\n"
 
         "Contact & Updates:\n"
         "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
@@ -419,6 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ====================================================================
     parser.add_argument("--help", "-h", nargs="?", const="", metavar="topic",
                         help=argparse.SUPPRESS)  # SUPPRESS hides from auto-generated help
+    parser.add_argument("-v", "--version", "-V", action="store_true", dest="version",
+                        help="Show version and current release info, then exit.")
     parser.add_argument("--manual", "-m", action="store_true", help=argparse.SUPPRESS)
     
     # ====================================================================
@@ -520,8 +524,6 @@ def parse_args(argv=None):
         Parsed arguments namespace object with all arguments as attributes.
         Example: args.files, args.interactive, args.mass, etc.
     """
-    import re
-    
     # ====================================================================
     # STEP 1: SCAN FOR CUSTOM --readcol<ext> FLAGS
     # ====================================================================

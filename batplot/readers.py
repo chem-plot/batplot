@@ -31,8 +31,18 @@ Special Features:
 from __future__ import annotations
 
 import csv
-import numpy as np
+import numpy as np  # type: ignore[import-untyped]
 from typing import Tuple, List, Dict, Any, Optional
+import struct
+import zipfile
+import xml.etree.ElementTree as ET
+from io import StringIO
+import re
+import os
+try:
+    import openpyxl  # type: ignore[import-untyped]
+except ImportError:
+    openpyxl = None  # optional dependency
 
 
 def _infer_cycles_from_masks(charge_mask: np.ndarray, discharge_mask: np.ndarray, n_points: int) -> np.ndarray:
@@ -184,11 +194,9 @@ def read_excel_to_csv_like(fname: str, header_row: int = 2, data_start_row: int 
     Returns:
         Tuple of (header_list, rows_list) compatible with CSV processing
     """
-    try:
-        import openpyxl
-    except ImportError:
+    if openpyxl is None:
         raise ImportError("openpyxl is required to read Excel files. Install with: pip install openpyxl")
-    
+
     wb = openpyxl.load_workbook(fname, read_only=True, data_only=True)
     ws = wb.active
     
@@ -468,7 +476,6 @@ def read_bruker_raw(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nda
     """
     if not (fname and str(fname).lower().endswith(".raw")):
         raise ValueError("read_bruker_raw expects a .raw file")
-    import struct
 
     try:
         with open(fname, "rb") as f:
@@ -543,8 +550,6 @@ def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
     """
     if not (fname and str(fname).lower().endswith(".brml")):
         raise ValueError("read_bruker_brml expects a .brml file")
-    import zipfile
-    import xml.etree.ElementTree as ET
 
     def _first_experiment_and_datacontainer(zip_f):
         for name in zip_f.namelist():
@@ -735,7 +740,6 @@ def robust_loadtxt_skipheader(fname: str):
                 data_lines.append(ls_normalized)
     if not data_lines:
         raise ValueError(f"No numeric data found in {fname}")
-    from io import StringIO
     return np.loadtxt(StringIO("\n".join(data_lines)))
 
 
@@ -806,7 +810,6 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: float = None):
         - Column names may be in French or English
         - Simple exports are just tab/space-separated numbers
     """
-    import re
     
     # === STEP 1: Detect file format ===
     # EC-Lab files start with specific marker, simple exports don't
@@ -1517,8 +1520,6 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         - Summary vs detail: Automatically detects summary files (one row per cycle) vs
           detailed files (many points per cycle) and handles appropriately
     """
-    import csv
-    import os
     
     # Check if file is Excel
     _, ext = os.path.splitext(fname)
@@ -2769,7 +2770,6 @@ def read_mpt_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
     Returns:
         (time_h, voltage) where time_h is in hours and voltage in volts
     """
-    import re
     
     # Read header to find number of header lines
     header_lines = 0

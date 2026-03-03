@@ -40,6 +40,21 @@ import numpy as np
 from .utils import _confirm_overwrite
 from .color_utils import ensure_colormap
 from .ui import set_spine_side_color as _set_spine_side_color
+import numpy
+import subprocess
+import sys
+from matplotlib.ticker import MultipleLocator, AutoMinorLocator
+from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator
+from .utils import ensure_exact_case_filename
+import numpy as _np
+from numpy import ma as _ma
+from matplotlib.ticker import AutoMinorLocator, NullFormatter
+from matplotlib.colorbar import Colorbar as _Colorbar
+from matplotlib.ticker import FuncFormatter, MaxNLocator
+from .operando import _draw_operando_cif_ticks
+from matplotlib.colors import to_hex
+from matplotlib.colors import to_hex, to_rgba
+import traceback
 
 
 def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
@@ -78,15 +93,12 @@ def _get_current_numpy_version() -> str:
     """
     # Method 1: Try direct import
     try:
-        import numpy
         return numpy.__version__
     except Exception:
         pass
     
     # Method 2: Try pip show
     try:
-        import subprocess
-        import sys
         result = subprocess.run(
             [sys.executable, '-m', 'pip', 'show', 'numpy'],
             capture_output=True,
@@ -312,6 +324,62 @@ def _get_duplicate_axis_label(ax, which: str, fallback: str = '') -> str:
         except Exception:
             pass
     return fallback or ''
+
+
+def _capture_session_tick_locator(ax):
+    """Capture tick spacing/minor-count locator state for session serialization."""
+    def _step(loc):
+        try:
+            if isinstance(loc, MultipleLocator):
+                return float(loc._edge.step)
+        except Exception:
+            pass
+        return None
+    def _ndivs(loc):
+        try:
+            if isinstance(loc, AutoMinorLocator):
+                return int(loc._ndivs)
+        except Exception:
+            pass
+        return None
+    return {
+        'x_major_step': _step(ax.xaxis.get_major_locator()),
+        'x_minor_step': _step(ax.xaxis.get_minor_locator()),
+        'y_major_step': _step(ax.yaxis.get_major_locator()),
+        'y_minor_step': _step(ax.yaxis.get_minor_locator()),
+        'x_minor_ndivs': _ndivs(ax.xaxis.get_minor_locator()),
+        'y_minor_ndivs': _ndivs(ax.yaxis.get_minor_locator()),
+    }
+
+
+def _restore_session_tick_locator(ax, state):
+    """Restore tick spacing/minor-count locator state saved by _capture_session_tick_locator."""
+    if not state:
+        return
+    for axis_obj, step_key in ((ax.xaxis, 'x_major_step'), (ax.yaxis, 'y_major_step')):
+        val = state.get(step_key)
+        try:
+            if val is not None:
+                axis_obj.set_major_locator(MultipleLocator(float(val)))
+            else:
+                axis_obj.set_major_locator(AutoLocator())
+        except Exception:
+            pass
+    for axis_obj, step_key, ndivs_key in (
+        (ax.xaxis, 'x_minor_step', 'x_minor_ndivs'),
+        (ax.yaxis, 'y_minor_step', 'y_minor_ndivs'),
+    ):
+        step = state.get(step_key)
+        ndivs = state.get(ndivs_key)
+        try:
+            if step is not None:
+                axis_obj.set_minor_locator(MultipleLocator(float(step)))
+            elif ndivs is not None:
+                axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
+            else:
+                axis_obj.set_minor_locator(AutoMinorLocator())
+        except Exception:
+            pass
 
 
 # ------------------------- Generic XY session (existing) -------------------------
@@ -566,6 +634,7 @@ def dump_session(
             'tick_widths': tick_widths,
             'tick_lengths': tick_lengths,
             'tick_direction': getattr(fig, '_tick_direction', 'out'),
+            'tick_locator_state': _capture_session_tick_locator(ax),
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
@@ -610,7 +679,6 @@ def dump_session(
                 print("Session save canceled.")
                 return
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-        from .utils import ensure_exact_case_filename
         target = ensure_exact_case_filename(target)
         
         with open(target, 'wb') as f:
@@ -663,7 +731,6 @@ def dump_operando_session(
             ec_w_in = 0.0
 
         # Operando image state
-        import numpy as _np
         arr = im.get_array()
         # Use masked arrays to preserve NaNs if present
         data = _np.array(arr)  # preserves mask where possible
@@ -847,6 +914,7 @@ def dump_operando_session(
                 'wasd_state': ec_wasd_state,
                 'spines': ec_spines,
                 'ticks': {'widths': ec_ticks},
+                'tick_locator_state': _capture_session_tick_locator(ec_ax),
                 'title_offsets': ec_title_offsets,
                 'stored_ylabel': getattr(ec_ax, '_stored_ylabel', None),  # Save hidden ylabel text
                 'visible': bool(ec_ax.get_visible()),
@@ -883,6 +951,7 @@ def dump_operando_session(
                 'wasd_state': op_wasd_state,
                 'spines': op_spines,
                 'ticks': {'widths': op_ticks},
+                'tick_locator_state': _capture_session_tick_locator(ax),
                 'title_offsets': op_title_offsets,
                 'stored_ylabel': getattr(ax, '_stored_ylabel', None),  # Save hidden ylabel text
             },
@@ -923,7 +992,6 @@ def dump_operando_session(
                 print("Session save canceled.")
                 return
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-        from .utils import ensure_exact_case_filename
         target = ensure_exact_case_filename(target)
         
         with open(target, 'wb') as f:
@@ -1019,7 +1087,6 @@ def load_operando_session(filename: str):
     cbar_ax = fig.add_axes([cb_x0, y0, cb_wf, ax_hf])
 
     # Recreate operando image
-    from numpy import ma as _ma
     op = sess['operando']
     arr = _ma.masked_invalid(op['array'])
     extent = tuple(op['extent']) if op['extent'] is not None else None
@@ -1044,7 +1111,6 @@ def load_operando_session(filename: str):
     if version >= 2:
         op_wasd = op.get('wasd_state')
         if op_wasd and isinstance(op_wasd, dict):
-            from matplotlib.ticker import AutoMinorLocator, NullFormatter
             try:
                 # Apply spines
                 for side in ('top', 'bottom', 'left', 'right'):
@@ -1145,6 +1211,12 @@ def load_operando_session(filename: str):
             ax._right_ylabel_manual_offset_y_pts = float(op_title_offsets.get('right_y', 0.0) or 0.0)
     except Exception:
         pass
+
+    # Restore tick locator state for operando ax
+    try:
+        _restore_session_tick_locator(ax, op.get('tick_locator_state'))
+    except Exception:
+        pass
         
         # Apply operando spines
         op_spines = op.get('spines', {})
@@ -1184,7 +1256,6 @@ def load_operando_session(filename: str):
                 pass
 
     # Colorbar
-    from matplotlib.colorbar import Colorbar as _Colorbar
     cbar = _Colorbar(cbar_ax, im)
     cbar.ax.yaxis.set_ticks_position('left')
     cbar.ax.yaxis.set_label_position('left')
@@ -1254,7 +1325,6 @@ def load_operando_session(filename: str):
         if version >= 2:
             ec_wasd = ec.get('wasd_state')
             if ec_wasd and isinstance(ec_wasd, dict):
-                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                 try:
                     # Apply spines
                     for side in ('top', 'bottom', 'left', 'right'):
@@ -1335,7 +1405,6 @@ def load_operando_session(filename: str):
         if mode == 'ions':
             try:
                 # Rebuild ions formatter based on stored ions array if present; else leave time labels
-                import numpy as _np
                 t = _np.asarray(th, float)
                 ions_abs = ec.get('ions_abs')
                 ion_params = ec.get('ion_params')
@@ -1357,7 +1426,6 @@ def load_operando_session(filename: str):
                 if ions_abs is not None and t is not None and len(ions_abs) == len(t):
                     setattr(ec_ax, '_ions_abs', _np.asarray(ions_abs, float))
                     # Install formatter and label
-                    from matplotlib.ticker import FuncFormatter, MaxNLocator
                     y0, y1 = ec_ax.get_ylim()
                     ions_y0 = float(_np.interp(y0, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
                     ions_y1 = float(_np.interp(y1, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
@@ -1462,6 +1530,11 @@ def load_operando_session(filename: str):
                     if ec_tick_widths.get('y_minor'): ec_ax.tick_params(axis='y', which='minor', width=ec_tick_widths['y_minor'])
                 except Exception:
                     pass
+            # Restore tick locator state for ec_ax
+            try:
+                _restore_session_tick_locator(ec_ax, ec.get('tick_locator_state'))
+            except Exception:
+                pass
 
     # Persist fixed inch parameters from loaded session to attributes
     # This ensures interactive menu can read correct values
@@ -1551,7 +1624,6 @@ def load_operando_session(filename: str):
     try:
         cif = sess.get('cif')
         if cif and cif.get('tick_series'):
-            from .operando import _draw_operando_cif_ticks
             ax._operando_cif_tick_series = cif['tick_series']
             ax._operando_cif_hkl_label_map = cif.get('hkl_label_map', {})
             fig._operando_cif_show_hkl = bool(cif.get('show_hkl', False))
@@ -1638,11 +1710,9 @@ def _ec_cycle_lines_to_lines_state(cycle_lines: Dict[int, Dict[str, Any]]) -> Di
                 try:
                     color_raw = ln.get_color()
                     try:
-                        from matplotlib.colors import to_hex
                         color_hex = to_hex(color_raw)
                     except Exception:
                         try:
-                            from matplotlib.colors import to_hex, to_rgba
                             color_hex = to_hex(to_rgba(color_raw))
                         except Exception:
                             color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
@@ -1667,11 +1737,9 @@ def _ec_cycle_lines_to_lines_state(cycle_lines: Dict[int, Dict[str, Any]]) -> Di
             try:
                 color_raw = ln.get_color()
                 try:
-                    from matplotlib.colors import to_hex
                     color_hex = to_hex(color_raw)
                 except Exception:
                     try:
-                        from matplotlib.colors import to_hex, to_rgba
                         color_hex = to_hex(to_rgba(color_raw))
                     except Exception:
                         color_hex = color_raw if isinstance(color_raw, str) else 'tab:blue'
@@ -1858,6 +1926,7 @@ def dump_ec_session(
             'tick_state': tick_state,
             'tick_widths': tick_widths,
             'tick_direction': tick_direction,
+            'tick_locator_state': _capture_session_tick_locator(ax),
             'spines': spines_state,
             'titles': titles,
             'title_offsets': title_offsets,
@@ -2182,7 +2251,6 @@ def load_ec_session(filename: str):
     if version >= 2:
         wasd = sess.get('wasd_state')
         if wasd and isinstance(wasd, dict):
-            from matplotlib.ticker import AutoMinorLocator, NullFormatter
             try:
                 # Apply spines
                 for side in ('top', 'bottom', 'left', 'right'):
@@ -2247,7 +2315,13 @@ def load_ec_session(filename: str):
                 ax.tick_params(axis='both', which='both', direction=tick_direction)
         except Exception:
             pass
-        
+
+        # Restore tick spacing and minor count (t > n and t > m commands)
+        try:
+            _restore_session_tick_locator(ax, sess.get('tick_locator_state'))
+        except Exception:
+            pass
+
         # Restore grid state
         try:
             grid_enabled = sess.get('grid', False)
@@ -2279,7 +2353,6 @@ def load_ec_session(filename: str):
                            right=tick_state.get('ry', False), labelright=tick_state.get('ry', False))
             # Minor ticks
             if tick_state.get('mbx') or tick_state.get('mtx'):
-                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor',
@@ -2289,7 +2362,6 @@ def load_ec_session(filename: str):
             else:
                 ax.tick_params(axis='x', which='minor', bottom=False, top=False, labelbottom=False, labeltop=False)
             if tick_state.get('mly') or tick_state.get('mry'):
-                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                 ax.yaxis.set_minor_locator(AutoMinorLocator())
                 ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor',
@@ -2504,7 +2576,6 @@ def dump_cpc_session(
         skip_confirm: If True, skip overwrite confirmation (already handled by caller).
     """
     try:
-        import numpy as _np
         fig_w, fig_h = map(float, fig.get_size_inches())
         dpi = int(fig.dpi)
         
@@ -2525,7 +2596,6 @@ def dump_cpc_session(
         # Colors and sizes
         def _color_of(sc):
             try:
-                from matplotlib.colors import to_hex
                 arr = getattr(sc, 'get_facecolors', lambda: None)()
                 if arr is not None and len(arr):
                     return to_hex(arr[0])
@@ -2704,6 +2774,8 @@ def dump_cpc_session(
             },
             'wasd_state': wasd_state,
             'tick_widths': tick_widths,
+            'tick_locator_state_ax': _capture_session_tick_locator(ax),
+            'tick_locator_state_ax2': _capture_session_tick_locator(ax2),
             'stored_titles': stored_titles,
             'title_offsets': title_offsets,
             'font': {
@@ -2904,7 +2976,6 @@ def load_cpc_session(filename: str):
         dh = sr.get('discharge', {})
         ef = sr.get('efficiency', {})
         def _mk_sc(axX, rec, default_marker='o'):
-            import numpy as _np
             x_val = rec.get('x')
             x = _np.asarray(x_val if x_val is not None else [], float)
             y_val = rec.get('y')
@@ -3027,6 +3098,13 @@ def load_cpc_session(filename: str):
                 ax2.tick_params(axis='both', which='both', direction=tick_direction)
         except Exception:
             pass
+
+        # Restore tick locator state (spacing + minor count) for ax and ax2
+        try:
+            _restore_session_tick_locator(ax, sess.get('tick_locator_state_ax'))
+            _restore_session_tick_locator(ax2, sess.get('tick_locator_state_ax2'))
+        except Exception:
+            pass
         
         # Restore grid state
         try:
@@ -3083,7 +3161,6 @@ def load_cpc_session(filename: str):
                 fig._cpc_wasd_state = wasd_state
                 
                 # Apply WASD state
-                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                 
                 # Spines
                 if 'top' in wasd_state:
@@ -3272,7 +3349,6 @@ def load_cpc_session(filename: str):
                 pass
         return fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data
     except Exception as e:
-        import traceback
         print(f"Error loading CPC session: {e}")
         traceback.print_exc()
         return None

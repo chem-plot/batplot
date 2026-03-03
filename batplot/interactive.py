@@ -15,8 +15,12 @@ from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator
+from matplotlib.ticker import (
+    AutoMinorLocator, AutoLocator, MultipleLocator,
+    NullFormatter, NullLocator,
+)
 from matplotlib import colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
 
 from .plotting import update_labels
 from .utils import (
@@ -60,6 +64,15 @@ from .color_utils import (
     _CUSTOM_CMAPS,
 )
 from .config import load_config, save_config
+import re
+from .style import export_style_config as _export_style_config
+import sys as _sys_snap
+import sys as _sys_vis
+from .utils import ensure_exact_case_filename
+import matplotlib.cm as _cm
+import importlib as _il
+import traceback
+import re as _re
 
 
 class _FilterIMKWarning:
@@ -192,7 +205,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     
     def colorize_prompt(text):
         """Colorize commands within input prompts. Handles formats like (s=size, f=family, q=return) or (y/n) or (q=cancel)."""
-        import re
         # Pattern to match parenthesized command lists like (s=size, f=family, q=return) or (y/n) or (m/p/s/t/q) or (q=cancel)
         pattern = r'\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)'
         
@@ -236,7 +248,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     
     def colorize_inline_commands(text):
         """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
-        import re
         # Color quoted command examples (like 's2 w5 a4', 'w2 w5', or 'all magma_r')
         text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
         # Color specific known single-letter commands: q, i, l, when they appear as standalone commands
@@ -247,20 +258,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
     is_diffraction = use_Q or (not use_r and not use_E and not use_k and not use_rft)  # 2θ or Q
     def print_main_menu():
-        has_cif = False
-        try:
-            # Check for CIF files in args.files (handle colon syntax like file.cif:0.25448)
-            has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
-            # Also check if CIF tick series exists (more reliable)
-            if not has_cif and _bp is not None:
-                has_cif = bool(getattr(_bp, 'cif_tick_series', None))
-        except Exception:
-            pass
         col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend", "sm: smooth"]
-        if has_cif:
-            col1.append("z: hkl")
-            col1.append("j: CIF titles")
-        col2 = ["a: rearrange", "o: offset", "r: rename", "x: change X", "y: change Y", "d: derivative"]
+        # Place CIF submenu entry under Geometries; always show it so users
+        # discover CIF support even before adding CIF files.
+        col2 = ["a: rearrange", "o: offset", "r: rename", "x: change X", "y: change Y", "d: derivative", "cif: CIF ticks"]
         col3 = ["v: find peaks", "n: crosshair", "p: print(export) style/geom", "i: import style/geom", "e: export figure", "s: save project", "b: undo", "q: quit"]
 
         # Conditional overwrite shortcuts under (Options)
@@ -863,9 +864,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
     # NEW helper (was referenced in 'h' menu but not defined previously)
     def print_tick_state():
+        _C = '\033[96m'; _R = '\033[0m'
         def onoff(v):
             return 'ON ' if bool(v) else 'off'
-        summary = []
         sides = (
             ('bottom',
              get_spine_visible('bottom'),
@@ -892,9 +893,43 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
              tick_state.get('r_labels', False),
              bool(getattr(ax, '_right_ylabel_on', False))),
         )
-        print(colorize_inline_commands("State (per side: spine, major, minor, labels, title):"))
+        print(f"\033[1mToggle axes state:\033[0m")
+        print(f"  {'Side':<7}  spine  major  minor  labels title")
         for name, spine, mj, mn, lbl, title in sides:
-            print(colorize_inline_commands(f"  {name:<6}: spine={onoff(spine)} major={onoff(mj)} minor={onoff(mn)} labels={onoff(lbl)} title={onoff(title)}"))
+            print(f"  {_C}{name:<7}{_R} {onoff(spine)}  {onoff(mj)}   {onoff(mn)}   {onoff(lbl)}  {onoff(title)}")
+        # Tick direction
+        tick_dir = getattr(fig, '_tick_direction', 'out')
+        print(f"  Tick direction  : {_C}{tick_dir}{_R}")
+        # Tick lengths
+        tl = getattr(fig, '_tick_lengths', {}) or {}
+        maj_l = tl.get('major')
+        min_l = tl.get('minor')
+        if maj_l is not None:
+            print(f"  Tick length     : {_C}major={maj_l:.2g}{_R}  {_C}minor={min_l:.2g}{_R}" if min_l is not None else f"  Tick length     : {_C}major={maj_l:.2g}{_R}")
+        else:
+            print(f"  Tick length     : default")
+        # Tick spacing
+        def _sp_str(loc):
+            try:
+                if isinstance(loc, MultipleLocator):
+                    return str(loc._edge.step)
+                return "auto"
+            except Exception:
+                return "auto"
+        def _mn_str(loc):
+            try:
+                if isinstance(loc, AutoMinorLocator):
+                    n = loc._ndivs
+                    return f"{n-1}/interval"
+                if isinstance(loc, NullLocator):
+                    return "off"
+                if isinstance(loc, MultipleLocator):
+                    return f"step={loc._edge.step}"
+                return "auto"
+            except Exception:
+                return "auto"
+        print(f"  Tick spacing    : {_C}x{_R}={_sp_str(ax.xaxis.get_major_locator())}  {_C}y{_R}={_sp_str(ax.yaxis.get_major_locator())}")
+        print(f"  Minor count     : {_C}x{_R}={_mn_str(ax.xaxis.get_minor_locator())}  {_C}y{_R}={_mn_str(ax.yaxis.get_minor_locator())}")
 
     # NEW: style / diagnostics printer (clean version)
     def print_style_info():
@@ -926,7 +961,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     def export_style_config(filename, base_path=None, overwrite_path=None, force_kind=None):
         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
         show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
-        from .style import export_style_config as _export_style_config
         return _export_style_config(
             filename,
             fig,
@@ -1445,6 +1479,70 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             delattr(fig, '_derivative_order')
         return (reset_count > 0, reset_count, total_points)
 
+    def _capture_tick_spacing(ax_obj):
+        """Return {x_major, x_minor, y_major, y_minor} step sizes, or None if auto."""
+        def _step(locator):
+            try:
+                if isinstance(locator, MultipleLocator):
+                    return float(locator._edge.step)
+            except Exception:
+                pass
+            return None
+        return {
+            'x_major': _step(ax_obj.xaxis.get_major_locator()),
+            'x_minor': _step(ax_obj.xaxis.get_minor_locator()),
+            'y_major': _step(ax_obj.yaxis.get_major_locator()),
+            'y_minor': _step(ax_obj.yaxis.get_minor_locator()),
+        }
+
+    def _restore_tick_spacing(ax_obj, spacing):
+        """Restore tick spacing from a dict captured by _capture_tick_spacing."""
+        if not spacing:
+            return
+        for axis_name, locator_setter, is_minor in (
+            ('x_major', ax_obj.xaxis.set_major_locator, False),
+            ('x_minor', ax_obj.xaxis.set_minor_locator, True),
+            ('y_major', ax_obj.yaxis.set_major_locator, False),
+            ('y_minor', ax_obj.yaxis.set_minor_locator, True),
+        ):
+            val = spacing.get(axis_name)
+            if val is not None:
+                try:
+                    locator_setter(MultipleLocator(float(val)))
+                except Exception:
+                    pass
+            else:
+                try:
+                    locator_setter(AutoMinorLocator() if is_minor else AutoLocator())
+                except Exception:
+                    pass
+
+    def _capture_tick_minor_count(ax_obj):
+        """Return {x, y} AutoMinorLocator ndivs, or None if not AutoMinorLocator."""
+        def _ndivs(locator):
+            try:
+                if isinstance(locator, AutoMinorLocator):
+                    return int(locator._ndivs)
+            except Exception:
+                pass
+            return None
+        return {
+            'x': _ndivs(ax_obj.xaxis.get_minor_locator()),
+            'y': _ndivs(ax_obj.yaxis.get_minor_locator()),
+        }
+
+    def _restore_tick_minor_count(ax_obj, counts):
+        """Restore minor tick count from a dict captured by _capture_tick_minor_count."""
+        if not counts:
+            return
+        for axis_obj, key in ((ax_obj.xaxis, 'x'), (ax_obj.yaxis, 'y')):
+            val = counts.get(key)
+            if val is not None:
+                try:
+                    axis_obj.set_minor_locator(AutoMinorLocator(int(val)))
+                except Exception:
+                    pass
+
     def push_state(note=""):
         """Snapshot current editable state (before a modifying action)."""
         try:
@@ -1496,6 +1594,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 },
                 "tick_lengths": dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
                 "tick_direction": getattr(fig, '_tick_direction', 'out'),
+                "tick_spacing": _capture_tick_spacing(ax),
+                "tick_minor_count": _capture_tick_minor_count(ax),
                 "cif_tick_series": (list(getattr(_bp, 'cif_tick_series')) if (_bp is not None and hasattr(_bp, 'cif_tick_series')) else None),
                 "show_cif_hkl": (bool(getattr(_bp, 'show_cif_hkl')) if _bp is not None and hasattr(_bp, 'show_cif_hkl') else False),
                 "show_cif_titles": (bool(getattr(_bp, 'show_cif_titles')) if _bp is not None and hasattr(_bp, 'show_cif_titles') else True),
@@ -1504,6 +1604,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 "label_anchor_left": getattr(fig, '_label_anchor_left', False),
                 "grid": ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
             }
+            # Optional per-set CIF visibility state for 1D mode
+            try:
+                _bp_module_snap = _sys_snap.modules.get('__main__')
+                if _bp_module_snap is not None and hasattr(_bp_module_snap, 'cif_set_visible'):
+                    snap["cif_set_visible"] = list(getattr(_bp_module_snap, 'cif_set_visible') or [])
+            except Exception:
+                pass
             # Line + data arrays
             for i, ln in enumerate(ax.lines):
                 snap["lines"].append({
@@ -1736,6 +1843,18 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             except Exception:
                 pass
 
+            # Tick spacing (n command)
+            try:
+                _restore_tick_spacing(ax, snap.get("tick_spacing"))
+            except Exception:
+                pass
+
+            # Minor tick count (m command)
+            try:
+                _restore_tick_minor_count(ax, snap.get("tick_minor_count"))
+            except Exception:
+                pass
+
             # Labels list
             labels[:] = snap["labels"]
 
@@ -1887,6 +2006,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         pass
                 except Exception:
                     pass
+            # Restore CIF per-set visibility if present
+            if 'cif_set_visible' in snap:
+                try:
+                    _bp_module = sys.modules.get('__main__')
+                    if _bp_module is not None:
+                        _bp_module.cif_set_visible = list(snap['cif_set_visible'])
+                except Exception:
+                    pass
             # Redraw CIF ticks after restoration if available
             if hasattr(ax, '_cif_draw_func'):
                 try:
@@ -1948,52 +2075,387 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 continue
             else:
                 continue
-        elif key == 'z':  # toggle hkl labels on CIF ticks (non-blocking)
-            # Check if CIF files exist before allowing this command
-            has_cif = False
+        elif key in ('cif', 'z', 'j'):
+            # Unified CIF ticks submenu (mirrors operando 'c' → CIF menu).
+            # Always expose the command; if no CIF data is present, show guidance.
+            cif_series = None
             try:
-                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
-                if not has_cif and _bp is not None:
-                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+                if _bp is not None and hasattr(_bp, 'cif_tick_series'):
+                    cif_series = getattr(_bp, 'cif_tick_series')
             except Exception:
-                pass
+                cif_series = None
+            has_cif = bool(cif_series)
             if not has_cif:
-                print("Unknown option.")
+                print("\nNo CIF tick labels are available.")
+                print("To enable CIF ticks, include one or more CIF files when launching batplot, e.g.:")
+                print("  batplot data.xy phase.cif:1.5406 --interactive")
+                print("You can append ':wavelength' (in Å) to each CIF filename to set its wavelength.")
                 continue
-            try:
-                push_state("toggle-cif-hkl")
-                # Flip visibility flag in batplot module
-                cur = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
-                new_state = not cur
-                if _bp is not None:
-                    setattr(_bp, 'show_cif_hkl', new_state)
-                # Also store in __main__ module so draw function can access it
-                try:
-                    _bp_module = sys.modules.get('__main__')
-                    if _bp_module is not None:
-                        setattr(_bp_module, 'show_cif_hkl', new_state)
-                except Exception:
-                    pass
-                # Avoid re-entrant extension while redrawing
-                prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
-                if _bp is not None:
-                    setattr(_bp, 'cif_extend_suspended', True)
-                if hasattr(ax, '_cif_draw_func'):
-                    ax._cif_draw_func()
-                if _bp is not None:
-                    setattr(_bp, 'cif_extend_suspended', prev_ext)
-                # Count visible labels
-                n_labels = 0
-                if bool(getattr(_bp, 'show_cif_hkl', False)) and hasattr(ax, '_cif_tick_art'):
-                    for art in getattr(ax, '_cif_tick_art'):
+
+            # Local state mirrors operando CIF submenu: hkl and title visibility flags.
+            show_hkl = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
+            show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
+            while True:
+                print("\n\033[1mCIF tick labels:\033[0m")
+                hkl_desc = f"z: toggle hkl labels (currently {'on' if show_hkl else 'off'})"
+                titles_desc = f"t: toggle CIF titles (currently {'on' if show_titles else 'off'})"
+                order_desc = "v: change CIF vertical order (sequence of rows)"
+                print("  " + colorize_menu(hkl_desc))
+                # Accept both 'j' (legacy) and 't' (to match operando) for title toggle
+                print("  " + colorize_menu(titles_desc))
+                print("  " + colorize_menu(order_desc))
+                print("  " + colorize_menu("c: CIF color (per set)"))
+                print("  " + colorize_menu("x: show/hide CIF set"))
+                print("  " + colorize_menu("r: rename CIF set label"))
+                print("  " + colorize_menu("q: back to main menu"))
+                sub = _safe_input("cif> ").strip().lower()
+                if not sub or sub == 'q':
+                    break
+                if sub == 'z':
+                    try:
+                        push_state("toggle-cif-hkl")
+                    except Exception:
+                        pass
+                    try:
+                        cur = bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False
+                        new_state = not cur
+                        if _bp is not None:
+                            setattr(_bp, 'show_cif_hkl', new_state)
                         try:
-                            if hasattr(art, 'get_text') and '(' in art.get_text():
-                                n_labels += 1
+                            _bp_module = sys.modules.get('__main__')
+                            if _bp_module is not None:
+                                setattr(_bp_module, 'show_cif_hkl', new_state)
                         except Exception:
                             pass
-                print(f"CIF hkl labels {'ON' if bool(getattr(_bp,'show_cif_hkl', False)) else 'OFF'} (visible labels: {n_labels}).")
-            except Exception as e:
-                print(f"Error toggling hkl labels: {e}")
+                        prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', True)
+                        if hasattr(ax, '_cif_draw_func'):
+                            ax._cif_draw_func()
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', prev_ext)
+                        n_labels = 0
+                        if bool(getattr(_bp, 'show_cif_hkl', False)) and hasattr(ax, '_cif_tick_art'):
+                            for art in getattr(ax, '_cif_tick_art'):
+                                try:
+                                    if hasattr(art, 'get_text') and '(' in art.get_text():
+                                        n_labels += 1
+                                except Exception:
+                                    pass
+                        show_hkl = bool(getattr(_bp, 'show_cif_hkl', False))
+                        print(f"CIF hkl labels {'ON' if show_hkl else 'OFF'} (visible labels: {n_labels}).")
+                    except Exception as e:
+                        print(f"Error toggling hkl labels: {e}")
+                elif sub == 't':
+                    try:
+                        push_state("toggle-cif-titles")
+                    except Exception:
+                        pass
+                    try:
+                        prev_xlim = ax.get_xlim()
+                        prev_ylim = ax.get_ylim()
+                        cur = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
+                        new_state = not cur
+                        if _bp is not None:
+                            setattr(_bp, 'show_cif_titles', new_state)
+                        fig._bp_show_cif_titles = new_state
+                        try:
+                            _bp_module = sys.modules.get('__main__')
+                            if _bp_module is not None:
+                                setattr(_bp_module, 'show_cif_titles', new_state)
+                        except Exception:
+                            pass
+                        prev_ext = bool(getattr(_bp, 'cif_extend_suspended', False)) if _bp is not None else False
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', True)
+                        if hasattr(ax, '_cif_draw_func'):
+                            ax._cif_draw_func()
+                        if _bp is not None:
+                            setattr(_bp, 'cif_extend_suspended', prev_ext)
+                        # Restore limits to prevent drift if draw function adjusted them unexpectedly
+                        try:
+                            ax.set_xlim(prev_xlim)
+                            ax.set_ylim(prev_ylim)
+                        except Exception:
+                            pass
+                        show_titles = new_state
+                        print(f"CIF title labels {'ON' if new_state else 'OFF'}.")
+                    except Exception as e:
+                        print(f"Error toggling CIF titles: {e}")
+                elif sub == 'v':
+                    # Reorder CIF series vertically by changing sequence in cif_tick_series.
+                    try:
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets to reorder.")
+                        else:
+                            print("Current CIF order (top to bottom):")
+                            for i, (lab, fname, *_rest) in enumerate(cts):
+                                print(f"  {i+1}: {lab}")
+                            seq = _safe_input("New order (comma-separated indices, e.g. 2,1,3; q=cancel): ").strip().lower()
+                            if not seq or seq == 'q':
+                                continue
+                            try:
+                                parts = [int(s.strip()) for s in seq.split(',') if s.strip()]
+                            except ValueError:
+                                print("Invalid sequence. Use numbers separated by commas, e.g. 2,1,3.")
+                                continue
+                            n = len(cts)
+                            if len(parts) != n or sorted(parts) != list(range(1, n + 1)):
+                                print(f"Sequence must be a permutation of 1..{n}.")
+                                continue
+                            try:
+                                push_state("cif-reorder")
+                            except Exception:
+                                pass
+                            new_cts = [cts[i - 1] for i in parts]
+                            if _bp is not None:
+                                setattr(_bp, 'cif_tick_series', new_cts)
+                            if hasattr(ax, '_cif_draw_func'):
+                                ax._cif_draw_func()
+                            print("Updated CIF vertical order.")
+                    except Exception as e:
+                        print(f"Error reordering CIF sets: {e}")
+                elif sub == 'c':
+                    # CIF colors: support per-set mappings and palette-like tokens, mirroring main color menu behavior.
+                    try:
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets to recolor.")
+                        else:
+                            # Show current CIF sets and colors
+                            while True:
+                                _C = '\033[96m'; _R = '\033[0m'
+                                print("CIF color (per set).")
+                                for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
+                                    print(f"  {i+1}: {color_block(col)}  {lab}")
+                                print("Examples:")
+                                print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
+                                print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
+                                print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
+                                print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
+                                line = _safe_input("Enter mappings or range+palette (q=back): ").strip()
+                                if not line or line.lower() == 'q':
+                                    break
+                                tokens = line.split()
+                                # Decide mode: if any token contains ':', treat as manual index:color pairs.
+                                if any(':' in t for t in tokens):
+                                    # Manual CIF index:color pairs, e.g. 1:red 2:u3
+                                    try:
+                                        push_state("cif-color")
+                                    except Exception:
+                                        pass
+                                    pairs = []
+                                    for tok in tokens:
+                                        if ':' not in tok:
+                                            print(f"Skip malformed token: {tok}")
+                                            continue
+                                        idx_str, color_spec = tok.split(":", 1)
+                                        pairs.append((idx_str, color_spec))
+                                    for idx_str, color_spec in pairs:
+                                        try:
+                                            idx = int(idx_str) - 1
+                                        except ValueError:
+                                            print(f"Bad index: {idx_str}")
+                                            continue
+                                        if not (0 <= idx < len(cts)):
+                                            print(f"Index out of range: {idx_str}")
+                                            continue
+                                        try:
+                                            resolved = resolve_color_token(color_spec, fig)
+                                        except Exception:
+                                            resolved = color_spec
+                                        lab, fname, peaksQ, wl_e, qmax, _old = cts[idx]
+                                        cts[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
+                                    if _bp is not None:
+                                        setattr(_bp, 'cif_tick_series', cts)
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                                else:
+                                    # Palette mode: treat input as "<range> <palette>" similar to main color menu.
+                                    parts = tokens
+                                    if len(parts) < 2:
+                                        print("Need range(s) and palette (e.g., '1-3 viridis' or 'all magma_r').")
+                                        continue
+                                    range_part = " ".join(parts[:-1]).replace(" ", "")
+                                    palette_token = parts[-1]
+                                    # Resolve palette token: number or name, with optional _r suffix.
+                                    available = list(_CUSTOM_CMAPS.keys()) + list(plt.colormaps())
+                                    palette_name = None
+                                    # If numeric, map to a small predefined list as in main menu
+                                    base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
+                                    extras = []
+                                    if 'turbo' in plt.colormaps():
+                                        extras.append('turbo')
+                                    for extra in ('batlowK', 'batlowW'):
+                                        if ensure_colormap(extra):
+                                            extras.append(extra)
+                                    palette_options = base_palettes + extras[:3]
+                                    palette_index = {str(i): name for i, name in enumerate(palette_options, 1)}
+                                    def _resolve_palette_token(token: str) -> str:
+                                        suffix = ''
+                                        base = token
+                                        if token.lower().endswith('_r'):
+                                            suffix = '_r'
+                                            base = token[:-2]
+                                        if base in palette_index:
+                                            return palette_index[base] + suffix
+                                        return token
+                                    palette_name = _resolve_palette_token(palette_token)
+                                    # Check palette availability
+                                    if palette_name not in available and not ensure_colormap(palette_name):
+                                        print(f"Unknown palette '{palette_name}'.")
+                                        continue
+                                    def _parse_ranges(spec: str, total: int):
+                                        spec = spec.lower()
+                                        if spec == 'all':
+                                            return list(range(total))
+                                        result = set()
+                                        tokens_r = spec.split(',')
+                                        for tok in tokens_r:
+                                            tok = tok.strip()
+                                            if not tok:
+                                                continue
+                                            if '-' in tok:
+                                                try:
+                                                    a, b = tok.split('-', 1)
+                                                    start = int(a) - 1
+                                                    end = int(b) - 1
+                                                    if start > end:
+                                                        start, end = end, start
+                                                    for i in range(start, end + 1):
+                                                        if 0 <= i < total:
+                                                            result.add(i)
+                                                except ValueError:
+                                                    print(f"Bad range token: {tok}")
+                                            else:
+                                                try:
+                                                    i = int(tok) - 1
+                                                    if 0 <= i < total:
+                                                        result.add(i)
+                                                    else:
+                                                        print(f"Index out of range: {tok}")
+                                                except ValueError:
+                                                    print(f"Bad index token: {tok}")
+                                        return sorted(result)
+                                    indices = _parse_ranges(range_part, len(cts))
+                                    if not indices:
+                                        print("No valid indices parsed.")
+                                        continue
+                                    try:
+                                        cmap = ensure_colormap(palette_name) or plt.get_cmap(palette_name)
+                                    except Exception:
+                                        cmap = None
+                                    if cmap is None:
+                                        print(f"Could not load palette '{palette_name}'.")
+                                        continue
+                                    try:
+                                        push_state("cif-color-palette")
+                                    except Exception:
+                                        pass
+                                    nsel = len(indices)
+                                    low_clip = 0.08
+                                    high_clip = 0.85
+                                    if nsel == 1:
+                                        colors = [cmap(0.55)]
+                                    elif nsel == 2:
+                                        colors = [cmap(low_clip), cmap(high_clip)]
+                                    else:
+                                        positions = np.linspace(low_clip, high_clip, nsel)
+                                        colors = [cmap(p) for p in positions]
+                                    for c_idx, idx in enumerate(indices):
+                                        lab, fname, peaksQ, wl_e, qmax, _old = cts[idx]
+                                        col = colors[c_idx]
+                                        # Convert RGBA to hex or keep as RGBA tuple
+                                        try:
+                                            col_val = mcolors.to_hex(col)
+                                        except Exception:
+                                            col_val = col
+                                        cts[idx] = (lab, fname, peaksQ, wl_e, qmax, col_val)
+                                    if _bp is not None:
+                                        setattr(_bp, 'cif_tick_series', cts)
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                    except Exception as e:
+                        print(f"Error changing CIF colors: {e}")
+                elif sub == 'x':
+                    # Per-set CIF visibility: maintain a boolean list in __main__.cif_set_visible.
+                    try:
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets to show/hide.")
+                        else:
+                            _bp_module = _sys_vis.modules.get('__main__')
+                            vis = []
+                            if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
+                                try:
+                                    vis = list(getattr(_bp_module, 'cif_set_visible') or [])
+                                except Exception:
+                                    vis = []
+                            if len(vis) < len(cts):
+                                vis = vis + [True] * (len(cts) - len(vis))
+                            while True:
+                                print("CIF set visibility (q=back):")
+                                for i, (lab, fname, *_rest) in enumerate(cts):
+                                    state = "show" if vis[i] else "hide"
+                                    print(f"  {i+1}: {lab} ({state})")
+                                idx_s = _safe_input("Set index to toggle (q=back): ").strip().lower()
+                                if not idx_s or idx_s == 'q':
+                                    break
+                                try:
+                                    idx = int(idx_s) - 1
+                                    if 0 <= idx < len(cts):
+                                        try:
+                                            push_state("cif-visibility")
+                                        except Exception:
+                                            pass
+                                        vis[idx] = not vis[idx]
+                                        if _bp_module is not None:
+                                            _bp_module.cif_set_visible = list(vis)
+                                        if hasattr(ax, '_cif_draw_func'):
+                                            ax._cif_draw_func()
+                                    else:
+                                        print("Invalid index.")
+                                except ValueError:
+                                    print("Invalid index.")
+                    except Exception as e:
+                        print(f"Error toggling CIF visibility: {e}")
+                elif sub == 'r':
+                    # Rename CIF set labels — updates label field in cif_tick_series and redraws.
+                    try:
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets to rename.")
+                        else:
+                            while True:
+                                print("CIF sets (q=back)")
+                                for i, (lab, fname, *_rest) in enumerate(cts):
+                                    print(f"  {i+1}: {lab}")
+                                idx_s = _safe_input("Set index to rename (q=back): ").strip().lower()
+                                if not idx_s or idx_s == 'q':
+                                    break
+                                try:
+                                    idx = int(idx_s) - 1
+                                    if 0 <= idx < len(cts):
+                                        lab, fname, peaksQ, wl_e, qmax, col = cts[idx]
+                                        new_lab = _safe_input(f"New label for set {idx+1} (current: {lab}, blank=cancel): ").strip()
+                                        if not new_lab:
+                                            continue
+                                        push_state("cif-rename")
+                                        cts[idx] = (new_lab, fname, peaksQ, wl_e, qmax, col)
+                                        if _bp is not None:
+                                            setattr(_bp, 'cif_tick_series', cts)
+                                        if hasattr(ax, '_cif_draw_func'):
+                                            ax._cif_draw_func()
+                                        print(f"Set {idx+1} renamed to: {new_lab}")
+                                    else:
+                                        print("Invalid index.")
+                                except ValueError:
+                                    print("Invalid index.")
+                    except Exception as e:
+                        print(f"Error renaming CIF sets: {e}")
+                else:
+                    print("Unknown option.")
             continue
         elif key == 'h':  # legend submenu
             try:
@@ -2188,7 +2650,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print("Canceled.")
                     continue
                 export_target = last_figure_path
-                from .utils import ensure_exact_case_filename
                 export_target = ensure_exact_case_filename(export_target)
                 # Temporarily remove numbering for export
                 for i, txt in enumerate(label_text_objects):
@@ -2379,384 +2840,346 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 has_cif = False
                 try:
-                    # Check for CIF files in args.files (handle colon syntax like file.cif:0.25448)
                     has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
-                    # Also check if CIF tick series exists (more reliable)
                     if not has_cif and _bp is not None:
                         has_cif = bool(getattr(_bp, 'cif_tick_series', None))
                 except Exception:
                     pass
-                while True:
-                    print("\033[1mColor menu:\033[0m")
-                    print(f"  {colorize_menu('m : set curve colors (e.g., 1:red 2:u3 or 1:red 2:#00B006)')}")
-                    print(f"  {colorize_menu('p : apply colormap palette to a range (e.g., 1-3 viridis)')}")
-                    print(f"  {colorize_menu('s : spine/tick colors (e.g., w:red a:#4561F7)')}")
-                    if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
-                        print(f"  {colorize_menu('t : change CIF tick set color (e.g., 1:red 2:#888888)')}")
-                    print(f"  {colorize_menu('u : manage saved colors (use in m/p via number or u#)')}")
-                    print(f"  {colorize_menu('q : return to main menu')}")
-                    sub = _safe_input(colorize_prompt("Choose (m/p/s/t/u/q): ")).strip().lower()
-                    if sub == 'q':
-                        break
-                    if sub == '':
-                        continue
-                    if sub == 'm':
-                        print("Current curves (q to cancel):")
-                        for idx, label in enumerate(labels):
+
+                # Build palette list once
+                _base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
+                _palette_extras = []
+                if 'turbo' in plt.colormaps():
+                    _palette_extras.append('turbo')
+                for _pex in ('batlowK', 'batlowW'):
+                    try:
+                        if _pex in plt.colormaps() or ensure_colormap(_pex):
+                            _palette_extras.append(_pex)
+                    except Exception:
+                        pass
+                _palette_options = _base_palettes + _palette_extras[:3]
+                _palette_index = {str(i): name for i, name in enumerate(_palette_options, 1)}
+                _desc_map = {
+                    'viridis': 'blue→yellow', 'cividis': 'blue→olive',
+                    'plasma': 'purple→yellow', 'inferno': 'dark→bright',
+                    'magma': 'dark→light purple', 'batlow': 'colorblind-friendly',
+                    'turbo': 'vibrant rainbow', 'batlowK': 'dark-light batlow variant',
+                    'batlowW': 'warm batlow variant',
+                }
+
+                def _resolve_pal_token(token):
+                    suffix = '_r' if token.lower().endswith('_r') else ''
+                    base = token[:-2] if suffix else token
+                    return _palette_index.get(base, base) + suffix
+
+                def _apply_palette_to_lines(palette_name, indices):
+                    ensure_colormap(palette_name)
+                    cmap = None
+                    try:
+                        cmap = _cm.get_cmap(palette_name)
+                    except Exception:
+                        pass
+                    if cmap is None and palette_name.lower().startswith('batlow'):
+                        try:
+                            _cmc = _il.import_module('cmcrameri.cm')
+                            _attr = palette_name.lower()
+                            cmap = getattr(_cmc, _attr, None) or getattr(_cmc, 'batlow', None)
+                        except Exception:
+                            pass
+                    if cmap is None:
+                        _base = palette_name.lower().rstrip('_r')
+                        _cc = _CUSTOM_CMAPS.get(_base)
+                        if _cc:
+                            cmap = LinearSegmentedColormap.from_list(_base, _cc, N=256)
+                            if palette_name.lower().endswith('_r'):
+                                cmap = cmap.reversed()
+                    if cmap is None:
+                        print(f"Unknown palette '{palette_name}'.")
+                        return
+                    push_state("color-palette")
+                    nsel = len(indices)
+                    low_clip, high_clip = 0.08, 0.85
+                    if nsel == 1:
+                        colors = [cmap(0.55)]
+                    elif nsel == 2:
+                        colors = [cmap(low_clip), cmap(high_clip)]
+                    else:
+                        colors = [cmap(p) for p in np.linspace(low_clip, high_clip, nsel)]
+                    for c_idx, line_idx in enumerate(indices):
+                        ax.lines[line_idx].set_color(colors[c_idx])
+                    update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    fig.canvas.draw()
+                    try:
+                        applied_preview = color_bar([mcolors.to_hex(c) for c in colors])
+                    except Exception:
+                        applied_preview = ""
+                    print(f"Applied '{palette_name}' to curves: " + ", ".join(str(i+1) for i in indices))
+                    if applied_preview:
+                        print(f"  {applied_preview}")
+                    history = list(getattr(fig, '_curve_palette_history', []))
+                    history.append({'palette': palette_name, 'indices': [i+1 for i in indices], 'low_clip': low_clip, 'high_clip': high_clip})
+                    fig._curve_palette_history = history
+
+                def _parse_ranges(spec, total):
+                    spec = spec.lower().strip()
+                    if spec == 'all':
+                        return list(range(total))
+                    result = set()
+                    for tok in spec.split(','):
+                        tok = tok.strip()
+                        if not tok:
+                            continue
+                        if '-' in tok:
                             try:
-                                current_color = ax.lines[idx].get_color()
-                            except Exception:
-                                current_color = None
-                            print(f"{idx+1}: {color_block(current_color)} {label} ({current_color})")
-                        user_colors = get_user_color_list(fig)
-                        if user_colors:
-                            print("\nSaved colors (refer as number or u#):")
-                            for idx, color in enumerate(user_colors, 1):
-                                print(f"  {idx}: {color_block(color)} {color}")
-                        while True:
-                            color_input = _safe_input("Enter curve+color pairs (e.g., 1:red 2:u3) or q: ").strip()
-                            if not color_input or color_input.lower() == 'q':
-                                break
-                            tokens = color_input.split()
-                            if any(t and ':' not in t for t in tokens):
-                                print("Use curve:color form (e.g., 1:red 2:u3).")
-                            else:
-                                push_state("color-manual")
-                                def _apply_manual_entries(tokens):
-                                    idx_color_pairs = []
-                                    for tok in tokens:
+                                a, b = tok.split('-', 1)
+                                s, e = int(a)-1, int(b)-1
+                                if s > e: s, e = e, s
+                                result.update(i for i in range(s, e+1) if 0 <= i < total)
+                            except ValueError:
+                                print(f"Bad range: {tok}")
+                        else:
+                            try:
+                                i = int(tok)-1
+                                if 0 <= i < total:
+                                    result.add(i)
+                                else:
+                                    print(f"Index out of range: {tok}")
+                            except ValueError:
+                                print(f"Bad index: {tok}")
+                    return sorted(result)
+
+                _spine_keys = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
+
+                while True:
+                    # Header: show current curves
+                    print("\n\033[1mColors>\033[0m  Current curves:")
+                    for idx, label in enumerate(labels):
+                        try:
+                            cur = ax.lines[idx].get_color()
+                        except Exception:
+                            cur = None
+                        print(f"  {idx+1}: {color_block(cur)} {label}")
+                    # Saved user colors
+                    user_colors = get_user_color_list(fig)
+                    if user_colors:
+                        print("Saved colors (refer as number or u#):")
+                        for idx, col in enumerate(user_colors, 1):
+                            print(f"  {idx}: {color_block(col)} {col}")
+                    # Palettes
+                    history = getattr(fig, '_curve_palette_history', [])
+                    cur_pal = history[-1]['palette'] if history else None
+                    if cur_pal:
+                        print(f"Current palette: {cur_pal}")
+                    print("Palettes:")
+                    for idx, name in enumerate(_palette_options, 1):
+                        bar = palette_preview(name)
+                        desc = _desc_map.get(name, '')
+                        print(f"  {idx}. {name}" + (f" - {desc}" if desc else ""))
+                        if bar:
+                            print(f"      {bar}")
+                    _C = '\033[96m'; _R = '\033[0m'
+                    print(f"Spine/tick keys : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                    print(f"Curve colors    : {_C}1:red{_R}  {_C}2:u3{_R}  {_C}3:#00FF00{_R}")
+                    print(f"Palette         : {_C}all viridis{_R}   {_C}1-3 magma_r{_R}   {_C}1-2,4 2{_R}")
+                    print(f"Spine colors    : {_C}w:red{_R}  {_C}a:#4561F7{_R}")
+                    if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
+                        print(f"CIF tick colors : {_C}t{_R} (enter 't' to open CIF color submenu)")
+                    print(f"Other           : {_C}u{_R}=manage saved colors   {_C}q{_R}=back")
+                    line = _safe_input(colorize_prompt("Colors> ")).strip()
+                    if not line or line.lower() == 'q':
+                        break
+                    low = line.lower()
+                    # Special single-key commands
+                    if low == 'u':
+                        manage_user_colors(fig)
+                        continue
+                    if low == 't':
+                        if has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
+                            cts = getattr(_bp, 'cif_tick_series', [])
+                            while True:
+                                _C = '\033[96m'; _R = '\033[0m'
+                                print("CIF color (per set).")
+                                for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
+                                    print(f"  {i+1}: {lab}  color={_C}{col}{_R}")
+                                print("Examples:")
+                                print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
+                                print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
+                                print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
+                                print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
+                                cif_line = _safe_input("Enter mappings or range+palette (q=back): ").strip()
+                                if not cif_line or cif_line.lower() == 'q':
+                                    break
+                                cif_tokens = cif_line.split()
+                                if any(':' in t for t in cif_tokens):
+                                    try:
+                                        push_state("cif-color")
+                                    except Exception:
+                                        pass
+                                    for tok in cif_tokens:
                                         if ':' not in tok:
+                                            print(f"Skip malformed token: {tok}")
                                             continue
-                                        idx_str, color = tok.split(':', 1)
-                                        idx_color_pairs.append((idx_str, color))
-                                    for idx_str, color in idx_color_pairs:
+                                        idx_str, color_spec = tok.split(":", 1)
                                         try:
-                                            line_idx = int(idx_str) - 1
+                                            idx = int(idx_str) - 1
                                         except ValueError:
                                             print(f"Bad index: {idx_str}")
                                             continue
-                                        if not (0 <= line_idx < len(ax.lines)):
+                                        if not (0 <= idx < len(cts)):
                                             print(f"Index out of range: {idx_str}")
                                             continue
-                                        resolved = resolve_color_token(color, fig)
-                                        ax.lines[line_idx].set_color(resolved)
-                                _apply_manual_entries(tokens)
-                                # Update label colors to match new curve colors
-                                update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                                # Manual edits override any palette history
-                                try:
-                                    fig._curve_palette_history = []
-                                except Exception:
-                                    pass
-                            fig.canvas.draw()
-                    elif sub == 'u':
-                        manage_user_colors(fig)
-                        continue
-                    elif sub == 's':
-                        print("Set spine/tick colors (w=top, a=left, s=bottom, d=right).")
-                        print(colorize_inline_commands("Example: w:red a:#4561F7"))
-                        user_colors = get_user_color_list(fig)
-                        if user_colors:
-                            print("\nSaved colors (enter number or u# in place of a color):")
-                            for idx, color in enumerate(user_colors, 1):
-                                print(f"  {idx}: {color_block(color)} {color}")
-                            print("Type 'u' to edit saved colors.")
-                        while True:
-                            line = _safe_input("Enter mappings (e.g., w:red a:#4561F7) or q: ").strip()
-                            if line.lower() == 'u':
-                                manage_user_colors(fig)
-                                continue
-                            if not line or line.lower() == 'q':
-                                break
-                            tokens = line.split()
-                            if any(t and ':' not in t for t in tokens):
-                                print("Use key:color form (e.g., w:red a:#4561F7).")
-                            else:
-                                push_state("color-spine")
-                                key_to_spine = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
-                                pairs = []
-                                for tok in tokens:
-                                    if ':' not in tok:
+                                        try:
+                                            resolved = resolve_color_token(color_spec, fig)
+                                        except Exception:
+                                            resolved = color_spec
+                                        lab, fname, peaksQ, wl_e, qmax, _old = cts[idx]
+                                        cts[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
+                                    if _bp is not None:
+                                        setattr(_bp, 'cif_tick_series', cts)
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                                else:
+                                    parts = cif_tokens
+                                    if len(parts) < 2:
+                                        print("Need range and palette (e.g., 'all viridis' or '1-2 magma_r').")
                                         continue
-                                    key_part, color = tok.split(':', 1)
-                                    pairs.append((key_part.lower(), color))
-                                for key_part, color in pairs:
-                                    if key_part not in key_to_spine:
-                                        print(f"Unknown key: {key_part} (use w/a/s/d)")
+                                    range_part = "".join(parts[:-1])
+                                    palette_token = parts[-1]
+                                    pal_name = _resolve_pal_token(palette_token)
+                                    available = list(_CUSTOM_CMAPS.keys()) + list(plt.colormaps())
+                                    if pal_name not in available and not ensure_colormap(pal_name):
+                                        print(f"Unknown palette '{pal_name}'.")
                                         continue
-                                    spine_name = key_to_spine[key_part]
-                                    if spine_name not in ax.spines:
-                                        print(f"Spine '{spine_name}' not found.")
-                                        continue
-                                    try:
-                                        resolved = resolve_color_token(color, fig)
-                                        print(f"Applying color to side '{spine_name}' only (spine, major/minor ticks, labels, title). Set BATPLOT_DEBUG_SPINE_COLOR=1 for details.")
-                                        _ui_set_spine_side_color(ax, spine_name, resolved, fig=fig)
-                                        if spine_name == 'top':
-                                            position_top_xlabel()
-                                        elif spine_name == 'right':
-                                            position_right_ylabel()
-                                        print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
-                                    except Exception as e:
-                                        print(f"Error setting {spine_name} color: {e}")
-                            fig.canvas.draw()
-                    elif sub == 't' and has_cif and (_bp is not None and getattr(_bp, 'cif_tick_series', None)):
-                        cts = getattr(_bp, 'cif_tick_series', [])
-                        print("Current CIF tick sets:")
-                        for i,(lab, fname, *_rest) in enumerate(cts):
-                            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
-                        while True:
-                            line = _safe_input("Enter mappings (e.g., 1:red 2:#555555) or q: ").strip()
-                            if not line or line.lower() == 'q':
-                                break
-                            mappings = line.split()
-                            for token in mappings:
-                                if ':' not in token:
-                                    print(f"Skip malformed token: {token}")
-                                    continue
-                                idx_s, col = token.split(':',1)
-                                try:
-                                    idx_i = int(idx_s)-1
-                                    if 0 <= idx_i < len(cts):
-                                        lab,fname,peaksQ,wl,qmax_sim,_c = cts[idx_i]
-                                        cts[idx_i] = (lab,fname,peaksQ,wl,qmax_sim,col)
-                                    else:
-                                        print(f"Index out of range: {idx_s}")
-                                except ValueError:
-                                    print(f"Bad index: {idx_s}")
-                            setattr(_bp, 'cif_tick_series', cts)
-                            if hasattr(ax,'_cif_draw_func'):
-                                ax._cif_draw_func()
-                            fig.canvas.draw()
-                    elif sub == 'p':
-                        # Show current palette if one is applied
-                        history = getattr(fig, '_curve_palette_history', [])
-                        current_palette = history[-1]['palette'] if history else None
-                        if current_palette:
-                            print(f"Current palette: {current_palette}")
-                        base_palettes = ['viridis', 'cividis', 'plasma', 'inferno', 'magma', 'batlow']
-                        extras = []
-                        def _palette_available(name: str) -> bool:
-                            if name in plt.colormaps():
-                                return True
-                            lower = name.lower()
-                            if lower.startswith('batlow'):
-                                return ensure_colormap(name)
-                            return False
-                        if 'turbo' in plt.colormaps():
-                            extras.append('turbo')
-                        for extra in ('batlowK', 'batlowW'):
-                            if _palette_available(extra):
-                                extras.append(extra)
-                        palette_options = base_palettes + extras[:3]
-                        desc_map = {
-                            'viridis': 'Perceptually uniform (blue→yellow)',
-                            'cividis': 'Perceptually uniform (blue→olive)',
-                            'plasma': 'Perceptually uniform (purple→yellow)',
-                            'inferno': 'High-contrast (dark→bright)',
-                            'magma': 'Soft dark-to-light purple',
-                            'batlow': 'Colorblind-friendly sequential',
-                            'turbo': 'Vibrant rainbow (Google Turbo)',
-                            'batlowK': 'Dark-to-light variant of batlow',
-                            'batlowW': 'Warm variant of batlow',
-                        }
-                        palette_index = {str(i): name for i, name in enumerate(palette_options, 1)}
-                        print("Common perceptually uniform palettes (numbers optional):")
-                        for idx, name in enumerate(palette_options, 1):
-                            bar = palette_preview(name)
-                            desc = desc_map.get(name, '')
-                            extra = f" - {desc}" if desc else ''
-                            print(f"  {idx}. {name}{extra}")
-                            if bar:
-                                print(f"      {bar}")
-                        print(colorize_inline_commands("Example: 1-4 viridis   or: all magma_r   or: 1-3,5 plasma, _r for reverse"))
-                        while True:
-                            line = _safe_input("Enter range(s) and palette (number or name, e.g., '1-3 2' or 'all 1_r') or q: ").strip()
-                            if not line or line.lower() == 'q':
-                                break
-                            parts = line.split()
-                            if len(parts) < 2:
-                                print("Need range(s) and palette.")
-                            else:
-                                palette_name = parts[-1]
-                                def _resolve_palette_token(token: str) -> str:
-                                    suffix = ''
-                                    base = token
-                                    if token.lower().endswith('_r'):
-                                        suffix = '_r'
-                                        base = token[:-2]
-                                    if base in palette_index:
-                                        return palette_index[base] + suffix
-                                    return token
-                                palette_name = _resolve_palette_token(palette_name)
-                                range_part = " ".join(parts[:-1]).replace(" ", "")
-                                def parse_ranges(spec, total):
-                                    spec = spec.lower()
-                                    if spec == 'all':
-                                        return list(range(total))
-                                    result = set()
-                                    tokens = spec.split(',')
-                                    for tok in tokens:
-                                        if not tok:
-                                            continue
-                                        if '-' in tok:
-                                            try:
-                                                a, b = tok.split('-', 1)
-                                                start = int(a) - 1
-                                                end = int(b) - 1
-                                                if start > end:
-                                                    start, end = end, start
-                                                for i in range(start, end + 1):
+                                    def _cif_parse_ranges(spec, total):
+                                        spec = spec.lower()
+                                        if spec == 'all':
+                                            return list(range(total))
+                                        result = set()
+                                        for tok in spec.split(','):
+                                            tok = tok.strip()
+                                            if not tok:
+                                                continue
+                                            if '-' in tok:
+                                                try:
+                                                    a, b = tok.split('-', 1)
+                                                    s, e = int(a)-1, int(b)-1
+                                                    if s > e: s, e = e, s
+                                                    result.update(i for i in range(s, e+1) if 0 <= i < total)
+                                                except ValueError:
+                                                    print(f"Bad range: {tok}")
+                                            else:
+                                                try:
+                                                    i = int(tok)-1
                                                     if 0 <= i < total:
                                                         result.add(i)
-                                            except ValueError:
-                                                print(f"Bad range token: {tok}")
-                                        else:
-                                            try:
-                                                i = int(tok) - 1
-                                                if 0 <= i < total:
-                                                    result.add(i)
-                                                else:
-                                                    print(f"Index out of range: {tok}")
-                                            except ValueError:
-                                                print(f"Bad index token: {tok}")
-                                    return sorted(result)
-                                indices = parse_ranges(range_part, len(ax.lines))
-                                if not indices:
-                                    print("No valid indices parsed.")
-                                else:
-                                    # ====================================================================
-                                    # APPLY COLOR PALETTE TO MULTIPLE CURVES
-                                    # ====================================================================
-                                    # This section applies a colormap (like 'viridis') to selected curves,
-                                    # assigning each curve a different color that smoothly transitions
-                                    # across the colormap.
-                                    #
-                                    # HOW IT WORKS:
-                                    # 1. Get the continuous colormap (e.g., 'viridis')
-                                    # 2. Sample colors at evenly spaced positions along the colormap
-                                    # 3. Assign each sampled color to a different curve
-                                    #
-                                    # Example with 5 curves and 'viridis':
-                                    #   Curve 1 → position 0.08 → dark purple
-                                    #   Curve 2 → position 0.27 → blue-purple
-                                    #   Curve 3 → position 0.46 → green
-                                    #   Curve 4 → position 0.65 → yellow-green
-                                    #   Curve 5 → position 0.85 → bright yellow
-                                    #
-                                    # WHY CLIP THE RANGE (0.08 to 0.85)?
-                                    # The very start (0.0) and end (1.0) of colormaps are often too dark
-                                    # or too bright. Clipping to 0.08-0.85 gives better visual contrast
-                                    # and ensures all colors are visible.
-                                    # ====================================================================
-                                    
-                                    # Ensure colormap is registered (makes it available for use)
-                                    ensure_colormap(palette_name)
-                                    cmap = None
-                                    
-                                    # STEP 1: Try to get colormap from matplotlib's built-in colormaps
-                                    # This handles standard colormaps like 'viridis', 'plasma', 'inferno', etc.
+                                                except ValueError:
+                                                    print(f"Bad index: {tok}")
+                                        return sorted(result)
+                                    indices = _cif_parse_ranges(range_part, len(cts))
+                                    if not indices:
+                                        print("No valid indices parsed.")
+                                        continue
                                     try:
-                                        import matplotlib.cm as cm
-                                        # Get the continuous colormap (without specifying N)
-                                        # This allows us to sample directly from the continuous colormap
-                                        # without quantization issues
-                                        cmap = cm.get_cmap(palette_name)
-                                    except (ValueError, Exception):
-                                        pass
-                                    
-                                    # STEP 2: Fallback - try cmcrameri package for scientific colormaps
-                                    # cmcrameri provides colorblind-friendly colormaps like 'batlow', 'batlowk', etc.
-                                    if cmap is None and palette_name.lower().startswith("batlow"):
-                                        try:
-                                            import importlib
-                                            cmc = importlib.import_module('cmcrameri.cm')
-                                            attr = palette_name.lower()
-                                            if hasattr(cmc, attr):
-                                                cmap = getattr(cmc, attr)
-                                            elif hasattr(cmc, 'batlow'):
-                                                cmap = getattr(cmc, 'batlow')
-                                        except Exception:
-                                            pass
-                                    
-                                    # STEP 3: Final fallback - create from custom colormaps defined in color_utils
+                                        cmap = ensure_colormap(pal_name) or plt.get_cmap(pal_name)
+                                    except Exception:
+                                        cmap = None
                                     if cmap is None:
-                                        base_name = palette_name.lower()
-                                        # Handle reversed colormaps (remove '_r' suffix)
-                                        if base_name.endswith('_r'):
-                                            base_name = base_name[:-2]
-                                        custom_colors = _CUSTOM_CMAPS.get(base_name)
-                                        if custom_colors:
-                                            from matplotlib.colors import LinearSegmentedColormap
-                                            # Create a continuous colormap by interpolating between custom colors
-                                            # N=256 means create 256 intermediate colors for smooth gradient
-                                            cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
-                                            # If user requested reversed version, reverse it now
-                                            if palette_name.lower().endswith('_r'):
-                                                cmap = cmap.reversed()
-                                    
-                                    # Check if we successfully got a colormap
-                                    if cmap is None:
-                                        print(f"Unknown colormap '{palette_name}'.")
+                                        print(f"Could not load palette '{pal_name}'.")
+                                        continue
+                                    push_state("cif-color-palette")
+                                    nsel = len(indices)
+                                    low_clip, high_clip = 0.08, 0.85
+                                    if nsel == 1:
+                                        cif_colors = [cmap(0.55)]
+                                    elif nsel == 2:
+                                        cif_colors = [cmap(low_clip), cmap(high_clip)]
                                     else:
-                                        # Save current state for undo functionality
-                                        push_state("color-palette")
-                                        
-                                        # Get number of selected curves
-                                        nsel = len(indices)
-                                        
-                                        # Define color sampling range (clipped to avoid too dark/bright extremes)
-                                        low_clip = 0.08   # Start sampling at 8% into colormap (avoids very dark colors)
-                                        high_clip = 0.85  # End sampling at 85% into colormap (avoids very bright colors)
-                                        
-                                        # STEP 4: Sample colors from colormap at evenly spaced positions
-                                        if nsel == 1:
-                                            # Single curve: use middle of colormap (good visibility)
-                                            colors = [cmap(0.55)]
-                                        elif nsel == 2:
-                                            # Two curves: use clipped range endpoints (maximum contrast)
-                                            colors = [cmap(low_clip), cmap(high_clip)]
-                                        else:
-                                            # Multiple curves: sample evenly across clipped range
-                                            # np.linspace creates evenly spaced positions from low_clip to high_clip
-                                            # Example with 5 curves: [0.08, 0.27, 0.46, 0.65, 0.85]
-                                            positions = np.linspace(low_clip, high_clip, nsel)
-                                            # Sample color at each position
-                                            # cmap(position) returns an RGBA color tuple for that position
-                                            colors = [cmap(p) for p in positions]
-                                        
-                                        # STEP 5: Apply colors to the selected curves
-                                        # Loop through selected curve indices and assign corresponding color
-                                        for c_idx, line_idx in enumerate(indices):
-                                            # c_idx = index in colors array (0, 1, 2, ...)
-                                            # line_idx = index of line in ax.lines (the actual matplotlib line object)
-                                            ax.lines[line_idx].set_color(colors[c_idx])
-                                        # Update label colors to match new curve colors
-                                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                                        fig.canvas.draw()
+                                        cif_colors = [cmap(p) for p in np.linspace(low_clip, high_clip, nsel)]
+                                    for c_idx, idx in enumerate(indices):
+                                        lab, fname, peaksQ, wl_e, qmax, _old = cts[idx]
                                         try:
-                                            applied_preview = color_bar([mcolors.to_hex(c) for c in colors])
+                                            col_val = mcolors.to_hex(cif_colors[c_idx])
                                         except Exception:
-                                            applied_preview = ""
-                                        print(f"Applied '{palette_name}' to curves: " +
-                                              ", ".join(str(i+1) for i in indices))
-                                        if applied_preview:
-                                            print(f"  {applied_preview}")
-                                        # Record palette usage for style export
-                                        try:
-                                            history = list(getattr(fig, '_curve_palette_history', []))
-                                        except Exception:
-                                            history = []
-                                        entry = {
-                                            'palette': palette_name,
-                                            'indices': [i + 1 for i in indices],
-                                            'low_clip': low_clip,
-                                            'high_clip': high_clip,
-                                        }
-                                        history.append(entry)
-                                        fig._curve_palette_history = history
-                    else:
-                        print("Unknown color submenu option.")
+                                            col_val = cif_colors[c_idx]
+                                        cts[idx] = (lab, fname, peaksQ, wl_e, qmax, col_val)
+                                    if _bp is not None:
+                                        setattr(_bp, 'cif_tick_series', cts)
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                        else:
+                            print("No CIF tick data present.")
+                        continue
+                    tokens = line.split()
+                    # Detect spine: all tokens are spine-key:color pairs (w/a/s/d prefix)
+                    _is_spine = all(':' in t and t.split(':', 1)[0].lower() in _spine_keys for t in tokens if t)
+                    if _is_spine and tokens:
+                        push_state("color-spine")
+                        for tok in tokens:
+                            key_part, color_spec = tok.split(':', 1)
+                            spine_name = _spine_keys[key_part.lower()]
+                            if spine_name not in ax.spines:
+                                print(f"Spine '{spine_name}' not found.")
+                                continue
+                            try:
+                                resolved = resolve_color_token(color_spec, fig)
+                                _ui_set_spine_side_color(ax, spine_name, resolved, fig=fig)
+                                if spine_name == 'top':
+                                    position_top_xlabel()
+                                elif spine_name == 'right':
+                                    position_right_ylabel()
+                                print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                            except Exception as e:
+                                print(f"Error setting {spine_name} color: {e}")
+                        fig.canvas.draw()
+                        continue
+                    # Detect palette: last token has no ':' and more than one token total OR single token is a palette name/number
+                    _has_colon = any(':' in t for t in tokens)
+                    if not _has_colon and tokens:
+                        # Single token: could be palette applied to all, or a named color applied to all (unlikely)
+                        n_curves = len(labels)
+                        if len(tokens) == 1:
+                            pal = _resolve_pal_token(tokens[0])
+                            if pal in plt.colormaps() or ensure_colormap(pal):
+                                _apply_palette_to_lines(pal, list(range(n_curves)))
+                            else:
+                                print(f"Unknown palette or color '{tokens[0]}'. Use curve:color form for per-curve colors.")
+                        else:
+                            # Multiple tokens without ':' → range + palette
+                            pal = _resolve_pal_token(tokens[-1])
+                            range_part = "".join(tokens[:-1])
+                            indices = _parse_ranges(range_part, n_curves)
+                            if indices:
+                                _apply_palette_to_lines(pal, indices)
+                            else:
+                                print("No valid indices parsed.")
+                        continue
+                    # Mixed: some tokens have ':' — treat as curve index:color pairs
+                    if _has_colon:
+                        n_curves = len(labels)
+                        push_state("color-manual")
+                        for tok in tokens:
+                            if ':' not in tok:
+                                print(f"Skip: {tok}")
+                                continue
+                            idx_str, color_spec = tok.split(':', 1)
+                            try:
+                                line_idx = int(idx_str) - 1
+                            except ValueError:
+                                print(f"Bad index: {idx_str}")
+                                continue
+                            if not (0 <= line_idx < n_curves):
+                                print(f"Index out of range: {idx_str}")
+                                continue
+                            resolved = resolve_color_token(color_spec, fig)
+                            ax.lines[line_idx].set_color(resolved)
+                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                        try:
+                            fig._curve_palette_history = []
+                        except Exception:
+                            pass
+                        fig.canvas.draw()
+                        continue
+                    print("Unknown input. Use curve:color pairs, range+palette, or spine keys.")
             except Exception as e:
                 print(f"Error in color menu: {e}")
         elif key == 'r':
@@ -3266,7 +3689,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                         except Exception as e:
                             print(f"Error during auto restore: {e}")
-                            import traceback
                             traceback.print_exc()
                         continue
                     push_state("xrange")
@@ -3870,7 +4292,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     raw = _safe_input(prompt_text + " ").strip().lower()
                     if not raw or raw in ('all', '*'):
                         return list(range(total))
-                    import re as _re
                     tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
                     selected = []
                     for tok in tokens:
@@ -3909,7 +4330,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if raw == 'q':
                         print("Canceled.")
                         return None
-                    import re as _re
                     tokens = [tok for tok in _re.split(r'[,\s]+', raw) if tok]
                     try:
                         if kind == 'dashdot':
@@ -4246,12 +4666,17 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 't':
             try:
                 while True:
-                    print("\033[1mToggle help:\033[0m")
-                    print(colorize_inline_commands("  wasd choose side: w=top, a=left, s=bottom, d=right"))
-                    print(colorize_inline_commands("  1..5 choose what: 1=spine line, 2=major ticks, 3=minor ticks, 4=labels, 5=axis title"))
-                    print(colorize_inline_commands("  Combine letter+number to toggle, e.g. 's2 w5 a4' (case-insensitive)"))
-                    print(colorize_inline_commands("  i = invert tick direction, l = change tick length, list = show state, q = return"))
-                    print(colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
+                    _C = '\033[96m'; _R = '\033[0m'
+                    print("\033[1mToggle axes>\033[0m")
+                    print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                    print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
+                    print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                    print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
+                    print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
+                    print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                    print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
+                    print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
+                    print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
                     cmd = _safe_input(colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd:
                         continue
@@ -4309,6 +4734,145 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print("Invalid number.")
                         except Exception as e:
                             print(f"Error setting tick length: {e}")
+                        continue
+                    if cmd == 'n':
+                        # Set tick spacing / increment for each axis independently
+                        try:
+                            _C = '\033[96m'; _R = '\033[0m'
+                            print("Set tick spacing. Current axes:")
+                            # Show current major locators
+                            def _locator_str(locator):
+                                try:
+                                    if isinstance(locator, MultipleLocator):
+                                        return str(locator._edge.step)
+                                    return "auto"
+                                except Exception:
+                                    return "auto"
+                            print(f"  {_C}x{_R} (bottom X) : {_locator_str(ax.xaxis.get_major_locator())}")
+                            print(f"  {_C}y{_R} (left Y)   : {_locator_str(ax.yaxis.get_major_locator())}")
+                            # Top / right axes if they exist
+                            _axes_map = {'x': ax.xaxis, 'y': ax.yaxis}
+                            try:
+                                if ax.get_shared_x_axes().get_siblings(ax):
+                                    pass
+                            except Exception:
+                                pass
+                            print(f"Enter axis and spacing, e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}x auto{_R}  {_C}all 1{_R}  (q=back)")
+                            while True:
+                                inp = _safe_input("Spacing> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_n = inp.split()
+                                if len(parts_n) < 2:
+                                    print("Need axis and value, e.g. 'x 0.5' or 'all 1'.")
+                                    continue
+                                axis_key = parts_n[0]
+                                val_str = parts_n[1]
+                                target_axes = []
+                                if axis_key == 'all':
+                                    target_axes = [ax.xaxis, ax.yaxis]
+                                elif axis_key == 'x':
+                                    target_axes = [ax.xaxis]
+                                elif axis_key == 'y':
+                                    target_axes = [ax.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key}'. Use x, y, or all.")
+                                    continue
+                                push_state("tick-spacing")
+                                for _axis in target_axes:
+                                    if val_str == 'auto':
+                                        _axis.set_major_locator(AutoLocator())
+                                        _axis.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis.axis_name} to auto spacing.")
+                                    else:
+                                        try:
+                                            spacing = float(val_str)
+                                            if spacing <= 0:
+                                                print("Spacing must be positive.")
+                                                continue
+                                            _axis.set_major_locator(MultipleLocator(spacing))
+                                            _axis.set_minor_locator(MultipleLocator(spacing / 5))
+                                            print(f"Set {_axis.axis_name} major spacing: {spacing}, minor: {spacing/5:.4g}")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_str}'. Use a number or 'auto'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting tick spacing: {e}")
+                        continue
+                    if cmd == 'm':
+                        # Set number of minor ticks between each pair of major ticks
+                        try:
+                            _C = '\033[96m'; _R = '\033[0m'
+                            def _minor_count_str(axis):
+                                loc = axis.get_minor_locator()
+                                if isinstance(loc, AutoMinorLocator):
+                                    try:
+                                        n = loc._ndivs
+                                        return f"{n-1} minor tick(s) per interval (AutoMinorLocator({n}))"
+                                    except Exception:
+                                        return "auto"
+                                elif isinstance(loc, MultipleLocator):
+                                    try:
+                                        maj_loc = axis.get_major_locator()
+                                        if isinstance(maj_loc, MultipleLocator):
+                                            ratio = maj_loc._edge.step / loc._edge.step
+                                            return f"~{ratio:.4g} minor ticks per interval (step={loc._edge.step})"
+                                    except Exception:
+                                        pass
+                                    return f"MultipleLocator step={loc._edge.step}"
+                                return "auto"
+                            print(f"Minor ticks between major ticks:")
+                            print(f"  x : {_minor_count_str(ax.xaxis)}")
+                            print(f"  y : {_minor_count_str(ax.yaxis)}")
+                            print(f"Enter axis and count: {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 4{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}  (q=back)")
+                            while True:
+                                inp = _safe_input("Minor> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_m = inp.split()
+                                if len(parts_m) < 2:
+                                    print("Need axis and count, e.g. 'x 4' or 'all 1'.")
+                                    continue
+                                axis_key_m = parts_m[0]
+                                val_m = parts_m[1]
+                                target_axes_m = []
+                                if axis_key_m == 'all':
+                                    target_axes_m = [ax.xaxis, ax.yaxis]
+                                elif axis_key_m == 'x':
+                                    target_axes_m = [ax.xaxis]
+                                elif axis_key_m == 'y':
+                                    target_axes_m = [ax.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key_m}'. Use x, y, or all.")
+                                    continue
+                                push_state("tick-minor-count")
+                                for _axis_m in target_axes_m:
+                                    if val_m == 'auto':
+                                        _axis_m.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis_m.axis_name} minor ticks to auto.")
+                                    elif val_m == '0':
+                                        _axis_m.set_minor_locator(NullLocator())
+                                        print(f"Disabled {_axis_m.axis_name} minor ticks.")
+                                    else:
+                                        try:
+                                            count = int(val_m)
+                                            if count < 0:
+                                                print("Count must be 0 or positive.")
+                                                continue
+                                            # AutoMinorLocator(n) creates n-1 minor ticks (n intervals)
+                                            _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
+                                            print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per major interval.")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_m}'. Use a number, 'auto', or '0'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting minor ticks: {e}")
                         continue
                     parts = cmd.split()
                     if parts == ['list']:
@@ -4636,7 +5200,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if not fname:
                     print("Style import canceled.")
                     continue
-                import os
                 bname = os.path.basename(fname)
                 yn = _safe_input(colorize_prompt(f"Apply style '{bname}'? (y/n): ")).strip().lower()
                 if yn != 'y':
@@ -4724,7 +5287,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print("Export canceled.")
                 else:
                         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-                        from .utils import ensure_exact_case_filename
                         export_target = ensure_exact_case_filename(export_target)
                         
                         # Temporarily remove numbering for export
@@ -5546,7 +6108,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     fname = "peaks.txt"
                                 if not fname.endswith('.txt'):
                                     fname += '.txt'
-                                import os
                                 target = fname if os.path.isabs(fname) else os.path.join(folder, fname)
                                 do_write = not os.path.exists(target)
                                 if os.path.exists(target):

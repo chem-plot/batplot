@@ -17,9 +17,12 @@ This will:
 """
 
 import os
+import re
 import sys
+import json
 import subprocess
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -62,7 +65,6 @@ def parse_release_notes_blocks(content: str) -> dict:
     Returns:
         Dict mapping version string to notes string (e.g. {"1.8.14": "- Fix one\n- Fix two", ...})
     """
-    import re
     version_marker = re.compile(r'^##\s+(\d+\.\d+\.\d+(?:\.\d+)?)\s*$')
     blocks = {}
     current_version = None
@@ -149,7 +151,6 @@ def update_version_check_update_info(project_root: Path, update_notes: str) -> N
 }}'''
     
     content = version_check_file.read_text()
-    import re
     # Replace the UPDATE_INFO = { ... } block (match from opening to closing })
     pattern = r'UPDATE_INFO = \{.*?\n\}\s*\n'
     new_content = re.sub(pattern, new_block + '\n\n', content, flags=re.DOTALL)
@@ -175,7 +176,6 @@ def write_latest_release_notes_json(project_root: Path, new_version: str, update
     data_dir = project_root / "batplot" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     out_file = data_dir / "latest_release_notes.json"
-    import json
     payload = {"version": new_version, "custom_message": custom_message, "update_notes": update_notes_list}
     out_file.write_text(json.dumps(payload, indent=2), encoding='utf-8')
     print("\033[0;32m✓ Wrote batplot/data/latest_release_notes.json (commit & push so users see notes)\033[0m")
@@ -386,8 +386,6 @@ def update_citation_cff(project_root: Path, new_version: str) -> None:
     cff_file = project_root / "CITATION.cff"
     if not cff_file.exists():
         return
-    import re
-    from datetime import datetime
     content = cff_file.read_text()
     today = datetime.now().strftime("%Y-%m-%d")
     content = re.sub(r'^version:\s*.+$', f'version: v{new_version}', content, flags=re.MULTILINE)
@@ -411,7 +409,6 @@ def update_version_files(project_root: Path, new_version: str):
     # Update pyproject.toml
     toml_file = project_root / "pyproject.toml"
     content = toml_file.read_text()
-    import re
     updated = re.sub(
         r'version = "[^"]*"',
         f'version = "{new_version}"',
@@ -546,12 +543,10 @@ def run_upgrade():
             print()
     
     # Save to CHANGELOG: merge all version blocks from RELEASE_NOTES (or single entry)
-    from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     changelog_file = project_root / "CHANGELOG.md"
     
     if all_version_notes:
-        import re
         # Parse existing CHANGELOG for versions already present
         existing_versions = set()
         if changelog_file.exists():

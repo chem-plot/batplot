@@ -1,0 +1,204 @@
+Metadata-Version: 2.4
+Name: batplot
+Version: 1.8.24
+Summary: Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing
+Author-email: Tian Dai <tianda@uio.no>
+License: MIT License
+        
+        Copyright (c) 2025 Tian Dai
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Project-URL: Homepage, https://github.com/chem-plot/batplot
+Project-URL: Repository, https://github.com/chem-plot/batplot
+Project-URL: Issues, https://github.com/chem-plot/batplot/issues
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Operating System :: OS Independent
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Visualization
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: matplotlib>=3.5.0
+Requires-Dist: rich>=10.0.0
+Requires-Dist: openpyxl>=3.0.0
+Dynamic: license-file
+
+# batplot
+
+**Interactive plotting tool for battery and materials characterization data**
+
+`batplot` is a Python CLI tool for visualizing and analyzing electrochemical and structural characterization data with interactive styling and session management. The electrochemistry and operando plots were inspired from Amalie Skurtveit's python scripts (https://github.com/piieceofcake?tab=repositories).
+
+## Features
+
+- **Electrochemistry Modes**: Galvanostatic cycling (GC), cyclic voltammetry (CV), differential capacity (dQdV), capacity per cycle (CPC) with multi-file support
+- **Normal xy plot**: Designed for XRD, PDF, XAS (XANES/EXAFS) but also support other types
+- **Operando Analysis**: Correlate in-situ characterizations (XRD/PDF/XAS) with electrochemical data
+- **Interactive plotting**: Real-time editing customized for each type of plottings
+- **Session Persistence**: Save and reload complete plot states with `.pkl` files
+- **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files
+- **Batch Processing**: Plot multiple files simultaneously with automatic SVG export
+
+## Installation
+
+```bash
+pip install batplot
+```
+
+## Quick Start
+
+Tutorial
+https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
+
+### XRD / PDF / XAS and much more
+
+```bash
+# Single diffraction pattern in 2theta
+batplot pattern.xye --xaxis 2theta
+
+# Interactive styling
+batplot pattern.xye --i
+
+# Plot all XY files in directory on same figure
+batplot allfiles
+batplot allfiles --stack --i
+batplot allfiles --xaxis 2theta --xrange 10 80
+
+# Only plot a specific extension (natural-sorted)
+batplot allxyfiles
+batplot "/path/to/data" allnorfiles --i
+
+# Batch mode: export all XY files to SVG
+batplot --all
+
+# Batch mode with options: custom axis and range
+batplot --all --xaxis 2theta --xrange 10 80
+
+# Normalize data (--stack mode auto-normalizes by default)
+batplot allfiles --norm
+
+# Batch mode: convert 2theta to Q
+batplot --all --wl 1.5406
+```
+
+### Electrochemistry
+
+```bash
+# Galvanostatic cycling with interactive menu
+batplot battery.csv --gc --i
+
+# Cyclic voltammetry
+batplot cyclic.mpt --cv --i
+
+# Differential capacity
+batplot battery.csv --dqdv
+
+# Capacity per cycle - single file
+batplot stability.mpt --cpc --mass 5.4 --i
+
+# Capacity per cycle - multiple files with individual color control
+batplot file1.csv file2.csv file3.mpt --cpc --mass 5.4 --i
+
+# Batch processing: export all EC files to SVG
+batplot --gc --all --mass 7.0       # All .mpt/.csv files (.mpt needs --mass, .csv doesn't)
+batplot --cv --all                  # All .mpt files (CV mode)
+batplot --dqdv --all                # All .csv files (dQdV mode)
+batplot --cpc --all --mass 6.2      # All .mpt/.csv files (.mpt needs --mass, .csv doesn't)
+
+# Batch processing with style/geometry: apply consistent formatting to all files
+batplot --all mystyle.bps --gc --mass 7.0   # Apply .bps style to all GC files
+batplot --all config.bpsg --cv              # Apply .bpsg style+geometry to all CV files
+batplot --all style.bps --dqdv              # Apply style to all dQdV files
+batplot --all geom.bpsg --cpc --mass 5.4    # Apply style+geometry to all CPC files
+```
+
+### Operando Analysis
+
+```bash
+# Correlate in-situ XRD with electrochemistry
+# (Place both .xye and .mpt files in same directory)
+batplot --operando --i
+# or: batplot --contour --i  (same as --operando)
+
+# Operando mode without electrochemistry data
+# (Only .xye files, no .mpt file)
+batplot --operando --i
+```
+
+Interactive menu: (Styles) | (Operando) | (Side Panel) | (Options) — Side Panel for the time/voltage trace when .mpt is present.
+
+## Supported File Formats
+
+| Type | Formats |
+|------|---------|
+| **Electrochemistry** | `.csv` (Neware raw data; summary format for CPC), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe summary for CPC) |
+| **XRD / PDF** | Any text-based file (`.xye`, `.xy`, `.qye`, `.dat`, `.csv`, `.txt`, etc.); use `--readcol` and `--xaxis` as needed. Bruker `.brml` and `.raw` are read natively. |
+| **XAS** | `.nor`, `.chik`, `.chir` |
+| **Others** | `user defined` (skip the header lines and plot first two columns as x and y, alternatively using --readcol flag) |
+
+## Interactive Features
+
+When launched with `--interactive/--i`:
+- **Cycle/Scan Control**: Toggle visibility, change colors
+- **Styling**: Line widths, markers, transparency
+- **Axes**: Labels, limits, ticks, spine styles
+- **Export**: Save sessions (`.pkl`), styles (`.bps`/`.bpsg`), or high-res images
+- **Live Preview**: All changes update in real-time
+
+## Documentation
+
+For detailed usage, see [USER_MANUAL.md](USER_MANUAL.md).
+
+After installing from PyPI you can read the packaged manual straight from a
+terminal:
+
+```bash
+# Stream the manual (.txt)
+batplot -m
+```
+
+## Requirements
+
+- Python ≥ 3.9
+- numpy
+- matplotlib
+
+## License
+
+See [LICENSE](LICENSE)
+
+## Author & Contact
+
+Tian Dai
+tianda@uio.no
+University of Oslo
+https://www.mn.uio.no/kjemi/english/people/aca/tianda/
+https://github.com/chem-plot/
+
+**Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback. If you are not from UiO, send an email to sympa@kjemi.uio.no with the exact subject line with your name: "subscribe batplot-lab@kjemi.uio.no your-name"

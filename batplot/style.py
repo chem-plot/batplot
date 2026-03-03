@@ -14,8 +14,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from .utils import _confirm_overwrite
-from .color_utils import color_block
+from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, NullFormatter
+from matplotlib.colors import LinearSegmentedColormap
+
+from .utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename
+from .color_utils import color_block, _CUSTOM_CMAPS
 from .ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -25,6 +28,64 @@ from .ui import (
     position_left_ylabel as _ui_position_left_ylabel,
     set_spine_side_color as _ui_set_spine_side_color,
 )
+
+
+def _capture_tick_locator_state(ax):
+    """Capture tick spacing and minor count from an axes object for serialization."""
+    def _step(loc):
+        try:
+            if isinstance(loc, MultipleLocator):
+                return float(loc._edge.step)
+        except Exception:
+            pass
+        return None
+    def _ndivs(loc):
+        try:
+            if isinstance(loc, AutoMinorLocator):
+                return int(loc._ndivs)
+        except Exception:
+            pass
+        return None
+    return {
+        'x_major_step': _step(ax.xaxis.get_major_locator()),
+        'x_minor_step': _step(ax.xaxis.get_minor_locator()),
+        'y_major_step': _step(ax.yaxis.get_major_locator()),
+        'y_minor_step': _step(ax.yaxis.get_minor_locator()),
+        'x_minor_ndivs': _ndivs(ax.xaxis.get_minor_locator()),
+        'y_minor_ndivs': _ndivs(ax.yaxis.get_minor_locator()),
+    }
+
+
+def _restore_tick_locator_state(ax, spacing):
+    """Restore tick spacing and minor count from a dict saved by _capture_tick_locator_state."""
+    if not spacing:
+        return
+    # Major locators
+    for axis_obj, step_key in ((ax.xaxis, 'x_major_step'), (ax.yaxis, 'y_major_step')):
+        val = spacing.get(step_key)
+        try:
+            if val is not None:
+                axis_obj.set_major_locator(MultipleLocator(float(val)))
+            else:
+                axis_obj.set_major_locator(AutoLocator())
+        except Exception:
+            pass
+    # Minor locators: prefer explicit step, then ndivs, then auto
+    for axis_obj, step_key, ndivs_key in (
+        (ax.xaxis, 'x_minor_step', 'x_minor_ndivs'),
+        (ax.yaxis, 'y_minor_step', 'y_minor_ndivs'),
+    ):
+        step = spacing.get(step_key)
+        ndivs = spacing.get(ndivs_key)
+        try:
+            if step is not None:
+                axis_obj.set_minor_locator(MultipleLocator(float(step)))
+            elif ndivs is not None:
+                axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
+            else:
+                axis_obj.set_minor_locator(AutoMinorLocator())
+        except Exception:
+            pass
 
 
 def _color_to_hex(value):
@@ -203,10 +264,8 @@ def _resolve_palette_cmap(palette_name: str):
         
         # METHOD 3: Fallback to custom colormaps defined in this package
         try:
-            from .color_utils import _CUSTOM_CMAPS
             custom_colors = _CUSTOM_CMAPS.get(base_name)
             if custom_colors:
-                from matplotlib.colors import LinearSegmentedColormap
                 # Create colormap from list of colors
                 # N=256 means create 256 intermediate colors by interpolation
                 cmap = LinearSegmentedColormap.from_list(base_name, custom_colors, N=256)
@@ -464,7 +523,6 @@ def print_style_info(
         print(f"CIF hkl labels (z): {'shown' if show_cif_hkl else 'hidden'}")
     elif cif_tick_series:
         try:
-            import sys
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
                 hkl_state = bool(getattr(_bp_module, 'show_cif_hkl', False))
@@ -602,6 +660,7 @@ def export_style_config(
                 "y_minor_width": axis_tick_width(ax.yaxis, "minor"),
                 "lengths": dict(getattr(fig, '_tick_lengths', {})),
                 "direction": getattr(fig, '_tick_direction', 'out'),
+                "spacing": _capture_tick_locator_state(ax),
             },
             "wasd_state": wasd_state,
             "spines": {
@@ -682,7 +741,6 @@ def export_style_config(
             cfg["show_cif_titles"] = bool(show_cif_titles)
         # Save CIF hkl label visibility (read from __main__ module if available)
         try:
-            import sys
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
                 cfg["show_cif_hkl"] = bool(getattr(_bp_module, 'show_cif_hkl', False))
@@ -776,8 +834,6 @@ def export_style_config(
             target_path = overwrite_path
         else:
             # List existing files for user convenience (from Styles subdirectory)
-            import os
-            from .utils import list_files_in_subdirectory, get_organized_path
             
             if base_path:
                 print(f"\nChosen path: {base_path}")
@@ -833,7 +889,6 @@ def export_style_config(
                         return None
 
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-        from .utils import ensure_exact_case_filename
         target_path = ensure_exact_case_filename(target_path)
         
         with open(target_path, "w", encoding="utf-8") as f:
@@ -1074,7 +1129,6 @@ def apply_style_config(
                 
                 # Apply minor ticks
                 if top_cfg.get('minor') or bot_cfg.get('minor'):
-                    from matplotlib.ticker import AutoMinorLocator, NullFormatter
                     ax.xaxis.set_minor_locator(AutoMinorLocator())
                     ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor',
@@ -1083,7 +1137,6 @@ def apply_style_config(
                               labeltop=False, labelbottom=False)
                 
                 if left_cfg.get('minor') or right_cfg.get('minor'):
-                    from matplotlib.ticker import AutoMinorLocator, NullFormatter
                     ax.yaxis.set_minor_locator(AutoMinorLocator())
                     ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor',
@@ -1168,6 +1221,14 @@ def apply_style_config(
                 ax.tick_params(axis="both", which="both", direction=tick_direction)
             except Exception as e:
                 print(f"Warning: Could not restore tick direction: {e}")
+
+        # Tick spacing and minor count (t > n and t > m)
+        spacing_cfg = ticks_cfg.get("spacing")
+        if spacing_cfg:
+            try:
+                _restore_tick_locator_state(ax, spacing_cfg)
+            except Exception as e:
+                print(f"Warning: Could not restore tick spacing: {e}")
 
     # Tick colors (legacy axis-wide; skipped when spines have per-side color)
         spines_cfg = cfg.get("spines", {})
@@ -1324,7 +1385,6 @@ def apply_style_config(
                 if cif_tick_series is not None:
                     # Try to update via interactive menu's _bp object
                     try:
-                        import sys
                         _bp_obj = getattr(sys.modules.get('__main__'), '_bp', None)
                         if _bp_obj is not None:
                             setattr(_bp_obj, 'show_cif_hkl', bool(cfg["show_cif_hkl"]))

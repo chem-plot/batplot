@@ -24,7 +24,7 @@ from .ui import (
     position_left_ylabel as _ui_position_left_ylabel,
     set_spine_side_color as _ui_set_spine_side_color,
 )
-from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator
+from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
 from .plotting import update_labels as _update_labels
 from .utils import (
     _confirm_overwrite,
@@ -35,7 +35,11 @@ from .utils import (
     convert_label_shortcuts,
     natural_sort_key,
 )
+import re
 import time
+import matplotlib as mpl
+from .session import dump_ec_session
+from .utils import ensure_exact_case_filename
 from .color_utils import (
     color_block,
     color_bar,
@@ -106,7 +110,6 @@ def _format_file_timestamp(filepath: str) -> str:
 
 def _colorize_prompt(text):
     """Colorize commands within input prompts. Handles formats like (s=size, f=family, q=return) or (y/n)."""
-    import re
     pattern = r'\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)'
     
     def colorize_match(match):
@@ -132,7 +135,6 @@ def _colorize_prompt(text):
 
 def _colorize_inline_commands(text):
     """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
-    import re
     # Color quoted command examples (like 's2 w5 a4', 'w2 w5')
     text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
     # Color specific known commands: q, i, l, list, help, all
@@ -781,7 +783,6 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
 
 def _apply_font_family(ax, family: str):
     try:
-        import matplotlib as mpl
         # Update defaults for any new text
         mpl.rcParams['font.family'] = family
         # Configure mathtext to use the same font family
@@ -872,7 +873,6 @@ def _apply_font_family(ax, family: str):
 def _apply_font_size(ax, size: float):
     """Apply font size to all text elements on the axes."""
     try:
-        import matplotlib as mpl
         # Update defaults for any new text
         mpl.rcParams['font.size'] = size
         # Labels
@@ -1144,7 +1144,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
     def _title_offset_menu():
         """Allow nudging duplicate top/right titles by single-pixel increments."""
         # Import UI positioning functions locally to ensure they're accessible in nested functions
-        from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
         
         def _dpi():
             try:
@@ -1414,6 +1413,20 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         except Exception:
             return None
         return None
+    def _locator_step(locator):
+        try:
+            if isinstance(locator, MultipleLocator):
+                return float(locator._edge.step)
+        except Exception:
+            pass
+        return None
+    def _locator_ndivs(locator):
+        try:
+            if isinstance(locator, AutoMinorLocator):
+                return int(locator._ndivs)
+        except Exception:
+            pass
+        return None
 
     def push_state(note: str = ""):
         try:
@@ -1446,6 +1459,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 },
                 'tick_lengths': dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
                 'tick_direction': getattr(fig, '_tick_direction', 'out'),
+                'tick_spacing': {
+                    'x_major_step': _locator_step(ax.xaxis.get_major_locator()),
+                    'x_minor_step': _locator_step(ax.xaxis.get_minor_locator()),
+                    'y_major_step': _locator_step(ax.yaxis.get_major_locator()),
+                    'y_minor_step': _locator_step(ax.yaxis.get_minor_locator()),
+                    'x_minor_ndivs': _locator_ndivs(ax.xaxis.get_minor_locator()),
+                    'y_minor_ndivs': _locator_ndivs(ax.yaxis.get_minor_locator()),
+                },
                 'font_size': plt.rcParams.get('font.size'),
                 'font_family': plt.rcParams.get('font.family'),
                 'font_sans_serif': list(plt.rcParams.get('font.sans-serif', [])),
@@ -1637,9 +1658,34 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     ax.tick_params(axis='both', which='both', direction=tick_dir)
             except Exception:
                 pass
+            # Tick spacing and minor count
+            spacing = snap.get('tick_spacing', {})
+            if spacing:
+                for axis_obj, maj_key, min_key, ndivs_key in [
+                    (ax.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
+                    (ax.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
+                ]:
+                    try:
+                        maj_step = spacing.get(maj_key)
+                        if maj_step is not None:
+                            axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
+                        else:
+                            axis_obj.set_major_locator(AutoLocator())
+                    except Exception:
+                        pass
+                    try:
+                        min_step = spacing.get(min_key)
+                        ndivs = spacing.get(ndivs_key)
+                        if min_step is not None:
+                            axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
+                        elif ndivs is not None:
+                            axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
+                        else:
+                            axis_obj.set_minor_locator(AutoMinorLocator())
+                    except Exception:
+                        pass
             # Font size and family
             try:
-                import matplotlib as mpl
                 font_size = snap.get('font_size')
                 if font_size is not None:
                     mpl.rcParams['font.size'] = font_size
@@ -1648,7 +1694,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             except Exception:
                 pass
             try:
-                import matplotlib as mpl
                 font_family = snap.get('font_family')
                 font_sans_serif = snap.get('font_sans_serif')
                 if font_family is not None:
@@ -1970,7 +2015,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         target = _confirm_overwrite(target)
                     if target:
                         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-                        from .utils import ensure_exact_case_filename
                         target = ensure_exact_case_filename(target)
                         
                         # Save current legend position before export (savefig can change layout)
@@ -2545,6 +2589,32 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     if tick_direction:
                         setattr(fig, '_tick_direction', tick_direction)
                         ax.tick_params(axis='both', which='both', direction=tick_direction)
+                    # Apply tick spacing and minor count
+                    ec_spacing = cfg.get('ticks', {}).get('spacing', {})
+                    if ec_spacing:
+                        for axis_obj, maj_key, min_key, ndivs_key in [
+                            (ax.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
+                            (ax.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
+                        ]:
+                            try:
+                                maj_step = ec_spacing.get(maj_key)
+                                if maj_step is not None:
+                                    axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
+                                else:
+                                    axis_obj.set_major_locator(AutoLocator())
+                            except Exception:
+                                pass
+                            try:
+                                min_step = ec_spacing.get(min_key)
+                                ndivs = ec_spacing.get(ndivs_key)
+                                if min_step is not None:
+                                    axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
+                                elif ndivs is not None:
+                                    axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
+                                else:
+                                    axis_obj.set_minor_locator(AutoMinorLocator())
+                            except Exception:
+                                pass
                 except Exception: pass
                 
                 # Grid state
@@ -3445,12 +3515,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     tick_state['mbx'] = bool(wasd['bottom']['minor'])
                     tick_state['mly'] = bool(wasd['left']['minor'])
                     tick_state['mry'] = bool(wasd['right']['minor'])
+                _C = '\033[96m'; _R = '\033[0m'
+                print(f"\033[1mToggle axes>\033[0m")
+                print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
+                print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
+                print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
                 while True:
-                    print(_colorize_inline_commands("WASD toggles: direction (w/a/s/d) x action (1..5)"))
-                    print(_colorize_inline_commands("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title"))
-                    print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' for state, 'q' to return."))
-                    print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
-                    cmd = _safe_input(_colorize_prompt("t> ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -3503,13 +3580,160 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         except Exception as e:
                             print(f"Error setting tick length: {e}")
                         continue
+                    if cmd == 'n':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _loc_str_ec(loc):
+                                try:
+                                    if isinstance(loc, MultipleLocator):
+                                        return str(loc._edge.step)
+                                    return "auto"
+                                except Exception:
+                                    return "auto"
+                            print(f"Set tick spacing. Current:")
+                            print(f"  {_C2}x{_R2} (X axis) : {_loc_str_ec(ax.xaxis.get_major_locator())}")
+                            print(f"  {_C2}y{_R2} (Y axis) : {_loc_str_ec(ax.yaxis.get_major_locator())}")
+                            print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}all 1{_R2}  {_C2}x auto{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Spacing> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_n = inp.split()
+                                if len(parts_n) < 2:
+                                    print("Need axis and value, e.g. 'x 0.5' or 'all 1'.")
+                                    continue
+                                axis_key, val_str = parts_n[0], parts_n[1]
+                                target_axes_n = []
+                                if axis_key == 'all':
+                                    target_axes_n = [ax.xaxis, ax.yaxis]
+                                elif axis_key == 'x':
+                                    target_axes_n = [ax.xaxis]
+                                elif axis_key == 'y':
+                                    target_axes_n = [ax.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key}'. Use x, y, or all.")
+                                    continue
+                                push_state("tick-spacing")
+                                for _axis in target_axes_n:
+                                    if val_str == 'auto':
+                                        _axis.set_major_locator(AutoLocator())
+                                        _axis.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis.axis_name} to auto spacing.")
+                                    else:
+                                        try:
+                                            sp_val = float(val_str)
+                                            if sp_val <= 0:
+                                                print("Spacing must be positive.")
+                                                continue
+                                            _axis.set_major_locator(MultipleLocator(sp_val))
+                                            _axis.set_minor_locator(MultipleLocator(sp_val / 5))
+                                            print(f"Set {_axis.axis_name} spacing: {sp_val}")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_str}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting tick spacing: {e}")
+                        continue
+                    if cmd == 'm':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _minor_str_ec(axis):
+                                loc = axis.get_minor_locator()
+                                if isinstance(loc, AutoMinorLocator):
+                                    try:
+                                        return f"{loc._ndivs-1} minor(s)/interval"
+                                    except Exception:
+                                        return "auto"
+                                elif isinstance(loc, NullLocator):
+                                    return "off"
+                                return "auto"
+                            print(f"Minor ticks between major ticks:")
+                            print(f"  x : {_minor_str_ec(ax.xaxis)}")
+                            print(f"  y : {_minor_str_ec(ax.yaxis)}")
+                            print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Minor> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_m = inp.split()
+                                if len(parts_m) < 2:
+                                    print("Need axis and count, e.g. 'x 4' or 'all 1'.")
+                                    continue
+                                axis_key_m, val_m = parts_m[0], parts_m[1]
+                                target_axes_m = []
+                                if axis_key_m == 'all':
+                                    target_axes_m = [ax.xaxis, ax.yaxis]
+                                elif axis_key_m == 'x':
+                                    target_axes_m = [ax.xaxis]
+                                elif axis_key_m == 'y':
+                                    target_axes_m = [ax.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key_m}'. Use x, y, or all.")
+                                    continue
+                                push_state("tick-minor-count")
+                                for _axis_m in target_axes_m:
+                                    if val_m == 'auto':
+                                        _axis_m.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis_m.axis_name} minor ticks to auto.")
+                                    elif val_m == '0':
+                                        _axis_m.set_minor_locator(NullLocator())
+                                        print(f"Disabled {_axis_m.axis_name} minor ticks.")
+                                    else:
+                                        try:
+                                            count = int(val_m)
+                                            if count < 0:
+                                                print("Count must be 0 or positive.")
+                                                continue
+                                            _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
+                                            print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per interval.")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_m}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting minor ticks: {e}")
+                        continue
                     if cmd == 'list':
-                        print(_colorize_inline_commands("Spine/ticks state:"))
-                        def b(v): return 'ON' if bool(v) else 'off'
-                        print(_colorize_inline_commands(f"top    w1:{b(wasd['top']['spine'])} w2:{b(wasd['top']['ticks'])} w3:{b(wasd['top']['minor'])} w4:{b(wasd['top']['labels'])} w5:{b(wasd['top']['title'])}"))
-                        print(_colorize_inline_commands(f"bottom s1:{b(wasd['bottom']['spine'])} s2:{b(wasd['bottom']['ticks'])} s3:{b(wasd['bottom']['minor'])} s4:{b(wasd['bottom']['labels'])} s5:{b(wasd['bottom']['title'])}"))
-                        print(_colorize_inline_commands(f"left   a1:{b(wasd['left']['spine'])} a2:{b(wasd['left']['ticks'])} a3:{b(wasd['left']['minor'])} a4:{b(wasd['left']['labels'])} a5:{b(wasd['left']['title'])}"))
-                        print(_colorize_inline_commands(f"right  d1:{b(wasd['right']['spine'])} d2:{b(wasd['right']['ticks'])} d3:{b(wasd['right']['minor'])} d4:{b(wasd['right']['labels'])} d5:{b(wasd['right']['title'])}"))
+                        _Cl = '\033[96m'; _Rl = '\033[0m'
+                        def b_ec(v): return 'ON ' if bool(v) else 'off'
+                        print(f"\033[1mToggle axes state:\033[0m")
+                        print(f"  {'Side':<8}  spine  major  minor  labels title")
+                        for side_key, side_code in [('top','w'),('bottom','s'),('left','a'),('right','d')]:
+                            s = wasd[side_key]
+                            print(f"  {_Cl}{side_code}={side_key:<6}{_Rl} {b_ec(s['spine'])}  {b_ec(s['ticks'])}   {b_ec(s['minor'])}   {b_ec(s['labels'])}  {b_ec(s['title'])}")
+                        tick_dir = getattr(fig, '_tick_direction', 'out')
+                        print(f"  Tick direction  : {_Cl}{tick_dir}{_Rl}")
+                        tl = getattr(fig, '_tick_lengths', {}) or {}
+                        maj_l = tl.get('major')
+                        min_l = tl.get('minor')
+                        if maj_l is not None:
+                            min_str = f"  minor={min_l:.2g}" if min_l is not None else ""
+                            print(f"  Tick length     : {_Cl}major={maj_l:.2g}{_Rl}{min_str}")
+                        else:
+                            print(f"  Tick length     : default")
+                        def _sp_ec(loc):
+                            try:
+                                if isinstance(loc, MultipleLocator):
+                                    return str(loc._edge.step)
+                                return "auto"
+                            except Exception:
+                                return "auto"
+                        def _mn_ec(loc):
+                            try:
+                                if isinstance(loc, AutoMinorLocator):
+                                    return f"{loc._ndivs-1}/interval"
+                                if isinstance(loc, NullLocator):
+                                    return "off"
+                                return "auto"
+                            except Exception:
+                                return "auto"
+                        print(f"  Tick spacing    : {_Cl}x{_Rl}={_sp_ec(ax.xaxis.get_major_locator())}  {_Cl}y{_Rl}={_sp_ec(ax.yaxis.get_major_locator())}")
+                        print(f"  Minor count     : {_Cl}x{_Rl}={_mn_ec(ax.xaxis.get_minor_locator())}  {_Cl}y{_Rl}={_mn_ec(ax.yaxis.get_minor_locator())}")
                         continue
                     push_state("wasd-toggle")
                     changed = False
@@ -3542,7 +3766,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             continue
         elif key == 's':
             try:
-                from .session import dump_ec_session
                 last_session_path = getattr(fig, '_last_session_save_path', None)
                 folder = choose_save_path(source_paths, purpose="EC session save")
                 if not folder:
@@ -3870,8 +4093,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     # Construct label with proper mathtext for superscript
                     # Configure mathtext fontset BEFORE setting the label to ensure consistency
                     try:
-                        import matplotlib.pyplot as plt
-                        import matplotlib as mpl
                         font_fam = plt.rcParams.get('font.sans-serif', [''])
                         font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                         
@@ -3894,7 +4115,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     
                     # Apply current font settings to the label to ensure consistency
                     try:
-                        import matplotlib.pyplot as plt
                         font_fam = plt.rcParams.get('font.sans-serif', [''])
                         font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                         font_size = plt.rcParams.get('font.size', None)
@@ -3942,8 +4162,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     # Construct label with proper mathtext for superscript
                     # Configure mathtext fontset BEFORE setting the label to ensure consistency
                     try:
-                        import matplotlib.pyplot as plt
-                        import matplotlib as mpl
                         font_fam = plt.rcParams.get('font.sans-serif', [''])
                         font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                         
@@ -3966,7 +4184,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     
                     # Apply current font settings to the label to ensure consistency
                     try:
-                        import matplotlib.pyplot as plt
                         font_fam = plt.rcParams.get('font.sans-serif', [''])
                         font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                         font_size = plt.rcParams.get('font.size', None)
@@ -4042,7 +4259,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         
                         # Configure mathtext fontset
                         try:
-                            import matplotlib as mpl
                             font_fam = plt.rcParams.get('font.sans-serif', [''])
                             font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                             if font_fam_str:
@@ -4155,7 +4371,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         
                         # Configure mathtext fontset
                         try:
-                            import matplotlib as mpl
                             font_fam = plt.rcParams.get('font.sans-serif', [''])
                             font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
                             if font_fam_str:
@@ -4345,8 +4560,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             continue
         elif key == 'f':
             # Font submenu with numbered options
-            import matplotlib.pyplot as plt
-            import matplotlib as mpl
             cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
             cur_size = plt.rcParams.get('font.size', None)
             while True:
@@ -5063,7 +5276,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         elif key == 'os':
             # Overwrite last saved session
             try:
-                from .session import dump_ec_session
                 last_session_path = getattr(fig, '_last_session_save_path', None)
                 if not last_session_path:
                     print("No previous session save found.")
@@ -5083,7 +5295,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         elif key in ('ops', 'opsg'):
             # Overwrite last exported style (ops) or style+geometry (opsg)
             try:
-                import json
                 last_style_path = getattr(fig, '_last_style_export_path', None)
                 if not last_style_path:
                     print("No previous style export found.")
@@ -5174,6 +5385,20 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
         'y_major': _tick_width(ax.yaxis, 'major'),
         'y_minor': _tick_width(ax.yaxis, 'minor'),
     }
+    def _locator_step(locator):
+        try:
+            if isinstance(locator, MultipleLocator):
+                return float(locator._edge.step)
+        except Exception:
+            pass
+        return None
+    def _locator_ndivs(locator):
+        try:
+            if isinstance(locator, AutoMinorLocator):
+                return int(locator._ndivs)
+        except Exception:
+            pass
+        return None
 
     # Tick direction
     tick_direction = getattr(fig, '_tick_direction', 'out')
@@ -5334,7 +5559,18 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
             'title': _get_legend_title(fig),
         },
         'spines': spines,
-        'ticks': {'widths': tick_widths, 'direction': tick_direction},
+        'ticks': {
+            'widths': tick_widths,
+            'direction': tick_direction,
+            'spacing': {
+                'x_major_step': _locator_step(ax.xaxis.get_major_locator()),
+                'x_minor_step': _locator_step(ax.xaxis.get_minor_locator()),
+                'y_major_step': _locator_step(ax.yaxis.get_major_locator()),
+                'y_minor_step': _locator_step(ax.yaxis.get_minor_locator()),
+                'x_minor_ndivs': _locator_ndivs(ax.xaxis.get_minor_locator()),
+                'y_minor_ndivs': _locator_ndivs(ax.yaxis.get_minor_locator()),
+            },
+        },
         'grid': grid_enabled,
         'wasd_state': wasd_state,
         'title_offsets': {

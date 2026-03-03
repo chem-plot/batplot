@@ -1,0 +1,16 @@
+{
+  "pythonPath": "/opt/miniconda3/bin/python3",
+  "typeCheckingMode": "basic",
+  "reportGeneralTypeIssues": "warning",
+  "reportOptionalMemberAccess": "warning",
+  "reportOptionalSubscript": "warning",
+  "reportPrivateUsage": "none",
+  "reportUnusedImport": "none",
+  "reportUnusedVariable": "none",
+  "exclude": [
+    "archive_unused",
+    "dist",
+    "**/__pycache__",
+    "*.egg-info"
+  ]
+}

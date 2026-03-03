@@ -1,0 +1,8 @@
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H3", "location": "batplot.py:legend", "message": "legend create", "data": {"h1": 6, "h2": 3}, "timestamp": 1765465474345}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H0", "location": "cpc_interactive_menu:entry", "message": "menu entry", "data": {"file_data_len": 3}, "timestamp": 1765465474358}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H3", "location": "batplot.py:legend", "message": "legend create", "data": {"h1": 6, "h2": 3}, "timestamp": 1765466041389}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H0", "location": "cpc_interactive_menu:entry", "message": "menu entry", "data": {"file_data_len": 3}, "timestamp": 1765466041401}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H3", "location": "batplot.py:legend", "message": "legend create", "data": {"h1": 6, "h2": 3}, "timestamp": 1765466135826}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H0", "location": "cpc_interactive_menu:entry", "message": "menu entry", "data": {"file_data_len": 3}, "timestamp": 1765466135836}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H3", "location": "batplot.py:legend", "message": "legend create", "data": {"h1": 6, "h2": 3}, "timestamp": 1765466243163}
+{"sessionId": "debug-session", "runId": "pre-fix", "hypothesisId": "H0", "location": "cpc_interactive_menu:entry", "message": "menu entry", "data": {"file_data_len": 3}, "timestamp": 1765466243174}

@@ -245,23 +245,31 @@ def palette_preview(name: str, steps: int = 8) -> str:
     # Ensure steps is at least 1 (avoid division by zero)
     if steps < 1:
         steps = 1
-    
+
     # Special handling for tab10 to use hardcoded colors (matching EC and CPC interactive)
     if name.lower() == 'tab10':
         default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                                '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-        # Use first 'steps' colors from tab10
         samples = [default_tab10_colors[i % len(default_tab10_colors)] for i in range(steps)]
     else:
         # Sample colors at evenly spaced positions along the colormap
-        # Position ranges from 0.0 (start) to 1.0 (end)
         samples = [
-            mcolors.to_hex(cmap(i / max(steps - 1, 1)))  # Convert to hex color code
+            mcolors.to_hex(cmap(i / max(steps - 1, 1)))
             for i in range(steps)
         ]
-    
-    # Convert color codes to visual blocks and return as string
-    return color_bar(samples)
+
+    # Use foreground-colored █ characters so the bar is visible on any terminal background
+    result = ""
+    for hex_color in samples:
+        try:
+            r, g, b, _ = mcolors.to_rgba(hex_color)
+            r_i = max(0, min(255, int(round(r * 255))))
+            g_i = max(0, min(255, int(round(g * 255))))
+            b_i = max(0, min(255, int(round(b * 255))))
+            result += f"\033[38;2;{r_i};{g_i};{b_i}m██\033[0m"
+        except Exception:
+            result += "??"
+    return result
 
 
 def _set_cached_colors(fig, colors: List[str]):
@@ -469,7 +477,7 @@ def manage_user_colors(fig=None) -> None:
                 print(f"  {idx}: {color_block(color)} {color}")
         else:
             print("  (empty)")
-        print("Options: a=add colors, d=delete numbers, c=clear, q=back")
+        print("Options: \033[96ma\033[0m=add colors  \033[96md\033[0m=delete numbers  \033[96mc\033[0m=clear  \033[96mq\033[0m=back")
         choice = input("User colors> ").strip().lower()
         if not choice:
             continue

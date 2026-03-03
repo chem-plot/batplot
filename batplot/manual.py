@@ -270,16 +270,19 @@ def show_manual(open_viewer: bool = True) -> str:
 	This function manages the manual cache and opens the manual for viewing:
 	
 	1. **Load manual text**: Read USER_MANUAL.md from package
-	2. **Check cache**: See if we already have a cached .txt file
-	3. **Validate cache**: Compare hash of current content vs cached hash
-	4. **Regenerate if needed**: If content changed, create new .txt file
-	5. **Open editor**: Launch user's preferred text editor (if requested)
+	2. **Prepend version header**: Add "Batplot User Manual — Version X.Y.Z" so the
+	   opened file shows the manual for the installed batplot version.
+	3. **Check cache**: See if we already have a cached .txt file
+	4. **Validate cache**: Compare hash of current content vs cached hash
+	5. **Regenerate if needed**: If content or version changed, create new .txt file
+	6. **Open editor**: Launch user's preferred text editor (if requested)
 	
 	CACHING STRATEGY:
 	---------------
 	We cache the manual to avoid regenerating it on every run. The cache is
 	invalidated when:
 	- Manual content changes (detected by hash comparison)
+	- Batplot version changes (version is included in the displayed text)
 	- Manual format version changes (MANUAL_RENDER_VERSION)
 	
 	This means users get fresh manual when it's updated, but don't regenerate
@@ -293,15 +296,20 @@ def show_manual(open_viewer: bool = True) -> str:
 		Path to the manual .txt file (as string)
 		Example: "/Users/username/.cache/batplot/batplot_manual.txt"
 	"""
+	from . import __version__
 	text = _manual_text()
+	# Prepend version so the opened manual shows which batplot version it applies to.
+	# Including version in the text also invalidates cache when user upgrades.
+	version_header = f"Batplot User Manual — Version {__version__}\n\n"
+	display_text = version_header + text
 	target_dir = _cache_dir()
 	txt_path = target_dir / TEXT_NAME
 	hash_path = target_dir / HASH_NAME
-	content_hash = _manual_hash(text)
+	content_hash = _manual_hash(display_text)
 	cached_hash = hash_path.read_text(encoding="utf-8").strip() if hash_path.exists() else ""
 
 	if (not txt_path.exists()) or (cached_hash != content_hash):
-		txt_path.write_text(text, encoding="utf-8")
+		txt_path.write_text(display_text, encoding="utf-8")
 		hash_path.write_text(content_hash, encoding="utf-8")
 
 	if open_viewer:

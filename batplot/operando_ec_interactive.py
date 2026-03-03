@@ -22,7 +22,7 @@ import time
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import FuncFormatter, MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
 import numpy as np
 
 # Import UI positioning functions
@@ -41,7 +41,30 @@ from .color_utils import (
     ensure_colormap,
 )
 from matplotlib import colors as mcolors
-from .utils import choose_style_file, convert_label_shortcuts, natural_sort_key
+import re
+import traceback
+from io import StringIO
+
+import matplotlib as mpl
+import matplotlib.cm as cm
+import matplotlib.lines
+from matplotlib.ticker import ScalarFormatter
+
+from .operando import _draw_operando_cif_ticks
+from .session import dump_operando_session
+from .utils import (
+    choose_style_file, convert_label_shortcuts, natural_sort_key,
+    choose_save_path, list_files_in_subdirectory, get_organized_path,
+    ensure_exact_case_filename, _confirm_overwrite,
+)
+try:
+    import cmcrameri.cm as cmc
+except ImportError:
+    cmc = None  # optional dependency
+try:
+    from scipy.signal import find_peaks
+except ImportError:
+    find_peaks = None  # optional dependency
 
 
 class _FilterIMKWarning:
@@ -106,7 +129,6 @@ def _ensure_operando_colormap(name: str) -> bool:
     if base in plt.colormaps():
         return True
     try:
-        import cmcrameri.cm as cmc
         cmap_obj = None
         if hasattr(cmc, base):
             cmap_obj = getattr(cmc, base)
@@ -150,7 +172,6 @@ def _colorize_menu(text):
 
 def _colorize_prompt(text):
     """Colorize commands within input prompts. Handles formats like (s=size, f=family, q=return) or (y/n)."""
-    import re
     pattern = r'\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)'
     
     def colorize_match(match):
@@ -176,7 +197,6 @@ def _colorize_prompt(text):
 
 def _colorize_inline_commands(text):
     """Colorize inline command examples in help text. Colors quoted examples and x=desc / x: desc subcommands."""
-    import re
     # Color quoted command examples (like 's2 w5 a4', 'w2 w5')
     text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
     # Color subcommand keys in "x=desc" format (e.g. t=toggle, a=alpha, q=back)
@@ -397,9 +417,6 @@ def _safe_set_clim(im, vmin, vmax):
         vmin: Minimum value for color scale
         vmax: Maximum value for color scale
     """
-    import sys
-    import os
-    from io import StringIO
     
     # Create a null device for stderr redirection
     class NullDevice:
@@ -582,7 +599,6 @@ def _redraw_operando_cif_if_present(fig, ax):
     try:
         if not getattr(ax, '_operando_cif_tick_series', None):
             return
-        from .operando import _draw_operando_cif_ticks
         cif_series = ax._operando_cif_tick_series
         cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
         axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
@@ -1022,7 +1038,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print(f"  {p1:<{w1}} {p2:<{w2}} {p3:<{w3}} {p4:<{w4}}")
 
     def set_fonts(family=None, size=None):
-        import matplotlib as mpl
         if family:
             mpl.rcParams['font.family'] = 'sans-serif'
             mpl.rcParams['font.sans-serif'] = [family, 'DejaVu Sans', 'Arial', 'Liberation Sans']
@@ -1224,6 +1239,21 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         except Exception:
             return False
     
+    def _op_locator_step(locator):
+        try:
+            if isinstance(locator, MultipleLocator):
+                return float(locator._edge.step)
+        except Exception:
+            pass
+        return None
+    def _op_locator_ndivs(locator):
+        try:
+            if isinstance(locator, AutoMinorLocator):
+                return int(locator._ndivs)
+        except Exception:
+            pass
+        return None
+
     def _snapshot(note: str = ""):
         try:
             fig_w, fig_h = _get_fig_size(fig)
@@ -1394,6 +1424,22 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 'ec_wasd': dict(ec_wasd) if ec_wasd is not None else None,
                 'tick_lengths': getattr(fig, '_tick_lengths', None),
                 'tick_direction': getattr(fig, '_tick_direction', 'out'),
+                'tick_spacing_op': {
+                    'x_major_step': _op_locator_step(ax.xaxis.get_major_locator()),
+                    'x_minor_step': _op_locator_step(ax.xaxis.get_minor_locator()),
+                    'y_major_step': _op_locator_step(ax.yaxis.get_major_locator()),
+                    'y_minor_step': _op_locator_step(ax.yaxis.get_minor_locator()),
+                    'x_minor_ndivs': _op_locator_ndivs(ax.xaxis.get_minor_locator()),
+                    'y_minor_ndivs': _op_locator_ndivs(ax.yaxis.get_minor_locator()),
+                },
+                'tick_spacing_ec': {
+                    'x_major_step': _op_locator_step(ec_ax.xaxis.get_major_locator()),
+                    'x_minor_step': _op_locator_step(ec_ax.xaxis.get_minor_locator()),
+                    'y_major_step': _op_locator_step(ec_ax.yaxis.get_major_locator()),
+                    'y_minor_step': _op_locator_step(ec_ax.yaxis.get_minor_locator()),
+                    'x_minor_ndivs': _op_locator_ndivs(ec_ax.xaxis.get_minor_locator()),
+                    'y_minor_ndivs': _op_locator_ndivs(ec_ax.yaxis.get_minor_locator()),
+                } if ec_ax is not None else None,
                 'cb_visible': cb_visible,
                 'ec_visible': ec_visible,
                 'cb_h_offset': float(cb_h_offset),
@@ -1612,7 +1658,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             try: gl.remove()
                             except Exception: pass
                         ec_ax._ion_guides = []
-                        from matplotlib.ticker import ScalarFormatter
                         ec_ax.yaxis.set_major_formatter(ScalarFormatter())
                         try:
                             ec_ax.set_ylabel(snap.get('ec_labels',{}).get('y_time') or 'Time (h)')
@@ -1822,6 +1867,39 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 fig._tick_direction = tick_dir
             except Exception:
                 pass
+            # Restore tick spacing and minor count
+            def _restore_ax_spacing(axis_obj, spacing_dict):
+                if not spacing_dict:
+                    return
+                for axis_ax, maj_key, min_key, ndivs_key in [
+                    (axis_obj.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
+                    (axis_obj.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
+                ]:
+                    try:
+                        maj_step = spacing_dict.get(maj_key)
+                        if maj_step is not None:
+                            axis_ax.set_major_locator(MultipleLocator(float(maj_step)))
+                        else:
+                            axis_ax.set_major_locator(AutoLocator())
+                    except Exception:
+                        pass
+                    try:
+                        min_step = spacing_dict.get(min_key)
+                        ndivs = spacing_dict.get(ndivs_key)
+                        if min_step is not None:
+                            axis_ax.set_minor_locator(MultipleLocator(float(min_step)))
+                        elif ndivs is not None:
+                            axis_ax.set_minor_locator(AutoMinorLocator(int(ndivs)))
+                        else:
+                            axis_ax.set_minor_locator(AutoMinorLocator())
+                    except Exception:
+                        pass
+            try:
+                _restore_ax_spacing(ax, snap.get('tick_spacing_op'))
+                if ec_ax is not None:
+                    _restore_ax_spacing(ec_ax, snap.get('tick_spacing_ec'))
+            except Exception:
+                pass
             # Restore spine linewidths and tick widths (l command)
             try:
                 op_sp = snap.get('op_spines', {})
@@ -1917,7 +1995,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 cif_snap = snap.get('operando_cif')
                 if cif_snap and getattr(ax, '_operando_cif_tick_series', None):
-                    from .operando import _draw_operando_cif_ticks
                     fig._operando_cif_show_hkl = bool(cif_snap.get('show_hkl', False))
                     fig._operando_cif_show_titles = bool(cif_snap.get('show_titles', True))
                     fig._operando_cif_placement = str(cif_snap.get('placement', 'below'))
@@ -1975,8 +2052,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
 
     def _run_save_operando_session():
         """Run the operando session save flow. Returns without printing menus."""
-        from .session import dump_operando_session
-        from .utils import choose_save_path
         folder = choose_save_path(file_paths, purpose="operando session save")
         if not folder:
             return
@@ -2091,8 +2166,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         if not cross['active']:
             try:
                 # Create unified crosshair lines spanning the entire figure (same style as XY mode)
-                import matplotlib.lines
-                import matplotlib.pyplot as mpl_plt
                 vline = fig.add_artist(matplotlib.lines.Line2D([0.5, 0.5], [0, 1], transform=fig.transFigure,
                                                    color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999))
                 hline = fig.add_artist(matplotlib.lines.Line2D([0, 1], [0.5, 0.5], transform=fig.transFigure,
@@ -2105,7 +2178,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                      bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
             except Exception as e:
                 print(f"Failed to create crosshair: {e}")
-                import traceback
                 traceback.print_exc()
                 return
             def on_move(ev):
@@ -2227,7 +2299,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 ans = 'y'
             if ans == 'y':
                 try:
-                    import matplotlib.pyplot as _plt
                     _plt.close(fig)
                 except Exception:
                     pass
@@ -2239,14 +2310,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 continue
         if cmd == 'e':
             try:
-                import os
-                from .utils import (
-                    list_files_in_subdirectory,
-                    get_organized_path,
-                    _confirm_overwrite as _co,
-                    choose_save_path,
-                )
-
                 # Choose base path (terminal cwd vs file directories)
                 base_path = choose_save_path(file_paths, purpose="figure export")
                 if not base_path:
@@ -2311,11 +2374,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         target = get_organized_path(fname, 'figure', base_path=base_path)
                 
                 if not already_confirmed and os.path.exists(target):
-                    target = _co(target)
+                    target = _confirm_overwrite(target)
                 if not target:
                     print_menu(); continue
                 # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-                from .utils import ensure_exact_case_filename
                 target = ensure_exact_case_filename(target)
                 
                 _, ext = os.path.splitext(target)
@@ -2556,14 +2618,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu(); continue
         if cmd == 'pk':
             try:
-                import os
-                from .utils import choose_save_path
-                try:
-                    from scipy.signal import find_peaks
-                except ImportError:
+                if find_peaks is None:
                     print("Error: scipy is required for peak finding. Install with: pip install scipy")
                     print_menu(); continue
-                
+
                 # Get operando data
                 data_array = np.asarray(im.get_array(), dtype=float)
                 if data_array.ndim != 2 or data_array.size == 0:
@@ -2779,7 +2837,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print("Invalid option.")
             except Exception as e:
                 print(f"Error in peak search: {e}")
-                import traceback
                 traceback.print_exc()
             print_menu(); continue
         if cmd == 'h':
@@ -2944,9 +3001,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 't':
             # Unified WASD ticks/labels/spines submenu for either pane
             # Import here to avoid scoping issues with nested functions
-            from matplotlib.ticker import AutoMinorLocator, NullFormatter, MaxNLocator, NullLocator
             # Import UI positioning functions locally to ensure they're accessible in nested functions
-            from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
             
             def _get_tick_state(a):
                 # Unified keys with fallbacks for legacy combined flags
@@ -3251,12 +3306,19 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         if not is_ec:
                             _ui_position_right_ylabel(axis, fig, current_tick_state)
                 
-                print(_colorize_inline_commands("WASD toggles: direction (w/a/s/d) x action (1..5)"))
-                print(_colorize_inline_commands("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title"))
-                print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' for state, 'q' to return."))
-                print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
+                _C = '\033[96m'; _R = '\033[0m'
+                print(f"\033[1mToggle axes>\033[0m")
+                print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
+                print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
+                print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
                 while True:
-                    cmd2 = _safe_input(_colorize_prompt("Toggle> ")).strip().lower()
+                    cmd2 = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd2:
                         continue
                     if cmd2 == 'q':
@@ -3309,19 +3371,169 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         except Exception as e:
                             print(f"Error setting tick length: {e}")
                         continue
+                    if cmd2 == 'n':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _loc_str_op(loc):
+                                try:
+                                    if isinstance(loc, MultipleLocator):
+                                        return str(loc._edge.step)
+                                    return "auto"
+                                except Exception:
+                                    return "auto"
+                            print(f"Set tick spacing for {('EC' if target is ec_ax else 'operando')} pane. Current:")
+                            print(f"  {_C2}x{_R2} (X axis) : {_loc_str_op(target.xaxis.get_major_locator())}")
+                            print(f"  {_C2}y{_R2} (Y axis) : {_loc_str_op(target.yaxis.get_major_locator())}")
+                            print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}all 1{_R2}  {_C2}x auto{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Spacing> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_n = inp.split()
+                                if len(parts_n) < 2:
+                                    print("Need axis and value, e.g. 'x 0.5' or 'all 1'.")
+                                    continue
+                                axis_key, val_str = parts_n[0], parts_n[1]
+                                target_axes_n = []
+                                if axis_key == 'all':
+                                    target_axes_n = [target.xaxis, target.yaxis]
+                                elif axis_key == 'x':
+                                    target_axes_n = [target.xaxis]
+                                elif axis_key == 'y':
+                                    target_axes_n = [target.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key}'. Use x, y, or all.")
+                                    continue
+                                _snapshot("tick-spacing")
+                                for _axis in target_axes_n:
+                                    if val_str == 'auto':
+                                        _axis.set_major_locator(AutoLocator())
+                                        _axis.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis.axis_name} to auto spacing.")
+                                    else:
+                                        try:
+                                            sp_val = float(val_str)
+                                            if sp_val <= 0:
+                                                print("Spacing must be positive.")
+                                                continue
+                                            _axis.set_major_locator(MultipleLocator(sp_val))
+                                            _axis.set_minor_locator(MultipleLocator(sp_val / 5))
+                                            print(f"Set {_axis.axis_name} spacing: {sp_val}")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_str}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting tick spacing: {e}")
+                        continue
+                    if cmd2 == 'm':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _minor_str_op(axis):
+                                loc = axis.get_minor_locator()
+                                if isinstance(loc, AutoMinorLocator):
+                                    try:
+                                        return f"{loc._ndivs-1} minor(s)/interval"
+                                    except Exception:
+                                        return "auto"
+                                elif isinstance(loc, NullLocator):
+                                    return "off"
+                                return "auto"
+                            print(f"Minor ticks for {('EC' if target is ec_ax else 'operando')} pane:")
+                            print(f"  x : {_minor_str_op(target.xaxis)}")
+                            print(f"  y : {_minor_str_op(target.yaxis)}")
+                            print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Minor> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_m = inp.split()
+                                if len(parts_m) < 2:
+                                    print("Need axis and count, e.g. 'x 4' or 'all 1'.")
+                                    continue
+                                axis_key_m, val_m = parts_m[0], parts_m[1]
+                                target_axes_m = []
+                                if axis_key_m == 'all':
+                                    target_axes_m = [target.xaxis, target.yaxis]
+                                elif axis_key_m == 'x':
+                                    target_axes_m = [target.xaxis]
+                                elif axis_key_m == 'y':
+                                    target_axes_m = [target.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key_m}'. Use x, y, or all.")
+                                    continue
+                                _snapshot("tick-minor-count")
+                                for _axis_m in target_axes_m:
+                                    if val_m == 'auto':
+                                        _axis_m.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis_m.axis_name} minor ticks to auto.")
+                                    elif val_m == '0':
+                                        _axis_m.set_minor_locator(NullLocator())
+                                        print(f"Disabled {_axis_m.axis_name} minor ticks.")
+                                    else:
+                                        try:
+                                            count = int(val_m)
+                                            if count < 0:
+                                                print("Count must be 0 or positive.")
+                                                continue
+                                            _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
+                                            print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per interval.")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_m}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting minor ticks: {e}")
+                        continue
                     if cmd2 == 'list':
-                        def b(v): return 'ON ' if bool(v) else 'off'
-                        # Show which sides are available for this pane
+                        _Col = '\033[96m'; _Rol = '\033[0m'
+                        def b_op(v): return 'ON ' if bool(v) else 'off'
+                        pane_label = 'EC' if target is ec_ax else 'Operando'
+                        print(f"\033[1mToggle axes state ({pane_label}):\033[0m")
+                        print(f"  {'Side':<8}  spine  major  minor  labels title")
                         if target is ec_ax:
-                            print(_colorize_inline_commands(f"top    w1:{b(wasd['top']['spine'])} w2:{b(wasd['top']['ticks'])} w3:{b(wasd['top']['minor'])} w4:{b(wasd['top']['labels'])} w5:{b(wasd['top']['title'])}"))
-                            print(_colorize_inline_commands(f"bottom s1:{b(wasd['bottom']['spine'])} s2:{b(wasd['bottom']['ticks'])} s3:{b(wasd['bottom']['minor'])} s4:{b(wasd['bottom']['labels'])} s5:{b(wasd['bottom']['title'])}"))
-                            print(_colorize_inline_commands(f"right  d1:{b(wasd['right']['spine'])} d2:{b(wasd['right']['ticks'])} d3:{b(wasd['right']['minor'])} d4:{b(wasd['right']['labels'])} d5:{b(wasd['right']['title'])}"))
-                            print(_colorize_inline_commands("(left spine 'a' not available for EC panel)"))
+                            for side_key, side_code in [('top','w'),('bottom','s'),('right','d')]:
+                                s = wasd[side_key]
+                                print(f"  {_Col}{side_code}={side_key:<6}{_Rol} {b_op(s['spine'])}  {b_op(s['ticks'])}   {b_op(s['minor'])}   {b_op(s['labels'])}  {b_op(s['title'])}")
+                            print(f"  (left 'a' not available for EC panel)")
                         else:
-                            print(_colorize_inline_commands(f"top    w1:{b(wasd['top']['spine'])} w2:{b(wasd['top']['ticks'])} w3:{b(wasd['top']['minor'])} w4:{b(wasd['top']['labels'])} w5:{b(wasd['top']['title'])}"))
-                            print(_colorize_inline_commands(f"bottom s1:{b(wasd['bottom']['spine'])} s2:{b(wasd['bottom']['ticks'])} s3:{b(wasd['bottom']['minor'])} s4:{b(wasd['bottom']['labels'])} s5:{b(wasd['bottom']['title'])}"))
-                            print(_colorize_inline_commands(f"left   a1:{b(wasd['left']['spine'])} a2:{b(wasd['left']['ticks'])} a3:{b(wasd['left']['minor'])} a4:{b(wasd['left']['labels'])} a5:{b(wasd['left']['title'])}"))
-                            print(_colorize_inline_commands("(right spine 'd' not available for operando panel)"))
+                            for side_key, side_code in [('top','w'),('bottom','s'),('left','a')]:
+                                s = wasd[side_key]
+                                print(f"  {_Col}{side_code}={side_key:<6}{_Rol} {b_op(s['spine'])}  {b_op(s['ticks'])}   {b_op(s['minor'])}   {b_op(s['labels'])}  {b_op(s['title'])}")
+                            print(f"  (right 'd' not available for operando panel)")
+                        # Tick direction, length, spacing, minor count
+                        tick_dir = getattr(fig, '_tick_direction', 'out')
+                        print(f"  Tick direction  : {_Col}{tick_dir}{_Rol}")
+                        tl = getattr(fig, '_tick_lengths', {}) or {}
+                        maj_l = tl.get('major')
+                        min_l = tl.get('minor')
+                        if maj_l is not None:
+                            min_str = f"  minor={min_l:.2g}" if min_l is not None else ""
+                            print(f"  Tick length     : {_Col}major={maj_l:.2g}{_Rol}{min_str}")
+                        else:
+                            print(f"  Tick length     : default")
+                        def _sp_op(loc):
+                            try:
+                                if isinstance(loc, MultipleLocator):
+                                    return str(loc._edge.step)
+                                return "auto"
+                            except Exception:
+                                return "auto"
+                        def _mn_op(loc):
+                            try:
+                                if isinstance(loc, AutoMinorLocator):
+                                    return f"{loc._ndivs-1}/interval"
+                                if isinstance(loc, NullLocator):
+                                    return "off"
+                                return "auto"
+                            except Exception:
+                                return "auto"
+                        print(f"  Tick spacing    : {_Col}x{_Rol}={_sp_op(target.xaxis.get_major_locator())}  {_Col}y{_Rol}={_sp_op(target.yaxis.get_major_locator())}")
+                        print(f"  Minor count     : {_Col}x{_Rol}={_mn_op(target.xaxis.get_minor_locator())}  {_Col}y{_Rol}={_mn_op(target.yaxis.get_minor_locator())}")
                         continue
                     if cmd2 == 'p':
                         # Title offset menu — build tick_state for both panes so _get_tick_state_for_axis can use them
@@ -3662,7 +3874,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 print("No CIF tick labels. Add CIF files when launching: batplot folder phase.cif:1.54 --operando -i")
                 print_menu()
                 continue
-            from .operando import _draw_operando_cif_ticks
             axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
             wl = getattr(fig, '_operando_wl', None)
             cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
@@ -3980,7 +4191,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                      '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
                     n = len(cif_series)
                     try:
-                        import matplotlib.cm as cm
                         base = pal_name[:-2] if pal_name.lower().endswith('_r') else pal_name
                         if base.lower() == 'tab10':
                             colors = [default_tab10[i % len(default_tab10)] for i in range(n)]
@@ -4181,7 +4391,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 
                 # Calculate actual intensity range in the visible (current X/Y) area
                 try:
-                    import numpy as _np  # Local import to ensure availability
                     arr = _np.asarray(im.get_array(), dtype=float)
                     if arr.ndim == 2 and arr.size > 0:
                         H, W = arr.shape
@@ -4422,7 +4631,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         raise ValueError(f"Unknown colormap '{choice}'")
                 if palette_obj is None:
                     try:
-                        import matplotlib.cm as cm
                         palette_obj = cm.get_cmap(base_choice)
                         if reversed_choice:
                             palette_obj = palette_obj.reversed()
@@ -4681,7 +4889,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print("=" * 60 + "\n")
                     
                     # List available style files (.bps, .bpsg, .bpcfg) in Styles/ subdirectory
-                    from .utils import list_files_in_subdirectory
                     style_file_list = list_files_in_subdirectory(('.bps', '.bpsg', '.bpcfg'), 'style')
                     _bpcfg_files = [f[0] for f in style_file_list]
                     if _bpcfg_files:
@@ -4948,7 +5155,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 print(f"EC Y limits: {geom['ec']['ylim'][0]:.4g} to {geom['ec']['ylim'][1]:.4g}")
                     
                     # Use choose_save_path for style export (consistent with other menus)
-                    from .utils import choose_save_path, list_files_in_subdirectory, get_organized_path
                     save_base = choose_save_path(file_paths, purpose="style export")
                     if not save_base:
                         print("Style export canceled.")
@@ -4999,7 +5205,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 target = None
                     if target:
                         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-                        from .utils import ensure_exact_case_filename
                         target = ensure_exact_case_filename(target)
                         
                         with open(target, 'w', encoding='utf-8') as f:
@@ -5155,24 +5360,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                           labelright=bool(op_wasd.get('right', {}).get('labels', False)))
                             # Apply minor ticks
                             if op_wasd.get('top', {}).get('minor') or op_wasd.get('bottom', {}).get('minor'):
-                                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                                 ax.xaxis.set_minor_formatter(NullFormatter())
                             else:
                                 # Clear minor locator if no minor ticks are enabled
-                                from matplotlib.ticker import NullLocator, NullFormatter
                                 ax.xaxis.set_minor_locator(NullLocator())
                                 ax.xaxis.set_minor_formatter(NullFormatter())
                             ax.tick_params(axis='x', which='minor',
                                           top=bool(op_wasd.get('top', {}).get('minor', False)),
                                           bottom=bool(op_wasd.get('bottom', {}).get('minor', False)))
                             if op_wasd.get('left', {}).get('minor') or op_wasd.get('right', {}).get('minor'):
-                                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                                 ax.yaxis.set_minor_locator(AutoMinorLocator())
                                 ax.yaxis.set_minor_formatter(NullFormatter())
                             else:
                                 # Clear minor locator if no minor ticks are enabled
-                                from matplotlib.ticker import NullLocator, NullFormatter
                                 ax.yaxis.set_minor_locator(NullLocator())
                                 ax.yaxis.set_minor_formatter(NullFormatter())
                             ax.tick_params(axis='y', which='minor',
@@ -5260,24 +5461,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                              labelright=bool(ec_wasd.get('right', {}).get('labels', False)))
                             # Apply minor ticks
                             if ec_wasd.get('top', {}).get('minor') or ec_wasd.get('bottom', {}).get('minor'):
-                                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                                 ec_ax.xaxis.set_minor_locator(AutoMinorLocator())
                                 ec_ax.xaxis.set_minor_formatter(NullFormatter())
                             else:
                                 # Clear minor locator if no minor ticks are enabled
-                                from matplotlib.ticker import NullLocator, NullFormatter
                                 ec_ax.xaxis.set_minor_locator(NullLocator())
                                 ec_ax.xaxis.set_minor_formatter(NullFormatter())
                             ec_ax.tick_params(axis='x', which='minor',
                                              top=bool(ec_wasd.get('top', {}).get('minor', False)),
                                              bottom=bool(ec_wasd.get('bottom', {}).get('minor', False)))
                             if ec_wasd.get('left', {}).get('minor') or ec_wasd.get('right', {}).get('minor'):
-                                from matplotlib.ticker import AutoMinorLocator, NullFormatter
                                 ec_ax.yaxis.set_minor_locator(AutoMinorLocator())
                                 ec_ax.yaxis.set_minor_formatter(NullFormatter())
                             else:
                                 # Clear minor locator if no minor ticks are enabled
-                                from matplotlib.ticker import NullLocator, NullFormatter
                                 ec_ax.yaxis.set_minor_locator(NullLocator())
                                 ec_ax.yaxis.set_minor_formatter(NullFormatter())
                             ec_ax.tick_params(axis='y', which='minor',
@@ -5408,7 +5605,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     try:
                         cif_cfg = cfg.get('cif', {})
                         if cif_cfg and getattr(ax, '_operando_cif_tick_series', None):
-                            from .operando import _draw_operando_cif_ticks
                             fig._operando_cif_show_hkl = bool(cif_cfg.get('show_hkl', False))
                             fig._operando_cif_show_titles = bool(cif_cfg.get('show_titles', True))
                             fig._operando_cif_placement = str(cif_cfg.get('placement', 'below'))
@@ -5663,7 +5859,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 
                 # Reposition titles to apply offsets (after labelpads are set)
                 try:
-                    from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
                     # Build tick_state for operando pane
                     op_ts = getattr(ax, '_saved_tick_state', {})
                     op_tick_state = {
@@ -6407,7 +6602,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             if prev_fmt is not None:
                                 ec_ax.yaxis.set_major_formatter(prev_fmt)
                             else:
-                                from matplotlib.ticker import ScalarFormatter
                                 ec_ax.yaxis.set_major_formatter(ScalarFormatter())
                             # Restore previous locator if available
                             prev_loc = getattr(ec_ax, '_prev_ylocator', None)
@@ -6611,7 +6805,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'oe':
             # Overwrite last exported figure
             try:
-                import os
                 last_figure_path = getattr(fig, '_last_figure_export_path', None)
                 if not last_figure_path:
                     print("No previous figure export found.")
@@ -6665,8 +6858,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'os':
             # Overwrite last saved session
             try:
-                from .session import dump_operando_session
-                import os
                 last_session_path = getattr(fig, '_last_session_save_path', None)
                 if not last_session_path:
                     print("No previous session save found.")
@@ -6685,8 +6876,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd in ('ops', 'opsg'):
             # Overwrite last exported style (ops) or style+geometry (opsg)
             try:
-                import os
-                import json
                 last_style_path = getattr(fig, '_last_style_export_path', None)
                 if not last_style_path:
                     print("No previous style export found.")

@@ -587,9 +587,7 @@ def convert_label_shortcuts(text: str) -> str:
     """
     if not text:
         return text
-    
-    import re
-    
+
     # Convert {super(...)} to $^{\mathrm{...}}$ to prevent italic rendering
     # Pattern matches {super(anything inside)}
     # Use \mathrm{} to ensure non-italic rendering unless explicitly specified

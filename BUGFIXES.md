@@ -4,6 +4,329 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-03: Apply tick spacing (n) and minor count (m) commands to EC, CPC, and Operando interactive modes
+
+### Summary
+The `n` (tick spacing) and `m` (minor tick count) subcommands previously added to the 1D interactive mode's `t` (toggle axes) section have been applied to all other interactive modes: EC (`electrochem_interactive.py`), CPC (`cpc_interactive.py`), and Operando (`operando_ec_interactive.py`). All changes are fully reflected in the `p` (export style), `i` (import style), `s` (save session), and `b` (undo) commands.
+
+### Changes Made
+
+**`cpc_interactive.py`**:
+- Added `_locator_step` and `_locator_ndivs` helper functions inside `_style_snapshot`
+- Extended the `ticks` dict in `_style_snapshot` to include `spacing` sub-dict capturing x/y/right-y major/minor locator steps and AutoMinorLocator ndivs for both `ax` and `ax2`
+- Added spacing restoration in `_apply_style` (used by `p`, `i`, `b` commands)
+- Added `n` (tick spacing) and `m` (minor count) commands to the toggle axes loop; supports `x`, `y`, `r` (right y), and `all` as axis keys
+- Updated toggle axes menu display to match 1D interactive format with proper highlights
+
+**`electrochem_interactive.py`**:
+- Added `_locator_step` and `_locator_ndivs` helper functions in `push_state` scope and `_get_style_snapshot` scope
+- Extended `push_state` snap dict to include `tick_spacing` field
+- Added tick spacing restoration to `restore_state` (used by `b`)
+- Extended `_get_style_snapshot` to include spacing in the `ticks` dict
+- Added tick spacing restoration when importing a style file (`i` command)
+- Added `n` and `m` commands to the toggle axes loop
+- Updated toggle axes menu display
+
+**`operando_ec_interactive.py`**:
+- Added `_op_locator_step` and `_op_locator_ndivs` helper functions
+- Extended `_snapshot` dict to include `tick_spacing_op` (operando ax) and `tick_spacing_ec` (ec_ax) fields
+- Added `_restore_ax_spacing` helper and tick spacing restoration in `_restore()` for both panes
+- Added `n` and `m` commands to the toggle axes loop (per pane); `target` is either the operando or EC axis
+- Updated toggle axes menu display
+
+**`session.py`** (for `s` command persistence):
+- `dump_operando_session`: added `tick_locator_state` to `operando` sub-dict and `tick_locator_state` to `ec_state` sub-dict
+- `load_operando_session`: added `_restore_session_tick_locator` call for both `ax` and `ec_ax`
+- `dump_ec_session`: added `tick_locator_state` field to the session dict
+- `dump_cpc_session`: added `tick_locator_state_ax` and `tick_locator_state_ax2` fields (for `ax` and `ax2`)
+- `load_cpc_session`: added `_restore_session_tick_locator` calls for both `ax` and `ax2`
+
+### Axes Coverage
+- **CPC**: x (shared X axis), y (left Y on `ax`), r (right Y on `ax2`)
+- **EC**: x, y (single axes object)
+- **Operando**: per-pane (operando or EC); x, y for the selected pane
+- All modes: `all` applies to all available axes in that mode/pane
+
+---
+
+## 2026-03-02: Systematic removal of all function-body inline imports
+
+### Summary
+All `import` statements that appeared inside function bodies (not at module level) were removed and moved to module-level imports across all batplot source files. This eliminates an entire class of Python scoping bugs where a name bound by an `import` inside one branch of a function becomes an unresolvable local variable in other branches or nested closures.
+
+### Root Cause
+Python's scoping rules treat any `import name` statement anywhere in a function body as declaring `name` as a local variable for the **entire** function's scope — including nested closures. When the code path that contains the `import` is not yet taken, any use of the name in another branch or in a nested function raises `UnboundLocalError` or `NameError`. Previous sessions had fixed individual instances of this bug (e.g., `NullLocator`, `os`), but many more remained latent across all interactive modules.
+
+### Files Fixed
+- **`interactive.py`**: 12 inline imports removed; `re`, `importlib`, `traceback`, `matplotlib.cm`, `export_style_config`, `ensure_exact_case_filename` moved to module level
+- **`cpc_interactive.py`**: 26 inline imports removed; `re`, `to_hex`, `to_rgb`, `rgb_to_hsv`, `hsv_to_rgb`, `to_rgba`, `numpy`, `matplotlib.cm/colors`, `dump_cpc_session`, `ensure_exact_case_filename`, `dump_session`, position UI functions, `traceback`, `json` moved to module level
+- **`operando_ec_interactive.py`**: 43 inline imports removed; all stdlib and matplotlib/numpy imports moved to module level; optional deps (`cmcrameri`, `scipy`) handled with module-level `try/except`; a broken orphaned multi-line import continuation was removed and `_co` alias replaced with `_confirm_overwrite`
+- **`electrochem_interactive.py`**: 21 inline imports removed; `re`, `matplotlib`, `dump_ec_session`, `ensure_exact_case_filename`, color utilities moved to module level
+- **`session.py`**: 27 inline imports removed; all `matplotlib.ticker`, `matplotlib.colors`, `numpy`, utility imports moved to module level
+- **`style.py`**: 12 inline imports removed; `MultipleLocator`, `AutoLocator`, `AutoMinorLocator`, `NullFormatter`, `LinearSegmentedColormap`, `_CUSTOM_CMAPS`, utility imports moved to module level
+- **`readers.py`**: 9 inline imports removed; `struct`, `zipfile`, `xml.etree.ElementTree`, `csv`, `os`, `re`, `StringIO` moved to module level; `openpyxl` handled with module-level `try/except` and a `if openpyxl is None: raise ImportError(...)` guard
+- **`batplot.py`**: 2 inline imports removed; `to_rgb`, `rgb_to_hsv`, `hsv_to_rgb` moved to module level
+- **`operando.py`**: 4 inline imports removed; `blended_transform_factory`, `Line2D`, `patheffects`, `read_xrd_vendor_file` moved to module level
+- **`batch.py`**: 3 inline imports removed; `ensure_subdirectory`, `matplotlib.cm`, `read_biologic_txt_file` added to module-level imports
+- **`dev_upgrade.py`**: 8 inline imports removed; `re`, `json`, `datetime` added to module-level imports
+- **`utils.py`**: 1 redundant `import re` removed (already at module level)
+- **`args.py`**: 1 redundant `import re` removed (already at module level)
+
+### Justified Exceptions (kept inline)
+The following inline imports were intentionally left in place:
+- **Circular dependencies**: `style.py → interactive.py` and `session.py → operando_ec_interactive.py` — moving these to module level would create import cycles
+- **Lazy entry-point loads**: `cli.py`, `batplot.py` — large module loads deferred intentionally for startup performance
+- **Optional deps in try/except**: `color_utils.py` (cmcrameri), `utils.py` (tkinter), `version_check.py` (urllib/shutil) — these are inside `try/except` blocks, so Python's scoping trap does not apply; the `except` handler always catches `ImportError`
+- **`__version__` guards**: `args.py`, `dev_upgrade.py`, `manual.py` — guarded by `try/except ImportError` at the call site
+
+---
+
+## 2026-03-02: Startup crash — "cannot access free variable 'NullLocator' where it is not associated with a value"
+
+### Summary
+`batplot` crashed immediately on launch with `NameError: cannot access free variable 'NullLocator' where it is not associated with a value in enclosing scope` when the 1D interactive mode started.
+
+### Root Cause
+Same Python scoping rule as the `os` bug: any `from module import name` statement inside a function body makes that name a **local** (or free-variable) binding for the **entire** function — even in branches that never execute the import. `NullLocator` and related ticker names were imported at module level (line 18) **and** re-imported inline in several branches of `interactive_menu`. This caused `NullLocator` to be treated as a local variable in the nested `update_tick_visibility()` closure, which runs on startup before any inline branch is reached.
+
+### Solution
+Added all missing names (`MultipleLocator`, `AutoLocator`, `LinearSegmentedColormap`) to the module-level imports in `interactive.py`, then removed all 8 inline `from matplotlib.ticker import` / `from matplotlib.colors import LinearSegmentedColormap` statements from inside the function body.
+
+Applied the same fix to `cpc_interactive.py` (1 inline `from matplotlib.ticker import` inside the main menu function) and `operando_ec_interactive.py` (1 inline `from matplotlib.ticker import` inside the main menu function). Inline imports inside standalone utility functions (not the main menu function) were left as-is since they don't create cross-branch scoping conflicts.
+
+### Affected Files
+- `batplot/interactive.py` (removed 8 inline ticker/colors imports; added `MultipleLocator`, `AutoLocator`, `LinearSegmentedColormap` to module-level imports)
+- `batplot/cpc_interactive.py` (removed 1 inline ticker import at former line 1089)
+- `batplot/operando_ec_interactive.py` (removed 1 inline ticker import at former line 2946)
+
+---
+
+## 2026-03-02: Figure export crash — "cannot access local variable 'os' where it is not associated with a value"
+
+### Summary
+Figure export (and session/style overwrite shortcuts `oe`, `os`, `ops`, `opsg`) crashed with `UnboundLocalError: cannot access local variable 'os' where it is not associated with a value` on Python 3.12+.
+
+### Root Cause
+Python's scoping rules treat `import name` the same as an assignment: if `import os` appears anywhere in a function body, Python marks `os` as a local variable for the **entire** function. Several interactive menu branches (`oe`, `os`, `ops/opsg`, `e`, `pk`) had redundant `import os` inline. This meant that branches which used `os` without executing their own `import os` would raise `UnboundLocalError` at runtime, even though `os` was imported at module level.
+
+### Solution
+Removed all redundant inline `import os` statements inside function bodies in the three affected files. The module-level `import os` (already present in each file's header) is sufficient and is visible to all branches of the interactive menu function.
+
+One occurrence in `operando_ec_interactive.py` (line 401) was intentionally kept as it is inside a self-contained utility function with no module-level `os` import of its own.
+
+### Affected Files
+- `batplot/cpc_interactive.py` (removed lines 4636, 4695, 4715)
+- `batplot/interactive.py` (removed lines 5175, 6085)
+- `batplot/operando_ec_interactive.py` (removed lines 2242, 2559, 6614, 6669, 6688)
+
+---
+
+## 2026-03-02: 1D interactive — persist tick spacing/minor count in p/i/s/b and mirror to paired axes
+
+### Summary
+The `n` (tick spacing) and `m` (minor tick count) commands introduced under `t` (toggle axes) were not saved or restored by `b` (undo), `p`/`i` (style export/import), or `s` (session save). Additionally, changes needed to automatically mirror to both top/bottom X and left/right Y axes.
+
+### Solution
+- **Paired axes**: `ax.xaxis` and `ax.yaxis` in matplotlib already apply to both paired sides (top+bottom for X, left+right for Y), so a single locator set covers both sides automatically.
+- **`b` (undo)**: Added `tick_spacing` and `tick_minor_count` keys to `push_state` snapshots and restored them in `restore_state` via new helpers `_capture_tick_spacing`, `_restore_tick_spacing`, `_capture_tick_minor_count`, `_restore_tick_minor_count` in `interactive.py`.
+- **`p`/`i` (style)**: Added `_capture_tick_locator_state` and `_restore_tick_locator_state` helpers in `style.py`. Export writes `cfg["ticks"]["spacing"]`; import reads it back.
+- **`s` (session)**: Added `_capture_session_tick_locator` and `_restore_session_tick_locator` helpers in `session.py`. Dump writes `sess["tick_locator_state"]`; load restores it.
+- State stores `x_major_step`, `x_minor_step`, `y_major_step`, `y_minor_step` (for `MultipleLocator`) and `x_minor_ndivs`, `y_minor_ndivs` (for `AutoMinorLocator`). `None` values restore auto locators.
+
+### Affected Files
+- `batplot/interactive.py`
+- `batplot/style.py`
+- `batplot/session.py`
+
+---
+
+## 2026-03-02: 1D interactive — add tick spacing command under toggle axes (t > n)
+
+### Summary
+Added `n` (spacing) subcommand under the `t` (toggle axes) menu so the user can set custom major/minor tick intervals for X and Y axes independently without leaving the interactive session.
+
+### Solution
+- `n` opens a spacing prompt showing the current locator state for each axis.
+- Input format: `x 0.5` (set X major spacing to 0.5, minor to 0.1), `y 10`, `all 1`, or `x auto` (restore matplotlib automatic spacing).
+- Minor tick spacing is automatically set to 1/5 of the major spacing.
+- Uses `matplotlib.ticker.MultipleLocator` for fixed spacing and `AutoLocator`/`AutoMinorLocator` to restore auto.
+- State is captured by `b` (undo) via `push_state("tick-spacing")`.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: 1D interactive — flatten main color menu (remove m/p/s submenus)
+
+### Summary
+The main `c` (colors) command in the 1D interactive menu previously had a sub-menu with `m` (set curve colors), `p` (apply palette), and `s` (spine/tick colors) options, requiring two key presses to change a color. The user requested these submenu commands to be removed and their functionality to be available directly at the top-level `Colors>` prompt.
+
+### Root Cause
+The original multi-level color menu was designed for discoverability but created unnecessary friction for experienced users.
+
+### Solution
+Replaced the `m`/`p`/`s` submenu structure with a single unified `Colors>` prompt that auto-detects intent from the input:
+- `1:red 2:u3` → curve color manual mapping (was `m` submenu)
+- `all viridis` / `1-3 magma_r` → palette application (was `p` submenu)
+- `w:red a:#4561F7` → spine/tick colors (was `s` submenu, detected by w/a/s/d key prefixes)
+- `u` → manage saved colors (unchanged)
+- `t` → open CIF color submenu (only shown when CIF data is present)
+- `q` → back
+
+The menu also shows current curve colors, saved user colors, and available palettes with preview bars at each prompt. All changes are captured by `p`/`i`/`s`/`b` (style export/import/session/undo) as before since the underlying push_state/snapshot mechanisms are unchanged.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: Pyright "Import 'numpy' could not be resolved" in cif.py
+
+### Summary
+Pyright reported a `Import "numpy" could not be resolved` warning for `batplot/cif.py` even though `numpy` is a required runtime dependency for diffraction and CIF utilities.
+
+### Root Cause
+The warning originates from the static type checker environment not being able to locate the `numpy` package (missing stubs or interpreter environment mismatch), rather than a real runtime bug in batplot itself. The code legitimately depends on `numpy` and imports it at module scope.
+
+### Solution
+Annotated the `numpy` import in `batplot/cif.py` with `# type: ignore[import]` so Pyright no longer emits a missing-import diagnostic for this known runtime dependency. This keeps the import behavior unchanged at runtime while silencing the spurious tooling warning.
+
+### Affected Files
+- `batplot/cif.py`
+
+---
+
+## 2026-03-02: 1D interactive — unify CIF tick commands under 'cif'
+
+### Summary
+In the 1D interactive menu, CIF tick controls were previously exposed as two separate top-level commands (`z` for hkl labels and `j` for CIF titles) that only appeared when CIF files were present. This made the CIF features harder to discover and inconsistent with the operando interactive CIF submenu.
+
+### Root Cause
+The original 1D interactive menu added `z`/`j` directly under the Styles column and hid them when no CIF state was available. Operando interactive, by contrast, groups CIF options under a dedicated `c` → "CIF tick labels" submenu that is always visible, and then offers subcommands for toggling hkl labels and titles.
+
+### Solution
+Reworked the 1D interactive UI to introduce a unified `cif` command under the Geometries column that opens a CIF tick submenu. Inside this submenu:
+- `z` toggles hkl labels on CIF ticks.
+- `j` (and `t`, for consistency with operando) toggles CIF title labels.
+- When no CIF data is present, the submenu prints a clear message and instructions on how to launch batplot with CIF files to enable ticks.
+The top-level `z`/`j` handlers were removed and replaced by this submenu, while the underlying CIF state and snapshot/export logic remain unchanged, so CIF settings continue to round-trip correctly through `p`/`i`/`s`/`b` (print/export style+geom, import, save project, undo).
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: 1D interactive — CIF submenu SyntaxError
+
+### Summary
+Launching batplot with CIF files and `--interactive` failed with a `SyntaxError: unexpected character after line continuation character` in `interactive.py` due to nested f-strings in the new CIF submenu print calls.
+
+### Root Cause
+The CIF tick submenu used an f-string that itself called `colorize_menu` with another f-string containing conditional expressions and escaped quotes. This created a string that the Python parser interpreted as invalid on some environments.
+
+### Solution
+Refactored the CIF submenu prints to build the description strings (`hkl_desc`, `titles_desc`) first via simple f-strings, then passed those plain strings into `colorize_menu` without any nested f-strings. This removes the syntactic ambiguity while keeping the same runtime behavior and text output.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: 1D interactive — expand CIF submenu commands
+
+### Summary
+The initial 1D interactive `cif` submenu only exposed three subcommands (toggle hkl, toggle titles, back), whereas the operando interactive `c` → CIF submenu offers a richer set of controls (color, rename, placement, etc.). This made behavior inconsistent between modes and hid some of the CIF-related configuration hooks.
+
+### Root Cause
+When the `cif` command was first introduced for 1D interactive, only the most critical toggles (hkl and titles) were wired through, leaving out additional subcommands that exist in operando. Several of those operando commands depend on 2D operando layout state that does not exist in 1D, so they require stub or adapted implementations.
+
+### Solution
+Extended the 1D `cif` submenu to list the same set of subcommands as operando (z, j/t, h, p, v, o, m, f, r, n, x, b, q). Implemented the ones compatible with 1D (z/j/t toggles and `o`/`r` for per-set color and label changes) by updating the shared `cif_tick_series` state and redrawing via `ax._cif_draw_func`, which is already serialized through style (`p`/`i`), session save (`s`), and undo (`b`). The remaining commands are wired as no-op “reserved” hooks with clear messages, preserving future extensibility without breaking existing 1D geometry or style logic.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: 1D interactive — CIF vertical sequence reordering
+
+### Summary
+The 1D interactive `cif` submenu initially exposed several stubbed commands and did not provide a way to change the vertical sequence of CIF tick rows, which is a key layout control for stacked tick sets.
+
+### Root Cause
+The prior implementation focused on safely wiring visibility toggles and per-set color/label changes but left vertical ordering to the original file order. Stub commands (placement, manual y-positions, colormap, etc.) were shown for parity with operando but intentionally did not modify the 1D layout to avoid unintended geometry regressions.
+
+### Solution
+Simplified the 1D `cif` submenu to only include commands that are fully implemented and safe, and added a concrete `v` command for reordering:
+- `z`: toggle hkl labels (unchanged).
+- `j/t`: toggle CIF titles (unchanged).
+- `v`: change vertical sequence of CIF sets by entering a new index permutation (e.g., `2,1,3`), which reorders the shared `cif_tick_series` list and redraws ticks via `ax._cif_draw_func`.
+- `o`: per-set CIF color.
+- `r`: rename CIF set label.
+- `q`: back.
+The removed stub commands (highlight, placement, colormap, font, per-set name/show) no longer appear in the submenu, eliminating non-functional options. Reordering is captured in snapshots, style export/import, and session save/load because it operates directly on `cif_tick_series`, which is already serialized by those systems.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-02: 1D interactive — align CIF row titles with tick baselines
+
+### Summary
+In 1D interactive mode with CIF ticks enabled, the CIF row titles (file names/labels) were drawn slightly above the tick baselines for each row, making the row label and its tick marks look vertically misaligned.
+
+### Root Cause
+Both the live drawing path and the session-restored drawing path in `batplot.py` positioned the CIF row title text at `y_line + 0.005*yr` (a small positive offset above the base of the tick lines), while the tick lines themselves started at `y_line`. This created a visible offset between the text baseline for the CIF row and the line from which its ticks were drawn.
+
+### Solution
+Adjusted the CIF title text y-position so that the label is drawn exactly at `y_line` (the tick baseline) in both the main `draw_cif_ticks` implementation and the `_session_cif_draw` helper used for restored sessions. This keeps the titles horizontally aligned with their corresponding tick rows without changing x-limits, y-limits, or spacing logic.
+
+### Affected Files
+- `batplot/batplot.py`
+
+---
+
+## 2026-03-01: IDE "Not showing 139 further errors and warnings" in batplot.py
+
+### Summary
+In VS Code/Cursor, opening `batplot/batplot.py` showed an info message at line 3588: "Not showing 139 further errors and warnings", and the Problems panel capped the number of displayed diagnostics.
+
+### Root Cause
+VS Code applies a hard-coded limit (about 250 diagnostics per file) to the number of errors/warnings shown. Pylance (Pyright) was reporting more than that for the large `batplot.py` file, so the IDE truncated the list and showed the "Not showing X further..." message. This limit is not configurable in the editor.
+
+### Solution
+Added a project-level `pyrightconfig.json` that:
+- Sets `typeCheckingMode` to `"basic"` to reduce the number of type-check diagnostics.
+- Downgrades or disables several noisy rules (`reportGeneralTypeIssues`, `reportOptionalMemberAccess`, `reportOptionalSubscript` as warning; `reportPrivateUsage`, `reportUnusedImport`, `reportUnusedVariable` as none).
+- Excludes `archive_unused`, `dist`, `__pycache__`, and `*.egg-info` from analysis.
+
+This reduces the total diagnostics for `batplot.py` so they stay under the editor cap, removing the truncation message. No Python source code was changed; only tooling configuration was added.
+
+### Affected Files
+- `pyrightconfig.json` (new)
+
+---
+
+## 2026-03-01: CIF 2θ error message and Q-mode default for file:wl
+
+### Summary
+When mixing CIF files with XRD data where wavelengths are provided via the `file:wl` syntax, batplot could raise a confusing error that (1) suggested a non-existent filename pattern for wavelengths and (2) implied users needed to manually switch to Q mode with `--xaxis Q`.
+
+### Root Cause
+The 2θ+CIF validation message mentioned `data_wl1.5406.xy`, which is not a supported wavelength encoding, and suggested \"or use Q mode (remove --xaxis 2theta)\" even though batplot is designed to infer Q mode automatically when per-file wavelengths are given. The axis selection logic still defaulted to 2θ for mixes of CIF and `file:wl` inputs when no explicit `--xaxis` or `--wl` was provided.
+
+### Solution
+Updated axis selection so that when any `file:wl` inputs are present (with or without CIF files) and no explicit `--xaxis` or `--wl` is provided, batplot defaults to Q mode instead of 2θ. Also:
+- Corrected the CIF 2θ error message to describe only supported wavelength options: global `--wl` or appending `:wavelength` to the CIF filename itself.
+- Added a Q-mode validation step so that any 2θ-type XRD files (`.xy`, `.xye`, `.dat`, `.csv`, `.raw`) without a resolved wavelength now raise a clear error when Q mode is chosen automatically. Users can bypass this check by explicitly forcing Q with `--xaxis Q`, which tells batplot to treat all x-values as already in Q space (no wavelength required).
+
+### Affected Files
+- `batplot/batplot.py`
+
+---
+
 ## 2026-02-04: Operando mode — `posixpath` has no attribute `getcwd`
 
 ### Summary

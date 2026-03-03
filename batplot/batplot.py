@@ -8,7 +8,7 @@ from __future__ import annotations
 from .electrochem_interactive import electrochem_interactive_menu
 from .args import parse_args as _bp_parse_args
 from .interactive import interactive_menu
-from .batch import batch_process, batch_process_ec
+from .batch import batch_process, batch_process_ec, _apply_ec_style, _apply_xy_style
 from .converters import convert_xrd_data
 from .session import (
     dump_session as _bp_dump_session,
@@ -16,10 +16,12 @@ from .session import (
     load_operando_session,
     load_cpc_session,
     _apply_axes_bbox as _session_apply_axes_bbox,
+    _try_extract_version_from_pickle,
+    _get_current_numpy_version,
 )
 from .operando import plot_operando_folder
 from .plotting import update_labels
-from .utils import _confirm_overwrite, normalize_label_text, natural_sort_key
+from .utils import _confirm_overwrite, normalize_label_text, natural_sort_key, ensure_subdirectory
 from .readers import (
     read_csv_file,
     read_fullprof_rowwise,
@@ -36,6 +38,9 @@ from .readers import (
     read_cs_b_csv_file,
     is_cs_b_format,
     _load_csv_header_and_rows,
+    read_biologic_txt_file,
+    read_batx_file,
+    read_indexed_voltage_time_file,
 )
 from .cif import (
     simulate_cif_pattern_Q,
@@ -58,8 +63,10 @@ from .style import (
     export_style_config as _bp_export_style_config,
     apply_style_config as _bp_apply_style_config,
 )
+from .version_check import UPDATE_INFO, _read_changelog_from_package
+from . import __version__
 
-import numpy as np
+import numpy as np  # type: ignore
 import sys
 import os
 import pickle
@@ -67,9 +74,14 @@ import json
 import random
 import argparse
 import re
-import matplotlib as _mpl
-import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, NullFormatter
+import importlib.util
+import matplotlib as _mpl  # type: ignore[import-untyped]
+import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+import matplotlib.cm as cm  # type: ignore[import-untyped]
+import matplotlib.colors as mcolors  # type: ignore[import-untyped]
+from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import-untyped]
+from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb  # type: ignore[import-untyped]
+from matplotlib.colors import to_rgb  # type: ignore[import-untyped]
 
 # Try to import optional interactive menus
 try:
@@ -85,7 +97,6 @@ except ImportError:
     def _generate_similar_color(base_color):
         """Generate a similar but distinguishable color for discharge from charge color."""
         try:
-            from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
             rgb = to_rgb(base_color)
             hsv = rgb_to_hsv(rgb)
             h, s, v = hsv
@@ -99,7 +110,6 @@ except ImportError:
             return tuple(rgb_new)
         except Exception:
             try:
-                from matplotlib.colors import to_rgb
                 rgb = to_rgb(base_color)
                 return tuple(max(0, c * 0.7) for c in rgb)
             except Exception:
@@ -258,6 +268,29 @@ def batplot_main() -> int:
     # ====================================================================
     args = _bp_parse_args()
 
+    # --version / -V: show version and release info then exit
+    if getattr(args, 'version', False):
+        try:
+            print(f"batplot v{__version__}")
+            msg = UPDATE_INFO.get('custom_message') or (UPDATE_INFO.get('update_notes') or [None])[0]
+            if msg:
+                print(msg)
+            try:
+                choice = input("\nShow full release notes? [y/N]: ").strip().lower()
+                if choice in ('y', 'yes'):
+                    changelog = _read_changelog_from_package()
+                    if changelog:
+                        print("\n--- Full release notes (CHANGELOG) ---\n")
+                        print(changelog)
+                        print("\n--- End of release notes ---\n")
+                    else:
+                        print("  Release notes not included in this build.")
+            except (KeyboardInterrupt, EOFError):
+                print()
+        except Exception:
+            print(f"batplot v{__version__}")
+        return 0
+
     # ====================================================================
     # STEP 2: VALIDATE INPUT
     # ====================================================================
@@ -280,7 +313,7 @@ def batplot_main() -> int:
     # If no files AND no special flags, nothing to do
     if not args.files and not has_special_flag:
         print("No input provided, nothing to do.")
-        print("Use 'batplot -h' for CLI help or 'batplot -m' to open the txt manual.")
+        print("Use 'batplot -v' for version and release info, 'batplot -h' for CLI help, or 'batplot -m' to open the txt manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
     # ====================================================================
@@ -331,9 +364,6 @@ def batplot_main() -> int:
 
     # --- CV mode: plot voltage vs current for each cycle from .mpt ---
     if getattr(args, 'cv', False):
-        import os as _os
-        import matplotlib.pyplot as _plt
-        
         # Separate style files from data files
         data_files = []
         style_file_path = None
@@ -365,20 +395,18 @@ def batplot_main() -> int:
                     print(f"Warning: Could not load style file {style_file_path}: {e}")
         
         # Process each data file
-        from .utils import ensure_subdirectory
         out_dir = None
         if len(data_files) > 1 and (args.savefig or args.out):
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
         
         for ec_file in data_files:
-            if not _os.path.isfile(ec_file):
+            if not os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
             try:
                 # Support both .mpt and .txt formats
                 if ec_file.lower().endswith('.txt'):
-                    from .readers import read_biologic_txt_file
                     voltage, current, cycles = read_biologic_txt_file(ec_file, mode='cv')
                 else:
                     voltage, current, cycles = read_mpt_file(ec_file, mode='cv')
@@ -406,7 +434,7 @@ def batplot_main() -> int:
                 base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                                '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
                 # Ensure font and canvas settings match GC/dQdV
-                _plt.rcParams.update({
+                plt.rcParams.update({
                     'font.family': 'sans-serif',
                     # Prefer DejaVu Sans first because it has good Unicode
                     # coverage (including subscript/superscript digits), then
@@ -415,7 +443,7 @@ def batplot_main() -> int:
                     'mathtext.fontset': 'dejavusans',
                     'font.size': 16
                 })
-                fig, ax = _plt.subplots(figsize=(10, 6))
+                fig, ax = plt.subplots(figsize=(10, 6))
                 cycle_lines = {}
                 for cyc in cycles_present:
                     mask = (cyc_int == cyc)
@@ -466,7 +494,6 @@ def batplot_main() -> int:
                 # Apply style file if provided
                 if style_cfg:
                     try:
-                        from .batch import _apply_ec_style
                         _apply_ec_style(fig, ax, style_cfg)
                         # Redraw after applying style
                         if hasattr(fig, 'canvas'):
@@ -481,10 +508,10 @@ def batplot_main() -> int:
                     output_format = getattr(args, 'format', 'svg')
                     outname = os.path.join(out_dir, f"{base_name}.{output_format}")
                     try:
-                        _, _ext = _os.path.splitext(outname)
+                        _, _ext = os.path.splitext(outname)
                         if _ext.lower() == '.svg':
-                            _plt.rcParams['svg.fonttype'] = 'none'
-                            _plt.rcParams['svg.hashsalt'] = None
+                            plt.rcParams['svg.fonttype'] = 'none'
+                            plt.rcParams['svg.hashsalt'] = None
                         fig.savefig(outname, dpi=300, transparent=True if _ext.lower() == '.svg' else False)
                         print(f"CV plot saved to {outname}")
                     except Exception as e:
@@ -493,30 +520,30 @@ def batplot_main() -> int:
                 # Interactive menu: use electrochem_interactive_menu for consistency with GC
                 if args.interactive:
                     try:
-                        _plt.ion()
+                        plt.ion()
                     except Exception:
                         pass
-                    _plt.show(block=False)
+                    plt.show(block=False)
                     # Track whether data axes were swapped via --ro for this EC figure
                     try:
                         fig._ro_active = bool(getattr(args, "ro", False))
                     except Exception:
                         pass
                     try:
-                        fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                        fig._bp_source_paths = [os.path.abspath(ec_file)]
                     except Exception:
                         pass
                     try:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    _plt.show()
+                    plt.show()
                 else:
                     if not (args.savefig or args.out):
-                        _plt.show()
+                        plt.show()
                     # For multiple files, close the figure and continue to next file
                     if len(data_files) > 1:
-                        _plt.close(fig)
+                        plt.close(fig)
                         continue
                     else:
                         exit(0)
@@ -583,14 +610,13 @@ def batplot_main() -> int:
             order = candidates[1][1]
         else:
             order = candidates[2][1]
-        import importlib.util as _ilus
         for cand in order:
             try:
                 if cand == "TkAgg":
-                    if _ilus.find_spec("tkinter") is None:
+                    if importlib.util.find_spec("tkinter") is None:
                         continue
                 elif cand == "QtAgg":
-                    if (_ilus.find_spec("PyQt5") is None) and (_ilus.find_spec("PySide6") is None):
+                    if (importlib.util.find_spec("PyQt5") is None) and (importlib.util.find_spec("PySide6") is None):
                         continue
                 # MacOSX: attempt; will fail on non-framework builds
                 _mpl.use(cand, force=True)
@@ -600,9 +626,6 @@ def batplot_main() -> int:
 
     _ensure_gui_backend_for_interactive()
 
-    import matplotlib.pyplot as plt
-    # Note: All imports moved to module level for clean import behavior
-    
     # Set global default font
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -637,9 +660,6 @@ def batplot_main() -> int:
 
     # Galvanostatic cycling mode check: .mpt or supported .csv file with --gc flag
     if getattr(args, 'gc', False):
-        import os as _os
-        import matplotlib.pyplot as _plt
-        
         # Separate style files from data files
         data_files = []
         style_file_path = None
@@ -671,15 +691,14 @@ def batplot_main() -> int:
                     print(f"Warning: Could not load style file {style_file_path}: {e}")
         
         # Process each data file
-        from .utils import ensure_subdirectory
         out_dir = None
         if len(data_files) > 1 and (args.savefig or args.out):
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
 
-        # GC multi-file interactive: one figure with all files overlaid
-        if len(data_files) > 1 and args.interactive:
-            fig, ax = _plt.subplots(figsize=(10, 6))
+        # GC multi-file: one figure with all files overlaid (same for interactive and non-interactive)
+        if len(data_files) > 1:
+            fig, ax = plt.subplots(figsize=(10, 6))
             file_data = []
             base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
@@ -722,7 +741,7 @@ def batplot_main() -> int:
                 return np.concatenate(X) if X else np.array([]), np.concatenate(Y) if Y else np.array([])
 
             for file_idx, ec_file in enumerate(data_files):
-                if not _os.path.isfile(ec_file) or not (ec_file.lower().endswith('.mpt') or ec_file.lower().endswith('.csv')):
+                if not os.path.isfile(ec_file) or not (ec_file.lower().endswith('.mpt') or ec_file.lower().endswith('.csv')):
                     continue
                 try:
                     if ec_file.lower().endswith('.mpt'):
@@ -835,30 +854,47 @@ def batplot_main() -> int:
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
             if style_cfg:
                 try:
-                    from .batch import _apply_ec_style
                     _apply_ec_style(fig, ax, style_cfg)
                     if hasattr(fig, 'canvas'):
                         fig.canvas.draw()
                 except Exception as e:
                     print(f"Warning: Error applying style file: {e}")
             try:
-                _plt.ion()
+                plt.ion()
             except Exception:
                 pass
-            _plt.show(block=False)
+            plt.show(block=False)
             try:
-                fig._bp_source_paths = [_os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
+                fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
             except Exception:
                 pass
-            try:
-                electrochem_interactive_menu(fig, ax, file_data=file_data)
-            except Exception as _ie:
-                print(f"Interactive menu failed: {_ie}")
-            _plt.show()
+            if args.interactive:
+                try:
+                    electrochem_interactive_menu(fig, ax, file_data=file_data)
+                except Exception as _ie:
+                    print(f"Interactive menu failed: {_ie}")
+                plt.show()
+            else:
+                if out_dir and (args.savefig or getattr(args, 'out', None)):
+                    out_path = getattr(args, 'out', None)
+                    if not out_path:
+                        ext = getattr(args, 'format', 'svg') or 'svg'
+                        out_path = os.path.join(out_dir, f'GC_combined.{ext}')
+                    try:
+                        fig.savefig(out_path, dpi=300, bbox_inches='tight')
+                        print(f"Saved {out_path}")
+                    except Exception as e:
+                        print(f"Could not save: {e}")
+                try:
+                    plt.ioff()
+                except Exception:
+                    pass
+                print(f"Processed {len(file_data)} GC files.")
+                plt.show(block=True)
             exit(0)
 
         for ec_file_idx, ec_file in enumerate(data_files):
-            if not _os.path.isfile(ec_file):
+            if not os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
             
@@ -875,7 +911,6 @@ def batplot_main() -> int:
                         else:
                             exit(1)
                     # Import the potential-window (voltage-time to GC) reader
-                    from .readers import read_batx_file
                     b_tol = getattr(args, 'b', None)
                     tol_upper = b_tol[0] if b_tol is not None and len(b_tol) >= 2 else 0.05
                     tol_lower = b_tol[1] if b_tol is not None and len(b_tol) >= 2 else 0.005
@@ -885,7 +920,6 @@ def batplot_main() -> int:
                 elif ec_file.lower().endswith('.mpt'):
                     # If anode/cathode flags are set, try indexed voltage-time format first
                     if getattr(args, 'anode', False) or getattr(args, 'cathode', False):
-                        from .readers import read_indexed_voltage_time_file
                         is_anode = bool(getattr(args, 'anode', False))
                         cd = getattr(args, 'cd', None)
                         cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_indexed_voltage_time_file(
@@ -929,7 +963,7 @@ def batplot_main() -> int:
                         exit(1)
 
                 # Create the plot
-                fig, ax = _plt.subplots(figsize=(10, 6))
+                fig, ax = plt.subplots(figsize=(10, 6))
 
                 # Build per-cycle lines for charge and discharge
                 def _contiguous_blocks(mask):
@@ -1111,7 +1145,6 @@ def batplot_main() -> int:
                 # Apply style file if provided
                 if style_cfg:
                     try:
-                        from .batch import _apply_ec_style
                         _apply_ec_style(fig, ax, style_cfg)
                         # Redraw after applying style
                         fig.canvas.draw() if hasattr(fig, 'canvas') else None
@@ -1127,16 +1160,16 @@ def batplot_main() -> int:
                 else:
                     outname = args.savefig or args.out
                 if outname:
-                    if not _os.path.splitext(outname)[1]:
+                    if not os.path.splitext(outname)[1]:
                         outname += '.svg'
                     # Transparent background for SVG exports
-                    _, _ext = _os.path.splitext(outname)
+                    _, _ext = os.path.splitext(outname)
                     if _ext.lower() == '.svg':
                         # Fix for Affinity Designer/Photo compatibility issues
                         # Use 'none' to embed fonts as text (not paths) - prevents phantom labels
                         # Set hashsalt to empty to avoid duplicate text elements
-                        _plt.rcParams['svg.fonttype'] = 'none'
-                        _plt.rcParams['svg.hashsalt'] = None
+                        plt.rcParams['svg.fonttype'] = 'none'
+                        plt.rcParams['svg.hashsalt'] = None
                         try:
                             _fig_fc = fig.get_facecolor()
                         except Exception:
@@ -1173,7 +1206,7 @@ def batplot_main() -> int:
                 if args.interactive:
                     # Guard against non-interactive backends (e.g., Agg)
                     try:
-                        _backend = _plt.get_backend()
+                        _backend = plt.get_backend()
                     except Exception:
                         _backend = "unknown"
                     # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
@@ -1189,12 +1222,12 @@ def batplot_main() -> int:
                     else:
                         # Turn on interactive mode and show non-blocking window
                         try:
-                            _plt.ion()
+                            plt.ion()
                         except Exception:
                             pass
-                        _plt.show(block=False)
+                        plt.show(block=False)
                         try:
-                            fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                            fig._bp_source_paths = [os.path.abspath(ec_file)]
                         except Exception:
                             pass
                         try:
@@ -1202,24 +1235,24 @@ def batplot_main() -> int:
                         except Exception as _ie:
                             print(f"Interactive menu failed: {_ie}")
                         # Keep window open after menu
-                        _plt.show()
+                        plt.show()
                 else:
                     if not (args.savefig or args.out):
                         # Only show when a GUI backend is available
                         try:
-                            _backend = _plt.get_backend()
+                            _backend = plt.get_backend()
                         except Exception:
                             _backend = "unknown"
                         # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
                         _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
                         _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
                         if not _is_noninteractive:
-                            _plt.show()
+                            plt.show()
                         else:
                             print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
                 # For multiple files, close the figure and continue to next file
                 if len(data_files) > 1:
-                    _plt.close(fig)
+                    plt.close(fig)
                     continue
                 else:
                     exit()
@@ -1236,9 +1269,6 @@ def batplot_main() -> int:
 
     # Capacity-per-cycle (CPC) summary from CSV or .mpt with coulombic efficiency
     if getattr(args, 'cpc', False):
-        import os as _os
-        import numpy as _np
-
         # Separate style files from data files
         data_files = []
         style_file_path = None
@@ -1272,8 +1302,6 @@ def batplot_main() -> int:
         # Process multiple files
         file_data = []  # List of dicts with file info and data
         # Use tab10 for capacity and viridis for efficiency
-        import matplotlib.cm as cm
-        import matplotlib.colors as mcolors
         n_files = len(data_files)
         
         # Use tab10 hardcoded colors for capacity (matching interactive menu)
@@ -1291,12 +1319,12 @@ def batplot_main() -> int:
         efficiency_colors = [mcolors.rgb2hex(efficiency_cmap(pos)[:3]) for pos in eff_positions]
         
         for file_idx, ec_file in enumerate(data_files):
-            if not _os.path.isfile(ec_file):
+            if not os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
 
-            ext = _os.path.splitext(ec_file)[1].lower()
-            file_basename = _os.path.basename(ec_file)
+            ext = os.path.splitext(ec_file)[1].lower()
+            file_basename = os.path.basename(ec_file)
             
             try:
                 if ext in ['.csv', '.xlsx', '.xls']:
@@ -1309,9 +1337,9 @@ def batplot_main() -> int:
                         else:
                             # Use standard CSV reader
                             cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                            cyc = _np.array(cycles, dtype=int)
-                            unique_cycles = _np.unique(cyc)
-                            unique_cycles = unique_cycles[_np.isfinite(unique_cycles)]
+                            cyc = np.array(cycles, dtype=int)
+                            unique_cycles = np.unique(cyc)
+                            unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
                             unique_cycles = [int(x) for x in unique_cycles]
                             if not unique_cycles:
                                 unique_cycles = [1]
@@ -1321,23 +1349,23 @@ def batplot_main() -> int:
                             eff = []
                             for c in sorted(unique_cycles):
                                 m_c = (cyc == c)
-                                qchg = _np.nanmax(cap_x[m_c & chg_mask]) if _np.any(m_c & chg_mask) else _np.nan
-                                qdch = _np.nanmax(cap_x[m_c & dchg_mask]) if _np.any(m_c & dchg_mask) else _np.nan
-                                eta = (qdch / qchg * 100.0) if (_np.isfinite(qchg) and qchg > 0 and _np.isfinite(qdch)) else _np.nan
+                                qchg = np.nanmax(cap_x[m_c & chg_mask]) if np.any(m_c & chg_mask) else np.nan
+                                qdch = np.nanmax(cap_x[m_c & dchg_mask]) if np.any(m_c & dchg_mask) else np.nan
+                                eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
                                 cyc_nums.append(c)
                                 cap_charge.append(qchg)
                                 cap_discharge.append(qdch)
                                 eff.append(eta)
-                            cyc_nums = _np.array(cyc_nums, dtype=float)
-                            cap_charge = _np.array(cap_charge, dtype=float)
-                            cap_discharge = _np.array(cap_discharge, dtype=float)
-                            eff = _np.array(eff, dtype=float)
+                            cyc_nums = np.array(cyc_nums, dtype=float)
+                            cap_charge = np.array(cap_charge, dtype=float)
+                            cap_discharge = np.array(cap_discharge, dtype=float)
+                            eff = np.array(eff, dtype=float)
                     except Exception as e:
                         # Fallback to standard reader
                         cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                        cyc = _np.array(cycles, dtype=int)
-                        unique_cycles = _np.unique(cyc)
-                        unique_cycles = unique_cycles[_np.isfinite(unique_cycles)]
+                        cyc = np.array(cycles, dtype=int)
+                        unique_cycles = np.unique(cyc)
+                        unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
                         unique_cycles = [int(x) for x in unique_cycles]
                         if not unique_cycles:
                             unique_cycles = [1]
@@ -1347,17 +1375,17 @@ def batplot_main() -> int:
                         eff = []
                         for c in sorted(unique_cycles):
                             m_c = (cyc == c)
-                            qchg = _np.nanmax(cap_x[m_c & chg_mask]) if _np.any(m_c & chg_mask) else _np.nan
-                            qdch = _np.nanmax(cap_x[m_c & dchg_mask]) if _np.any(m_c & dchg_mask) else _np.nan
-                            eta = (qdch / qchg * 100.0) if (_np.isfinite(qchg) and qchg > 0 and _np.isfinite(qdch)) else _np.nan
+                            qchg = np.nanmax(cap_x[m_c & chg_mask]) if np.any(m_c & chg_mask) else np.nan
+                            qdch = np.nanmax(cap_x[m_c & dchg_mask]) if np.any(m_c & dchg_mask) else np.nan
+                            eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
                             cyc_nums.append(c)
                             cap_charge.append(qchg)
                             cap_discharge.append(qdch)
                             eff.append(eta)
-                        cyc_nums = _np.array(cyc_nums, dtype=float)
-                        cap_charge = _np.array(cap_charge, dtype=float)
-                        cap_discharge = _np.array(cap_discharge, dtype=float)
-                        eff = _np.array(eff, dtype=float)
+                        cyc_nums = np.array(cyc_nums, dtype=float)
+                        cap_charge = np.array(cap_charge, dtype=float)
+                        cap_discharge = np.array(cap_discharge, dtype=float)
+                        eff = np.array(eff, dtype=float)
                 elif ext == '.mpt':
                     mass_mg = getattr(args, 'mass', None)
                     if mass_mg is None:
@@ -1478,8 +1506,6 @@ def batplot_main() -> int:
                 )
         except Exception as e:
             print(f"Warning: Could not create CPC legend: {e}")
-            import traceback
-            traceback.print_exc()
 
         # Adjust layout to ensure top and bottom labels/titles are visible
         fig.subplots_adjust(left=0.12, right=0.88, top=0.88, bottom=0.15)
@@ -1499,7 +1525,6 @@ def batplot_main() -> int:
                     with open(style_file_path, 'r', encoding='utf-8') as f:
                         style_cfg = json.load(f)
                     print(f"Using style file: {os.path.basename(style_file_path)}")
-                    from .batch import _apply_ec_style
                     _apply_ec_style(fig, ax, style_cfg)
                     # Also apply to twin axis
                     _apply_ec_style(fig, ax2, style_cfg)
@@ -1561,9 +1586,6 @@ def batplot_main() -> int:
 
     # dQ/dV plotting mode for supported .csv electrochemistry exports
     if getattr(args, 'dqdv', False):
-        import os as _os
-        import matplotlib.pyplot as _plt
-        
         # Separate style files from data files
         data_files = []
         style_file_path = None
@@ -1595,22 +1617,21 @@ def batplot_main() -> int:
                     print(f"Warning: Could not load style file {style_file_path}: {e}")
         
         # Process each data file
-        from .utils import ensure_subdirectory
         out_dir = None
         if len(data_files) > 1 and (args.savefig or args.out):
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
 
-        # Multi-file interactive: one figure with all files overlaid
-        if len(data_files) > 1 and args.interactive:
-            fig, ax = _plt.subplots(figsize=(10, 6))
+        # dQ/dV multi-file: one figure with all files overlaid (same for interactive and non-interactive)
+        if len(data_files) > 1:
+            fig, ax = plt.subplots(figsize=(10, 6))
             ax._is_dqdv_mode = True
             file_data = []
             base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
             y_label_used = None
             for file_idx, ec_file in enumerate(data_files):
-                if not _os.path.isfile(ec_file) or not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
+                if not os.path.isfile(ec_file) or not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
                     continue
                 try:
                     if ec_file.lower().endswith('.mpt'):
@@ -1714,30 +1735,47 @@ def batplot_main() -> int:
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
             if style_cfg:
                 try:
-                    from .batch import _apply_ec_style
                     _apply_ec_style(fig, ax, style_cfg)
                     if hasattr(fig, 'canvas'):
                         fig.canvas.draw()
                 except Exception as e:
                     print(f"Warning: Error applying style file: {e}")
             try:
-                _plt.ion()
+                plt.ion()
             except Exception:
                 pass
-            _plt.show(block=False)
+            plt.show(block=False)
             try:
-                fig._bp_source_paths = [_os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
+                fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
             except Exception:
                 pass
-            try:
-                electrochem_interactive_menu(fig, ax, file_data=file_data)
-            except Exception as _ie:
-                print(f"Interactive menu failed: {_ie}")
-            _plt.show()
+            if args.interactive:
+                try:
+                    electrochem_interactive_menu(fig, ax, file_data=file_data)
+                except Exception as _ie:
+                    print(f"Interactive menu failed: {_ie}")
+                plt.show()
+            else:
+                if out_dir and (args.savefig or getattr(args, 'out', None)):
+                    out_path = getattr(args, 'out', None)
+                    if not out_path:
+                        ext = getattr(args, 'format', 'svg') or 'svg'
+                        out_path = os.path.join(out_dir, f'dQdV_combined.{ext}')
+                    try:
+                        fig.savefig(out_path, dpi=300, bbox_inches='tight')
+                        print(f"Saved {out_path}")
+                    except Exception as e:
+                        print(f"Could not save: {e}")
+                try:
+                    plt.ioff()
+                except Exception:
+                    pass
+                print(f"Processed {len(file_data)} dQ/dV files.")
+                plt.show(block=True)
             exit(0)
 
         for ec_file in data_files:
-            if not _os.path.isfile(ec_file):
+            if not os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
             if not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
@@ -1769,7 +1807,7 @@ def batplot_main() -> int:
                         voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
 
                 # Create the plot
-                fig, ax = _plt.subplots(figsize=(10, 6))
+                fig, ax = plt.subplots(figsize=(10, 6))
 
                 def _mask_segments(mask: np.ndarray, role: str):
                     inds = np.where(mask)[0]
@@ -1871,7 +1909,6 @@ def batplot_main() -> int:
                 # Apply style file if provided
                 if style_cfg:
                     try:
-                        from .batch import _apply_ec_style
                         _apply_ec_style(fig, ax, style_cfg)
                         # Redraw after applying style
                         if hasattr(fig, 'canvas'):
@@ -1888,9 +1925,9 @@ def batplot_main() -> int:
                 else:
                     outname = args.savefig or args.out
                 if outname:
-                    if not _os.path.splitext(outname)[1]:
+                    if not os.path.splitext(outname)[1]:
                         outname += '.svg'
-                    _, _ext = _os.path.splitext(outname)
+                    _, _ext = os.path.splitext(outname)
                     if _ext.lower() == '.svg':
                         try:
                             _fig_fc = fig.get_facecolor()
@@ -1927,7 +1964,7 @@ def batplot_main() -> int:
                 # Show / interactive
                 if args.interactive:
                     try:
-                        _backend = _plt.get_backend()
+                        _backend = plt.get_backend()
                     except Exception:
                         _backend = "unknown"
                     # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
@@ -1942,35 +1979,35 @@ def batplot_main() -> int:
                         print("Or run without --interactive and use --out to save the figure.")
                     else:
                         try:
-                            _plt.ion()
+                            plt.ion()
                         except Exception:
                             pass
-                        _plt.show(block=False)
+                        plt.show(block=False)
                         try:
-                            fig._bp_source_paths = [_os.path.abspath(ec_file)]
+                            fig._bp_source_paths = [os.path.abspath(ec_file)]
                         except Exception:
                             pass
                         try:
                             electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                         except Exception as _ie:
                             print(f"Interactive menu failed: {_ie}")
-                        _plt.show()
+                        plt.show()
                 else:
                     if not (args.savefig or args.out):
                         try:
-                            _backend = _plt.get_backend()
+                            _backend = plt.get_backend()
                         except Exception:
                             _backend = "unknown"
                         # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
                         _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
                         _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
                         if not _is_noninteractive:
-                            _plt.show()
+                            plt.show()
                         else:
                             print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
                 # For multiple files, close the figure and continue to next file
                 if len(data_files) > 1:
-                    _plt.close(fig)
+                    plt.close(fig)
                     continue
                 else:
                     exit()
@@ -1987,17 +2024,15 @@ def batplot_main() -> int:
 
     # Operando contour plotting mode (folder-based)
     if getattr(args, 'operando', False):
-        import os as _os
-        import matplotlib.pyplot as _plt
         try:
             # Determine target folder and optional CIF files
             # Usage: batplot folder [phase.cif:1.54 ...] --operando -i
             folder = None
             cif_files = []
             for f in args.files:
-                if _os.path.isdir(f):
+                if os.path.isdir(f):
                     if folder is None:
-                        folder = _os.path.abspath(f)
+                        folder = os.path.abspath(f)
                     else:
                         print("Operando mode: provide at most one folder.")
                         exit(1)
@@ -2010,10 +2045,10 @@ def batplot_main() -> int:
                             # Windows drive letter: C:\path\to\file.cif:1.54
                             fname = parts[0] + ":" + parts[1]
                             parts = [fname] + (parts[2:] if len(parts) > 2 else [])
-                        if _os.path.splitext(fname)[1].lower() == '.cif':
+                        if os.path.splitext(fname)[1].lower() == '.cif':
                             cif_files.append(f)
             if folder is None:
-                folder = _os.getcwd()
+                folder = os.getcwd()
 
             # Build plot (pass cif_files for CIF tick labels)
             fig, ax, meta = plot_operando_folder(folder, args, cif_files=cif_files)
@@ -2025,9 +2060,9 @@ def batplot_main() -> int:
             # Save if requested
             outname = args.savefig or args.out
             if outname:
-                if not _os.path.splitext(outname)[1]:
+                if not os.path.splitext(outname)[1]:
                     outname += '.svg'
-                _, _ext = _os.path.splitext(outname)
+                _, _ext = os.path.splitext(outname)
                 if _ext.lower() == '.svg':
                     try:
                         _fig_fc = fig.get_facecolor()
@@ -2066,7 +2101,7 @@ def batplot_main() -> int:
             # Interactive or show
             if args.interactive:
                 try:
-                    _backend = _plt.get_backend()
+                    _backend = plt.get_backend()
                 except Exception:
                     _backend = "unknown"
                 # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
@@ -2078,11 +2113,11 @@ def batplot_main() -> int:
                     print("Or run without --interactive and use --out to save the figure.")
                 else:
                     try:
-                        _plt.ion()
+                        plt.ion()
                     except Exception:
                         pass
                     try:
-                        _plt.show(block=False)
+                        plt.show(block=False)
                     except Exception:
                         pass
                     try:
@@ -2094,18 +2129,18 @@ def batplot_main() -> int:
                             print("Interactive menu not available.")
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    _plt.show()
+                    plt.show()
             else:
                 if not (args.savefig or args.out):
                     try:
-                        _backend = _plt.get_backend()
+                        _backend = plt.get_backend()
                     except Exception:
                         _backend = "unknown"
                     # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
                     _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
                     _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
                     if not _is_noninteractive:
-                        _plt.show()
+                        plt.show()
                     else:
                         print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
             exit()
@@ -2155,7 +2190,6 @@ def batplot_main() -> int:
             # Handle numpy._core and other module import errors
             if '_core' in str(e) or 'numpy' in str(e).lower():
                 # Try to extract version info before the error
-                from .session import _try_extract_version_from_pickle, _get_current_numpy_version
                 saved_versions = _try_extract_version_from_pickle(sess_path)
                 current_numpy = _get_current_numpy_version()
                 
@@ -2189,7 +2223,6 @@ def batplot_main() -> int:
         # If it's an EC GC session, load and open EC interactive menu directly
         if isinstance(sess, dict) and sess.get('kind') == 'ec_gc':
             try:
-                import matplotlib.pyplot as _plt
                 res = load_ec_session(sess_path)
                 if not res:
                     print("Failed to load EC session.")
@@ -2198,11 +2231,11 @@ def batplot_main() -> int:
                 if len(res) == 4 and res[2] is None:
                     fig, ax, _ignored, file_data = res
                     try:
-                        _plt.ion()
+                        plt.ion()
                     except Exception:
                         pass
                     try:
-                        _plt.show(block=False)
+                        plt.show(block=False)
                     except Exception:
                         pass
                     try:
@@ -2224,11 +2257,11 @@ def batplot_main() -> int:
                 else:
                     fig, ax, cycle_lines = res
                     try:
-                        _plt.ion()
+                        plt.ion()
                     except Exception:
                         pass
                     try:
-                        _plt.show(block=False)
+                        plt.show(block=False)
                     except Exception:
                         pass
                     try:
@@ -2247,7 +2280,7 @@ def batplot_main() -> int:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=sess_path)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                _plt.show()
+                plt.show()
                 exit()
             except Exception as e:
                 print(f"EC session load failed: {e}")
@@ -2255,7 +2288,6 @@ def batplot_main() -> int:
         # If it's an operando+EC session, load and open the combined interactive menu
         if isinstance(sess, dict) and sess.get('kind') == 'operando_ec':
             try:
-                import matplotlib.pyplot as _plt
                 res = load_operando_session(sess_path)
                 if not res:
                     print("Failed to load operando+EC session.")
@@ -2263,11 +2295,11 @@ def batplot_main() -> int:
                 fig2, ax2, im2, cbar2, ec_ax2 = res
                 # Always open interactive menu for session files
                 try:
-                    _plt.ion()
+                    plt.ion()
                 except Exception:
                     pass
                 try:
-                    _plt.show(block=False)
+                    plt.show(block=False)
                 except Exception:
                     pass
                 # Seed last-session path so 'os' overwrite command is available immediately
@@ -2280,7 +2312,7 @@ def batplot_main() -> int:
                         operando_ec_interactive_menu(fig2, ax2, im2, cbar2, ec_ax2)
                 except Exception as _ie:
                     print(f"Interactive menu failed: {_ie}")
-                _plt.show()
+                plt.show()
                 exit()
             except Exception as e:
                 print(f"Operando+EC session load failed: {e}")
@@ -2289,18 +2321,17 @@ def batplot_main() -> int:
         # If it's a CPC session, load and open CPC interactive menu
         if isinstance(sess, dict) and sess.get('kind') == 'cpc':
             try:
-                import matplotlib.pyplot as _plt
                 res = load_cpc_session(sess_path)
                 if not res:
                     print("Failed to load CPC session.")
                     exit(1)
                 fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data = res
                 try:
-                    _plt.ion()
+                    plt.ion()
                 except Exception:
                     pass
                 try:
-                    _plt.show(block=False)
+                    plt.show(block=False)
                 except Exception:
                     pass
                 # Seed last-session path so 'os' overwrite command is available immediately
@@ -2313,7 +2344,7 @@ def batplot_main() -> int:
                         cpc_interactive_menu(fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data=file_data)
                 except Exception as _ie:
                     print(f"CPC interactive menu failed: {_ie}")
-                _plt.show()
+                plt.show()
                 exit()
             except Exception as e:
                 print(f"CPC session load failed: {e}")
@@ -2921,8 +2952,8 @@ def batplot_main() -> int:
                         # Only add title label if show_cif_titles is True
                         if show_titles_local:
                             label_text = f" {lab}"
-                            # Use color from tuple (preserved from session)
-                            txt = ax.text(prev_xlim[0], y_line+0.005*yr, label_text,
+                            # Align CIF title baseline with tick baseline for this row
+                            txt = ax.text(prev_xlim[0], y_line, label_text,
                                           ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',16))), color=color)
                             new_art.append(txt)
                     ax._cif_tick_art = new_art
@@ -3173,7 +3204,7 @@ def batplot_main() -> int:
             else:
                 raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
         elif any_lambda or any_cif or any_xrd_vendor:
-            # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies 2theta
+            # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies Q domain
             if args.xaxis and args.xaxis.lower() in ("2theta","two_theta","tth"):
                 axis_mode = "2theta"
             elif args.xaxis and args.xaxis.upper() == "Q":
@@ -3181,8 +3212,14 @@ def batplot_main() -> int:
             elif getattr(args, 'wl', None) is not None:
                 # User gave --wl: default to Q and convert using file metadata or --wl
                 axis_mode = "Q"
+            elif any_lambda:
+                # Per-file wavelength suffix (file:wl) implies Q mode by default
+                axis_mode = "Q"
+            elif any_cif:
+                # CIF without global wavelength: keep 2theta axis (ticks will be converted if/when wavelength is known)
+                axis_mode = "2theta"
             else:
-                # No --wl and no explicit --xaxis: use 2theta so x-axis scale/label are correct
+                # No explicit wavelength info: use 2theta so x-axis scale/label are correct
                 axis_mode = "2theta"
         elif args.xaxis:
             # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
@@ -3207,8 +3244,7 @@ def batplot_main() -> int:
             "Cannot display CIF files in 2θ mode without wavelength.\n"
             "Please provide wavelength using:\n"
             "  --wl <wavelength_in_angstrom>\n"
-            "  or include wavelength in filename (e.g., data_wl1.5406.xy)\n"
-            "  or use Q mode (remove --xaxis 2theta)"
+            "  or append ':<wavelength_in_angstrom>' to the CIF filename (e.g., pattern.cif:1.5406)"
         )
 
     # ---------------- Read and plot files ----------------
@@ -3567,6 +3603,20 @@ def batplot_main() -> int:
                 theta_rad = np.arcsin(sin_theta)
                 x_plot = np.degrees(2 * theta_rad)
             elif use_Q and file_ext not in (".qye", ".gr", ".nor"):
+                # In Q mode, 2θ-type XRD data normally require a wavelength for conversion.
+                # However, if the user explicitly forced Q with '--xaxis Q', we assume all
+                # x-values are already in Q and skip wavelength validation.
+                if (original_wavelength is None
+                    and wavelength_file is None
+                    and file_ext in (".xy", ".xye", ".dat", ".csv", ".raw")
+                    and not is_chik and not is_chir
+                    and not (getattr(args, "xaxis", None) and str(args.xaxis).upper() == "Q")):
+                    raise ValueError(
+                        "In Q mode, wavelength must be provided for all 2θ XRD data files unless you explicitly force Q with '--xaxis Q'.\n"
+                        f"Missing wavelength for file: {fname}\n"
+                        "Provide wavelength via '--wl <wavelength_in_angstrom>' or using 'file:wl' syntax for every 2θ file, "
+                        "or rerun with '--xaxis Q' if all inputs should be treated as already in Q space."
+                    )
                 if original_wavelength is not None:
                     theta_rad = np.radians(x/2)
                     x_plot = 4*np.pi*np.sin(theta_rad)/original_wavelength
@@ -3829,7 +3879,7 @@ def batplot_main() -> int:
         fixed_yr = fixed_ylim[1] - fixed_ylim[0]
         if fixed_yr <= 0: fixed_yr = 1.0
         
-        # Check visibility flag first to decide if we need to adjust y-axis
+        # Check visibility flags first to decide if we need to adjust y-axis
         show_titles = show_cif_titles  # Use closure variable
         try:
             # Check __main__ module first (for backward compatibility)
@@ -3842,6 +3892,22 @@ def batplot_main() -> int:
         except Exception:
             pass
         
+        # Optional per-set visibility list (maintained by interactive menu).
+        set_visible = None
+        try:
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
+                vis = list(getattr(_bp_module, 'cif_set_visible') or [])
+                if len(vis) == len(cif_tick_series):
+                    set_visible = [bool(v) for v in vis]
+        except Exception:
+            pass
+        # Effective number of visible CIF rows (for spacing and y-limit expansion)
+        if set_visible is None:
+            n_rows = len(cif_tick_series)
+        else:
+            n_rows = max(1, sum(1 for v in set_visible if v))
+        
         # Calculate base and spacing based on FIXED y-axis limits (not current)
         # This prevents incremental movement when toggling
         if args.stack or len(y_data_list) > 1:
@@ -3852,7 +3918,7 @@ def batplot_main() -> int:
             base = global_min - 0.06*fixed_yr; spacing = 0.04*fixed_yr
         
         # Only adjust y-axis limits if titles are visible
-        needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*fixed_yr
+        needed_min = base - (n_rows-1)*spacing - 0.04*fixed_yr
         if show_titles and needed_min < fixed_ylim[0]:
             # Expand y-axis only if needed, using fixed limits as reference
             ax.set_ylim(needed_min, fixed_ylim[1])
@@ -3885,8 +3951,11 @@ def batplot_main() -> int:
                 show_hkl = bool(globals().get('show_cif_hkl', False))
             except Exception:
                 pass
+        visible_idx = 0
         for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
-            y_line = base - i*spacing
+            if set_visible is not None and i < len(set_visible) and not set_visible[i]:
+                continue
+            y_line = base - visible_idx*spacing
             if use_2th:
                 if wl is None: wl = _ensure_wavelength_for_2theta()
                 domain_peaks = _Q_to_2theta(peaksQ, wl)
@@ -3902,7 +3971,8 @@ def batplot_main() -> int:
                 if show_titles:
                     # Removed numbering; keep space padding
                     label_text = f" {lab}"
-                    txt = ax.text(prev_xlim[0], y_line + 0.005*yr, label_text,
+                    # Align CIF title baseline with tick baseline for this row
+                    txt = ax.text(prev_xlim[0], y_line, label_text,
                                   ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
                     new_art.append(txt)
                 continue
@@ -3948,9 +4018,11 @@ def batplot_main() -> int:
             # Only add title label if show_cif_titles is True
             if show_titles:
                 label_text = f" {lab}"
-                txt = ax.text(prev_xlim[0], y_line + 0.005*yr, label_text,
+                # Align CIF title baseline with tick baseline for this row
+                txt = ax.text(prev_xlim[0], y_line, label_text,
                               ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
                 new_art.append(txt)
+            visible_idx += 1
         ax._cif_tick_art = new_art
         # Restore both x and y-axis limits to prevent movement
         ax.set_xlim(prev_xlim)
@@ -4102,7 +4174,7 @@ def batplot_main() -> int:
         elif use_k: x_label = r"k ($\mathrm{\AA}^{-1}$)"
         elif use_rft: x_label = "Radial distance (Å)"
         elif use_Q: x_label = r"Q ($\mathrm{\AA}^{-1}$)"
-        elif use_2th: x_label = r"$2\theta$ (deg)"
+        elif use_2th: x_label = "2θ (deg)"
         elif use_time: x_label = "Time (h)"
         elif args.xaxis:
             x_label = str(args.xaxis)
@@ -4150,7 +4222,6 @@ def batplot_main() -> int:
     # ---------------- Apply style file if provided ----------------
     if style_cfg:
         try:
-            from .batch import _apply_xy_style
             _apply_xy_style(fig, ax, style_cfg)
             # Redraw after applying style
             fig.canvas.draw()

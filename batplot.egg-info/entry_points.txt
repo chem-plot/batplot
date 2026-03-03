@@ -1,0 +1,3 @@
+[console_scripts]
+batplot = batplot.cli:main
+batplot-manual = batplot.manual:main

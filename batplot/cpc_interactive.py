@@ -41,7 +41,7 @@ import contextlib
 from io import StringIO
 
 import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator
+from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
 import random as _random
 
 from .ui import set_spine_side_color as _ui_set_spine_side_color
@@ -97,6 +97,19 @@ from .utils import (
 import time
 from .color_utils import resolve_color_token, color_block, palette_preview, manage_user_colors, get_user_color_list, ensure_colormap
 from matplotlib.colors import to_hex as _mpl_to_hex
+from matplotlib.colors import to_hex
+import re
+from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
+import numpy as np
+from matplotlib.colors import to_rgb
+import numpy as _np
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+from matplotlib.colors import to_rgba
+from .utils import ensure_exact_case_filename
+from .session import dump_cpc_session
+import traceback
+from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
 
 
 def _legend_no_frame(ax, *args, **kwargs):
@@ -162,7 +175,6 @@ def _color_of(artist):
         if hasattr(artist, 'get_facecolors'):
             arr = artist.get_facecolors()
             if arr is not None and len(arr):
-                from matplotlib.colors import to_hex
                 return to_hex(arr[0])
     except Exception:
         return None
@@ -203,7 +215,6 @@ def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
 
 def _colorize_prompt(text):
     """Colorize commands within input prompts. Handles formats like (s=size, f=family, q=return) or (y/n)."""
-    import re
     pattern = r'\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)'
     
     def colorize_match(match):
@@ -229,7 +240,6 @@ def _colorize_prompt(text):
 
 def _colorize_inline_commands(text):
     """Colorize inline command examples in help text. Colors quoted examples and specific known commands."""
-    import re
     # Color quoted command examples (like 's2 w5 a4', 'w2 w5')
     text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
     # Color specific known commands: q, i, l, list, help, all
@@ -256,8 +266,6 @@ def _collect_file_paths(file_data) -> list:
 def _generate_similar_color(base_color):
     """Generate a similar but distinguishable color for discharge from charge color."""
     try:
-        from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb
-        import numpy as np
         
         # Convert to RGB
         rgb = to_rgb(base_color)
@@ -276,7 +284,6 @@ def _generate_similar_color(base_color):
     except Exception:
         # Fallback to a darker version
         try:
-            from matplotlib.colors import to_rgb
             rgb = to_rgb(base_color)
             return tuple(max(0, c * 0.7) for c in rgb)
         except Exception:
@@ -407,7 +414,7 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
                             xy_in = offset
                 except Exception:
                     pass
-        
+
         h1, l1 = ax.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
         # Filter to only visible items
@@ -416,11 +423,11 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
             if h.get_visible():
                 h_all.append(h)
                 l_all.append(l)
-        
+
         if h_all:
             # Get legend title (None if not set, to avoid showing "Legend")
             leg_title = _get_legend_title(fig, default=None)
-            
+
             if xy_in is not None and preserve_position:
                 # Use stored position
                 try:
@@ -495,7 +502,6 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 face_arr = artist.get_facecolors()
             if hasattr(artist, 'get_edgecolors'):
                 edge_arr = artist.get_edgecolors()
-            from matplotlib.colors import to_hex
             # If facecolor is 'none' or empty, use edgecolor instead
             if face_arr is not None and len(face_arr):
                 # Some backends use fully transparent facecolor for 'none'
@@ -528,6 +534,20 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 return float(width)
         except Exception:
             return None
+        return None
+    def _locator_step(locator):
+        try:
+            if isinstance(locator, MultipleLocator):
+                return float(locator._edge.step)
+        except Exception:
+            pass
+        return None
+    def _locator_ndivs(locator):
+        try:
+            if isinstance(locator, AutoMinorLocator):
+                return int(locator._ndivs)
+        except Exception:
+            pass
         return None
 
     def _label_visible(lbl):
@@ -658,7 +678,18 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 'ry_minor': _tick_width(ax2.yaxis, 'minor'),
             },
             'lengths': dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
-            'direction': getattr(fig, '_tick_direction', 'out')
+            'direction': getattr(fig, '_tick_direction', 'out'),
+            'spacing': {
+                'x_major_step': _locator_step(ax.xaxis.get_major_locator()),
+                'x_minor_step': _locator_step(ax.xaxis.get_minor_locator()),
+                'y_major_step': _locator_step(ax.yaxis.get_major_locator()),
+                'y_minor_step': _locator_step(ax.yaxis.get_minor_locator()),
+                'ry_major_step': _locator_step(ax2.yaxis.get_major_locator()),
+                'ry_minor_step': _locator_step(ax2.yaxis.get_minor_locator()),
+                'x_minor_ndivs': _locator_ndivs(ax.xaxis.get_minor_locator()),
+                'y_minor_ndivs': _locator_ndivs(ax.yaxis.get_minor_locator()),
+                'ry_minor_ndivs': _locator_ndivs(ax2.yaxis.get_minor_locator()),
+            },
         },
         'grid': grid_enabled,
         'wasd_state': wasd_state,
@@ -1032,7 +1063,6 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
                             if isinstance(col, (list, tuple)) and len(col) and not isinstance(col, str):
                                 col = col[0]
                             try:
-                                import numpy as _np
                                 if hasattr(col, "__len__") and not isinstance(col, str):
                                     col = tuple(_np.array(col).ravel().tolist())
                             except Exception:
@@ -1086,7 +1116,6 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             except Exception:
                 pass
             # Minor ticks
-            from matplotlib.ticker import AutoMinorLocator, NullFormatter, NullLocator, NullLocator
             if mbx or mtx:
                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
@@ -1147,6 +1176,34 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             setattr(fig, '_tick_direction', tick_direction)
             ax.tick_params(axis='both', which='both', direction=tick_direction)
             ax2.tick_params(axis='both', which='both', direction=tick_direction)
+        # Tick spacing and minor count
+        spacing = tk.get('spacing', {})
+        if spacing:
+            axes_keys = [
+                (ax.xaxis,  'x_major_step',  'x_minor_step',  'x_minor_ndivs'),
+                (ax.yaxis,  'y_major_step',  'y_minor_step',  'y_minor_ndivs'),
+                (ax2.yaxis, 'ry_major_step', 'ry_minor_step', 'ry_minor_ndivs'),
+            ]
+            for axis_obj, maj_key, min_key, ndivs_key in axes_keys:
+                try:
+                    maj_step = spacing.get(maj_key)
+                    if maj_step is not None:
+                        axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
+                    else:
+                        axis_obj.set_major_locator(AutoLocator())
+                except Exception:
+                    pass
+                try:
+                    min_step = spacing.get(min_key)
+                    ndivs = spacing.get(ndivs_key)
+                    if min_step is not None:
+                        axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
+                    elif ndivs is not None:
+                        axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
+                    else:
+                        axis_obj.set_minor_locator(AutoMinorLocator())
+                except Exception:
+                    pass
     except Exception:
         pass
     try:
@@ -1627,7 +1684,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         if isinstance(col, (list, tuple)) and len(col) and not isinstance(col, str):
                             col = col[0]
                         try:
-                            import numpy as _np
                             if hasattr(col, "__len__") and not isinstance(col, str):
                                 col = tuple(_np.array(col).ravel().tolist())
                         except Exception:
@@ -1836,9 +1892,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 # Use same palettes as EC interactive
                 palette_opts = ['tab10', 'Set2', 'Dark2', 'viridis', 'plasma']
                 def _palette_color(name, idx=0, total=1, default_val=0.4):
-                    import matplotlib.cm as cm
-                    import matplotlib.colors as mcolors
-                    import numpy as _np
                     # Ensure colormap is registered before use
                     if not ensure_colormap(name):
                         # Fallback to viridis if colormap can't be registered
@@ -1946,7 +1999,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     f['color'] = charge_col
                                     # Chg: filled square; DChg: unfilled (hollow) square
                                     if hasattr(f['sc_charge'], 'set_facecolors'):
-                                        from matplotlib.colors import to_rgba
                                         f['sc_charge'].set_color(charge_col)
                                         f['sc_charge'].set_facecolors(to_rgba(charge_col))
                                     else:
@@ -1989,7 +2041,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                             file_data[file_idx]['color'] = charge_col
                                             # Chg: filled square; DChg: unfilled (hollow) square
                                             if hasattr(file_data[file_idx]['sc_charge'], 'set_facecolors'):
-                                                from matplotlib.colors import to_rgba
                                                 file_data[file_idx]['sc_charge'].set_color(charge_col)
                                                 file_data[file_idx]['sc_charge'].set_facecolors(to_rgba(charge_col))
                                             else:
@@ -2047,7 +2098,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     f['eff_color'] = col
                                     # Force update of facecolors for scatter plots
                                     if hasattr(f['sc_eff'], 'set_facecolors'):
-                                        from matplotlib.colors import to_rgba
                                         rgba = to_rgba(col)
                                         f['sc_eff'].set_facecolors(rgba)
                                 except Exception:
@@ -2082,7 +2132,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                             file_data[file_idx]['eff_color'] = col
                                             # Force update of facecolors for scatter plots
                                             if hasattr(file_data[file_idx]['sc_eff'], 'set_facecolors'):
-                                                from matplotlib.colors import to_rgba
                                                 rgba = to_rgba(col)
                                                 file_data[file_idx]['sc_eff'].set_facecolors(rgba)
                                         except Exception:
@@ -2258,7 +2307,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             _print_menu(fig); continue
                 if target:
                     # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
-                    from .utils import ensure_exact_case_filename
                     target = ensure_exact_case_filename(target)
                     
                     # Save current legend position before export (savefig can change layout)
@@ -2378,7 +2426,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         elif key == 's':
             # Save CPC session (.pkl) with all data and styles
             try:
-                from .session import dump_cpc_session
                 # Sync current tick/title visibility (including minors) into stored WASD state before save
                 try:
                     wasd = getattr(fig, '_cpc_wasd_state', {})
@@ -3012,7 +3059,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             fig.canvas.draw_idle()
                         except Exception as e:
                             print(f"Error toggling legend: {e}")
-                            import traceback
                             traceback.print_exc()
                     elif sub == 'p':
                         # Position submenu with x and y subcommands
@@ -3380,7 +3426,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         elif key == 't':
             # Unified WASD toggles for spines/ticks/minor/labels/title per side
             # Import UI positioning functions locally to ensure they're accessible in nested functions
-            from .ui import position_top_xlabel as _ui_position_top_xlabel, position_bottom_xlabel as _ui_position_bottom_xlabel, position_left_ylabel as _ui_position_left_ylabel, position_right_ylabel as _ui_position_right_ylabel
             
             try:
                 # Local WASD state stored on figure to persist across openings
@@ -3601,21 +3646,59 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         _ui_position_left_ylabel(ax, fig, tick_state)
 
                 def _print_wasd():
+                    _Cw = '\033[96m'; _Rw = '\033[0m'
                     def b(v):
                         return 'ON ' if bool(v) else 'off'
-                    print(_colorize_inline_commands("State (top/bottom/left/right):"))
-                    print(_colorize_inline_commands(f"  top    w1:{b(wasd['top']['spine'])} w2:{b(wasd['top']['ticks'])} w3:{b(wasd['top']['minor'])} w4:{b(wasd['top']['labels'])} w5:{b(wasd['top']['title'])}"))
-                    print(_colorize_inline_commands(f"  bottom s1:{b(wasd['bottom']['spine'])} s2:{b(wasd['bottom']['ticks'])} s3:{b(wasd['bottom']['minor'])} s4:{b(wasd['bottom']['labels'])} s5:{b(wasd['bottom']['title'])}"))
-                    print(_colorize_inline_commands(f"  left   a1:{b(wasd['left']['spine'])} a2:{b(wasd['left']['ticks'])} a3:{b(wasd['left']['minor'])} a4:{b(wasd['left']['labels'])} a5:{b(wasd['left']['title'])}"))
-                    print(_colorize_inline_commands(f"  right  d1:{b(wasd['right']['spine'])} d2:{b(wasd['right']['ticks'])} d3:{b(wasd['right']['minor'])} d4:{b(wasd['right']['labels'])} d5:{b(wasd['right']['title'])}"))
+                    print(f"\033[1mToggle axes state:\033[0m")
+                    print(f"  {'Side':<8}  spine  major  minor  labels title")
+                    for side_key, side_code in [('top','w'),('bottom','s'),('left','a'),('right','d')]:
+                        s = wasd[side_key]
+                        print(f"  {_Cw}{side_code}={side_key:<6}{_Rw} {b(s['spine'])}  {b(s['ticks'])}   {b(s['minor'])}   {b(s['labels'])}  {b(s['title'])}")
+                    # Tick direction
+                    tick_dir = getattr(fig, '_tick_direction', 'out')
+                    print(f"  Tick direction  : {_Cw}{tick_dir}{_Rw}")
+                    # Tick lengths
+                    tl = getattr(fig, '_tick_lengths', {}) or {}
+                    maj_l = tl.get('major')
+                    min_l = tl.get('minor')
+                    if maj_l is not None:
+                        min_str = f"  minor={min_l:.2g}" if min_l is not None else ""
+                        print(f"  Tick length     : {_Cw}major={maj_l:.2g}{_Rw}{min_str}")
+                    else:
+                        print(f"  Tick length     : default")
+                    # Tick spacing
+                    def _sp(loc):
+                        try:
+                            if isinstance(loc, MultipleLocator):
+                                return str(loc._edge.step)
+                            return "auto"
+                        except Exception:
+                            return "auto"
+                    def _mn(loc):
+                        try:
+                            if isinstance(loc, AutoMinorLocator):
+                                return f"{loc._ndivs-1}/interval"
+                            if isinstance(loc, NullLocator):
+                                return "off"
+                            return "auto"
+                        except Exception:
+                            return "auto"
+                    print(f"  Tick spacing    : {_Cw}x{_Rw}={_sp(ax.xaxis.get_major_locator())}  {_Cw}y{_Rw}={_sp(ax.yaxis.get_major_locator())}  {_Cw}r{_Rw}={_sp(ax2.yaxis.get_major_locator())}")
+                    print(f"  Minor count     : {_Cw}x{_Rw}={_mn(ax.xaxis.get_minor_locator())}  {_Cw}y{_Rw}={_mn(ax.yaxis.get_minor_locator())}  {_Cw}r{_Rw}={_mn(ax2.yaxis.get_minor_locator())}")
 
-                print(_colorize_inline_commands("WASD toggles: direction (w/a/s/d) x action (1..5)"))
-                print(_colorize_inline_commands("  1=spine   2=ticks   3=minor ticks   4=tick labels   5=axis title"))
-                print(_colorize_inline_commands("Examples: 'w2 w5' to toggle top ticks and top title; 'd2 d5' for right."))
-                print(_colorize_inline_commands("Type 'i' to invert tick direction, 'l' to change tick length, 'list' to show current state, 'q' to go back."))
-                print(_colorize_inline_commands("  p = adjust title offsets (w=top, s=bottom, a=left, d=right)"))
+                _C = '\033[96m'; _R = '\033[0m'
+                print(f"\033[1mToggle axes>\033[0m")
+                print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
+                print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
+                print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
                 while True:
-                    cmd = _safe_input(_colorize_prompt("t> ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -3672,6 +3755,131 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print("Invalid number.")
                         except Exception as e:
                             print(f"Error setting tick length: {e}")
+                        continue
+                    if cmd == 'n':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _loc_str(loc):
+                                try:
+                                    if isinstance(loc, MultipleLocator):
+                                        return str(loc._edge.step)
+                                    return "auto"
+                                except Exception:
+                                    return "auto"
+                            print(f"Set tick spacing. Current:")
+                            print(f"  {_C2}x{_R2} (X axis) : {_loc_str(ax.xaxis.get_major_locator())}")
+                            print(f"  {_C2}y{_R2} (left Y) : {_loc_str(ax.yaxis.get_major_locator())}")
+                            print(f"  {_C2}r{_R2} (right Y): {_loc_str(ax2.yaxis.get_major_locator())}")
+                            print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}r 5{_R2}  {_C2}x auto{_R2}  {_C2}all 1{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Spacing> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_n = inp.split()
+                                if len(parts_n) < 2:
+                                    print("Need axis and value, e.g. 'x 0.5' or 'all 1'.")
+                                    continue
+                                axis_key, val_str = parts_n[0], parts_n[1]
+                                target_axes_n = []
+                                if axis_key == 'all':
+                                    target_axes_n = [ax.xaxis, ax.yaxis, ax2.yaxis]
+                                elif axis_key == 'x':
+                                    target_axes_n = [ax.xaxis]
+                                elif axis_key == 'y':
+                                    target_axes_n = [ax.yaxis]
+                                elif axis_key == 'r':
+                                    target_axes_n = [ax2.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key}'. Use x, y, r, or all.")
+                                    continue
+                                push_state("tick-spacing")
+                                for _axis in target_axes_n:
+                                    if val_str == 'auto':
+                                        _axis.set_major_locator(AutoLocator())
+                                        _axis.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis.axis_name} to auto spacing.")
+                                    else:
+                                        try:
+                                            spacing = float(val_str)
+                                            if spacing <= 0:
+                                                print("Spacing must be positive.")
+                                                continue
+                                            _axis.set_major_locator(MultipleLocator(spacing))
+                                            _axis.set_minor_locator(MultipleLocator(spacing / 5))
+                                            print(f"Set {_axis.axis_name} spacing: {spacing}")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_str}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting tick spacing: {e}")
+                        continue
+                    if cmd == 'm':
+                        try:
+                            _C2 = '\033[96m'; _R2 = '\033[0m'
+                            def _minor_str(axis):
+                                loc = axis.get_minor_locator()
+                                if isinstance(loc, AutoMinorLocator):
+                                    try:
+                                        n = loc._ndivs
+                                        return f"{n-1} minor(s)/interval"
+                                    except Exception:
+                                        return "auto"
+                                elif isinstance(loc, NullLocator):
+                                    return "off"
+                                return "auto"
+                            print(f"Minor ticks between major ticks:")
+                            print(f"  x : {_minor_str(ax.xaxis)}")
+                            print(f"  y : {_minor_str(ax.yaxis)}")
+                            print(f"  r : {_minor_str(ax2.yaxis)}")
+                            print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}r 4{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
+                            while True:
+                                inp = _safe_input("Minor> ").strip().lower()
+                                if not inp or inp == 'q':
+                                    break
+                                parts_m = inp.split()
+                                if len(parts_m) < 2:
+                                    print("Need axis and count, e.g. 'x 4' or 'all 1'.")
+                                    continue
+                                axis_key_m, val_m = parts_m[0], parts_m[1]
+                                target_axes_m = []
+                                if axis_key_m == 'all':
+                                    target_axes_m = [ax.xaxis, ax.yaxis, ax2.yaxis]
+                                elif axis_key_m == 'x':
+                                    target_axes_m = [ax.xaxis]
+                                elif axis_key_m == 'y':
+                                    target_axes_m = [ax.yaxis]
+                                elif axis_key_m == 'r':
+                                    target_axes_m = [ax2.yaxis]
+                                else:
+                                    print(f"Unknown axis '{axis_key_m}'. Use x, y, r, or all.")
+                                    continue
+                                push_state("tick-minor-count")
+                                for _axis_m in target_axes_m:
+                                    if val_m == 'auto':
+                                        _axis_m.set_minor_locator(AutoMinorLocator())
+                                        print(f"Set {_axis_m.axis_name} minor ticks to auto.")
+                                    elif val_m == '0':
+                                        _axis_m.set_minor_locator(NullLocator())
+                                        print(f"Disabled {_axis_m.axis_name} minor ticks.")
+                                    else:
+                                        try:
+                                            count = int(val_m)
+                                            if count < 0:
+                                                print("Count must be 0 or positive.")
+                                                continue
+                                            _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
+                                            print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per interval.")
+                                        except ValueError:
+                                            print(f"Invalid value '{val_m}'.")
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                        except Exception as e:
+                            print(f"Error setting minor ticks: {e}")
                         continue
                     if cmd == 'list':
                         _print_wasd(); continue
@@ -4013,7 +4221,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         base_name = current_file.get('filename', 'Data')
                         
                         # Try to extract from labels
-                        import re
                         for label in [chg_label, dchg_label, eff_label]:
                             if label:
                                 # First try to extract from bracket pattern: "filename (Chg)" -> "filename"
@@ -4042,7 +4249,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                 push_state("rename-legend")
                                 
                                 # Extract bracket content from original labels if present
-                                import re
                                 chg_bracket = ''
                                 dchg_bracket = ''
                                 eff_bracket = ''
@@ -4121,7 +4327,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                     
                                     # Extract base filename
                                     base_name = current_file.get('filename', 'Data')
-                                    import re
                                     for label in [chg_label, dchg_label, eff_label]:
                                         if label:
                                             # First try to extract from bracket pattern: "filename (Chg)" -> "filename"
@@ -4150,7 +4355,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                                             push_state("rename-legend")
                                             
                                             # Extract bracket content from original labels if present
-                                            import re
                                             chg_bracket = ''
                                             dchg_bracket = ''
                                             eff_bracket = ''
@@ -4633,7 +4837,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         elif key == 'oe':
             # Overwrite last exported figure
             try:
-                import os
                 last_figure_path = getattr(fig, '_last_figure_export_path', None)
                 if not last_figure_path:
                     print("No previous figure export found.")
@@ -4691,8 +4894,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         elif key == 'os':
             # Overwrite last saved session
             try:
-                from .session import dump_cpc_session
-                import os
                 last_session_path = getattr(fig, '_last_session_save_path', None)
                 if not last_session_path:
                     print("No previous session save found.")
@@ -4712,8 +4913,6 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         elif key in ('ops', 'opsg'):
             # Overwrite last exported style (ops) or style+geometry (opsg)
             try:
-                import os
-                import json
                 last_style_path = getattr(fig, '_last_style_export_path', None)
                 if not last_style_path:
                     print("No previous style export found.")

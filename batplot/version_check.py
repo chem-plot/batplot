@@ -19,6 +19,7 @@ When you run batplot, it automatically (and silently) checks for updates:
 3. **Compare Versions**: Compares current version vs latest version
    - If latest > current: Show update notification
    - If latest <= current: Do nothing (you're up to date)
+   - So you only see the "new version" box when PyPI has a newer release than your install.
 
 4. **Show Notification**: If update available, prints a friendly message
    - Shows current and latest version numbers
@@ -51,7 +52,39 @@ import sys
 import json
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+
+
+def _get_terminal_width() -> int:
+    """Return terminal width if available, else a sensible default. Works on Windows, macOS, Linux."""
+    try:
+        import shutil
+        size = shutil.get_terminal_size((120, 24))
+        return min(max(size.columns, 72), 132)
+    except Exception:
+        return 120
+
+
+def _wrap_line(text: str, width: int) -> List[str]:
+    """Wrap a single line of text to width, breaking at spaces when possible. Returns list of lines."""
+    if not text or width < 10:
+        return [text] if text else []
+    width = int(width)
+    lines = []
+    rest = text.strip()
+    while rest:
+        if len(rest) <= width:
+            lines.append(rest)
+            break
+        chunk = rest[:width]
+        last_space = chunk.rfind(' ')
+        if last_space > width // 2:
+            lines.append(rest[:last_space].rstrip())
+            rest = rest[last_space + 1:].lstrip()
+        else:
+            lines.append(rest[:width])
+            rest = rest[width:].lstrip()
+    return lines
 
 # ====================================================================================
 # UPDATE INFO CONFIGURATION
@@ -68,14 +101,11 @@ from typing import Optional, Tuple
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files (still testing)',
+    'custom_message': '- Improved interactive menu functionality for colors/ticks',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files (still testing)',
-        '- .brml and .raw are also supported in operando mode',
-        '- Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file',
-        '- e.g. batplot file1.xy --readcol 1 2 file2.xy --readcol 4 6 this will plot col 1 as x and col 2 as y for file1, and col 4 as x and col 6 as y for file2',
-        '- batplot file.xy --readcol 1 2 1 3 1 4 1 5 this will plot 4 curves with col 1 as x and col 2, 3, 4, 5 as y'
+        '- Improved interactive menu functionality for colors/ticks',
+        '- Bug fixes'
     ],
     'show_update_notes': True,
 }
@@ -85,7 +115,8 @@ UPDATE_INFO = {
 # ====================================================================================
 # URL for release notes of the latest version (so old installs can show "what's new").
 # Updated by batplot --dev-upgrade; commit and push so users see notes.
-LATEST_RELEASE_NOTES_URL = "https://raw.githubusercontent.com/TianDai1729/batplot/main/batplot/data/latest_release_notes.json"
+# Must match the repo you push to (e.g. chem-plot/batplot).
+LATEST_RELEASE_NOTES_URL = "https://raw.githubusercontent.com/chem-plot/batplot/main/batplot/data/latest_release_notes.json"
 
 
 def _fetch_latest_release_notes(latest_version: str) -> Optional[dict]:
@@ -198,16 +229,15 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
     cache_file = get_cache_file()
     now = time.time()
     
-    # Check cache unless forced
+    # Check cache unless forced (only use cache if it has a valid latest_version)
     if not force and cache_file.exists():
         try:
             with open(cache_file, 'r') as f:
                 cache = json.load(f)
-                # Check once per hour (3600 seconds)
-                if now - cache.get('timestamp', 0) < 3600:
-                    # Use cached result
-                    latest = cache.get('latest_version')
-                    if latest and parse_version(latest) > parse_version(current_version):
+                latest = cache.get('latest_version')
+                # Check once per hour (3600 seconds); skip cache if previous fetch failed (latest is None)
+                if latest and (now - cache.get('timestamp', 0) < 3600):
+                    if parse_version(latest) > parse_version(current_version):
                         _print_update_message(current_version, latest, 0)  # count unknown when from cache
                     return
         except Exception:
@@ -262,61 +292,36 @@ def _print_update_message(current: str, latest: str, versions_behind: int = 0) -
         update_notes = UPDATE_INFO.get('update_notes')
         show_notes = UPDATE_INFO.get('show_update_notes', True)
     
-    # Calculate box width (minimum 68, expand if needed for longer messages)
-    box_width = 68
-    
-    # Calculate required width based on content
-    max_line_len = 68  # Default minimum width
-    if custom_msg:
-        max_line_len = max(max_line_len, len(custom_msg) + 4)
-    if update_notes and show_notes:
-        for note in update_notes:
-            max_line_len = max(max_line_len, len(note) + 4)
-    # Account for "Press 'v'..." and "(X versions behind..." lines
-    max_line_len = max(max_line_len, 52, 48)
-    # Ensure box width is at least the calculated width
-    box_width = max(68, min(max_line_len, 100))  # Cap at 100 for readability
-    
+    # Box width: use terminal width (72–132) so full text can show; wrap long lines instead of truncating
+    try:
+        box_width = _get_terminal_width()
+    except Exception:
+        box_width = 120
+    content_width = box_width - 4  # "│  " and "  │"
+
     print(f"\n\033[93m╭{'─' * box_width}╮\033[0m")
     print(f"\033[93m│\033[0m  \033[1mA new version of batplot is available!\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
     print(f"\033[93m│\033[0m  Current: \033[91m{current}\033[0m → Latest: \033[92m{latest}\033[0m" + " " * max(0, box_width - 20 - len(current) - len(latest)) + "\033[93m│\033[0m")
-    
-    # Add custom message if provided
+
+    # Add custom message (wrapped to multiple lines if needed)
     if custom_msg and custom_msg.strip():
-        # Truncate if too long to fit in box
-        msg = custom_msg[:box_width - 6] if len(custom_msg) > box_width - 6 else custom_msg
-        print(f"\033[93m│\033[0m  {msg}" + " " * max(0, box_width - len(msg) - 4) + "\033[93m│\033[0m")
-    
-    # Add update notes if provided
+        for line in _wrap_line(custom_msg, content_width):
+            print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
+
+    # Add update notes (wrapped, no truncation)
     if update_notes and show_notes and isinstance(update_notes, list):
         for note in update_notes:
             if note and note.strip():
-                # Truncate if too long to fit in box
-                note_text = note[:box_width - 6] if len(note) > box_width - 6 else note
-                print(f"\033[93m│\033[0m  {note_text}" + " " * max(0, box_width - len(note_text) - 4) + "\033[93m│\033[0m")
-    
+                for line in _wrap_line(note, content_width):
+                    print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
+
     print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
     if versions_behind > 1:
-        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — press 'v' for full release notes)\033[0m" + " " * max(0, box_width - 48) + "\033[93m│\033[0m")
+        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — run 'batplot -v' for full release notes)\033[0m" + " " * max(0, box_width - 58) + "\033[93m│\033[0m")
     else:
-        print(f"\033[93m│\033[0m  \033[1mPress 'v' for full release notes, or Enter to continue\033[0m" + " " * max(0, box_width - 48) + "\033[93m│\033[0m")
+        print(f"\033[93m│\033[0m  \033[1mRun 'batplot -v' for full release notes\033[0m" + " " * max(0, box_width - 42) + "\033[93m│\033[0m")
     print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * max(0, box_width - 45) + "\033[93m│\033[0m")
     print(f"\033[93m╰{'─' * box_width}╯\033[0m\n")
-    
-    # Prompt for 'v' to show full changelog
-    try:
-        choice = input("\033[93m  [v] Release notes  [Enter] Continue: \033[0m").strip().lower()
-        if choice == 'v':
-            changelog = _read_changelog_from_package()
-            if changelog:
-                print("\n\033[1m--- Full release notes (CHANGELOG) ---\033[0m\n")
-                print(changelog)
-                print("\033[1m--- End of release notes ---\033[0m\n")
-            else:
-                print("\033[91m  Could not load release notes (changelog not included in this build).\033[0m\n")
-    except (KeyboardInterrupt, EOFError):
-        print()
-        pass
 
 
 if __name__ == '__main__':

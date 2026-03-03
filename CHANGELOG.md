@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.8.24] - 2026-03-03
+- Improved interactive menu functionality for colors/ticks
+- Bug fixes
+
+
 ## [1.8.23] - 2026-02-28
 - Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files (still testing)
 - .brml and .raw are also supported in operando mode

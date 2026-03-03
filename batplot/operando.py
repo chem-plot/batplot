@@ -50,6 +50,10 @@ from .converters import convert_to_qye
 from .readers import robust_loadtxt_skipheader, read_mpt_file, is_bruker_raw
 from .cif import cif_reflection_positions, list_reflections_with_hkl, build_hkl_label_map_from_list
 from .utils import natural_sort_key
+from .readers import read_xrd_vendor_file
+from matplotlib.transforms import blended_transform_factory
+from matplotlib.lines import Line2D
+from matplotlib import patheffects
 
 # Import colorbar drawing function for non-interactive mode
 try:
@@ -97,7 +101,6 @@ def _infer_axis_mode(args, any_qye: bool, has_unknown_ext: bool):
 def _load_curve(path: Path, readcol=None):
     suffix = path.suffix.lower()
     if suffix in ('.brml', '.xrdml', '.rasx') or (suffix == '.raw' and is_bruker_raw(str(path))):
-        from .readers import read_xrd_vendor_file
         x, y, _, _ = read_xrd_vendor_file(str(path))
         return np.asarray(x, float), np.asarray(y, float)
 
@@ -170,8 +173,6 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
     title_visible: list of bool, one per set; if None, all visible when show_titles
     set_visible: list of bool, one per set; if False, skip drawing that CIF set entirely
     """
-    from matplotlib.transforms import blended_transform_factory
-    from matplotlib.lines import Line2D
 
     if highlight is None:
         highlight = getattr(fig, '_operando_cif_highlight', False)
@@ -193,7 +194,6 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
     pe = []
     if highlight:
         try:
-            from matplotlib import patheffects
             pe = [patheffects.withStroke(linewidth=2.5, foreground='white')]
         except Exception:
             pass
