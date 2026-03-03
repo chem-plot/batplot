@@ -38,8 +38,8 @@ import re
 # If rich is not installed, we fall back to plain text (still works fine).
 # ====================================================================
 try:
-    from rich.console import Console 
-    from rich.markup import escape
+    from rich.console import Console  # type: ignore[import]
+    from rich.markup import escape  # type: ignore[import]
     _console = Console()
     _HAS_RICH = True
 except ImportError:

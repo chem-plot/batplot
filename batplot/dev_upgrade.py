@@ -213,13 +213,12 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
         
         print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
         print(f"  Files to commit:")
-        print(f"    - batplot/__init__.py (version)")
-        print(f"    - pyproject.toml (version)")
-        print(f"    - batplot/version_check.py (UPDATE_INFO)")
-        print(f"    - batplot/data/latest_release_notes.json")
-        print(f"    - CITATION.cff")
-        print(f"    - RELEASE_NOTES.txt, CHANGELOG.md, BUGFIXES.md")
-        print(f"    - batplot/data/CHANGELOG.md")
+        print(f"    - All changes under batplot/ (source, data, version files)")
+        print(f"    - pyproject.toml")
+        print(f"    - BUGFIXES.md")
+        print(f"    - README.md")
+        print(f"    - RELEASE_NOTES.txt")
+        print(f"    - USER_MANUAL.md")
         
         try:
             choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
@@ -231,33 +230,24 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             print(f"{YELLOW}Skipped git push{NC}")
             return True
         
-        # Stage the files: release metadata + release notes and changelog so GitHub reflects the release.
-        # Use -f so files listed in .gitignore (e.g. RELEASE_NOTES, CHANGELOG) are still committed and pull won't abort.
-        files_to_commit = [
-            "batplot/__init__.py",
+        # Stage the files:
+        # - Everything under batplot/ (source, data, version files)
+        # - Selected root-level metadata/docs needed for a release
+        root_files_to_commit = [
             "pyproject.toml",
-            "batplot/version_check.py",
-            "batplot/data/latest_release_notes.json",
-            "CITATION.cff",
-            "RELEASE_NOTES.txt",
-            "CHANGELOG.md",
             "BUGFIXES.md",
-            "batplot/data/CHANGELOG.md",
+            "README.md",
+            "RELEASE_NOTES.txt",
+            "USER_MANUAL.md",
         ]
         
-        for f in files_to_commit:
+        for f in root_files_to_commit:
             file_path = project_root / f
             if file_path.exists():
-                subprocess.run(["git", "add", "-f", f], cwd=project_root, check=True)
+                subprocess.run(["git", "add", f], cwd=project_root, check=True)
         
-        # Optionally include all other modified and new files (batplot source, etc.) so GitHub has the full release
-        try:
-            include_all = input(f"{YELLOW}Also include all other modified and new files (e.g. batplot/ source)? (y/n): {NC}").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            include_all = "n"
-        if include_all in ("y", "yes"):
-            subprocess.run(["git", "add", "-A"], cwd=project_root, capture_output=True)
-            print(f"{GREEN}✓ Staged all modified and new tracked files{NC}")
+        # Stage all changes (including deletions) under batplot/ only
+        subprocess.run(["git", "add", "-A", "batplot"], cwd=project_root, check=True)
         
         # Create commit message
         commit_msg = f"Release v{new_version}\n\n"

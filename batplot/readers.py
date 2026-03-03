@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import csv
 import numpy as np  # type: ignore[import-untyped]
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, cast
 import struct
 import zipfile
 import xml.etree.ElementTree as ET
@@ -199,6 +199,9 @@ def read_excel_to_csv_like(fname: str, header_row: int = 2, data_start_row: int 
 
     wb = openpyxl.load_workbook(fname, read_only=True, data_only=True)
     ws = wb.active
+    if ws is None:
+        wb.close()
+        raise ValueError("Workbook has no active worksheet")
     
     # Read header row
     header = []
@@ -743,7 +746,7 @@ def robust_loadtxt_skipheader(fname: str):
     return np.loadtxt(StringIO("\n".join(data_lines)))
 
 
-def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: float = None):
+def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None):
     """Read BioLogic .mpt file in various modes.
     
     BioLogic .mpt files come in two formats:
@@ -1650,6 +1653,9 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         
         return (cap_x, voltage, cycles, charge_mask, discharge_mask)
     
+    # At this point we have per-point data, so voltage and current indices must be present.
+    assert v_idx is not None and i_idx is not None
+
     # Normal processing for point-by-point data
     voltage = np.empty(n, dtype=float)
     current = np.empty(n, dtype=float)
@@ -1692,6 +1698,8 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     # Initialize arrays to track charge/discharge status for each data point
     is_charge = np.zeros(n, dtype=bool)  # True = charging, False = discharging
     is_rest_segment = np.zeros(n, dtype=bool)  # Track rest/CV periods (excluded from both masks)
+    # Track Rest/CV/other non-active steps when a Step Type column is available
+    is_rest_or_other: np.ndarray = np.zeros(n, dtype=bool)
     used_step_type = False  # Flag: did we successfully use Step Type method?
     used_capacity_columns = False  # Flag: did we successfully use capacity column method?
     
@@ -1710,7 +1718,6 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     if step_type_idx is not None:
         # Parse Step Type column to determine charge/discharge for each data point
         # We'll also track which rows are Rest/CV/other non-active steps (these get excluded)
-        is_rest_or_other = np.zeros(n, dtype=bool)
         
         # Loop through each row in the data file
         for k, row in enumerate(rows):
@@ -1791,6 +1798,8 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
         else:
             chg_col_idx = cap_abs_chg_idx   # Charge absolute capacity column index
             dch_col_idx = cap_abs_dch_idx   # Discharge absolute capacity column index
+
+        assert chg_col_idx is not None and dch_col_idx is not None
         
         # STEP 2: Read all capacity values from the file
         cap_chg_vals = np.empty(n, dtype=float)  # Array to store charge capacity for each point
@@ -1953,8 +1962,8 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     run_starts.append(n)
 
     # Build masks from voltage trend
-    # Exclude Rest/CV steps if they were identified
-    if used_step_type and 'is_rest_or_other' in locals():
+    # Exclude Rest/CV steps if they were identified via Step Type
+    if used_step_type:
         charge_mask = is_charge & ~is_rest_or_other
         discharge_mask = ~is_charge & ~is_rest_or_other
     else:
@@ -2217,8 +2226,12 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
             row = row + [''] * (len(header) - len(row))
         voltage[k] = _to_float(row[v_idx])
         if use_spec:
+            if dq_spec_idx is None:
+                raise RuntimeError("Internal error: dq_spec_idx is None despite use_spec=True")
             dqdv[k] = _to_float(row[dq_spec_idx])
         else:
+            if dq_abs_idx is None:
+                raise RuntimeError("Internal error: dq_abs_idx is None despite use_spec=False")
             dqdv[k] = _to_float(row[dq_abs_idx])
         if i_idx is not None:
             current[k] = _to_float(row[i_idx])
@@ -2272,6 +2285,8 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
         else:
             chg_col_idx = cap_abs_chg_idx
             dch_col_idx = cap_abs_dch_idx
+
+        assert chg_col_idx is not None and dch_col_idx is not None
         
         cap_chg_vals = np.empty(n, dtype=float)
         cap_dch_vals = np.empty(n, dtype=float)
@@ -2386,8 +2401,10 @@ def read_mpt_dqdv_file(fname: str,
     if mass_mg is None or mass_mg <= 0:
         raise ValueError("Mass loading (mg) is required and must be positive for dQ/dV from .mpt files. Use --mass.")
 
-    specific_capacity, voltage, cycles, charge_mask, discharge_mask = read_mpt_file(
-        fname, mode='gc', mass_mg=mass_mg
+    result = read_mpt_file(fname, mode='gc', mass_mg=mass_mg)
+    specific_capacity, voltage, cycles, charge_mask, discharge_mask = cast(
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        result,
     )
 
     mass_g = float(mass_mg) / 1000.0

@@ -23,10 +23,10 @@ from __future__ import annotations
 
 import os
 from typing import List, Dict, Any, Optional
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator, NullFormatter
-import matplotlib.transforms as mtransforms
+import numpy as np  # type: ignore[import]
+import matplotlib.pyplot as plt  # type: ignore[import]
+from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import]
+import matplotlib.transforms as mtransforms  # type: ignore[import]
 
 _DEBUG_SPINE_COLOR = os.environ.get("BATPLOT_DEBUG_SPINE_COLOR", "").strip().lower() in ("1", "true", "yes")
 

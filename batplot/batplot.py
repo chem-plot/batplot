@@ -219,7 +219,215 @@ def _maybe_expand_allfiles_argument(args, ec_mode_active: bool = False) -> None:
                                 allowed_exts=allowed_exts)
 
 
-def batplot_main() -> int:
+def _handle_cv_mode(args) -> int:
+    """
+    Handle CV mode plotting and routing.
+    Returns an integer exit code (0 for success, non-zero for error).
+    """
+    # Separate style files from data files
+    data_files = []
+    style_file_path = None
+    for f in args.files:
+        ext = os.path.splitext(f)[1].lower()
+        if ext in ('.bps', '.bpsg', '.bpcfg'):
+            if style_file_path is None:
+                style_file_path = f
+            else:
+                print(f"Warning: Multiple style files provided, using first: {style_file_path}")
+        else:
+            data_files.append(f)
+
+    if not data_files:
+        print("CV mode: no data files found (only style files provided).")
+        return 1
+
+    # Load style file if provided
+    style_cfg = None
+    if style_file_path:
+        if not os.path.isfile(style_file_path):
+            print(f"Warning: Style file not found: {style_file_path}")
+        else:
+            try:
+                with open(style_file_path, 'r', encoding='utf-8') as f:
+                    style_cfg = json.load(f)
+                print(f"Using style file: {os.path.basename(style_file_path)}")
+            except Exception as e:
+                print(f"Warning: Could not load style file {style_file_path}: {e}")
+
+    # Process each data file
+    out_dir = None
+    if len(data_files) > 1 and (args.savefig or args.out):
+        # Multiple files: create output directory
+        out_dir = ensure_subdirectory('Figures', os.getcwd())
+
+    for ec_file in data_files:
+        if not os.path.isfile(ec_file):
+            print(f"File not found: {ec_file}")
+            if len(data_files) > 1:
+                continue
+            return 1
+        try:
+            # Support both .mpt and .txt formats
+            if ec_file.lower().endswith('.txt'):
+                voltage, current, cycles = read_biologic_txt_file(ec_file, mode='cv')
+            else:
+                # read_mpt_file can return different tuple sizes depending on mode;
+                # in CV mode we only use the first three elements (voltage, current, cycles).
+                mpt_result = read_mpt_file(ec_file, mode='cv')
+                voltage = mpt_result[0]
+                current = mpt_result[1]
+                cycles = mpt_result[2]
+            # Normalize cycle indices to start at 1
+            # Find the first cycle with at least 2 data points (needed for plotting)
+            cyc_int_raw = np.array(np.rint(cycles), dtype=int)
+            if cyc_int_raw.size:
+                unique_cycles_raw = np.unique(cyc_int_raw)
+                valid_min_c = None
+                for c in sorted(unique_cycles_raw):
+                    if np.sum(cyc_int_raw == c) >= 2:
+                        valid_min_c = int(c)
+                        break
+
+                if valid_min_c is not None:
+                    shift = 1 - valid_min_c
+                else:
+                    min_c = int(np.min(cyc_int_raw))
+                    shift = 1 - min_c if min_c <= 0 else 0
+            else:
+                shift = 0
+            cyc_int = cyc_int_raw + shift
+            cycles_present = sorted(int(c) for c in np.unique(cyc_int)) if cyc_int.size else [1]
+            # Color palette
+            base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            # Ensure font and canvas settings match GC/dQdV
+            plt.rcParams.update({
+                'font.family': 'sans-serif',
+                # Prefer DejaVu Sans first because it has good Unicode
+                # coverage (including subscript/superscript digits), then
+                # fall back to other common sans-serif fonts.
+                'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
+                'mathtext.fontset': 'dejavusans',
+                'font.size': 16
+            })
+            fig, ax = plt.subplots(figsize=(10, 6))
+            cycle_lines = {}
+            for cyc in cycles_present:
+                mask = (cyc_int == cyc)
+                idx = np.where(mask)[0]
+                if idx.size >= 2:
+                    # Insert NaNs between non-consecutive indices for proper cycle breaks
+                    parts_x = []
+                    parts_y = []
+                    start = 0
+                    for k in range(1, idx.size):
+                        if idx[k] != idx[k-1] + 1:
+                            parts_x.append(voltage[idx[start:k]])
+                            parts_y.append(current[idx[start:k]])
+                            start = k
+                    parts_x.append(voltage[idx[start:]])
+                    parts_y.append(current[idx[start:]])
+                    X = []
+                    Y = []
+                    for i, (px, py) in enumerate(zip(parts_x, parts_y)):
+                        if i > 0:
+                            X.append(np.array([np.nan]))
+                            Y.append(np.array([np.nan]))
+                        X.append(px)
+                        Y.append(py)
+                    x_b = np.concatenate(X) if X else np.array([])
+                    y_b = np.concatenate(Y) if Y else np.array([])
+                    ln, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
+                                  linewidth=2.0, label=str(cyc), alpha=0.8)
+                    cycle_lines[cyc] = ln
+            # Swap axis labels if --ro flag is set
+            if getattr(args, 'ro', False):
+                ax.set_xlabel('Current (mA)', labelpad=8.0)
+                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            else:
+                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel('Current (mA)', labelpad=8.0)
+            legend = ax.legend(title='Cycle')
+            if legend is not None:
+                try:
+                    legend.set_frame_on(False)
+                except Exception:
+                    pass
+            legend.get_title().set_fontsize('medium')
+            fig._ec_legend_title = "Cycle"
+            # Match GC/dQdV: consistent label/title displacement and canvas
+            fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
+
+            # Apply style file if provided
+            if style_cfg:
+                try:
+                    _apply_ec_style(fig, ax, style_cfg)
+                    # Redraw after applying style
+                    if hasattr(fig, 'canvas'):
+                        fig.canvas.draw()
+                except Exception as e:
+                    print(f"Warning: Error applying style file: {e}")
+
+            # Save if requested
+            if len(data_files) > 1 and (args.savefig or args.out):
+                # Multiple files: save to Figures/ directory
+                base_name = os.path.splitext(os.path.basename(ec_file))[0]
+                output_format = getattr(args, 'format', 'svg')
+                outname = os.path.join(out_dir or "", f"{base_name}.{output_format}")
+                try:
+                    _, _ext = os.path.splitext(outname)
+                    if _ext.lower() == '.svg':
+                        plt.rcParams['svg.fonttype'] = 'none'
+                        plt.rcParams['svg.hashsalt'] = None
+                    fig.savefig(outname, dpi=300, transparent=True if _ext.lower() == '.svg' else False)
+                    print(f"CV plot saved to {outname}")
+                except Exception as e:
+                    print(f"Warning: Could not save CV plot: {e}")
+
+            # Interactive menu: use electrochem_interactive_menu for consistency with GC
+            if args.interactive:
+                try:
+                    plt.ion()
+                except Exception:
+                    pass
+                plt.show(block=False)
+                # Track whether data axes were swapped via --ro for this EC figure
+                try:
+                    fig._ro_active = bool(getattr(args, "ro", False))
+                except Exception:
+                    pass
+                try:
+                    fig._bp_source_paths = [os.path.abspath(ec_file)]
+                except Exception:
+                    pass
+                try:
+                    electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
+                except Exception as _ie:
+                    print(f"Interactive menu failed: {_ie}")
+                plt.show()
+            else:
+                if not (args.savefig or args.out):
+                    plt.show()
+                # For multiple files, close the figure and continue to next file
+                if len(data_files) > 1:
+                    plt.close(fig)
+                    continue
+                return 0
+        except Exception as e:
+            print(f"CV plot failed for {ec_file}: {e}")
+            if len(data_files) > 1:
+                continue
+            return 1
+
+    # Exit after processing all files
+    if len(data_files) > 1:
+        print(f"Processed {len(data_files)} CV files.")
+        return 0
+
+    return 0
+
+
+def batplot_main() -> int:  # type: ignore
     """
     Main entry point for batplot CLI.
     
@@ -364,199 +572,7 @@ def batplot_main() -> int:
 
     # --- CV mode: plot voltage vs current for each cycle from .mpt ---
     if getattr(args, 'cv', False):
-        # Separate style files from data files
-        data_files = []
-        style_file_path = None
-        for f in args.files:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in ('.bps', '.bpsg', '.bpcfg'):
-                if style_file_path is None:
-                    style_file_path = f
-                else:
-                    print(f"Warning: Multiple style files provided, using first: {style_file_path}")
-            else:
-                data_files.append(f)
-        
-        if not data_files:
-            print("CV mode: no data files found (only style files provided).")
-            exit(1)
-        
-        # Load style file if provided
-        style_cfg = None
-        if style_file_path:
-            if not os.path.isfile(style_file_path):
-                print(f"Warning: Style file not found: {style_file_path}")
-            else:
-                try:
-                    with open(style_file_path, 'r', encoding='utf-8') as f:
-                        style_cfg = json.load(f)
-                    print(f"Using style file: {os.path.basename(style_file_path)}")
-                except Exception as e:
-                    print(f"Warning: Could not load style file {style_file_path}: {e}")
-        
-        # Process each data file
-        out_dir = None
-        if len(data_files) > 1 and (args.savefig or args.out):
-            # Multiple files: create output directory
-            out_dir = ensure_subdirectory('Figures', os.getcwd())
-        
-        for ec_file in data_files:
-            if not os.path.isfile(ec_file):
-                print(f"File not found: {ec_file}")
-                continue
-            try:
-                # Support both .mpt and .txt formats
-                if ec_file.lower().endswith('.txt'):
-                    voltage, current, cycles = read_biologic_txt_file(ec_file, mode='cv')
-                else:
-                    voltage, current, cycles = read_mpt_file(ec_file, mode='cv')
-                # Normalize cycle indices to start at 1
-                # Find the first cycle with at least 2 data points (needed for plotting)
-                cyc_int_raw = np.array(np.rint(cycles), dtype=int)
-                if cyc_int_raw.size:
-                    unique_cycles_raw = np.unique(cyc_int_raw)
-                    valid_min_c = None
-                    for c in sorted(unique_cycles_raw):
-                        if np.sum(cyc_int_raw == c) >= 2:
-                            valid_min_c = int(c)
-                            break
-                    
-                    if valid_min_c is not None:
-                        shift = 1 - valid_min_c
-                    else:
-                        min_c = int(np.min(cyc_int_raw))
-                        shift = 1 - min_c if min_c <= 0 else 0
-                else:
-                    shift = 0
-                cyc_int = cyc_int_raw + shift
-                cycles_present = sorted(int(c) for c in np.unique(cyc_int)) if cyc_int.size else [1]
-                # Color palette
-                base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                # Ensure font and canvas settings match GC/dQdV
-                plt.rcParams.update({
-                    'font.family': 'sans-serif',
-                    # Prefer DejaVu Sans first because it has good Unicode
-                    # coverage (including subscript/superscript digits), then
-                    # fall back to other common sans-serif fonts.
-                    'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
-                    'mathtext.fontset': 'dejavusans',
-                    'font.size': 16
-                })
-                fig, ax = plt.subplots(figsize=(10, 6))
-                cycle_lines = {}
-                for cyc in cycles_present:
-                    mask = (cyc_int == cyc)
-                    idx = np.where(mask)[0]
-                    if idx.size >= 2:
-                        # Insert NaNs between non-consecutive indices for proper cycle breaks
-                        parts_x = []
-                        parts_y = []
-                        start = 0
-                        for k in range(1, idx.size):
-                            if idx[k] != idx[k-1] + 1:
-                                parts_x.append(voltage[idx[start:k]])
-                                parts_y.append(current[idx[start:k]])
-                                start = k
-                        parts_x.append(voltage[idx[start:]])
-                        parts_y.append(current[idx[start:]])
-                        X = []
-                        Y = []
-                        for i, (px, py) in enumerate(zip(parts_x, parts_y)):
-                            if i > 0:
-                                X.append(np.array([np.nan]))
-                                Y.append(np.array([np.nan]))
-                            X.append(px)
-                            Y.append(py)
-                        x_b = np.concatenate(X) if X else np.array([])
-                        y_b = np.concatenate(Y) if Y else np.array([])
-                        ln, = ax.plot(x_b, y_b, '-', color=base_colors[(cyc-1) % len(base_colors)],
-                                      linewidth=2.0, label=str(cyc), alpha=0.8)
-                        cycle_lines[cyc] = ln
-                # Swap axis labels if --ro flag is set
-                if getattr(args, 'ro', False):
-                    ax.set_xlabel('Current (mA)', labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
-                else:
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
-                    ax.set_ylabel('Current (mA)', labelpad=8.0)
-                legend = ax.legend(title='Cycle')
-                if legend is not None:
-                    try:
-                        legend.set_frame_on(False)
-                    except Exception:
-                        pass
-                legend.get_title().set_fontsize('medium')
-                fig._ec_legend_title = "Cycle"
-                # Match GC/dQdV: consistent label/title displacement and canvas
-                fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
-                
-                # Apply style file if provided
-                if style_cfg:
-                    try:
-                        _apply_ec_style(fig, ax, style_cfg)
-                        # Redraw after applying style
-                        if hasattr(fig, 'canvas'):
-                            fig.canvas.draw()
-                    except Exception as e:
-                        print(f"Warning: Error applying style file: {e}")
-                
-                # Save if requested
-                if len(data_files) > 1 and (args.savefig or args.out):
-                    # Multiple files: save to Figures/ directory
-                    base_name = os.path.splitext(os.path.basename(ec_file))[0]
-                    output_format = getattr(args, 'format', 'svg')
-                    outname = os.path.join(out_dir, f"{base_name}.{output_format}")
-                    try:
-                        _, _ext = os.path.splitext(outname)
-                        if _ext.lower() == '.svg':
-                            plt.rcParams['svg.fonttype'] = 'none'
-                            plt.rcParams['svg.hashsalt'] = None
-                        fig.savefig(outname, dpi=300, transparent=True if _ext.lower() == '.svg' else False)
-                        print(f"CV plot saved to {outname}")
-                    except Exception as e:
-                        print(f"Warning: Could not save CV plot: {e}")
-                
-                # Interactive menu: use electrochem_interactive_menu for consistency with GC
-                if args.interactive:
-                    try:
-                        plt.ion()
-                    except Exception:
-                        pass
-                    plt.show(block=False)
-                    # Track whether data axes were swapped via --ro for this EC figure
-                    try:
-                        fig._ro_active = bool(getattr(args, "ro", False))
-                    except Exception:
-                        pass
-                    try:
-                        fig._bp_source_paths = [os.path.abspath(ec_file)]
-                    except Exception:
-                        pass
-                    try:
-                        electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
-                    except Exception as _ie:
-                        print(f"Interactive menu failed: {_ie}")
-                    plt.show()
-                else:
-                    if not (args.savefig or args.out):
-                        plt.show()
-                    # For multiple files, close the figure and continue to next file
-                    if len(data_files) > 1:
-                        plt.close(fig)
-                        continue
-                    else:
-                        exit(0)
-            except Exception as e:
-                print(f"CV plot failed for {ec_file}: {e}")
-                if len(data_files) > 1:
-                    continue
-                else:
-                    exit(1)
-        # Exit after processing all files
-        if len(data_files) > 1:
-            print(f"Processed {len(data_files)} CV files.")
-            exit(0)
+        return _handle_cv_mode(args)
 
 
     """
@@ -1156,7 +1172,7 @@ def batplot_main() -> int:
                     # Multiple files: save to Figures/ directory
                     base_name = os.path.splitext(os.path.basename(ec_file))[0]
                     output_format = getattr(args, 'format', 'svg')
-                    outname = os.path.join(out_dir, f"{base_name}.{output_format}")
+                    outname = os.path.join(out_dir or "", f"{base_name}.{output_format}")
                 else:
                     outname = args.savefig or args.out
                 if outname:
@@ -1622,6 +1638,21 @@ def batplot_main() -> int:
             # Multiple files: create output directory
             out_dir = ensure_subdirectory('Figures', os.getcwd())
 
+        def _mask_segments(mask: np.ndarray, role: str):
+            inds = np.where(mask)[0]
+            if inds.size == 0:
+                return []
+            segs = []
+            start, prev = inds[0], inds[0]
+            for idx in inds[1:]:
+                if idx == prev + 1:
+                    prev = idx
+                else:
+                    segs.append((start, prev, role))
+                    start, prev = idx, idx
+            segs.append((start, prev, role))
+            return segs
+
         # dQ/dV multi-file: one figure with all files overlaid (same for interactive and non-interactive)
         if len(data_files) > 1:
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -1650,20 +1681,6 @@ def batplot_main() -> int:
                             voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
                     if y_label_used is None:
                         y_label_used = y_label
-                    def _mask_segments(mask, role):
-                        inds = np.where(mask)[0]
-                        if inds.size == 0:
-                            return []
-                        segs = []
-                        start, prev = inds[0], inds[0]
-                        for i in inds[1:]:
-                            if i == prev + 1:
-                                prev = i
-                            else:
-                                segs.append((start, prev, role))
-                                start, prev = i, i
-                        segs.append((start, prev, role))
-                        return segs
                     segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
                     segments.sort(key=lambda x: x[0])
                     cycle_lines = {}
@@ -1809,23 +1826,6 @@ def batplot_main() -> int:
                 # Create the plot
                 fig, ax = plt.subplots(figsize=(10, 6))
 
-                def _mask_segments(mask: np.ndarray, role: str):
-                    inds = np.where(mask)[0]
-                    if inds.size == 0:
-                        return []
-                    segments = []
-                    start = inds[0]
-                    prev = inds[0]
-                    for idx in inds[1:]:
-                        if idx == prev + 1:
-                            prev = idx
-                        else:
-                            segments.append((start, prev, role))
-                            start = idx
-                            prev = idx
-                    segments.append((start, prev, role))
-                    return segments
-
                 segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
                 segments.sort(key=lambda item: item[0])
 
@@ -1921,7 +1921,7 @@ def batplot_main() -> int:
                     # Multiple files: save to Figures/ directory
                     base_name = os.path.splitext(os.path.basename(ec_file))[0]
                     output_format = getattr(args, 'format', 'svg')
-                    outname = os.path.join(out_dir, f"{base_name}.{output_format}")
+                    outname = os.path.join(out_dir or "", f"{base_name}.{output_format}")
                 else:
                     outname = args.savefig or args.out
                 if outname:
