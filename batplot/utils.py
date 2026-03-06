@@ -45,17 +45,19 @@ from typing import Optional, List, Tuple
 def natural_sort_key(name: str) -> list:
     """Generate a natural sorting key for filenames with numbers.
 
-    Converts 'file_10.xy' to ['file_', 10, '.xy'] so numerical parts are sorted numerically.
-    This ensures file_2.xy comes before file_10.xy (natural/human order).
-    Works with strings (e.g. from os.listdir or Path.name).
+    Converts 'file_10.xy' to [(0,'file_'), (1,10), (0,'.xy')] so numerical
+    parts sort numerically and string parts sort lexicographically.
+    Wrapping each part as (type_flag, value) prevents TypeError when
+    comparing entries whose leading tokens differ in type (e.g. '.DS_Store'
+    vs '1.raw').
     """
     parts = []
     for match in re.finditer(r'(\d+|\D+)', name):
         text = match.group(0)
         if text.isdigit():
-            parts.append(int(text))
+            parts.append((1, int(text)))
         else:
-            parts.append(text.lower())
+            parts.append((0, text.lower()))
     return parts
 
 
@@ -768,14 +770,15 @@ def choose_save_path(file_paths: list, purpose: str = "saving") -> Optional[str]
                     preview += ", ..."
                 extra = f" (input files: {preview})"
             label = f"{opt['label']}: {opt['path']}"
-            print(f"  {idx}. {label}{extra}")
-        print("  c. Custom path")
-        print("  q. Cancel (return to menu)")
+            print(f"  \033[96m{idx}\033[0m. {label}{extra}")
+        print(f"  \033[96mc\033[0m. Custom path")
+        print(f"  \033[96mq\033[0m. Cancel (return to menu)")
         
         max_choice = len(options)
+        save_prompt = _colorize_option_keys(f"1-{max_choice}: select path, Enter: default(1), c: custom, q: cancel")
         while True:
             try:
-                choice = input(f"Choose path for {purpose} (1-{max_choice}, Enter=1): ").strip()
+                choice = input(f"Choose path for {purpose} ({save_prompt}): ").strip()
             except KeyboardInterrupt:
                 print("\nCanceled path selection.")
                 return None
@@ -922,6 +925,23 @@ def _has_valid_extension(filename: str, extensions: Tuple[str, ...]) -> bool:
     return any(name.endswith(ext) for ext in extensions)
 
 
+def _colorize_option_keys(text: str) -> str:
+    """Highlight option keys (key: desc format) in prompts for consistency with interactive menus."""
+    if not text or not text.strip():
+        return text
+    parts = []
+    for segment in text.split(','):
+        segment = segment.strip()
+        if ':' in segment:
+            key, rest = segment.split(':', 1)
+            key = key.strip()
+            rest = rest.strip()
+            parts.append(f"\033[96m{key}\033[0m: {rest}")
+        else:
+            parts.append(segment)
+    return ', '.join(parts)
+
+
 def choose_style_file(file_paths: List[str], purpose: str = "style import", extensions: Optional[Tuple[str, ...]] = None) -> Optional[str]:
     """Select a style file (.bps/.bpsg/.bpcfg) from known directories or via dialog."""
     extensions = tuple(_normalize_extension(ext) for ext in (extensions or STYLE_FILE_EXTENSIONS))
@@ -1004,9 +1024,9 @@ def choose_style_file(file_paths: List[str], purpose: str = "style import", exte
         for idx, cand in enumerate(style_candidates, start=1):
             timestamp = _format_file_timestamp(cand['path'])
             if timestamp:
-                print(f"  {idx}. {cand['name']}  ({timestamp})  (in {cand['location']})")
+                print(f"  \033[96m{idx}\033[0m. {cand['name']}  ({timestamp})  (in {cand['location']})")
             else:
-                print(f"  {idx}. {cand['name']}  (in {cand['location']})")
+                print(f"  \033[96m{idx}\033[0m. {cand['name']}  (in {cand['location']})")
     else:
         print("\nNo style files found in scanned directories.")
     
@@ -1049,9 +1069,16 @@ def choose_style_file(file_paths: List[str], purpose: str = "style import", exte
                 return path
         return None
     
+    n_candidates = len(style_candidates)
+    if n_candidates:
+        prompt_text = f"1-{n_candidates}: select file, path: enter path, c: custom dialog, q: cancel"
+    else:
+        prompt_text = "c: custom path, q: cancel"
+    prompt = _colorize_option_keys(prompt_text)
+
     while True:
         try:
-            choice = input("Select style file (number/path/c=custom/q=cancel): ").strip()
+            choice = input(f"Select style file ({prompt}): ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nStyle import canceled.")
             return None

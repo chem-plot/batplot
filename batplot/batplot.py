@@ -34,6 +34,7 @@ from .readers import (
     read_mpt_file,
     read_ec_csv_file,
     read_ec_csv_dqdv_file,
+    compute_dqdv_numerical,
     read_mpt_dqdv_file,
     read_csv_time_voltage,
     read_mpt_time_voltage,
@@ -92,9 +93,10 @@ except ImportError:
     operando_ec_interactive_menu = None
 
 try:
-    from .cpc_interactive import cpc_interactive_menu, _generate_similar_color
+    from .cpc_interactive import cpc_interactive_menu, _generate_similar_color, _build_compact_cpc_legend
 except ImportError:
     cpc_interactive_menu = None
+    _build_compact_cpc_legend = None
     # Fallback function if import fails
     def _generate_similar_color(base_color):
         """Generate a similar but distinguishable color for discharge from charge color."""
@@ -116,6 +118,30 @@ except ImportError:
                 return tuple(max(0, c * 0.7) for c in rgb)
             except Exception:
                 return base_color
+
+def _resolve_mass(mass_arg, file_idx: int = 0):
+    """Return mass (mg) for the file at *file_idx* from the --mass argument.
+
+    Supports both the legacy single-value form (--mass 3.52) and the new
+    per-file form (--mass 3.52 4.1 5.0).  When a single value is supplied it
+    is applied to every file.  When multiple values are given they map 1-to-1
+    with the input files; if there are fewer values than files the last value
+    is reused for any extra files.
+
+    Returns a float or None.
+    """
+    if mass_arg is None:
+        return None
+    if isinstance(mass_arg, (int, float)):
+        return float(mass_arg)
+    if isinstance(mass_arg, list):
+        if len(mass_arg) == 1:
+            return float(mass_arg[0])
+        if file_idx < len(mass_arg):
+            return float(mass_arg[file_idx])
+        return float(mass_arg[-1])
+    return None
+
 
 # Global state variables (used by interactive menus and style system)
 keep_canvas_fixed = False
@@ -550,8 +576,9 @@ def batplot_main() -> int:  # type: ignore
     ec_mode_active = any([
         getattr(args, 'gc', False),      # Galvanostatic cycling
         getattr(args, 'cv', False),      # Cyclic voltammetry
-        getattr(args, 'dqdv', False),     # Differential capacity
-        getattr(args, 'cpc', False)       # Capacity per cycle
+        getattr(args, 'dqdv', False),    # Differential capacity
+        getattr(args, 'cpc', False),     # Capacity per cycle
+        getattr(args, 'epc', False),     # Energy per cycle
     ])
     
     # Check for --all flag (explicit batch mode)
@@ -720,6 +747,7 @@ def batplot_main() -> int:  # type: ignore
             file_data = []
             base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            # Default to specific capacity; may be overridden to absolute capacity
             x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
 
             def _contiguous_blocks(mask):
@@ -762,8 +790,8 @@ def batplot_main() -> int:  # type: ignore
                 if not os.path.isfile(ec_file) or not (ec_file.lower().endswith('.mpt') or ec_file.lower().endswith('.csv')):
                     continue
                 try:
+                    mass_mg = _resolve_mass(getattr(args, 'mass', None), file_idx)
                     if ec_file.lower().endswith('.mpt'):
-                        mass_mg = getattr(args, 'mass', None)
                         if mass_mg is None:
                             continue
                         specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
@@ -776,7 +804,23 @@ def batplot_main() -> int:  # type: ignore
                             else:
                                 cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
                         except Exception:
+                            header = None
                             cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                        # If we only have absolute capacity and the user supplied --mass,
+                        # convert Capacity(mAh) → Specific Capacity (mAh g⁻¹).
+                        if header is not None:
+                            header_stripped = [h.strip().replace('\t', '') for h in header]
+                            has_spec = any('Spec. Cap.(mAh/g)' in h for h in header_stripped)
+                            has_abs = any('Capacity(mAh)' == h for h in header_stripped)
+                            if has_abs and not has_spec:
+                                if mass_mg is not None and mass_mg > 0:
+                                    # Treat cap_x as absolute capacity (mAh) and rescale to mAh/g
+                                    cap_x = cap_x * (1000.0 / float(mass_mg))
+                                    x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+                                else:
+                                    # No mass supplied: keep absolute capacity but warn the user
+                                    print(f"GC mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) with no specific-capacity column.")
+                                    print("         Pass --mass <mg> to plot specific capacity (mAh g^-1) instead of raw mAh.")
                     else:
                         continue
                     color_offset = (file_idx * 5) % len(base_colors)
@@ -917,6 +961,7 @@ def batplot_main() -> int:  # type: ignore
                 continue
             
             try:
+                mass_mg = _resolve_mass(getattr(args, 'mass', None), ec_file_idx)
                 # Check for potential-window mode first (custom voltage-time format)
                 if getattr(args, 'pw', None) is not None:
                     v_min, v_max = args.pw
@@ -948,7 +993,6 @@ def batplot_main() -> int:  # type: ignore
                         x_label_gc = r'Specific Capacity (mAh g$^{-1}$)' if cd is not None else "Relative Capacity (h)"
                     else:
                         # For standard .mpt, mass is required to compute specific capacity
-                        mass_mg = getattr(args, 'mass', None)
                         if mass_mg is None:
                             print("GC mode (.mpt): --mass parameter is required (active material mass in milligrams).")
                             print("Example: batplot file.mpt --gc --mass 7.0")
@@ -961,6 +1005,7 @@ def batplot_main() -> int:  # type: ignore
                         cap_x = specific_capacity
                 elif ec_file.lower().endswith('.csv'):
                     # Check if this is CS-B format
+                    header = None
                     try:
                         header, _, _ = _load_csv_header_and_rows(ec_file)
                         if is_cs_b_format(header):
@@ -972,7 +1017,22 @@ def batplot_main() -> int:  # type: ignore
                     except Exception:
                         # Fallback to standard reader
                         cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                    # Decide whether we should treat cap_x as absolute or specific capacity.
                     x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+                    # If the CSV only has absolute capacity and no specific capacity, rescale
+                    # using --mass (already resolved per file above).
+                    if header is not None:
+                        header_stripped = [h.strip().replace('\t', '') for h in header]
+                        has_spec = any('Spec. Cap.(mAh/g)' in h for h in header_stripped)
+                        has_abs = any(h == 'Capacity(mAh)' for h in header_stripped)
+                        if has_abs and not has_spec:
+                            if mass_mg is not None and mass_mg > 0:
+                                # Treat cap_x as absolute capacity (mAh) and rescale to mAh/g
+                                cap_x = cap_x * (1000.0 / float(mass_mg))
+                                x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+                            else:
+                                print(f"GC mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) with no specific-capacity column.")
+                                print("         Pass --mass <mg> to plot specific capacity (mAh g^-1) instead of raw mAh.")
                 else:
                     print(f"GC mode: file must be .mpt or .csv: {ec_file}")
                     if len(data_files) > 1:
@@ -1286,7 +1346,7 @@ def batplot_main() -> int:  # type: ignore
             exit()
 
     # Capacity-per-cycle (CPC) summary from CSV or .mpt with coulombic efficiency
-    if getattr(args, 'cpc', False):
+    if getattr(args, 'cpc', False) or getattr(args, 'epc', False):
         # Separate style files from data files
         data_files = []
         style_file_path = None
@@ -1317,6 +1377,7 @@ def batplot_main() -> int:  # type: ignore
                 except Exception as e:
                     print(f"Warning: Could not load style file {style_file_path}: {e}")
         
+        is_epc = bool(getattr(args, 'epc', False))
         # Process multiple files
         file_data = []  # List of dicts with file info and data
         # Use tab10 for capacity and viridis for efficiency
@@ -1345,22 +1406,35 @@ def batplot_main() -> int:  # type: ignore
             file_basename = os.path.basename(ec_file)
             
             try:
+                mass_mg = _resolve_mass(getattr(args, 'mass', None), file_idx)
                 if ext in ['.csv', '.xlsx', '.xls']:
-                    # Check if this is CS-B format
-                    try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader for CPC
+                    # For EPC, prefer explicit per-point energy-density columns if available;
+                    # otherwise, fall back to integrating V vs capacity.
+                    if not is_epc:
+                        _cpc_header = None
+                        try:
+                            _cpc_header, _, _ = _load_csv_header_and_rows(ec_file)
+                        except Exception:
+                            pass
+                        if _cpc_header is not None and is_cs_b_format(_cpc_header):
                             cyc_nums, cap_charge, cap_discharge, eff = read_cs_b_csv_file(ec_file, mode='cpc')
                         else:
-                            # Use standard CSV reader
                             cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                            # Apply mass scaling when file only has absolute capacity (mAh)
+                            _cpc_mass = mass_mg
+                            if _cpc_header is not None:
+                                _cpc_hdr_s = [h.strip().replace('\t', '') for h in _cpc_header]
+                                _has_spec = any('Spec. Cap.(mAh/g)' in h for h in _cpc_hdr_s)
+                                _has_abs = any(h == 'Capacity(mAh)' for h in _cpc_hdr_s)
+                                if _has_abs and not _has_spec:
+                                    if _cpc_mass is not None and _cpc_mass > 0:
+                                        cap_x = cap_x * (1000.0 / float(_cpc_mass))
+                                    else:
+                                        print(f"CPC mode: {file_basename!r} contains only Capacity(mAh) — pass --mass <mg> for specific capacity.")
                             cyc = np.array(cycles, dtype=int)
                             unique_cycles = np.unique(cyc)
                             unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
-                            unique_cycles = [int(x) for x in unique_cycles]
-                            if not unique_cycles:
-                                unique_cycles = [1]
+                            unique_cycles = [int(x) for x in unique_cycles] or [1]
                             cyc_nums = []
                             cap_charge = []
                             cap_discharge = []
@@ -1369,6 +1443,7 @@ def batplot_main() -> int:  # type: ignore
                                 m_c = (cyc == c)
                                 qchg = np.nanmax(cap_x[m_c & chg_mask]) if np.any(m_c & chg_mask) else np.nan
                                 qdch = np.nanmax(cap_x[m_c & dchg_mask]) if np.any(m_c & dchg_mask) else np.nan
+                                # Efficiency from capacity ratio (no explicit efficiency column)
                                 eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
                                 cyc_nums.append(c)
                                 cap_charge.append(qchg)
@@ -1378,41 +1453,171 @@ def batplot_main() -> int:  # type: ignore
                             cap_charge = np.array(cap_charge, dtype=float)
                             cap_discharge = np.array(cap_discharge, dtype=float)
                             eff = np.array(eff, dtype=float)
-                    except Exception as e:
-                        # Fallback to standard reader
-                        cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                    else:
+                        header, rows, _ = _load_csv_header_and_rows(ec_file)
+                        # Check for explicit energy-density columns
+                        header_stripped = [h.strip().replace('\t', '') for h in header]
+                        has_chg_en = any('Chg. Spec. Energy(mWh/g)' in h for h in header_stripped)
+                        has_dch_en = any('DChg. Spec. Energy(mWh/g)' in h for h in header_stripped)
+                        has_en = any('Spec. Energy(mWh/g)' in h for h in header_stripped)
+                        if has_chg_en or has_dch_en or has_en:
+                            # Use the existing GC parsing to get cycles and masks
+                            cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                            cyc = np.array(cycles, dtype=int)
+                            unique_cycles = np.unique(cyc)
+                            unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
+                            unique_cycles = [int(x) for x in unique_cycles] or [1]
+                            # Build name->index map
+                            name_to_idx = {h.strip().replace('\t', ''): i for i, h in enumerate(header)}
+                            def _idx(name: str):
+                                return name_to_idx.get(name, None)
+                            idx_chg_en = _idx('Chg. Spec. Energy(mWh/g)')
+                            idx_dch_en = _idx('DChg. Spec. Energy(mWh/g)')
+                            idx_en = _idx('Spec. Energy(mWh/g)')
+                            # Extract per-point energy arrays
+                            def _col(idx):
+                                if idx is None:
+                                    return None
+                                vals = []
+                                for row in rows:
+                                    if idx < len(row):
+                                        val = row[idx]
+                                    else:
+                                        val = ''
+                                    try:
+                                        vals.append(float(str(val).strip() or 'nan'))
+                                    except Exception:
+                                        vals.append(float('nan'))
+                                return np.array(vals, dtype=float)
+                            en_chg = _col(idx_chg_en)
+                            en_dch = _col(idx_dch_en)
+                            en_any = _col(idx_en)
+                            cyc_nums = []
+                            cap_charge = []
+                            cap_discharge = []
+                            eff = []
+                            for c in sorted(unique_cycles):
+                                m_c = (cyc == c)
+                                mask_c = m_c & chg_mask
+                                mask_d = m_c & dchg_mask
+                                # Prefer charge/discharge-specific energy columns; fall back to generic Spec. Energy if needed
+                                if en_chg is not None:
+                                    e_c = float(np.nanmax(en_chg[mask_c])) if np.any(mask_c) else float('nan')
+                                elif en_any is not None:
+                                    e_c = float(np.nanmax(en_any[mask_c])) if np.any(mask_c) else float('nan')
+                                else:
+                                    e_c = float('nan')
+                                if en_dch is not None:
+                                    e_d = float(np.nanmax(en_dch[mask_d])) if np.any(mask_d) else float('nan')
+                                elif en_any is not None:
+                                    e_d = float(np.nanmax(en_any[mask_d])) if np.any(mask_d) else float('nan')
+                                else:
+                                    e_d = float('nan')
+                                # Efficiency still based on capacity
+                                qchg = np.nanmax(cap_x[mask_c]) if np.any(mask_c) else np.nan
+                                qdch = np.nanmax(cap_x[mask_d]) if np.any(mask_d) else np.nan
+                                eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
+                                cyc_nums.append(c)
+                                cap_charge.append(e_c)
+                                cap_discharge.append(e_d)
+                                eff.append(eta)
+                            print(f"EPC mode: using Spec. Energy(mWh/g) columns from {file_basename!r} (no numerical integration).")
+                            cyc_nums = np.array(cyc_nums, dtype=float)
+                            cap_charge = np.array(cap_charge, dtype=float)
+                            cap_discharge = np.array(cap_discharge, dtype=float)
+                            eff = np.array(eff, dtype=float)
+                        else:
+                            # Fallback: compute energy density by integrating V vs capacity
+                            cap_x, voltage, cycles, chg_mask, dchg_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                            # Apply mass scaling when file only has absolute capacity (mAh),
+                            # so that ∫V dQ yields mWh/g instead of mWh
+                            _epc_mass = mass_mg
+                            _epc_hdr_s = header_stripped  # already built above
+                            _epc_has_spec = any('Spec. Cap.(mAh/g)' in h for h in _epc_hdr_s)
+                            _epc_has_abs = any(h == 'Capacity(mAh)' for h in _epc_hdr_s)
+                            if _epc_has_abs and not _epc_has_spec:
+                                if _epc_mass is not None and _epc_mass > 0:
+                                    cap_x = cap_x * (1000.0 / float(_epc_mass))
+                                else:
+                                    print(f"EPC mode: {file_basename!r} contains only Capacity(mAh) — pass --mass <mg> for specific energy (mWh/g).")
+                            cyc = np.array(cycles, dtype=int)
+                            unique_cycles = np.unique(cyc)
+                            unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
+                            unique_cycles = [int(x) for x in unique_cycles] or [1]
+                            cyc_nums = []
+                            cap_charge = []
+                            cap_discharge = []
+                            eff = []
+                            for c in sorted(unique_cycles):
+                                m_c = (cyc == c)
+                                mask_c = m_c & chg_mask
+                                mask_d = m_c & dchg_mask
+                                if np.count_nonzero(mask_c) >= 2:
+                                    e_c = float(np.trapz(voltage[mask_c], cap_x[mask_c]))
+                                else:
+                                    e_c = np.nan
+                                if np.count_nonzero(mask_d) >= 2:
+                                    e_d = float(np.trapz(voltage[mask_d], cap_x[mask_d]))
+                                else:
+                                    e_d = np.nan
+                                qchg = np.nanmax(cap_x[mask_c]) if np.any(mask_c) else np.nan
+                                qdch = np.nanmax(cap_x[mask_d]) if np.any(mask_d) else np.nan
+                                eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
+                                cyc_nums.append(c)
+                                cap_charge.append(e_c)
+                                cap_discharge.append(e_d)
+                                eff.append(eta)
+                            print(f"EPC mode: computing energy density by integrating V vs capacity for {file_basename!r}.")
+                            cyc_nums = np.array(cyc_nums, dtype=float)
+                            cap_charge = np.array(cap_charge, dtype=float)
+                            cap_discharge = np.array(cap_discharge, dtype=float)
+                            eff = np.array(eff, dtype=float)
+                elif ext == '.mpt':
+                    if mass_mg is None:
+                        mode_name = "EPC" if is_epc else "CPC"
+                        print(f"Skipped {file_basename}: {mode_name} mode (.mpt) requires --mass parameter.")
+                        continue
+                    if is_epc:
+                        cap_x, voltage, cycles, chg_mask, dchg_mask = cast(
+                            Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                            read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg),
+                        )
                         cyc = np.array(cycles, dtype=int)
                         unique_cycles = np.unique(cyc)
                         unique_cycles = unique_cycles[np.isfinite(unique_cycles)]
-                        unique_cycles = [int(x) for x in unique_cycles]
-                        if not unique_cycles:
-                            unique_cycles = [1]
+                        unique_cycles = [int(x) for x in unique_cycles] or [1]
                         cyc_nums = []
                         cap_charge = []
                         cap_discharge = []
                         eff = []
                         for c in sorted(unique_cycles):
                             m_c = (cyc == c)
-                            qchg = np.nanmax(cap_x[m_c & chg_mask]) if np.any(m_c & chg_mask) else np.nan
-                            qdch = np.nanmax(cap_x[m_c & dchg_mask]) if np.any(m_c & dchg_mask) else np.nan
+                            mask_c = m_c & chg_mask
+                            mask_d = m_c & dchg_mask
+                            if np.count_nonzero(mask_c) >= 2:
+                                e_c = float(np.trapz(voltage[mask_c], cap_x[mask_c]))
+                            else:
+                                e_c = np.nan
+                            if np.count_nonzero(mask_d) >= 2:
+                                e_d = float(np.trapz(voltage[mask_d], cap_x[mask_d]))
+                            else:
+                                e_d = np.nan
+                            qchg = np.nanmax(cap_x[mask_c]) if np.any(mask_c) else np.nan
+                            qdch = np.nanmax(cap_x[mask_d]) if np.any(mask_d) else np.nan
                             eta = (qdch / qchg * 100.0) if (np.isfinite(qchg) and qchg > 0 and np.isfinite(qdch)) else np.nan
                             cyc_nums.append(c)
-                            cap_charge.append(qchg)
-                            cap_discharge.append(qdch)
+                            cap_charge.append(e_c)
+                            cap_discharge.append(e_d)
                             eff.append(eta)
                         cyc_nums = np.array(cyc_nums, dtype=float)
                         cap_charge = np.array(cap_charge, dtype=float)
                         cap_discharge = np.array(cap_discharge, dtype=float)
                         eff = np.array(eff, dtype=float)
-                elif ext == '.mpt':
-                    mass_mg = getattr(args, 'mass', None)
-                    if mass_mg is None:
-                        print(f"Skipped {file_basename}: CPC mode (.mpt) requires --mass parameter.")
-                        continue
-                    cyc_nums, cap_charge, cap_discharge, eff = cast(
-                        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-                        read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg),
-                    )
+                    else:
+                        cyc_nums, cap_charge, cap_discharge, eff = cast(
+                            Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                            read_mpt_file(ec_file, mode='cpc', mass_mg=mass_mg),
+                        )
                 else:
                     print(f"Skipped {file_basename}: unsupported format (must be .csv, .xlsx, or .mpt)")
                     continue
@@ -1444,7 +1649,10 @@ def batplot_main() -> int:  # type: ignore
         # Plot (same figsize as GC)
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.set_xlabel('Cycle number', labelpad=8.0)
-        ax.set_ylabel(r'Specific Capacity (mAh g$^{-1}$)', labelpad=8.0)
+        if is_epc:
+            ax.set_ylabel(r'Specific Energy (mWh g$^{-1}$)', labelpad=8.0)
+        else:
+            ax.set_ylabel(r'Specific Capacity (mAh g$^{-1}$)', labelpad=8.0)
         ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.8)
 
         ax2 = ax.twinx()
@@ -1462,10 +1670,15 @@ def batplot_main() -> int:  # type: ignore
             
             # For single file, use simple labels; for multiple files, prefix with filename
             if len(file_data) == 1:
-                label_chg = 'Charge capacity'
-                label_dch = 'Discharge capacity'
+                if is_epc:
+                    label_chg = 'Charge energy density'
+                    label_dch = 'Discharge energy density'
+                else:
+                    label_chg = 'Charge capacity'
+                    label_dch = 'Discharge capacity'
                 label_eff = 'Coulombic efficiency'
             else:
+                # Keep compact suffix labels; underlying quantity is determined by Y-axis label
                 label_chg = f'{label} (Chg)'
                 label_dch = f'{label} (Dch)'
                 label_eff = f'{label} (Eff)'
@@ -1505,26 +1718,29 @@ def batplot_main() -> int:  # type: ignore
         # Set efficiency y-range to 0-120 by default
         ax2.set_ylim(0, 120)
 
-        # Compose a combined legend
+        # Compose legend
         try:
-            h1, l1 = ax.get_legend_handles_labels()
-            h2, l2 = ax2.get_legend_handles_labels()
-            combined_handles = h1 + h2
-            combined_labels = l1 + l2
-            if combined_handles:
-                # Don't use labelcolor='linecolor' for scatter plots with hollow markers
-                # as it causes issues with color extraction
-                leg = ax.legend(
-                    combined_handles, combined_labels,
-                    loc='best',
-                    frameon=False,
-                    handlelength=1.0,
-                    handletextpad=0.35,
-                    labelspacing=0.25,
-                    borderaxespad=0.5,
-                    borderpad=0.3,
-                    columnspacing=0.6,
-                )
+            if len(file_data) > 1 and _build_compact_cpc_legend is not None:
+                # Multi-file: compact header row + one colored row per file
+                _build_compact_cpc_legend(ax, ax2, file_data)
+            else:
+                # Single-file: standard two-entry legend
+                h1, l1 = ax.get_legend_handles_labels()
+                h2, l2 = ax2.get_legend_handles_labels()
+                combined_handles = h1 + h2
+                combined_labels = l1 + l2
+                if combined_handles:
+                    ax.legend(
+                        combined_handles, combined_labels,
+                        loc='best',
+                        frameon=False,
+                        handlelength=1.0,
+                        handletextpad=0.35,
+                        labelspacing=0.25,
+                        borderaxespad=0.5,
+                        borderpad=0.3,
+                        columnspacing=0.6,
+                    )
         except Exception as e:
             print(f"Warning: Could not create CPC legend: {e}")
 
@@ -1670,20 +1886,45 @@ def batplot_main() -> int:  # type: ignore
                 if not os.path.isfile(ec_file) or not (ec_file.lower().endswith('.csv') or ec_file.lower().endswith('.mpt')):
                     continue
                 try:
+                    _mf_mass = _resolve_mass(getattr(args, 'mass', None), file_idx)
                     if ec_file.lower().endswith('.mpt'):
-                        mass_mg = getattr(args, 'mass', None)
-                        if mass_mg is None or mass_mg <= 0:
+                        if _mf_mass is None or _mf_mass <= 0:
                             continue
-                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=mass_mg, prefer_specific=True)
+                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=_mf_mass, prefer_specific=True)
                     else:
+                        _mf_dqdv_header = None
                         try:
-                            header, _, _ = _load_csv_header_and_rows(ec_file)
-                            if is_cs_b_format(header):
-                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
-                            else:
-                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                            _mf_dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
                         except Exception:
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                            pass
+
+                        _mf_loaded = False
+                        if _mf_dqdv_header is not None and is_cs_b_format(_mf_dqdv_header):
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                            _mf_loaded = True
+
+                        if not _mf_loaded:
+                            try:
+                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                                _mf_loaded = True
+                            except ValueError:
+                                pass
+
+                        if not _mf_loaded:
+                            _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm = read_ec_csv_file(ec_file, prefer_specific=True)
+                            if _mf_dqdv_header is not None:
+                                _mf_hdrs = [h.strip().replace('\t', '') for h in _mf_dqdv_header]
+                                _mf_has_spec = any('Spec. Cap.(mAh/g)' in h for h in _mf_hdrs)
+                                _mf_has_abs = any(h == 'Capacity(mAh)' for h in _mf_hdrs)
+                                if _mf_has_abs and not _mf_has_spec:
+                                    if _mf_mass and _mf_mass > 0:
+                                        _mf_gc_cap = _mf_gc_cap * (1000.0 / float(_mf_mass))
+                                    else:
+                                        print(f"dQ/dV mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) — pass --mass <mg>.")
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = compute_dqdv_numerical(
+                                _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm
+                            )
+                            print(f"dQ/dV mode: computing numerically from GC data for {os.path.basename(ec_file)!r}.")
                     if y_label_used is None:
                         y_label_used = y_label
                     segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
@@ -1796,7 +2037,7 @@ def batplot_main() -> int:  # type: ignore
                 plt.show(block=True)
             exit(0)
 
-        for ec_file in data_files:
+        for _dqdv_file_idx, ec_file in enumerate(data_files):
             if not os.path.isfile(ec_file):
                 print(f"File not found: {ec_file}")
                 continue
@@ -1805,28 +2046,51 @@ def batplot_main() -> int:  # type: ignore
                 continue
             
             try:
+                _dqdv_mass = _resolve_mass(getattr(args, 'mass', None), _dqdv_file_idx)
                 # Load voltage, dQ/dV, cycles, and charge/discharge masks
                 if ec_file.lower().endswith('.mpt'):
                     # .mpt files require mass for dQ/dV calculation
-                    mass_mg = getattr(args, 'mass', None)
-                    if mass_mg is None or mass_mg <= 0:
+                    if _dqdv_mass is None or _dqdv_mass <= 0:
                         print(f"dQ/dV mode (.mpt): --mass parameter is required (active material mass in milligrams).")
                         print(f"Example: batplot {ec_file} --dqdv --mass 7.0")
                         continue
-                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=mass_mg, prefer_specific=True)
+                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=_dqdv_mass, prefer_specific=True)
                 else:
-                    # Check if this is CS-B format
+                    # Load header for format detection and mass-scaling check
+                    _dqdv_header = None
                     try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
-                        else:
-                            # Use standard CSV reader
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                        _dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
                     except Exception:
-                        # Fallback to standard reader
-                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                        pass
+
+                    _loaded_dqdv = False
+                    if _dqdv_header is not None and is_cs_b_format(_dqdv_header):
+                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                        _loaded_dqdv = True
+
+                    if not _loaded_dqdv:
+                        try:
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                            _loaded_dqdv = True
+                        except ValueError:
+                            pass  # No dQ/dV columns — fall through to numerical computation
+
+                    if not _loaded_dqdv:
+                        # Numerical dQ/dV from GC data (for files with no pre-calculated dQ/dV column)
+                        _gc_cap, _gc_volt, _gc_cyc, _gc_chgm, _gc_dchm = read_ec_csv_file(ec_file, prefer_specific=True)
+                        if _dqdv_header is not None:
+                            _hdrs_dqdv = [h.strip().replace('\t', '') for h in _dqdv_header]
+                            _has_spec_dqdv = any('Spec. Cap.(mAh/g)' in h for h in _hdrs_dqdv)
+                            _has_abs_dqdv = any(h == 'Capacity(mAh)' for h in _hdrs_dqdv)
+                            if _has_abs_dqdv and not _has_spec_dqdv:
+                                if _dqdv_mass and _dqdv_mass > 0:
+                                    _gc_cap = _gc_cap * (1000.0 / float(_dqdv_mass))
+                                else:
+                                    print(f"dQ/dV mode: {file_basename!r} contains only Capacity(mAh) — pass --mass <mg> for specific dQ/dV.")
+                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = compute_dqdv_numerical(
+                            _gc_cap, _gc_volt, _gc_cyc, _gc_chgm, _gc_dchm
+                        )
+                        print(f"dQ/dV mode: no dQ/dV column found — computing numerically from GC data for {file_basename!r}.")
 
                 # Create the plot
                 fig, ax = plt.subplots(figsize=(10, 6))

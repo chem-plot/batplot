@@ -4,6 +4,374 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-05: CPC legend: efficiency hidden (ry) but legend still showed Efficiency
+
+### Summary
+When efficiency was hidden via the ry command, the legend still showed the Efficiency entry and symbol. Root cause: in the single-file legend style (when exactly one file is visible in multi-file mode), efficiency was always added to the legend regardless of visibility. Fixed by: only adding the efficiency handle and label to the legend when `sc_eff.get_visible()` is True. The compact multi-file legend already respected `any_eff_visible`; the fix ensures consistency for the single-file-style branch. Efficiency visibility is already captured in style snapshot (`series.efficiency.visible`) and session save; p (style print), i (import), s (save session), and b (undo) now correctly reflect and restore the legend state.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: CPC/EC legend: export alignment mismatch; use points for nudge
+
+### Summary
+Legend text was misaligned on export (e) despite looking correct on display. Root cause: the nudge used `shift_px = (fs * 0.15) * (fig.dpi / 72)` — pixel-based offset is wrong when savefig uses a different render context (e.g. Retina vs file). Fixed by: (1) using points for the nudge (`shift_pts = fs * 0.15`) so it's DPI-invariant; (2) passing `dpi=fig.dpi` to savefig so export uses the same DPI as the figure.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-05: CPC multi-file: auto single-file legend when 1 visible
+
+### Summary
+In multi-file mode, when only one file is visible (others hidden via v), the legend now automatically switches to single-file style (Charge/Discharge/Efficiency with filename). When multiple files become visible again, it switches back to compact multi-file format. Uses renamed filename from scatter labels when available. Reflected in p (style print shows "Legend mode: single-file (1 visible)"), i (import restores visibility, legend format follows), s (session save/load preserves visibility), b (undo restores visibility and legend format).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: CPC file visibility (v): multi-select support
+
+### Summary
+CPC file visibility toggle (v) only accepted a single file number or 'a' for all. Input like "1 2 3 4" was rejected as invalid. Added support for: (1) space-separated numbers (e.g. 1 2 3 4); (2) comma-separated (1,2,3,4); (3) ranges (1-4 for files 1 through 4); (4) mixed (e.g. 1 2-4). Prompt now shows clear instructions with highlighted commands via _colorize_menu.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: CPC colormap/color restoration on session and style load
+
+### Summary
+CPC colors were still not restored correctly when loading sessions (.pkl) or style files (.bps). Root cause: (1) **Global `_color_of`** in cpc_interactive did not handle hollow markers—for scatter with `facecolors='none'`, `get_facecolors()` returns empty, so it returned None instead of falling back to `get_edgecolors()`; (2) **`_is_hollow_marker`** did not detect hollow when `get_facecolors()` returns empty array (matplotlib behavior for `facecolors='none'`), so `hollow` was saved as False and colors were applied incorrectly on restore; (3) **Efficiency color in style snapshot** used `get_facecolors()[0]` directly, failing for hollow efficiency. Fixed by: (1) Update global `_color_of` to fall back to edgecolors when facecolors is empty or transparent; (2) Update `_is_hollow_marker` to treat empty facecolors + non-empty edgecolors as hollow; (3) Use `_color_of(sc_eff)` for efficiency color in style snapshot. Colors now restore correctly for both filled and hollow markers on all platforms.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: CPC session load: wrong markers (circles instead of squares/triangles)
+
+### Summary
+When opening a saved CPC .pkl file, all markers appeared as circles ("round balls") instead of the correct CPC defaults: squares for capacity (charge/discharge) and triangles for efficiency. Root cause: matplotlib's PathCollection (scatter) does not have `get_marker()`, so the session dump always fell back to `'o'` (circle) for charge. The load used `'o'` as default when marker was missing. Fixed by: (1) explicitly saving `marker: 's'` for charge and discharge in the series and multi_files dump; (2) using CPC defaults `'s'` for capacity and `'^'` for efficiency when loading (both multi-file and single-file); (3) adding `marker` to the series charge/discharge dicts in the dump; (4) backward compatibility: when loading, treat saved marker `'o'` as `'s'` for charge/discharge (old sessions saved circles because PathCollection has no get_marker).
+
+### Affected Files
+- `batplot/session.py`
+
+---
+
+## 2026-03-05: CPC session (.pkl) load: colors, legend, tick labels, display mode
+
+### Summary
+When opening a saved CPC .pkl file, colors, tick labels, legend display, and display mode were wrong. Fixed by: (1) **Legend**: Call `_rebuild_legend` after load so CPC compact multi-file format (square patches, correct ordering) is applied instead of default matplotlib legend; (2) **Hollow markers**: Save and restore `hollow` state for discharge (and charge/efficiency when applicable)—use edgecolor for hollow scatter; (3) **Display mode**: Save and restore `display_mode` (charge/discharge/both) and apply visibility to charge/discharge artists; (4) **fig._cpc_is_multi_file**: Set on load for correct menu behavior; (5) **eff_color**: Store in file_data when loading for color menu; (6) **Top xlabel**: Set `ax._top_xlabel_on` when restoring top title. Single-file and multi-file series now save/restore hollow and color correctly.
+
+### Affected Files
+- `batplot/session.py`
+
+---
+
+## 2026-03-05: Submenu looping: stay in subloop until q (all interactive modes)
+
+### Summary
+Applied consistent looping logic across all interactive menus (1D, EC, CPC, Operando): submenus now stay in a loop until the user presses `q` to return to the parent menu, instead of performing one action and returning. Submenus updated: (1D) a=rearrange curves; (EC) d=display mode, c=colors, ra=rearrange legend; (CPC) f=font, m=marker sizes, d=display mode; (Operando) l=line widths, oc=operando colormap, g=canvas size. Prompt text standardized to "q=back" where applicable.
+
+### Affected Files
+- `batplot/interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-05: File rename subloop: stay in loop until q (CPC and EC)
+
+### Summary
+In multi-file rename (f option), after renaming a file the user was returned to the main Rename menu and had to press `f` again to rename another file. Fixed by wrapping the file-rename submenu in a `while True` loop: show file list, prompt for file number, process rename, then loop again. User stays in the file-rename subloop until they press `q` to return to the main Rename menu. Prompt text updated from "q=cancel" to "q=back" for clarity.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-05: Legend symbol-text vertical alignment; style restore uses set_facecolor
+
+### Summary
+Legend symbols (squares, patches) and text labels were not vertically aligned (symbols appeared higher than text). Fixed by: (1) `t.set_verticalalignment('center_baseline')` for all legend text; (2) nudge text up by `avg(text_height)/3.6` via `set_position((0, shift))` so text center aligns with symbol center (from StackOverflow). Applied in both CPC and EC `_legend_no_frame`. Style import (i) restore for CPC multi-file colors now uses `set_facecolor`/`set_edgecolor` to match interactive color apply.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-05: CPC color menu: clear palette vs per-file instructions; all 1 / all viridis; fix "nothing happens"
+
+### Summary
+CPC colors (ly, ry) prompts were unclear. Users typing "all 1" or "all viridis" got "Use file:color form" error. Fixed by: (1) support `all 1` and `all viridis` (or `a 1`, `a viridis`) to apply palette to all files; (2) clear multi-line prompts with cyan-highlighted commands: `all 1`, `all viridis`, `1`, `viridis`, `1:2`, `2:red`, `3:#455353`, `q`; (3) Colors submenu (ly, ry, u, s, q) uses _colorize_menu; (4) success messages: "Palette applied to all capacity/efficiency curves." and "Colors applied to selected files."; (5) fix scatter color update: use set_facecolor(col) and set_edgecolor(col) instead of set_facecolors with np.tile. Use fig.canvas.draw() instead of draw_idle() for immediate visual update. Apply to both ly and ry (capacity and efficiency).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: Legend menu colon format with highlighted keys (EC and CPC)
+
+### Summary
+Legend submenu (h command) in EC and CPC interactive modes now uses colon format with highlighted keys (like rename/color menus). Main legend: t, p, q. Position submenu: w, s, a, d, 0, x, y, (x y), q. x/y sub-prompts: a, d / w, s, number, q.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-05: CPC multi-file legend symbols smaller; force square (never cuboid)
+
+### Summary
+Legend symbols (Charge/Discharge/Efficiency squares and per-file patches) in CPC multi-file mode were too large. Reduced handlelength and handleheight from 0.7 to 0.35 (~half), and efficiency triangle markersize from 7 to 4.
+
+Separately, legend Patch symbols sometimes rendered as cuboids/rectangles instead of squares. Fixed by: (1) custom `_HandlerSquarePatch` that explicitly creates square Rectangle patches regardless of allocated space; (2) `_legend_no_frame` now always enforces `handlelength == handleheight` so the legend handle box is square.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: Rename menu colon format and file-name rename in EC/CPC/Operando
+
+### Summary
+Rename submenus in EC, CPC, and Operando EC interactive modes now use colon format with highlighted keys (like the color menu). Added explicit `f` for file names in CPC (alias for `l`). EC rename supports `f` for single-file mode when file_data exists. File names are reflected in p (print/export), i (import), s (save), and b (undo).
+
+### Changes
+- **cpc_interactive.py**: Rename prompt changed from inline to colon format with `_colorize_menu`; added `f` as alias for `l` (file names); both single- and multi-file modes support file rename.
+- **electrochem_interactive.py**: Rename prompt changed to colon format with `_colorize_menu`; `f` for file names now works in single-file mode when file_data exists.
+- **operando_ec_interactive.py**: Operando rename (or) and EC rename (er) prompts updated to colon format with highlighting.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-05: WASD legend position adjustment in EC and CPC
+
+### Summary
+Added w/s/a/d/0 keys for legend position adjustment (like toggle axis title): w=up, s=down, a=left, d=right, 0=reset. User can keep pressing keys to nudge and stay in the loop. In x-only mode: a/d for nudge; in y-only mode: w/s for nudge. Step size 0.1 inches per keypress. Legend position is already reflected in p/i/s/b.
+
+### Changes
+- **electrochem_interactive.py**: Position submenu now accepts w/s/a/d/0 at top level; x and y sub-loops accept a/d and w/s respectively for incremental adjustment.
+- **cpc_interactive.py**: Same pattern.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: EC multi-file legend vertical layout; ra rearrange command
+
+### Summary
+In GC/CV/dQdV multi-file mode, the legend was displayed in parallel columns (one per file). Changed to vertical alignment (ncol=1). Added "ra: rearrange legend" under Geometries to reorder the sequence of files in the legend (similar to 1D rearrange). Legend order and layout persist across hide/show of files and are reflected in p, i, s, b.
+
+### Changes
+- **electrochem_interactive.py**: `_legend_handles_labels_ncol` now uses ncol=1 for multi-file (vertical layout) and respects `_ec_legend_file_order` for display order. Added "ra" command under Geometries (multi-file only) to prompt for new order (space-separated indices). Initialize `_ec_legend_file_order` on multi-file entry. Added `legend_file_order` to style snapshot, push_state, restore_state, and style import apply.
+- **session.py**: Added `legend_file_order` to EC session dump and restore.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/session.py`
+
+---
+
+## 2026-03-05: Accept "all" as well as "a" for multi-file target selection
+
+### Summary
+When prompted "Target file (1-N), all (a), or q=cancel", typing "all" was rejected with "Invalid input." Only "a" was accepted.
+
+### Fix
+Updated all file-target selection prompts in electrochem_interactive.py to accept both `'a'` and `'all'`: visibility toggle (v), cycles/colors (c), and smooth (sm).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: Ensure all interactive commands reflected in p, i, s, b
+
+### Summary
+Comprehensive audit to ensure every interactive menu command is properly captured and restored by p (print/export style/geom), i (import style/geom), s (save project), and b (undo).
+
+### Fixes
+
+**Electrochem (GC/CV/dQdV):**
+- **Spine colors (k)**: Added `color` to spine entries in `_get_style_snapshot` so spine colors are exported/imported via p/i.
+- **Display mode (d)**: Added `display_mode` to `push_state` and restore logic in `restore_state` so undo correctly restores charge/discharge visibility.
+- **xaxis_dual (a, x)**: Added `xaxis_dual` (mode, c_theoretical, swapped) to `push_state` and restore in `restore_state` so undo restores capacity/ion axis state.
+- **dQ/dV smooth (sm)**: Added `_dqdv_smooth_settings` to `push_state`, `_get_style_snapshot`, and style import apply logic so p/i/s/b correctly persist and restore smoothing.
+
+**CPC:**
+- **Invert efficiency (ie)**: Added `efficiency_offsets` to `_style_snapshot` (single-file and multi-file) and apply logic in `_apply_style` so undo and import correctly restore inverted efficiency data.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: GC import cycle info for multi-file; style file selection UI consistency
+
+### Summary
+In GC interactive mode, importing a style file did not restore cycle visibility/colors (c command) for all files in multi-file mode—only the first file was updated. Separately, the style file selection prompt when no files were found showed "number/path/c/q" but there were no numbers to choose from; commands were not highlighted; and the description style was inconsistent across export/save/import submenus.
+
+### Fix
+- **electrochem_interactive.py**: When applying imported `cycle_styles`, loop over all `file_data` entries and call `_apply_cycle_styles(cl, cycle_styles_cfg)` for each file's `cycle_lines`, so cycle visibility and colors are restored for every file in multi-file mode.
+- **utils.py**: Added `_colorize_option_keys()` to highlight option keys in prompts. Updated `choose_style_file` to use a dynamic prompt: when files exist, "1-N: select file, path: enter path, c: custom dialog, q: cancel"; when no files, "c: custom path, q: cancel". Highlighted numbers in the file list and the prompt keys. Updated `choose_save_path` to highlight numbered options and keys in the prompt.
+- **style.py**: Import `_colorize_option_keys`; updated export options and export-to-file prompts with highlighted keys and dynamic prompts (handle empty file list).
+- **electrochem_interactive.py**: Updated `_export_style_dialog` with highlighted numbers and dynamic prompt consistent with other submenus.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/utils.py`
+- `batplot/style.py`
+
+---
+
+## 2026-03-05: Fix CPC legend reverting to old format on position change; smaller square symbols
+
+### Summary
+When repositioning the legend (h → p → new position), the legend reverted to the old repetitive format (file1 (Chg), file1 (Dch), …) instead of staying in the compact format. Legend symbols were too large and rectangular (cuboid) instead of square.
+
+### Fix
+- **`_apply_legend_position`**: Now calls `_rebuild_legend(ax, ax2, file_data, preserve_position=True)` instead of building the legend from `_visible_handles_labels` (which returned raw scatter handles with old labels). This ensures the compact format (■ Charge □ Discharge, per-file names) is preserved when moving the legend.
+- **`_legend_no_frame`**: Set `handlelength=handleheight=0.7` (was 1.0) so symbols are smaller and square rather than rectangular.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: Add display (d) command under Styles for GC and CPC; move d from Geometries to Styles
+
+### Summary
+Added a `d` (display) command under Styles in CPC interactive menu to toggle charge-only / discharge-only / both capacity visibility, matching GC/dQdV/CV. Moved the existing `d` command in electrochem (GC) from Geometries to Styles. Ensured p (export), i (import), s (save), and b (undo) correctly persist and restore display mode.
+
+### Changes
+- **electrochem_interactive.py**: Moved `d: display (charge/discharge)` from col2 (Geometries) to col1 (Styles). Added `display_mode` to `_get_geometry_snapshot` and apply it when importing geometry. Store `fig._ec_display_mode` when user changes display mode.
+- **cpc_interactive.py**: Added `d: display (charge/discharge)` under Styles. Implemented handler to set `sc_charge`/`sc_discharge` visibility per file. Added `display_mode` and per-file `charge_visible`/`discharge_visible` to `_style_snapshot`. In `_apply_style`, apply `display_mode` when present and per-file visibility otherwise. Push state before display changes for undo (b).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-05: Fix Y range entry with negative values inverting the axis
+
+### Summary
+Entering a Y range where the first value is greater than the second (e.g. `0 -100`) caused matplotlib to invert the Y axis, flipping the data curve visually.
+
+### Root Cause
+`ax.set_ylim(a, b)` with `a > b` is treated by matplotlib as an intentional axis inversion. The interactive Y-range handler passed the values directly without sorting them.
+
+### Fix
+Added `lo, hi = min(lo, hi), max(lo, hi)` before every `set_ylim` call that takes user-supplied two-value input in `interactive.py`, `electrochem_interactive.py`, and `operando_ec_interactive.py`. X-axis range handlers were left unchanged as inverted X axes can be intentional (e.g. 2θ vs d-spacing). `cpc_interactive.py` already had this guard.
+
+### Affected Files
+- `batplot/interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-03: Add per-file --mass support for GC, dQ/dV, CPC, and EPC modes
+
+### Summary
+`--mass` previously accepted only a single float value applied to all input files. When plotting multiple files with different electrode masses (e.g., Neware absolute-capacity CSVs alongside `.mpt` files), there was no way to specify a different mass per file.
+
+### Root Cause
+`args.py` defined `--mass` as `type=float` (single value). All mass lookups used a bare `getattr(args, 'mass', None)` without awareness of which file was being processed.
+
+### Fix
+- Changed `--mass` in `args.py` to `action='append'` (repeat the flag once per file: `file1.csv --mass 2 file2.mpt --mass 3`).
+- Added `_resolve_mass(mass_arg, file_idx)` helper in `batplot.py` (module level) and `batch.py`. It returns a single float for a given file index: if one value is given it applies to all files; if multiple values are given they map positionally to files, with the last value reused for any extra files.
+- Replaced all `getattr(args, 'mass', None)` calls in GC, CPC, EPC, and dQ/dV handlers in both `batplot.py` and `batch.py` with `_resolve_mass(getattr(args, 'mass', None), file_idx)`, using the correct per-loop `file_idx`.
+- Added `enumerate` to the single-file dQ/dV loop (`for ec_file in data_files` → `for _dqdv_file_idx, ec_file in enumerate(data_files)`) and the batch file loop.
+- Updated `args.py` help text and `USER_MANUAL.md` with examples and a dedicated "Per-File Mass Loading" section.
+
+### Affected Files
+- `batplot/args.py`
+- `batplot/batplot.py`
+- `batplot/batch.py`
+- `batplot/data/USER_MANUAL.md`
+
+---
+
+## 2026-03-03: Add numerical dQ/dV fallback for files without pre-calculated dQ/dV columns
+
+### Summary
+In dQ/dV mode (`--dqdv`), Neware CSV files using the newer three-level format (e.g. `B448_rate.csv`) have no `dQ/dV(mAh/V)` or `dQm/dV(mAh/V.g)` column. The reader raised `ValueError` and the fallback block re-called the same reader, so the mode always failed for these files.
+
+### Root Cause
+`read_ec_csv_dqdv_file` raises `ValueError` immediately when no dQ/dV column is found. The surrounding `try/except Exception` block in `batplot.py` and `batch.py` silently called the same function again with the same result.
+
+### Fix
+1. Added `compute_dqdv_numerical(cap_x, voltage, cycles, charge_mask, discharge_mask)` to `readers.py`. It calls the existing `_compute_dqdv_from_capacity` helper for the raw finite-difference dQ/dV, then applies per-segment Savitzky-Golay smoothing (via `scipy.signal.savgol_filter`) when scipy is available.
+2. Updated the single-file and multi-file dQ/dV handlers in `batplot.py`, and the batch dQ/dV handler in `batch.py`, to use a structured try-ladder: CS-B reader → `read_ec_csv_dqdv_file` → numerical fallback. The numerical path also applies `--mass` scaling so that `cap_x` is in mAh/g before differentiation, yielding dQm/dV in mAh g⁻¹ V⁻¹.
+3. All interactive commands (`p`, `i`, `s`, `b`, `d`) continue to work unchanged because the interactive menu operates on matplotlib line objects, not raw data arrays.
+
+### Affected Files
+- `batplot/readers.py`
+- `batplot/batplot.py`
+- `batplot/batch.py`
+
+---
+
+## 2026-03-03: Add --mass scaling and capacity-based efficiency for CPC/EPC with absolute-capacity Neware CSVs
+
+### Summary
+In CPC and EPC modes, Neware CSV files that contain only `Capacity(mAh)` (absolute capacity, no `Spec. Cap.(mAh/g)`) were not scaled by `--mass`, so the plotted capacity values were raw mAh instead of mAh/g. Additionally, these files have no pre-calculated Coulombic efficiency column, but efficiency was not being computed from the charge/discharge capacity ratio.
+
+### Root Cause
+The CPC CSV branch used a `try/raise RuntimeError/except` pattern that swallowed the loaded header, making it unavailable for the absolute-vs-specific capacity check that was already implemented in the GC path. The EPC integration fallback also had no mass-scaling step.
+
+### Fix
+- CPC CSV path: restructured to load the header cleanly, then apply `cap_x *= 1000 / mass_mg` when `Capacity(mAh)` is present but `Spec. Cap.(mAh/g)` is absent and `--mass` is supplied. Prints a reminder when `--mass` is missing.
+- EPC integration fallback: same mass-scaling logic applied to `cap_x` before `∫V dQ`, ensuring the result is in mWh/g.
+- Efficiency in both paths is computed as `qdch / qchg × 100 %` from the per-cycle capacity (no explicit efficiency column needed).
+
+### Affected Files
+- `batplot/batplot.py`
+
+---
+
+## 2026-03-03: Fix GC plotting for Neware "Cycle Index / Step Index / DataPoint" CSV format
+
+### Summary
+Plotting GC data from Neware CSV files with the newer three-level hierarchical header format (e.g. `B448_rate.csv`, `B450_rate.csv`) produced a single flat cycle with grossly incorrect capacity values instead of the expected 60+ per-cycle charge/discharge curves.
+
+### Root Cause
+The multi-level Neware CSV parser (`_looks_like_neware_multilevel` and `_parse_neware_multilevel_rows` in `readers.py`) only detected the older export format that uses `"Cycle ID"`, `"Step ID"`, and `"Record ID"` as level-header markers. The newer Neware export format uses `"Cycle Index"`, `"Step Index"`, and `"DataPoint"` instead, so the file fell through to the flat-CSV fallback path, which read the cycle-level summary row (`Cycle Index, Chg. Cap.(mAh), …`) as the column header. That header has no `Voltage(V)` column, causing the reader to misclassify the file as a summary export and return a single synthetic data point.
+
+Additionally, the newer format inserts an extra `"Step Number"` column between `"Step Index"` and `"Step Type"` in step-level rows, so even after detection the Step Type (e.g. `CC Chg` / `CC DChg`) was read from the wrong column offset, leaving all points classified as discharge and suppressing cycle inference.
+
+### Fix
+1. Extended `_looks_like_neware_multilevel` to also recognise the `"Cycle Index"` / `"Step Index…"` / `"DataPoint"` variant.
+2. Extended `_parse_neware_multilevel_rows` to accept these alternative header names in the three level-header rows.
+3. Made the Step Type column offset dynamic: when the step-level header row is parsed, the code now searches for the `"Step Type"` column by name and records its raw-row index (`_step_type_offset`), so step data rows correctly extract the step-type string regardless of how many extra columns precede it.
+
+### Affected Files
+- `batplot/readers.py`
+
+---
+
 ## 2026-03-03: Fix `__getitem__` type error for dQ/dV column indices in `read_ec_csv_dqdv_file`
 
 ### Summary
@@ -3341,3 +3709,88 @@ Relaxed the helper's annotation to reflect the actual, union-like value shape by
 ## Future Bug Fixes
 
 All future bug fixes should follow this format and be added chronologically to this document.
+
+---
+
+## 2026-03-03: Improve CPC interactive command highlighting and legend prompt
+
+### Summary
+In CPC interactive mode, many inline command hints in submenus (such as the legend position prompt) did not visually highlight the individual key commands, even though the main CPC menu used the shared `_colorize_menu` helper. This made it harder to visually scan available commands compared to the more polished EC and operando interactive menus.
+
+### Root Cause
+The core CPC menu (`_print_menu`) was already calling `_colorize_menu` on each row, so entries like `k: spine colors`, `ry: show/hide efficiency`, `ie: invert efficiency`, and `v: show/hide files` were highlighted correctly. However, some follow‑up prompts inside submenus were plain strings passed directly to `_safe_input` without going through `_colorize_inline_commands`, leaving embedded command keys like `t`, `p`, and `q` uncolored (e.g. `"Legend: t=toggle, p=set position, q=back: "`).
+
+### Fix
+Updated the CPC legend submenu so that the `Legend: t=toggle, p=set position, q=back:` prompt is wrapped in `_colorize_inline_commands(...)` before being displayed. This brings its appearance in line with other CPC and EC interactive help text, making the `t`, `p`, and `q` shortcuts visually stand out while preserving all existing behavior.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Uses ANSI color escape codes already employed elsewhere in the interactive menus
+- ✅ Windows: Works in terminals that support ANSI colors (or gracefully shows plain text where not supported)
+- ✅ Linux: Same behavior as other interactive menus using `_colorize_menu` / `_colorize_inline_commands`
+
+---
+
+## 2026-03-03: Fix EPC legend labels to show energy density
+
+### Summary
+In the newly added `--epc` (energy-per-cycle) mode, the legend entries for single-file plots still used the CPC-style text `"Charge capacity"` and `"Discharge capacity"`, even though the Y-axis and data represented specific energy (mWh g⁻¹). This mismatch was confusing, especially when comparing CPC and EPC plots side-by-side.
+
+### Root Cause
+The shared CPC/EPC handler in `batplot.py` correctly changed the left Y-axis label to `"Specific Energy (mWh g$^{-1}$)"` when `--epc` was active, and it reused the same scatter-artist wiring as CPC. However, the label strings for the single-file legend (`label_chg`, `label_dch`) were hard-coded as `"Charge capacity"` / `"Discharge capacity"` with no conditional on the EPC flag, so EPC plots inherited the capacity-oriented legend text.
+
+### Fix
+Updated the legend label construction in the CPC/EPC block of `batplot.py` so that:
+- For **single-file EPC plots** (`--epc` and one input file), the scatter labels are now `"Charge energy density"` and `"Discharge energy density"`, while the efficiency trace remains `"Coulombic efficiency"`.
+- For **multi-file plots** in either CPC or EPC mode, the compact labels (`"<filename> (Chg)"`, `"<filename> (Dch)"`, `"<filename> (Eff)"`) are preserved, since the physical quantity is already clearly indicated by the left Y-axis label.
+
+This keeps CPC behavior unchanged while ensuring EPC legends accurately reflect energy density in both single-file and multi-file workflows.
+
+### Affected Files
+- `batplot/batplot.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: No change to plotting backend; only legend text updated
+- ✅ Windows: Same behavior; legend text is pure matplotlib text rendering
+- ✅ Linux: Identical rendering change, no platform-specific logic
+
+---
+
+## 2026-03-03: Use explicit Spec. Energy columns in EPC mode when available
+
+### Summary
+In EPC mode (`--epc`), Batplot originally always computed specific energy-per-cycle by numerically integrating voltage vs capacity (`∫ V dQ`) even when the input CSV already contained explicit per-point energy-density columns like `Spec. Energy(mWh/g)`, `Chg. Spec. Energy(mWh/g)`, and `DChg. Spec. Energy(mWh/g)` (e.g. in Neware exports such as `B425.csv`). This duplicated work, could introduce small numerical differences compared to the cycler’s own integration, and made it unclear which source of energy values was being used.
+
+### Root Cause
+The CPC/EPC handler in `batplot.py` used `read_ec_csv_file` and `read_mpt_file` to obtain capacity, voltage, cycles, and charge/discharge masks, then unconditionally derived energy density via trapezoidal integration for EPC. It never inspected the CSV header for explicit `Spec. Energy(mWh/g)` columns, so even when they were present they were ignored.
+
+### Fix
+Updated the EPC (`--epc`) CSV path in `batplot.py` so that:
+
+- For `.csv`/`.xlsx`/`.xls` inputs, Batplot now:
+  - Reads the header with `_load_csv_header_and_rows`.
+  - If it finds any of:
+    - `Chg. Spec. Energy(mWh/g)` and/or `DChg. Spec. Energy(mWh/g)`, or
+    - `Spec. Energy(mWh/g)`,
+    it will:
+    - Still call `read_ec_csv_file` to get `cycles`, `chg_mask`, and `dchg_mask`.
+    - Extract the corresponding per-point energy columns from the raw rows.
+    - For each cycle, compute charge/discharge energy density as the **max** of the relevant energy column over that branch (with fallback to `Spec. Energy(mWh/g)` if a branch-specific column is missing).
+    - Continue to compute coulombic efficiency from capacity as before.
+    - Print a one-line message such as:
+      - `EPC mode: using Spec. Energy(mWh/g) columns from 'B425.csv' (no numerical integration).`
+
+- If no suitable energy-density columns are found, EPC falls back to the existing integration logic, and prints:
+  - `EPC mode: computing energy density by integrating V vs capacity for 'filename.csv'.`
+
+MPT-based EPC remains integration-based (no change), and CPC behavior is unchanged.
+
+### Affected Files
+- `batplot/batplot.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Pure Python/Numpy changes; no backend-specific behavior
+- ✅ Windows: Same behavior; messages printed to stdout only
+- ✅ Linux: Identical logic and messaging

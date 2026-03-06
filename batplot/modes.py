@@ -37,6 +37,21 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 from .readers import read_mpt_file, read_ec_csv_file, read_ec_csv_dqdv_file, read_biologic_txt_file
 from .electrochem_interactive import electrochem_interactive_menu
 
+
+def _resolve_mass(mass_arg, file_idx: int = 0):
+    """Return mass (mg) for file at file_idx from a --mass list or single value."""
+    if mass_arg is None:
+        return None
+    if isinstance(mass_arg, (int, float)):
+        return float(mass_arg)
+    if isinstance(mass_arg, list):
+        if len(mass_arg) == 1:
+            return float(mass_arg[0])
+        if file_idx < len(mass_arg):
+            return float(mass_arg[file_idx])
+        return float(mass_arg[-1])
+    return None
+
 # Try to import optional interactive menus
 # These may not be available if dependencies are missing
 try:
@@ -445,7 +460,7 @@ def handle_gc_mode(args) -> int:
     try:
         # Branch by extension
         if ec_file.lower().endswith('.mpt'):
-            mass_mg = getattr(args, 'mass', None)
+            mass_mg = _resolve_mass(getattr(args, 'mass', None), 0)
             if mass_mg is None:
                 print("GC mode (.mpt): --mass parameter is required (active material mass in milligrams).")
                 print("Example: batplot file.mpt --gc --mass 7.0")

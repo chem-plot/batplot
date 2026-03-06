@@ -1,8 +1,9 @@
 {
-  "version": "1.8.26",
-  "custom_message": "- Improved interactive menu functionality for ec mode",
+  "version": "1.8.27",
+  "custom_message": "- Improved interactive menu functionality for cpc mode",
   "update_notes": [
-    "- Improved interactive menu functionality for ec mode",
+    "- Improved interactive menu functionality for cpc mode",
+    "- Improved interactive menu display",
     "- Bug fixes"
   ]
 }

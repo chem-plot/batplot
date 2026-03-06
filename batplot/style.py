@@ -17,7 +17,7 @@ import matplotlib.colors as mcolors  # type: ignore[import]
 from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, NullFormatter  # type: ignore[import]
 from matplotlib.colors import LinearSegmentedColormap  # type: ignore[import]
 
-from .utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename
+from .utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename, _colorize_option_keys
 from .color_utils import color_block, _CUSTOM_CMAPS
 from .ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
@@ -801,9 +801,10 @@ def export_style_config(
         else:
             # Ask user for style-only or style+geometry
             print("\nExport options:")
-            print("  ps  = style only (.bps)")
-            print("  psg = style + geometry (.bpsg)")
-            exp_choice = input("Export choice (ps/psg, q=cancel): ").strip().lower()
+            print(f"  \033[96mps\033[0m  = style only (.bps)")
+            print(f"  \033[96mpsg\033[0m = style + geometry (.bpsg)")
+            exp_prompt = _colorize_option_keys("ps: style only, psg: style+geometry, q: cancel")
+            exp_choice = input(f"Export choice ({exp_prompt}): ").strip().lower()
             if not exp_choice or exp_choice == 'q':
                 print("Style export canceled.")
                 return None
@@ -845,13 +846,21 @@ def export_style_config(
                 styles_dir = os.path.join(styles_root, 'Styles')
                 print(f"\nExisting {default_ext} files in {styles_dir}:")
                 for i, f in enumerate(style_files, 1):
-                    print(f"  {i}: {f}")
+                    print(f"  \033[96m{i}\033[0m: {f}")
 
             last_style_path = getattr(fig, '_last_style_export_path', None)
+            n_files = len(style_files) if style_files else 0
             if last_style_path:
-                choice = input("Export to file? Enter filename, number to overwrite, or o to overwrite last (q=cancel): ").strip()
+                if n_files:
+                    exp_file_prompt = _colorize_option_keys(f"filename, 1-{n_files}: overwrite, o: overwrite last, q: cancel")
+                else:
+                    exp_file_prompt = _colorize_option_keys("filename, o: overwrite last, q: cancel")
             else:
-                choice = input("Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
+                if n_files:
+                    exp_file_prompt = _colorize_option_keys(f"filename, 1-{n_files}: overwrite, q: cancel")
+                else:
+                    exp_file_prompt = _colorize_option_keys("filename, q: cancel")
+            choice = input(f"Export to file? ({exp_file_prompt}): ").strip()
             if not choice or choice.lower() == 'q':
                 print("Style export canceled.")
                 return None

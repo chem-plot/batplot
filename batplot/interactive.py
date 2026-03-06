@@ -253,6 +253,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         # Color specific known single-letter commands: q, i, l, when they appear as standalone commands
         # Pattern: word boundary + (q|i|l|list|help|all) + space/equals/comma/end
         text = re.sub(r'\b(q|i|l|list|help|all)\b(?=\s*[=,]|\s*$)', lambda m: f"\033[96m{m.group(1)}\033[0m", text)
+        # Additionally, color generic short command keys that appear before ':' or '='
+        # Example: "w=top  a=left  s=bottom  d=right" or "ly : capacity..."
+        def _color_key_before_sep(match: re.Match) -> str:
+            prefix = match.group(1)
+            key = match.group(2)
+            sep = match.group(3)
+            return f"{prefix}\033[96m{key}\033[0m{sep}"
+        text = re.sub(r'(^|\s)([a-z][a-z0-9_-]{0,3})(\s*[:=])', _color_key_before_sep, text, flags=re.MULTILINE)
         return text
     
     # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
@@ -2049,7 +2057,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 key = pending_key
                 pending_key = None
             else:
-                key = _safe_input("Press a key: ").strip().lower()
+                key = _safe_input(colorize_prompt("Press a key: ")).strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -2088,8 +2096,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             if not has_cif:
                 print("\nNo CIF tick labels are available.")
                 print("To enable CIF ticks, include one or more CIF files when launching batplot, e.g.:")
-                print("  batplot data.xy phase.cif:1.5406 --interactive")
-                print("You can append ':wavelength' (in Å) to each CIF filename to set its wavelength.")
+                print("  batplot data.xy phase.cif:1.5406 --i # plot in 2theta space")
+                print("  batplot data.xy:0.709 phase.cif --i # plot in Q space")
                 continue
 
             # Local state mirrors operando CIF submenu: hkl and title visibility flags.
@@ -2108,7 +2116,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print("  " + colorize_menu("x: show/hide CIF set"))
                 print("  " + colorize_menu("r: rename CIF set label"))
                 print("  " + colorize_menu("q: back to main menu"))
-                sub = _safe_input("cif> ").strip().lower()
+                sub = _safe_input(colorize_prompt("CIF (c/x/r/q): ")).strip().lower()
                 if not sub or sub == 'q':
                     break
                 if sub == 'z':
@@ -2461,11 +2469,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 while True:
                     print("\n\033[1mLegend submenu:\033[0m")
-                    print(f"  {colorize_menu('v: show/hide curve names')}")
+                    print("  " + colorize_menu("v: show/hide curve names"))
                     current_pos = _current_label_position()
                     print(f"  {colorize_menu(f's: legend position (current: {current_pos})')}")
                     print(f"  {colorize_menu('q: back to main menu')}")
-                    sub_key = _safe_input("Choose: ").strip().lower()
+                    sub_key = _safe_input(colorize_prompt("Choose (v/s/q): ")).strip().lower()
                     
                     if sub_key == 'q':
                         break
@@ -2487,7 +2495,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         print("  " + colorize_menu("2: top-left"))
                         print("  " + colorize_menu("3: bottom-right"))
                         print("  " + colorize_menu("4: bottom-left"))
-                        choice = _safe_input("Position (1-4, q=cancel): ").strip().lower()
+                        choice = _safe_input(colorize_prompt("Position (1-4, q=cancel): ")).strip().lower()
                         options = {
                             '1': (False, False),
                             '2': (False, True),
@@ -3326,92 +3334,96 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 if not args.stack:
                     print('Be careful, changing the arrangement may lead to a mess! If you want to rearrange the curves, use "--stack".')
-                print("Current curve order:")
-                for idx, label in enumerate(labels):
-                    print(f"{idx+1}: {label}")
-                new_order_str = _safe_input("Enter new order (space-separated indices, q=cancel): ").strip()
-                if not new_order_str or new_order_str.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                new_order = [int(i)-1 for i in new_order_str.strip().split()]
-                if len(new_order) != len(labels):
-                    print("Error: Number of indices does not match number of curves.")
-                    continue
-                if any(i < 0 or i >= len(labels) for i in new_order):
-                    print("Error: Invalid index in order list.")
-                    continue
+                while True:
+                    print("Current curve order:")
+                    for idx, label in enumerate(labels):
+                        print(f"{idx+1}: {label}")
+                    new_order_str = _safe_input("Enter new order (space-separated indices, q=back): ").strip()
+                    if not new_order_str or new_order_str.lower() == 'q':
+                        break
+                    try:
+                        new_order = [int(i)-1 for i in new_order_str.strip().split()]
+                    except (ValueError, TypeError):
+                        print("Invalid input. Use space-separated numbers (e.g., 3 1 2 4).")
+                        continue
+                    if len(new_order) != len(labels):
+                        print("Error: Number of indices does not match number of curves.")
+                        continue
+                    if any(i < 0 or i >= len(labels) for i in new_order):
+                        print("Error: Invalid index in order list.")
+                        continue
 
-                push_state("rearrange")
+                    push_state("rearrange")
 
-                original_styles = []
-                for ln in ax.lines:
-                    original_styles.append({
-                        "color": ln.get_color(),
-                        "linewidth": ln.get_linewidth(),
-                        "linestyle": ln.get_linestyle(),
-                        "alpha": ln.get_alpha(),
-                        "marker": ln.get_marker(),
-                        "markersize": ln.get_markersize(),
-                        "markerfacecolor": ln.get_markerfacecolor(),
-                        "markeredgecolor": ln.get_markeredgecolor()
-                    })
-                reordered_styles = [original_styles[i] for i in new_order]
-                xlim_current = ax.get_xlim()
+                    original_styles = []
+                    for ln in ax.lines:
+                        original_styles.append({
+                            "color": ln.get_color(),
+                            "linewidth": ln.get_linewidth(),
+                            "linestyle": ln.get_linestyle(),
+                            "alpha": ln.get_alpha(),
+                            "marker": ln.get_marker(),
+                            "markersize": ln.get_markersize(),
+                            "markerfacecolor": ln.get_markerfacecolor(),
+                            "markeredgecolor": ln.get_markeredgecolor()
+                        })
+                    reordered_styles = [original_styles[i] for i in new_order]
+                    xlim_current = ax.get_xlim()
 
-                x_data_list[:]      = [x_data_list[i] for i in new_order]
-                orig_y[:]           = [orig_y[i] for i in new_order]
-                y_data_list[:]      = [y_data_list[i] for i in new_order]
-                labels[:]           = [labels[i] for i in new_order]
-                label_text_objects[:] = [label_text_objects[i] for i in new_order]
-                x_full_list[:]      = [x_full_list[i] for i in new_order]
-                raw_y_full_list[:]  = [raw_y_full_list[i] for i in new_order]
-                offsets_list[:]     = [offsets_list[i] for i in new_order]
+                    x_data_list[:]      = [x_data_list[i] for i in new_order]
+                    orig_y[:]           = [orig_y[i] for i in new_order]
+                    y_data_list[:]      = [y_data_list[i] for i in new_order]
+                    labels[:]           = [labels[i] for i in new_order]
+                    label_text_objects[:] = [label_text_objects[i] for i in new_order]
+                    x_full_list[:]      = [x_full_list[i] for i in new_order]
+                    raw_y_full_list[:]  = [raw_y_full_list[i] for i in new_order]
+                    offsets_list[:]     = [offsets_list[i] for i in new_order]
 
-                if args.stack:
-                    offset_local = 0.0
-                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
-                        y_plot_offset = y_norm + offset_local
-                        y_data_list[i] = y_plot_offset
-                        offsets_list[i] = offset_local
-                        ln = ax.lines[i]
-                        ln.set_data(x_plot, y_plot_offset)
-                        ln.set_color(style["color"]) 
-                        ln.set_linewidth(style["linewidth"]) 
-                        ln.set_linestyle(style["linestyle"]) 
-                        ln.set_alpha(style["alpha"]) 
-                        ln.set_marker(style["marker"]) 
-                        ln.set_markersize(style["markersize"]) 
-                        ln.set_markerfacecolor(style["markerfacecolor"]) 
-                        ln.set_markeredgecolor(style["markeredgecolor"]) 
-                        y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
-                        gap = y_range + (delta * (y_range if args.autoscale else 1.0))
-                        offset_local -= gap
-                else:
-                    offset_local = 0.0
-                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
-                        y_plot_offset = y_norm + offset_local
-                        y_data_list[i] = y_plot_offset
-                        offsets_list[i] = offset_local
-                        ln = ax.lines[i]
-                        ln.set_data(x_plot, y_plot_offset)
-                        ln.set_color(style["color"]) 
-                        ln.set_linewidth(style["linewidth"]) 
-                        ln.set_linestyle(style["linestyle"]) 
-                        ln.set_alpha(style["alpha"]) 
-                        ln.set_marker(style["marker"]) 
-                        ln.set_markersize(style["markersize"]) 
-                        ln.set_markerfacecolor(style["markerfacecolor"]) 
-                        ln.set_markeredgecolor(style["markeredgecolor"]) 
-                        increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
-                        offset_local += increment
+                    if args.stack:
+                        offset_local = 0.0
+                        for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
+                            y_plot_offset = y_norm + offset_local
+                            y_data_list[i] = y_plot_offset
+                            offsets_list[i] = offset_local
+                            ln = ax.lines[i]
+                            ln.set_data(x_plot, y_plot_offset)
+                            ln.set_color(style["color"]) 
+                            ln.set_linewidth(style["linewidth"]) 
+                            ln.set_linestyle(style["linestyle"]) 
+                            ln.set_alpha(style["alpha"]) 
+                            ln.set_marker(style["marker"]) 
+                            ln.set_markersize(style["markersize"]) 
+                            ln.set_markerfacecolor(style["markerfacecolor"]) 
+                            ln.set_markeredgecolor(style["markeredgecolor"]) 
+                            y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
+                            gap = y_range + (delta * (y_range if args.autoscale else 1.0))
+                            offset_local -= gap
+                    else:
+                        offset_local = 0.0
+                        for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
+                            y_plot_offset = y_norm + offset_local
+                            y_data_list[i] = y_plot_offset
+                            offsets_list[i] = offset_local
+                            ln = ax.lines[i]
+                            ln.set_data(x_plot, y_plot_offset)
+                            ln.set_color(style["color"]) 
+                            ln.set_linewidth(style["linewidth"]) 
+                            ln.set_linestyle(style["linestyle"]) 
+                            ln.set_alpha(style["alpha"]) 
+                            ln.set_marker(style["marker"]) 
+                            ln.set_markersize(style["markersize"]) 
+                            ln.set_markerfacecolor(style["markerfacecolor"]) 
+                            ln.set_markeredgecolor(style["markeredgecolor"]) 
+                            increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
+                            offset_local += increment
 
-                for i, (txt, lab) in enumerate(zip(label_text_objects, labels)):
-                    txt.set_text(f"{i+1}: {lab}")
-                # Preserve current axis titles (respect 't' menu toggles like bt/lt)
-                ax.set_xlim(xlim_current)
-                # Do not reset xlabel/ylabel here; rearrange should not change title visibility
-                update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                fig.canvas.draw()
+                    for i, (txt, lab) in enumerate(zip(label_text_objects, labels)):
+                        txt.set_text(f"{i+1}: {lab}")
+                    # Preserve current axis titles (respect 't' menu toggles like bt/lt)
+                    ax.set_xlim(xlim_current)
+                    # Do not reset xlabel/ylabel here; rearrange should not change title visibility
+                    update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                    fig.canvas.draw()
             except Exception as e:
                 print(f"Error rearranging curves: {e}")
         elif key == 'x':
@@ -3419,7 +3431,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_xlim = ax.get_xlim()
                     print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                    rng = _safe_input("Enter new X range (min max), w=upper only, s=lower only, 'full', or 'a'=auto (restore original) (q=back): ").strip()
+                    rng = _safe_input(colorize_prompt("Enter x-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
                     if not rng or rng.lower() == 'q':
                         break
                     if rng.lower() == 'w':
@@ -3427,7 +3439,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_xlim = ax.get_xlim()
                             print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                            val = _safe_input(colorize_prompt(f"Enter upper limit (current lower: {current_xlim[0]:.6g}, q=back): ")).strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -3500,7 +3512,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_xlim = ax.get_xlim()
                             print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                            val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                            val = _safe_input(colorize_prompt(f"Enter lower limit (current upper: {current_xlim[1]:.6g}, q=back): ")).strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -3870,7 +3882,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_ylim = ax.get_ylim()
                     print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = _safe_input("Enter new Y range (min max), w=upper only, s=lower only, 'auto', 'a'=auto (restore original), or 'full' (q=back): ").strip().lower()
+                    rng = _safe_input(colorize_prompt("Enter y-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip().lower()
                     if not rng or rng == 'q':
                         break
                     if rng == 'w':
@@ -3878,7 +3890,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_ylim = ax.get_ylim()
                             print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = _safe_input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                            val = _safe_input(colorize_prompt(f"Enter upper limit (current lower: {current_ylim[0]:.6g}, q=back): ")).strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -3900,7 +3912,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         while True:
                             current_ylim = ax.get_ylim()
                             print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                            val = _safe_input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                            val = _safe_input(colorize_prompt(f"Enter lower limit (current upper: {current_ylim[1]:.6g}, q=back): ")).strip()
                             if not val or val.lower() == 'q':
                                 break
                             try:
@@ -4614,7 +4626,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
                     print("  " + colorize_menu(f"s: legend position (current: {current_pos})"))
                     print("  q: back to main menu")
-                    sub_key = _safe_input("Choose: ").strip().lower()
+                    sub_key = _safe_input(colorize_prompt("Choose (v/s/q): ")).strip().lower()
                     
                     if sub_key == 'q':
                         break

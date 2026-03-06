@@ -1,7 +1,20 @@
 # Changelog
 
+## [1.8.27] - 2026-03-06
+- Improved interactive menu functionality for cpc mode
+- Improved interactive menu display
+- Bug fixes
+
+
 ## [1.8.26] - 2026-03-03
-- Improved interactive menu functionality for ec mode
+- Interactive menus: consistent highlighting and descriptions across CPC, EC, 1D, and Operando
+  - Y-ranges (CPC): ly/ry/q with _colorize_menu; range prompts use _colorize_prompt (min max, w/s/a/q)
+  - X/Y range prompts: unified format (min max, w=upper, s=lower, a=auto, q=back) with highlighted keys
+  - Submenu prompts: Legend (t/p/q), Colors (ly/ry/u/s/q), Rename (x/ly/ry/f/q), Position (w/s/a/d/0/x/y/(x y)/q)
+  - Press a key, Toggle visibility, Display, and all input prompts use _colorize_prompt for key highlighting
+- Rename menu: colon format with highlighted keys (like color menu) in EC, CPC, and Operando
+- CPC: added `f` for file names (alias for `l`); both single- and multi-file support file rename
+- EC: `f` for file names now works in single-file mode; file names reflected in p/i/s/b
 - Bug fixes
 
 

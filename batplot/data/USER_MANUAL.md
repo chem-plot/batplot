@@ -526,9 +526,34 @@ This affects only the electrochemistry plot; CV-style single curves (without sep
 
 **Note**: 
 - Batch mode automatically exports SVG plots to `batplot_svg/` subdirectory
-- For GC and CPC modes: `.csv` files don't need `--mass` (capacity already in file)
 - For GC and CPC modes: `.mpt` files require `--mass` parameter
+- Neware absolute-capacity `.csv` files also require `--mass` (Cycle Index / Step Index / DataPoint format)
+- Standard Neware `.csv` files with `Spec. Cap.(mAh/g)` column do NOT need `--mass`
 - Interactive mode (`--interactive`) is only available for single-file plotting
+
+### Per-File Mass Loading (`--mass`)
+
+Repeat `--mass` once for each file that requires a mass, placing it immediately after the filename (or anywhere before the next file). Files that already contain a specific-capacity column (standard Neware CSVs) can be listed without any `--mass`.
+
+```bash
+# Single --mass applies to all files (same as before)
+batplot file1.mpt file2.mpt --gc --mass 7.0
+
+# Per-file: each --mass corresponds to the file listed before it
+batplot file1.csv --mass 3.52 file2.mpt --mass 7.0 --gc
+
+# Skip files that don't need mass (already have Spec. Cap. column)
+batplot b448.csv --mass 3.52 b425.csv b450.csv --mass 4.1 --gc
+# b448.csv → 3.52 mg, b425.csv → no mass (has specific capacity), b450.csv → 4.1 mg
+
+# CPC / EPC per-file
+batplot f1.csv --mass 3.52 f2.mpt --mass 6.5 --cpc
+
+# dQ/dV per-file (Neware absolute-capacity CSVs)
+batplot b448.csv --mass 3.52 b450.csv --mass 4.1 --dqdv
+```
+
+**How the mapping works**: `--mass` values are collected in the order they appear on the command line and mapped positionally to files (index 0, 1, 2 …). If a file does not need mass (has specific-capacity data built in), any mass value assigned to it is simply ignored. If fewer `--mass` values are given than files, the last value is reused for remaining files.
 
 ---
 

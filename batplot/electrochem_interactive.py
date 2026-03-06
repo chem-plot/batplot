@@ -34,6 +34,7 @@ from .utils import (
     get_organized_path,
     convert_label_shortcuts,
     natural_sort_key,
+    _colorize_option_keys,
 )
 import re
 import time
@@ -139,6 +140,17 @@ def _colorize_inline_commands(text):
     text = re.sub(r"'([a-z0-9\s_-]+)'", lambda m: f"'\033[96m{m.group(1)}\033[0m'", text)
     # Color specific known commands: q, i, l, list, help, all
     text = re.sub(r'\b(q|i|l|list|help|all)\b(?=\s*[=,]|\s*$)', lambda m: f"\033[96m{m.group(1)}\033[0m", text)
+    # Additionally, color generic short command keys that appear before ':' or '='
+    # This covers lines like:
+    #   ly : ...
+    #   ry : ...
+    #   w : top spine ...
+    def _color_key_before_sep(match: re.Match) -> str:
+        prefix = match.group(1)
+        key = match.group(2)
+        sep = match.group(3)
+        return f"{prefix}\033[96m{key}\033[0m{sep}"
+    text = re.sub(r'(^|\s)([a-z][a-z0-9_-]{0,3})(\s*[:=])', _color_key_before_sep, text, flags=re.MULTILINE)
     return text
 
 
@@ -369,6 +381,7 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         "t: toggle axes",
         "h: legend",
         "g: size",
+        "d: display (charge/discharge)",
     ]
     if is_dqdv:
         col1.insert(2, "sm: smooth")
@@ -376,7 +389,6 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         col1.append("v: show/hide files")
     col2 = [
         "c: cycles/colors",
-        "d: display (charge/discharge)",
         "r: rename",
         "x: x-scale",
         "y: y-scale",
@@ -384,6 +396,8 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
     # Only show capacity/ion option when NOT in dQdV mode
     if not is_dqdv:
         col2.insert(2, "a: capacity/ion")
+    if is_multi_file:
+        col2.append("ra: rearrange legend")
     
     col3 = [
         "p: print(export) style/geom",
@@ -458,17 +472,25 @@ def _visible_legend_entries(ax):
 
 
 def _legend_handles_labels_ncol(ax):
-    """Return (handles, labels, ncol). For multi-file, order by file and ncol = n visible files."""
+    """Return (handles, labels, ncol). For multi-file, order by legend_file_order (vertical, ncol=1)."""
     fig = ax.figure
     file_data = getattr(fig, "_ec_file_data", None)
     is_multi_file = getattr(fig, "_ec_is_multi_file", False)
     if not is_multi_file or not file_data:
         h, l = _visible_legend_entries(ax)
         return h, l, 1
-    visible_files = [f for f in file_data if f.get("visible", True)]
+    # Use legend_file_order for display order; filter to visible only
+    order = getattr(fig, "_ec_legend_file_order", None)
+    if order is None or not isinstance(order, (list, tuple)):
+        order = list(range(len(file_data)))
     handles = []
     labels = []
-    for f in visible_files:
+    for idx in order:
+        if idx < 0 or idx >= len(file_data):
+            continue
+        f = file_data[idx]
+        if not f.get("visible", True):
+            continue
         cl = f.get("cycle_lines") or {}
         for cyc in sorted(cl.keys(), key=lambda x: (x if isinstance(x, (int, float)) else 0)):
             parts = cl[cyc]
@@ -486,7 +508,8 @@ def _legend_handles_labels_ncol(ax):
                     if not lab.startswith("_"):
                         handles.append(parts)
                         labels.append(lab)
-    ncol = len(visible_files) if len(visible_files) > 1 else 1
+    # Vertical layout: ncol=1 for multi-file
+    ncol = 1
     return handles, labels, ncol
 
 
@@ -964,10 +987,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
     is_multi_file = len(file_data) > 1
     # Effective cycle_lines for single-file backward compat (first file)
     cycle_lines = file_data[0]["cycle_lines"]
-    # Store on figure so _rebuild_legend / _apply_legend_position can use ncol = n files
+    # Store on figure so _rebuild_legend / _apply_legend_position can use
     try:
         fig._ec_file_data = file_data
         fig._ec_is_multi_file = is_multi_file
+        if is_multi_file and not hasattr(fig, '_ec_legend_file_order'):
+            fig._ec_legend_file_order = list(range(len(file_data)))
     except Exception:
         pass
 
@@ -1494,6 +1519,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     'visible': (ax.spines.get(name).get_visible() if ax.spines.get(name) else None),
                     'color': (ax.spines.get(name).get_edgecolor() if ax.spines.get(name) else None)
                 } for name in ('bottom','top','left','right')},
+                'display_mode': getattr(fig, '_ec_display_mode', 'both'),
+                'xaxis_dual': {
+                    'mode': getattr(fig, '_xaxis_mode', 'capacity'),
+                    'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
+                    'swapped': getattr(fig, '_xaxis_swapped', False),
+                },
+                '_dqdv_smooth_settings': dict(getattr(fig, '_dqdv_smooth_settings', {})),
                 'tick_widths': {
                     'x_major': _tick_width(ax.xaxis, 'major'),
                     'x_minor': _tick_width(ax.xaxis, 'minor'),
@@ -1578,6 +1610,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             if is_multi_file and file_data:
                 snap['file_visibility'] = [f.get('visible', True) for f in file_data]
                 snap['file_display_names'] = [f.get('display_name', f.get('filename', str(i))) for i, f in enumerate(file_data)]
+                snap['legend_file_order'] = list(getattr(fig, '_ec_legend_file_order', None) or range(len(file_data)))
             state_history.append(snap)
             if len(state_history) > 40:
                 state_history.pop(0)
@@ -1607,6 +1640,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 if is_multi_file and file_data:
                     fallback['file_visibility'] = [f.get('visible', True) for f in file_data]
                     fallback['file_display_names'] = [f.get('display_name', f.get('filename', str(i))) for i, f in enumerate(file_data)]
+                    fallback['legend_file_order'] = list(getattr(fig, '_ec_legend_file_order', None) or range(len(file_data)))
                 state_history.append(fallback)
                 if len(state_history) > 40:
                     state_history.pop(0)
@@ -1853,6 +1887,33 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             f['visible'] = bool(vis_list[i])
             except Exception:
                 pass
+            # Restore display_mode (d command)
+            try:
+                dm = snap.get('display_mode')
+                if dm in ('charge', 'discharge', 'both'):
+                    fig._ec_display_mode = dm
+                    _apply_display_mode(dm)
+            except Exception:
+                pass
+            # Restore xaxis_dual (a, x commands)
+            try:
+                xd = snap.get('xaxis_dual')
+                if isinstance(xd, dict):
+                    fig._xaxis_mode = xd.get('mode', 'capacity')
+                    fig._xaxis_c_theoretical = xd.get('c_theoretical')
+                    fig._xaxis_swapped = bool(xd.get('swapped', False))
+            except Exception:
+                pass
+            # Restore dQ/dV smooth settings (sm command)
+            try:
+                smooth_cfg = snap.get('_dqdv_smooth_settings')
+                if isinstance(smooth_cfg, dict):
+                    fig._dqdv_smooth_settings = dict(smooth_cfg)
+                    # Line data is already restored from snap['lines']; smooth_cfg is metadata for future cycle changes
+                else:
+                    fig._dqdv_smooth_settings = {}
+            except Exception:
+                pass
             # Restore file display names (multi-file) and update legend labels
             try:
                 if is_multi_file and file_data and snap.get('file_display_names'):
@@ -1861,6 +1922,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         if i < len(names):
                             f['display_name'] = names[i]
                     _apply_file_display_names_to_legend(file_data)
+            except Exception:
+                pass
+            # Restore legend file order (ra command)
+            try:
+                if is_multi_file and file_data and 'legend_file_order' in snap:
+                    order = snap.get('legend_file_order')
+                    if isinstance(order, (list, tuple)) and len(order) == len(file_data):
+                        fig._ec_legend_file_order = list(order)
             except Exception:
                 pass
             # Grid state
@@ -1917,7 +1986,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 key = pending_key
                 pending_key = None
             else:
-                key = _safe_input("Press a key: ").strip().lower()
+                key = _safe_input(_colorize_prompt("Press a key: ")).strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1928,13 +1997,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             try:
                 if is_multi_file:
                     _print_file_list(file_data, current_file_idx)
-                    choice = _safe_input(f"Toggle visibility for file (1-{len(file_data)}), 'a' for all, or q=cancel: ").strip()
+                    choice = _safe_input(_colorize_prompt(f"Toggle visibility (1-{len(file_data)}, a=all, q=back): ")).strip()
                     if choice.lower() == 'q':
                         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
                         _print_file_list(file_data, current_file_idx)
                         continue
                     push_state("visibility")
-                    if choice.lower() == 'a':
+                    if choice.lower() in ('a', 'all'):
                         any_visible = any(f.get("visible", True) for f in file_data)
                         new_state = not any_visible
                         for f in file_data:
@@ -1983,33 +2052,43 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         elif key == 'd':
             # Display mode: charge-only / discharge-only / both
             try:
-                print("\nDisplay mode for GC/dQdV/CV/CPC:")
-                print("  " + _colorize_menu("c: show only charge curves (hide discharge)"))
-                print("  " + _colorize_menu("d: show only discharge curves (hide charge)"))
-                print("  " + _colorize_menu("b: show both charge and discharge"))
-                print("  " + _colorize_menu("q: cancel (no change)"))
-                sub = _safe_input(_colorize_prompt("Display (c/d/b/q): ")).strip().lower()
-                if not sub or sub == 'q':
-                    _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
-                    if is_multi_file:
-                        _print_file_list(file_data, current_file_idx)
-                    continue
-                if sub == 'c':
-                    push_state("display-charge")
-                    _apply_display_mode("charge")
-                elif sub == 'd':
-                    push_state("display-discharge")
-                    _apply_display_mode("discharge")
-                elif sub == 'b':
-                    push_state("display-both")
-                    _apply_display_mode("both")
-                else:
-                    print("Unknown choice (use c, d, b, or q).")
-                try:
-                    _rebuild_legend(ax)
-                    fig.canvas.draw()
-                except Exception:
-                    fig.canvas.draw_idle()
+                while True:
+                    print("\nDisplay mode for GC/dQdV/CV/CPC:")
+                    print("  " + _colorize_menu("c: show only charge curves (hide discharge)"))
+                    print("  " + _colorize_menu("d: show only discharge curves (hide charge)"))
+                    print("  " + _colorize_menu("b: show both charge and discharge"))
+                    print("  " + _colorize_menu("q: back"))
+                    sub = _safe_input(_colorize_prompt("Display (c/d/b/q): ")).strip().lower()
+                    if not sub or sub == 'q':
+                        break
+                    if sub == 'c':
+                        push_state("display-charge")
+                        _apply_display_mode("charge")
+                        try:
+                            fig._ec_display_mode = "charge"
+                        except Exception:
+                            pass
+                    elif sub == 'd':
+                        push_state("display-discharge")
+                        _apply_display_mode("discharge")
+                        try:
+                            fig._ec_display_mode = "discharge"
+                        except Exception:
+                            pass
+                    elif sub == 'b':
+                        push_state("display-both")
+                        _apply_display_mode("both")
+                        try:
+                            fig._ec_display_mode = "both"
+                        except Exception:
+                            pass
+                    else:
+                        print("Unknown choice (use c, d, b, or q).")
+                    try:
+                        _rebuild_legend(ax)
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Display mode change failed: {e}")
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
@@ -2206,7 +2285,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                 print(f"Legend is {'ON' if vis else 'off'}; position (inches from center): x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
                 while True:
-                    sub = _safe_input(_colorize_prompt("Legend: (t=toggle, p=set position, q=back): ")).strip().lower()
+                    print("Legend:")
+                    print("  " + _colorize_menu("t: toggle"))
+                    print("  " + _colorize_menu("p: set position"))
+                    print("  " + _colorize_menu("q: back"))
+                    sub = _safe_input(_colorize_prompt("Legend (t/p/q): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -2226,117 +2309,172 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         except Exception:
                             pass
                     elif sub == 'p':
-                        # Position submenu with x and y subcommands
+                        # Position submenu: WASD nudge or x/y direct
+                        _LEGEND_STEP = 0.1  # inches per keypress
+                        def _ec_apply_legend_pos():
+                            _store_legend_title(fig, ax)
+                            if not _apply_legend_position(fig, ax):
+                                handles, labels, ncol = _legend_handles_labels_ncol(ax)
+                                if handles:
+                                    _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=_get_legend_title(fig), ncol=ncol)
+                            fig.canvas.draw_idle()
                         while True:
                             xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                             print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                            pos_cmd = _safe_input(_colorize_prompt("Position: (x y) or x=x only, y=y only, q=back: ")).strip().lower()
+                            print("Position:")
+                            print("  " + _colorize_menu("w: up"))
+                            print("  " + _colorize_menu("s: down"))
+                            print("  " + _colorize_menu("a: left"))
+                            print("  " + _colorize_menu("d: right"))
+                            print("  " + _colorize_menu("0: reset"))
+                            print("  " + _colorize_menu("x: x only"))
+                            print("  " + _colorize_menu("y: y only"))
+                            print("  " + _colorize_menu("(x y): direct"))
+                            print("  " + _colorize_menu("q: back"))
+                            pos_cmd = _safe_input(_colorize_prompt("Position (w/s/a/d/0/x/y/(x y)/q): ")).strip().lower()
                             if not pos_cmd or pos_cmd == 'q':
                                 break
+                            if pos_cmd == '0':
+                                push_state("legend-position")
+                                new_pos = _sanitize_legend_offset(fig, (0.0, 0.0))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print("Legend position reset to center.")
+                                continue
+                            if pos_cmd == 'w':
+                                push_state("legend-position")
+                                new_pos = _sanitize_legend_offset(fig, (xy_in[0], xy_in[1] + _LEGEND_STEP))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                continue
+                            if pos_cmd == 's':
+                                push_state("legend-position")
+                                new_pos = _sanitize_legend_offset(fig, (xy_in[0], xy_in[1] - _LEGEND_STEP))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                continue
+                            if pos_cmd == 'a':
+                                push_state("legend-position")
+                                new_pos = _sanitize_legend_offset(fig, (xy_in[0] - _LEGEND_STEP, xy_in[1]))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                continue
+                            if pos_cmd == 'd':
+                                push_state("legend-position")
+                                new_pos = _sanitize_legend_offset(fig, (xy_in[0] + _LEGEND_STEP, xy_in[1]))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                continue
                             if pos_cmd == 'x':
-                                # X only: stay in loop
                                 while True:
                                     xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = _safe_input(f"Enter new x position (current y: {xy_in[1]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
+                                    print("x:")
+                                    print("  " + _colorize_menu("a: left"))
+                                    print("  " + _colorize_menu("d: right"))
+                                    print("  " + _colorize_menu("number: direct"))
+                                    print("  " + _colorize_menu("q: back"))
+                                    val = _safe_input(_colorize_prompt("x (a/d/number/q): ")).strip().lower()
+                                    if not val or val == 'q':
                                         break
+                                    if val == 'a':
+                                        push_state("legend-position")
+                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0] - _LEGEND_STEP, xy_in[1]))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            _ec_apply_legend_pos()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        continue
+                                    if val == 'd':
+                                        push_state("legend-position")
+                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0] + _LEGEND_STEP, xy_in[1]))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            _ec_apply_legend_pos()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        continue
                                     try:
                                         x_in = float(val)
                                     except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
+                                        print("Invalid input (use a, d, number, or q).")
                                         continue
                                     push_state("legend-position")
-                                    try:
-                                        # Store title before updating position
-                                        _store_legend_title(fig, ax)
-                                        # Sanitize and store the new position
-                                        new_pos = _sanitize_legend_offset(fig, (x_in, xy_in[1]))
-                                        if new_pos is not None:
-                                            fig._ec_legend_xy_in = new_pos
-                                            # If legend visible, reposition now
-                                            leg = ax.get_legend()
-                                            if leg is not None and leg.get_visible():
-                                                if not _apply_legend_position(fig, ax):
-                                                    # Fallback: rebuild with title preserved (preserve ncol for multi-file)
-                                                    handles, labels, ncol = _legend_handles_labels_ncol(ax)
-                                                    if handles:
-                                                        legend_title = _get_legend_title(fig)
-                                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title, ncol=ncol)
-                                            fig.canvas.draw_idle()
-                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
-                                        else:
-                                            print(f"Invalid position: x={x_in:.2f} is out of bounds. Position not updated.")
-                                    except Exception as e:
-                                        print(f"Error updating legend position: {e}")
-                            elif pos_cmd == 'y':
-                                # Y only: stay in loop
+                                    new_pos = _sanitize_legend_offset(fig, (x_in, xy_in[1]))
+                                    if new_pos is not None:
+                                        fig._ec_legend_xy_in = new_pos
+                                        _ec_apply_legend_pos()
+                                        print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                    else:
+                                        print(f"Invalid position: x={x_in:.2f} is out of bounds.")
+                                continue
+                            if pos_cmd == 'y':
                                 while True:
                                     xy_in = _sanitize_legend_offset(fig, getattr(fig, '_ec_legend_xy_in', (0.0, 0.0))) or (0.0, 0.0)
                                     print(f"Current position: x={xy_in[0]:.2f}, y={xy_in[1]:.2f}")
-                                    val = _safe_input(f"Enter new y position (current x: {xy_in[0]:.2f}, q=back): ").strip()
-                                    if not val or val.lower() == 'q':
+                                    print("y:")
+                                    print("  " + _colorize_menu("w: up"))
+                                    print("  " + _colorize_menu("s: down"))
+                                    print("  " + _colorize_menu("number: direct"))
+                                    print("  " + _colorize_menu("q: back"))
+                                    val = _safe_input(_colorize_prompt("y (w/s/number/q): ")).strip().lower()
+                                    if not val or val == 'q':
                                         break
+                                    if val == 'w':
+                                        push_state("legend-position")
+                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0], xy_in[1] + _LEGEND_STEP))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            _ec_apply_legend_pos()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        continue
+                                    if val == 's':
+                                        push_state("legend-position")
+                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0], xy_in[1] - _LEGEND_STEP))
+                                        if new_pos is not None:
+                                            fig._ec_legend_xy_in = new_pos
+                                            _ec_apply_legend_pos()
+                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                        continue
                                     try:
                                         y_in = float(val)
                                     except (ValueError, KeyboardInterrupt):
-                                        print("Invalid number, ignored.")
+                                        print("Invalid input (use w, s, number, or q).")
                                         continue
                                     push_state("legend-position")
-                                    try:
-                                        # Store title before updating position
-                                        _store_legend_title(fig, ax)
-                                        # Sanitize and store the new position
-                                        new_pos = _sanitize_legend_offset(fig, (xy_in[0], y_in))
-                                        if new_pos is not None:
-                                            fig._ec_legend_xy_in = new_pos
-                                            # If legend visible, reposition now
-                                            leg = ax.get_legend()
-                                            if leg is not None and leg.get_visible():
-                                                if not _apply_legend_position(fig, ax):
-                                                    # Fallback: rebuild with title preserved (preserve ncol for multi-file)
-                                                    handles, labels, ncol = _legend_handles_labels_ncol(ax)
-                                                    if handles:
-                                                        legend_title = _get_legend_title(fig)
-                                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title, ncol=ncol)
-                                            fig.canvas.draw_idle()
-                                            print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
-                                        else:
-                                            print(f"Invalid position: y={y_in:.2f} is out of bounds. Position not updated.")
-                                    except Exception as e:
-                                        print(f"Error updating legend position: {e}")
+                                    new_pos = _sanitize_legend_offset(fig, (xy_in[0], y_in))
+                                    if new_pos is not None:
+                                        fig._ec_legend_xy_in = new_pos
+                                        _ec_apply_legend_pos()
+                                        print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                    else:
+                                        print(f"Invalid position: y={y_in:.2f} is out of bounds.")
+                                continue
                             else:
                                 # Try to parse as "x y" format
                                 parts = pos_cmd.replace(',', ' ').split()
                                 if len(parts) != 2:
-                                    print("Need two numbers or 'x'/'y' command."); continue
+                                    print("Need two numbers (e.g. 2.5 3.1) or use w/s/a/d/0/x/y/q."); continue
                                 try:
                                     x_in = float(parts[0]); y_in = float(parts[1])
                                 except Exception:
                                     print("Invalid numbers."); continue
                                 push_state("legend-position")
-                                try:
-                                    # Store title before updating position
-                                    _store_legend_title(fig, ax)
-                                    # Sanitize and store the new position
-                                    new_pos = _sanitize_legend_offset(fig, (x_in, y_in))
-                                    if new_pos is not None:
-                                        fig._ec_legend_xy_in = new_pos
-                                        # If legend visible, reposition now
-                                        leg = ax.get_legend()
-                                        if leg is not None and leg.get_visible():
-                                                if not _apply_legend_position(fig, ax):
-                                                    # Fallback: rebuild with title preserved (preserve ncol for multi-file)
-                                                    handles, labels, ncol = _legend_handles_labels_ncol(ax)
-                                                    if handles:
-                                                        legend_title = _get_legend_title(fig)
-                                                        _legend_no_frame(ax, handles, labels, loc='best', borderaxespad=1.0, title=legend_title, ncol=ncol)
-                                        fig.canvas.draw_idle()
-                                        print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
-                                    else:
-                                        print(f"Invalid position: x={x_in:.2f}, y={y_in:.2f} is out of bounds. Position not updated.")
-                                except Exception as e:
-                                    print(f"Error updating legend position: {e}")
+                                new_pos = _sanitize_legend_offset(fig, (x_in, y_in))
+                                if new_pos is not None:
+                                    fig._ec_legend_xy_in = new_pos
+                                    _ec_apply_legend_pos()
+                                    print(f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}")
+                                else:
+                                    print(f"Invalid position: x={x_in:.2f}, y={y_in:.2f} is out of bounds.")
                     else:
                         print("Unknown option.")
             except Exception:
@@ -2764,7 +2902,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 
                 cycle_styles_cfg = cfg.get('cycle_styles')
                 if cycle_styles_cfg:
-                    _apply_cycle_styles(cycle_lines, cycle_styles_cfg)
+                    if is_multi_file and file_data:
+                        for f in file_data:
+                            cl = f.get('cycle_lines')
+                            if cl:
+                                _apply_cycle_styles(cl, cycle_styles_cfg)
+                    else:
+                        _apply_cycle_styles(cycle_lines, cycle_styles_cfg)
                 
                 # Restore file display names (multi-file) from style
                 try:
@@ -2775,6 +2919,30 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                 f['display_name'] = names[i]
                         _apply_file_display_names_to_legend(file_data)
                         _rebuild_legend(ax)
+                except Exception:
+                    pass
+                
+                # Restore legend file order (ra command)
+                try:
+                    order = cfg.get('legend_file_order')
+                    if order and file_data and isinstance(order, (list, tuple)) and len(order) == len(file_data):
+                        fig._ec_legend_file_order = list(order)
+                        _rebuild_legend(ax)
+                except Exception:
+                    pass
+                
+                # Restore dQ/dV smooth settings (sm command)
+                try:
+                    smooth_cfg = cfg.get('_dqdv_smooth_settings')
+                    if isinstance(smooth_cfg, dict) and smooth_cfg:
+                        fig._dqdv_smooth_settings = dict(smooth_cfg)
+                        if is_multi_file and file_data:
+                            for f in file_data:
+                                cl = f.get('cycle_lines')
+                                if cl:
+                                    _apply_stored_smooth_settings(cl, fig)
+                        else:
+                            _apply_stored_smooth_settings(cycle_lines, fig)
                 except Exception:
                     pass
                 
@@ -2892,6 +3060,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
                         if 'ylim' in geom and isinstance(geom['ylim'], list) and len(geom['ylim']) == 2:
                             ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
+                        dm = geom.get('display_mode')
+                        if dm in ('charge', 'discharge', 'both'):
+                            _apply_display_mode(dm)
+                            try:
+                                fig._ec_display_mode = dm
+                            except Exception:
+                                pass
                         print("Applied geometry (labels and limits)")
                     except Exception as e:
                         print(f"Warning: Could not apply geometry: {e}")
@@ -2969,7 +3144,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
                         _print_file_list(file_data, current_file_idx)
                         continue
-                    if choice == 'a':
+                    if choice in ('a', 'all'):
                         line_target_list = [f['cycle_lines'] for f in file_data if f.get('visible', True)]
                     else:
                         try:
@@ -3232,7 +3407,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             print(f"  {idx}: {color_block(color)} {color}")
                         print("Type 'u' to edit saved colors.")
                     print("q: back to main menu")
-                    line = _safe_input("Enter mappings (e.g., a:red d:blue) or q: ").strip()
+                    line = _safe_input(_colorize_prompt("Enter mappings (e.g., a:red d:blue, q=back): ")).strip()
                     if not line or line.lower() == 'q':
                         break
                     if line.lower() == 'u':
@@ -3316,56 +3491,58 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
                 while True:
+                    print("Rename:")
+                    print("  " + _colorize_menu("x: x-axis (bottom)"))
                     if is_dual_xaxis and secax is not None:
-                        prompt = "Rename: x (bottom x), tx (top x), y, both"
-                    else:
-                        prompt = "Rename: x, y, both"
-                    if is_multi_file and file_data:
-                        prompt += ", f (file/data name)"
-                    prompt += ", q=back"
-                    print(prompt)
-                    sub = _safe_input("Rename> ").strip().lower()
+                        print("  " + _colorize_menu("tx: x-axis (top)"))
+                    print("  " + _colorize_menu("y: y-axis"))
+                    print("  " + _colorize_menu("both: both axes"))
+                    if file_data:
+                        print("  " + _colorize_menu("f: file names (legend)"))
+                    print("  " + _colorize_menu("q: back"))
+                    sub = _safe_input(_colorize_prompt("Rename (x/y/tx/both/f/q): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
-                    if sub == 'f' and is_multi_file and file_data:
-                        _print_file_list(file_data)
-                        choice = _safe_input(f"File to rename (1-{len(file_data)}), q=cancel: ").strip()
-                        if choice.lower() == 'q':
-                            continue
-                        try:
-                            idx = int(choice) - 1
-                            if 0 <= idx < len(file_data):
-                                f = file_data[idx]
-                                current = f.get("display_name", f.get("filename", str(idx + 1)))
-                                new_name = _safe_input(f"New name for this file (current: {current!r}, blank=cancel): ").strip()
-                                if new_name:
-                                    push_state("rename-file")
-                                    f["display_name"] = new_name
-                                    cl = f.get("cycle_lines") or {}
-                                    for cyc in sorted(cl.keys(), key=lambda x: (x if isinstance(x, (int, float)) else 0)):
-                                        parts = cl[cyc]
-                                        if isinstance(parts, dict):
-                                            chg = parts.get("charge")
-                                            dch = parts.get("discharge")
-                                            if chg is not None:
-                                                chg.set_label(f"{new_name}: {cyc}")
-                                            if dch is not None:
-                                                dch.set_label("_nolegend_" if chg is not None else f"{new_name}: {cyc}")
-                                        else:
-                                            if hasattr(parts, "set_label"):
-                                                parts.set_label(f"{new_name}: {cyc}")
-                                    _rebuild_legend(ax)
-                                    try:
-                                        fig.canvas.draw()
-                                    except Exception:
-                                        fig.canvas.draw_idle()
-                                    print(f"File {idx + 1} display name set to {new_name!r}.")
-                            else:
-                                print("Invalid file number.")
-                        except ValueError:
-                            print("Invalid input.")
+                    if sub == 'f' and file_data:
+                        while True:
+                            _print_file_list(file_data)
+                            choice = _safe_input(f"File to rename (1-{len(file_data)}), q=back: ").strip()
+                            if choice.lower() == 'q':
+                                break
+                            try:
+                                idx = int(choice) - 1
+                                if 0 <= idx < len(file_data):
+                                    f = file_data[idx]
+                                    current = f.get("display_name", f.get("filename", str(idx + 1)))
+                                    new_name = _safe_input(f"New name for this file (current: {current!r}, blank=cancel): ").strip()
+                                    if new_name:
+                                        push_state("rename-file")
+                                        f["display_name"] = new_name
+                                        cl = f.get("cycle_lines") or {}
+                                        for cyc in sorted(cl.keys(), key=lambda x: (x if isinstance(x, (int, float)) else 0)):
+                                            parts = cl[cyc]
+                                            if isinstance(parts, dict):
+                                                chg = parts.get("charge")
+                                                dch = parts.get("discharge")
+                                                if chg is not None:
+                                                    chg.set_label(f"{new_name}: {cyc}")
+                                                if dch is not None:
+                                                    dch.set_label("_nolegend_" if chg is not None else f"{new_name}: {cyc}")
+                                            else:
+                                                if hasattr(parts, "set_label"):
+                                                    parts.set_label(f"{new_name}: {cyc}")
+                                        _rebuild_legend(ax)
+                                        try:
+                                            fig.canvas.draw()
+                                        except Exception:
+                                            fig.canvas.draw_idle()
+                                        print(f"File {idx + 1} display name set to {new_name!r}.")
+                                else:
+                                    print("Invalid file number.")
+                            except ValueError:
+                                print("Invalid input.")
                         continue
                     if sub in ('x','both'):
                         txt = _safe_input("New X-axis label (blank=cancel): ")
@@ -3437,6 +3614,45 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Error renaming axes: {e}")
+            _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
+            continue
+        elif key == 'ra':
+            # Rearrange legend order (multi-file only)
+            try:
+                if not is_multi_file or not file_data:
+                    print("Legend rearrange (ra) is only available with multiple files.")
+                    _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
+                    continue
+                while True:
+                    _print_file_list(file_data)
+                    print("Current legend order (top to bottom):")
+                    order = getattr(fig, '_ec_legend_file_order', None) or list(range(len(file_data)))
+                    for i, idx in enumerate(order):
+                        if 0 <= idx < len(file_data):
+                            f = file_data[idx]
+                            name = f.get("display_name", f.get("filename", str(idx + 1)))
+                            vis = "visible" if f.get("visible", True) else "hidden"
+                            print(f"  {i+1}: [{vis}] {name}")
+                    new_order_str = _safe_input("Enter new order (space-separated indices 1-N, q=back): ").strip()
+                    if not new_order_str or new_order_str.lower() == 'q':
+                        break
+                    try:
+                        new_order = [int(i) - 1 for i in new_order_str.split()]
+                        if len(new_order) != len(file_data):
+                            print(f"Error: Need exactly {len(file_data)} indices.")
+                            continue
+                        if sorted(new_order) != list(range(len(file_data))):
+                            print("Error: Indices must be a permutation of 1 to N.")
+                            continue
+                        push_state("rearrange-legend")
+                        fig._ec_legend_file_order = new_order
+                        _rebuild_legend(ax)
+                        fig.canvas.draw_idle()
+                        print("Legend order updated.")
+                    except ValueError:
+                        print("Invalid input. Use space-separated numbers (e.g., 3 1 2 4 5).")
+            except Exception as e:
+                print(f"Error rearranging legend: {e}")
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
             continue
         elif key == 't':
@@ -3924,171 +4140,170 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             continue
         elif key == 'c':
             # Multi-file: choose target file(s) for cycle/color edits
-            target_cycle_lines_list = []  # list of (cycle_lines, sorted_cycles) per target
-            if is_multi_file:
-                _print_file_list(file_data, current_file_idx)
-                choice = _safe_input(f"Target file (1-{len(file_data)}), all (a), or q=cancel: ").strip().lower()
-                if choice == 'q':
-                    _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
+            while True:
+                target_cycle_lines_list = []  # list of (cycle_lines, sorted_cycles) per target
+                if is_multi_file:
                     _print_file_list(file_data, current_file_idx)
-                    continue
-                if choice == 'a':
-                    target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys())) for f in file_data if f.get('visible', True)]
-                else:
-                    try:
-                        idx = int(choice)
-                        if 1 <= idx <= len(file_data):
-                            f = file_data[idx - 1]
-                            target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys()))]
-                            current_file_idx = idx - 1
-                        else:
-                            print("Invalid file number.")
-                            continue
-                    except ValueError:
-                        print("Invalid input.")
-                        continue
-                if not target_cycle_lines_list:
-                    print("No visible files selected.")
-                    continue
-            else:
-                target_cycle_lines_list = [(cycle_lines, all_cycles)]
-            # Show current palette if one is applied (this is informational only)
-            # Note: Individual cycles may use different colors, so we can't show a single "current" palette
-            print(f"Total cycles: {len(all_cycles)}")
-            print("Enter one of:")
-            print(_colorize_inline_commands("  - numbers: e.g. 1 5 10"))
-            print(_colorize_inline_commands("  - mappings: e.g. 1:red 5:#00B006"))
-            print(_colorize_inline_commands("  - numbers + palette: e.g. 1 5 10 viridis  OR  1 5 10 3"))
-            print(_colorize_inline_commands("  - all (optionally with palette): e.g. all  OR  all viridis  OR  all 3"))
-            print("\nRecommended palettes for scientific publications:")
-            rec_palettes = [
-                ("tab10", "Distinct, colorblind-friendly (default matplotlib)"),
-                ("Set2", "Soft, pastel colors for presentations"),
-                ("Dark2", "Bold, saturated colors for print"),
-                ("viridis", "Perceptually uniform (blue→yellow)"),
-                ("plasma", "Perceptually uniform (purple→yellow)"),
-            ]
-            for idx, (name, desc) in enumerate(rec_palettes, 1):
-                bar = palette_preview(name)
-                print(f"  {idx}. {name} - {desc}")
-                if bar:
-                    print(f"      {bar}")
-            print("  (Enter palette name OR number)")
-            user_colors = get_user_color_list(fig)
-            if user_colors:
-                print("\nSaved colors (use number or u# in mappings):")
-                for idx, color in enumerate(user_colors, 1):
-                    print(f"  {idx}: {color_block(color)} {color}")
-                print("Type 'u' to edit saved colors before assigning.")
-            line = _safe_input("Selection: ").strip()
-            if not line:
-                continue
-            if line.lower() == 'u':
-                manage_user_colors(fig)
-                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
-                continue
-            tokens = line.replace(',', ' ').split()
-            mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
-            push_state("cycles/colors")
-            all_ignored = []
-            # Apply to each target file
-            for cl, acyc in target_cycle_lines_list:
-                # Filter to existing cycles in this target
-                if use_all:
-                    existing = list(acyc)
-                    ignored = []
-                else:
-                    existing = [c for c in cycles if c in cl]
-                    ignored = [c for c in cycles if c not in cl]
-                    all_ignored.extend(ignored)
-                if not existing and mode != 'numbers':
-                    continue
-                if not existing:
-                    print("No valid cycles provided; keeping current visibility.")
-                # Update visibility
-                if existing:
-                    _set_visible_cycles(cl, existing)
-                # Apply coloring by mode
-                if mode == 'map' and mapping:
-                    mapping2 = {c: mapping[c] for c in existing if c in mapping}
-                    _apply_colors(cl, mapping2)
-                    if mapping2 and cl is target_cycle_lines_list[0][0]:
-                        print("Applied manual colors:")
-                        for cyc, col in mapping2.items():
-                            print(f"  Cycle {cyc}: {color_block(col)} {col}")
-                elif mode == 'palette' and existing:
-                    # ====================================================================
-                    # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
-                    # ====================================================================
-                    # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
-                    #
-                    # HOW IT WORKS:
-                    # Similar to XY mode, but works with cycles instead of individual files.
-                    # Each cycle gets a different color sampled from the colormap.
-                    #
-                    # Example with 10 cycles and 'viridis':
-                    #   Cycle 1 → dark purple
-                    #   Cycle 2 → purple-blue
-                    #   Cycle 3 → blue
-                    #   ...
-                    #   Cycle 10 → bright yellow
-                    #
-                    # This creates a visual progression showing how the battery changes
-                    # over multiple cycles (degradation, capacity fade, etc.)
-                    # ====================================================================
-                    
-                    # Special handling for Tab10 (default palette) to match hardcoded colors exactly
-                    default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                                           '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                    
-                    if palette and palette.lower() in ('tab10', '1'):
-                        # Use the exact hardcoded Tab10 colors to match default behavior
-                        n = len(existing)
-                        cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
-                                for i in range(n)]
+                    choice = _safe_input(f"Target file (1-{len(file_data)}), all (a), or q=back: ").strip().lower()
+                    if choice == 'q':
+                        break
+                    if choice in ('a', 'all'):
+                        target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys())) for f in file_data if f.get('visible', True)]
                     else:
                         try:
-                            cmap = cm.get_cmap(palette) if palette else None
-                        except Exception:
-                            cmap = None
-                        if cmap is None:
-                            print(f"Unknown colormap '{palette}'.")
-                            cols = []
-                        else:
-                            n = len(existing)
-                            if n == 1:
-                                cols = [cmap(0.55)]
-                            elif n == 2:
-                                cols = [cmap(0.15), cmap(0.85)]
+                            idx = int(choice)
+                            if 1 <= idx <= len(file_data):
+                                f = file_data[idx - 1]
+                                target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys()))]
+                                current_file_idx = idx - 1
                             else:
-                                cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
-                    if cols:
-                        _apply_colors(cl, {c: col for c, col in zip(existing, cols)})
-                        try:
-                            preview = color_bar([mcolors.to_hex(col) for col in cols])
-                        except Exception:
-                            preview = ""
-                        if preview and cl is target_cycle_lines_list[0][0]:
-                            palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
-                            print(f"Palette '{palette_display}' applied: {preview}")
-                elif mode == 'numbers' and existing:
-                    pass
-                # Reapply curve linewidth and smooth for this target
-                _apply_curve_linewidth(fig, cl)
-                if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                    _apply_stored_smooth_settings(cl, fig)
+                                print("Invalid file number.")
+                                continue
+                        except ValueError:
+                            print("Invalid input.")
+                            continue
+                    if not target_cycle_lines_list:
+                        print("No visible files selected.")
+                        continue
+                else:
+                    target_cycle_lines_list = [(cycle_lines, all_cycles)]
+                # Show current palette if one is applied (this is informational only)
+                # Note: Individual cycles may use different colors, so we can't show a single "current" palette
+                print(f"Total cycles: {len(all_cycles)}")
+                print("Enter one of:")
+                print(_colorize_inline_commands("  - numbers: e.g. 1 5 10"))
+                print(_colorize_inline_commands("  - mappings: e.g. 1:red 5:#00B006"))
+                print(_colorize_inline_commands("  - numbers + palette: e.g. 1 5 10 viridis  OR  1 5 10 3"))
+                print(_colorize_inline_commands("  - all (optionally with palette): e.g. all  OR  all viridis  OR  all 3"))
+                print("\nRecommended palettes for scientific publications:")
+                rec_palettes = [
+                    ("tab10", "Distinct, colorblind-friendly (default matplotlib)"),
+                    ("Set2", "Soft, pastel colors for presentations"),
+                    ("Dark2", "Bold, saturated colors for print"),
+                    ("viridis", "Perceptually uniform (blue→yellow)"),
+                    ("plasma", "Perceptually uniform (purple→yellow)"),
+                ]
+                for idx, (name, desc) in enumerate(rec_palettes, 1):
+                    bar = palette_preview(name)
+                    print(f"  {idx}. {name} - {desc}")
+                    if bar:
+                        print(f"      {bar}")
+                print("  (Enter palette name OR number)")
+                user_colors = get_user_color_list(fig)
+                if user_colors:
+                    print("\nSaved colors (use number or u# in mappings):")
+                    for idx, color in enumerate(user_colors, 1):
+                        print(f"  {idx}: {color_block(color)} {color}")
+                    print("Type 'u' to edit saved colors before assigning.")
+                print(_colorize_inline_commands("  q=back"))
+                line = _safe_input("Selection: ").strip()
+                if not line or line.lower() == 'q':
+                    break
+                if line.lower() == 'u':
+                    manage_user_colors(fig)
+                    continue
+                tokens = line.replace(',', ' ').split()
+                mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
+                push_state("cycles/colors")
+                all_ignored = []
+                # Apply to each target file
+                for cl, acyc in target_cycle_lines_list:
+                    # Filter to existing cycles in this target
+                    if use_all:
+                        existing = list(acyc)
+                        ignored = []
+                    else:
+                        existing = [c for c in cycles if c in cl]
+                        ignored = [c for c in cycles if c not in cl]
+                        all_ignored.extend(ignored)
+                    if not existing and mode != 'numbers':
+                        continue
+                    if not existing:
+                        print("No valid cycles provided; keeping current visibility.")
+                    # Update visibility
+                    if existing:
+                        _set_visible_cycles(cl, existing)
+                    # Apply coloring by mode
+                    if mode == 'map' and mapping:
+                        mapping2 = {c: mapping[c] for c in existing if c in mapping}
+                        _apply_colors(cl, mapping2)
+                        if mapping2 and cl is target_cycle_lines_list[0][0]:
+                            print("Applied manual colors:")
+                            for cyc, col in mapping2.items():
+                                print(f"  Cycle {cyc}: {color_block(col)} {col}")
+                    elif mode == 'palette' and existing:
+                        # ====================================================================
+                        # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
+                        # ====================================================================
+                        #
+                        # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
+                        #
+                        # HOW IT WORKS:
+                        # Similar to XY mode, but works with cycles instead of individual files.
+                        # Each cycle gets a different color sampled from the colormap.
+                        #
+                        # Example with 10 cycles and 'viridis':
+                        #   Cycle 1 → dark purple
+                        #   Cycle 2 → purple-blue
+                        #   Cycle 3 → blue
+                        #   ...
+                        #   Cycle 10 → bright yellow
+                        #
+                        # This creates a visual progression showing how the battery changes
+                        # over multiple cycles (degradation, capacity fade, etc.)
+                        # ====================================================================
+                        
+                        # Special handling for Tab10 (default palette) to match hardcoded colors exactly
+                        default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                        
+                        if palette and palette.lower() in ('tab10', '1'):
+                            # Use the exact hardcoded Tab10 colors to match default behavior
+                            n = len(existing)
+                            cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
+                                    for i in range(n)]
+                        else:
+                            try:
+                                cmap = cm.get_cmap(palette) if palette else None
+                            except Exception:
+                                cmap = None
+                            if cmap is None:
+                                print(f"Unknown colormap '{palette}'.")
+                                cols = []
+                            else:
+                                n = len(existing)
+                                if n == 1:
+                                    cols = [cmap(0.55)]
+                                elif n == 2:
+                                    cols = [cmap(0.15), cmap(0.85)]
+                                else:
+                                    cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
+                        if cols:
+                            _apply_colors(cl, {c: col for c, col in zip(existing, cols)})
+                            try:
+                                preview = color_bar([mcolors.to_hex(col) for col in cols])
+                            except Exception:
+                                preview = ""
+                            if preview and cl is target_cycle_lines_list[0][0]:
+                                palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
+                                print(f"Palette '{palette_display}' applied: {preview}")
+                    elif mode == 'numbers' and existing:
+                        pass
+                    # Reapply curve linewidth and smooth for this target
+                    _apply_curve_linewidth(fig, cl)
+                    if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
+                        _apply_stored_smooth_settings(cl, fig)
 
-            # Rebuild legend and redraw (once after all targets)
-            _rebuild_legend(ax)
-            _apply_nice_ticks()
-            try:
-                fig.canvas.draw()
-            except Exception:
-                fig.canvas.draw_idle()
+                # Rebuild legend and redraw (once after all targets)
+                _rebuild_legend(ax)
+                _apply_nice_ticks()
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
 
-            if all_ignored:
-                print("Ignored cycles:", ", ".join(str(c) for c in sorted(set(all_ignored))))
-            # Show the menu again after completing the command
+                if all_ignored:
+                    print("Ignored cycles:", ", ".join(str(c) for c in sorted(set(all_ignored))))
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
             continue
         elif key == 'a':
@@ -4736,7 +4951,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             while True:
                 current_xlim = ax.get_xlim()
                 print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                lim = _safe_input("Set X limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = _safe_input(_colorize_prompt("Enter x-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
                 if not lim or lim.lower() == 'q':
                     break
                 if lim.lower() == 'a':
@@ -4758,7 +4973,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = _safe_input(f"Enter new upper X limit (current lower: {current_xlim[0]:.6g}, q=back): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Enter upper limit (current lower: {current_xlim[0]:.6g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4784,7 +4999,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     while True:
                         current_xlim = ax.get_xlim()
                         print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                        val = _safe_input(f"Enter new lower X limit (current upper: {current_xlim[1]:.6g}, q=back): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Enter lower limit (current upper: {current_xlim[1]:.6g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4820,7 +5035,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             while True:
                 current_ylim = ax.get_ylim()
                 print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                lim = _safe_input("Set Y limits (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ").strip()
+                lim = _safe_input(_colorize_prompt("Enter y-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
                 if not lim or lim.lower() == 'q':
                     break
                 if lim.lower() == 'a':
@@ -4842,7 +5057,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     while True:
                         current_ylim = ax.get_ylim()
                         print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = _safe_input(f"Enter new upper Y limit (current lower: {current_ylim[0]:.6g}, q=back): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Enter upper limit (current lower: {current_ylim[0]:.6g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4868,7 +5083,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     while True:
                         current_ylim = ax.get_ylim()
                         print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        val = _safe_input(f"Enter new lower Y limit (current upper: {current_ylim[1]:.6g}, q=back): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Enter lower limit (current upper: {current_ylim[1]:.6g}, q=back): ")).strip()
                         if not val or val.lower() == 'q':
                             break
                         try:
@@ -4891,6 +5106,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     continue
                 try:
                     lo, hi = map(float, lim.split())
+                    lo, hi = min(lo, hi), max(lo, hi)
                     push_state("y-limits")
                     ax.set_ylim(lo, hi)
                     _apply_nice_ticks()
@@ -4943,7 +5159,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file)
                     _print_file_list(file_data, current_file_idx)
                     continue
-                if choice == 'a':
+                if choice in ('a', 'all'):
                     smooth_target_list = [f['cycle_lines'] for f in file_data if f.get('visible', True)]
                 else:
                     try:
@@ -5437,12 +5653,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
 
 def _get_geometry_snapshot(fig, ax) -> Dict:
     """Collects a snapshot of geometry settings (axes labels and limits)."""
-    return {
+    out = {
         'xlim': list(ax.get_xlim()),
         'ylim': list(ax.get_ylim()),
         'xlabel': ax.get_xlabel() or '',
         'ylabel': ax.get_ylabel() or '',
     }
+    try:
+        dm = getattr(fig, '_ec_display_mode', 'both')
+        if dm in ('charge', 'discharge', 'both'):
+            out['display_mode'] = dm
+    except Exception:
+        pass
+    return out
 
 
 def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data: Optional[list] = None) -> Dict:
@@ -5457,14 +5680,20 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
     font_fam0 = font_fam[0] if font_fam else ''
     font_size = plt.rcParams.get('font.size')
 
-    # Spine properties
+    # Spine properties (including color for k command)
     spines = {}
     for name in ('bottom', 'top', 'left', 'right'):
         sp = ax.spines.get(name)
         if sp:
+            try:
+                ec = sp.get_edgecolor()
+                color = mcolors.to_hex(ec) if ec is not None else None
+            except Exception:
+                color = None
             spines[name] = {
                 'linewidth': sp.get_linewidth(),
-                'visible': sp.get_visible()
+                'visible': sp.get_visible(),
+                'color': color,
             }
 
     # Tick widths
@@ -5694,9 +5923,11 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
             'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
             'swapped': getattr(fig, '_xaxis_swapped', False),
         },
+        '_dqdv_smooth_settings': dict(getattr(fig, '_dqdv_smooth_settings', {})),
     }
     if file_data is not None and len(file_data) > 0:
         result['file_display_names'] = [f.get('display_name', f.get('filename', str(i))) for i, f in enumerate(file_data)]
+        result['legend_file_order'] = list(getattr(fig, '_ec_legend_file_order', None) or range(len(file_data)))
     return result
 
 
@@ -5758,7 +5989,7 @@ def _print_style_snapshot(cfg: Dict):
     print("\n" + "=" * 60)
     print("  EC STYLE SUMMARY")
     print("=" * 60)
-    print("Commands (Styles): f, l, k, t, h, g, sm | Geometries: c, r, x, y, a")
+    print("Commands (Styles): f, l, k, t, h, g, d, sm | Geometries: c, r, x, y, a, ra")
     print()
 
     # ---- Canvas & Geometry (g) ----
@@ -5883,6 +6114,12 @@ def _print_style_snapshot(cfg: Dict):
             if segments:
                 print(f"  Cycle {cyc_key}: {', '.join(segments)}")
 
+    # ---- Legend file order (ra, multi-file) ----
+    legend_order = cfg.get('legend_file_order')
+    if legend_order and isinstance(legend_order, (list, tuple)):
+        print("\n--- Legend order (ra) ---")
+        print(f"Order: {[i+1 for i in legend_order]}")
+
     print("=" * 60 + "\n")
 
 
@@ -5904,9 +6141,11 @@ def _export_style_dialog(cfg: Dict, default_ext: str = '.bpcfg', base_path: Opti
             styles_dir = os.path.join(styles_root, 'Styles')
             print(f"Existing {default_ext} files in {styles_dir}:")
             for i, f in enumerate(bpcfg_files, 1):
-                print(f"  {i}: {f}")
+                print(f"  \033[96m{i}\033[0m: {f}")
         
-        choice = _safe_input(f"Export to file? Enter filename or number to overwrite (q=cancel): ").strip()
+        n_files = len(bpcfg_files)
+        exp_prompt = _colorize_option_keys(f"filename, 1-{n_files}: overwrite, q: cancel") if n_files else _colorize_option_keys("filename, q: cancel")
+        choice = _safe_input(f"Export to file? ({exp_prompt}): ").strip()
         if not choice or choice.lower() == 'q':
             return
 
@@ -5945,6 +6184,16 @@ def _legend_no_frame(ax, *args, title: Optional[str] = None, ncol: int = 1, **kw
     if leg is not None:
         try:
             leg.set_frame_on(False)
+            for t in leg.get_texts():
+                t.set_verticalalignment('center')
+            try:
+                sizes = [t.get_fontsize() for t in leg.get_texts() if t.get_text().strip()]
+                fs = float(sum(sizes) / len(sizes)) if sizes else 10.0
+                shift_pts = fs * 0.15
+                for t in leg.get_texts():
+                    t.set_position((0, shift_pts))
+            except Exception:
+                pass
         except Exception:
             pass
         if title:

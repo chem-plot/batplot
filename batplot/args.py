@@ -296,18 +296,28 @@ def _print_ec_help() -> None:
         "Use --interactive for styling, colors, line widths, axis scales, etc.\n"
         "GC from .mpt: requires active mass in mg to compute mAh g⁻¹.\n"
         "  batplot --gc file.mpt --mass 6.5 --interactive\n\n"
-        "GC from supported .csv: specific capacity is read directly (no --mass).\n"
-        "  batplot --gc file.csv\n\n"
-        "dQ/dV from supported .csv:\n"
-        "  batplot --dqdv file.csv\n\n"
+        "GC from supported .csv: specific capacity read directly when available; use --mass for\n"
+        "  Neware absolute-capacity files (Cycle Index / Step Index / DataPoint format).\n"
+        "  batplot --gc file.csv\n"
+        "  batplot --gc file.csv --mass 3.52       # Neware absolute-capacity CSV\n\n"
+        "Per-file mass: repeat --mass once per file that needs it, in file order.\n"
+        "  batplot f1.mpt --mass 6.5 f2.csv f3.mpt --mass 7.0 --gc\n"
+        "  batplot f1.csv --mass 3.52 f2.mpt --mass 5.0 --cpc\n"
+        "  # Files without --mass between them use the global --mass value (or none)\n"
+        "  # Single --mass applies to all files: batplot f1.mpt f2.mpt --gc --mass 7.0\n\n"
+        "dQ/dV from supported .csv (pre-calculated column or computed from GC data):\n"
+        "  batplot --dqdv file.csv\n"
+        "  batplot --dqdv file.csv --mass 3.52     # Neware absolute-capacity CSV\n\n"
         "Cyclic voltammetry (CV) from .mpt or .txt: plots voltage vs current for each cycle.\n"
         "  batplot --cv file.mpt\n"
         "  batplot --cv file.txt\n\n"
         "Capacity-per-cycle (CPC) with coulombic efficiency from .csv, .xlsx, or .mpt.\n"
         "Supports multiple files with individual color customization:\n"
-        "  batplot --cpc file.csv                 # Neware CSV\n"
+        "  batplot --cpc file.csv                 # Neware CSV (specific capacity)\n"
+        "  batplot --cpc file.csv --mass 3.52     # Neware absolute-capacity CSV\n"
         "  batplot --cpc file.xlsx                # Landt/Lanhe Excel (Chinese tester)\n"
-        "  batplot --cpc file.mpt --mass 1.2      # Biologic MPT\n"
+        "  batplot --cpc file.mpt --mass 1.2              # Biologic MPT\n"
+        "  batplot file1.csv --mass 3.52 file2.mpt --mass 1.2 --cpc   # Per-file mass\n"
         "  batplot --cpc file1.csv file2.xlsx file3.mpt --mass 1.2 --interactive\n\n"
         "Excel support: Landt/Lanhe (蓝电/蓝河) .xlsx files with Chinese headers:\n"
         "  Expected structure: Row 1=filename, Row 2=headers, Row 3+=data\n"
@@ -457,10 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--mass", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--mass", type=float, action='append', help=argparse.SUPPRESS)
     parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--epc", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pw", nargs=2, type=float, metavar=('V_MIN', 'V_MAX'),
                        help=argparse.SUPPRESS)
     parser.add_argument("--cd", type=float, help=argparse.SUPPRESS)

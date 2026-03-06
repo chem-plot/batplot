@@ -101,10 +101,11 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Improved interactive menu functionality for ec mode',
+    'custom_message': '- Improved interactive menu functionality for cpc mode',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Improved interactive menu functionality for ec mode',
+        '- Improved interactive menu functionality for cpc mode',
+        '- Improved interactive menu display',
         '- Bug fixes'
     ],
     'show_update_notes': True,

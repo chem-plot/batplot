@@ -316,14 +316,25 @@ def _looks_like_neware_multilevel(rows: List[List[str]]) -> bool:
     c3_third = _normalize_header_value(r3[2]) if len(r3) > 2 else ''  # Row 3, column 3
     
     # Check if pattern matches Neware multi-level format
-    return (
-        c1.lower() == 'cycle id'  # Row 1 starts with "Cycle ID"
-        and c2_first == ''  # Row 2, column 1 is empty
-        and c2_second.lower() == 'step id'  # Row 2, column 2 is "Step ID"
-        and c3_first == ''  # Row 3, column 1 is empty
-        and c3_second == ''  # Row 3, column 2 is empty
-        and c3_third.lower() == 'record id'  # Row 3, column 3 is "Record ID"
+    # Original format: "Cycle ID" / "Step ID" / "Record ID"
+    is_old_format = (
+        c1.lower() == 'cycle id'
+        and c2_first == ''
+        and c2_second.lower() == 'step id'
+        and c3_first == ''
+        and c3_second == ''
+        and c3_third.lower() == 'record id'
     )
+    # New Neware export format: "Cycle Index" / "Step Index" (or similar) / "DataPoint"
+    is_new_format = (
+        c1.lower() == 'cycle index'
+        and c2_first == ''
+        and c2_second.lower().startswith('step')
+        and c3_first == ''
+        and c3_second == ''
+        and c3_third.lower() in ('datapoint', 'data point', 'record id')
+    )
+    return is_old_format or is_new_format
 
 
 def _parse_neware_multilevel_rows(rows: List[List[str]]) -> Optional[Dict[str, Any]]:
@@ -338,6 +349,10 @@ def _parse_neware_multilevel_rows(rows: List[List[str]]) -> Optional[Dict[str, A
     current_cycle_id: Optional[str] = None
     current_step_id: Optional[str] = None
     current_step_name: Optional[str] = None
+    # Column offset (within raw step data row) for the Step Type value.
+    # Old format: ,<Step ID>,<Step Type>,... → offset 2
+    # New format: ,<Step Index>,<Step Number>,<Step Type>,... → offset 3
+    _step_type_offset: int = 2
 
     for raw_row in rows:
         normalized = [_normalize_data_value(cell) for cell in raw_row]
@@ -347,14 +362,20 @@ def _parse_neware_multilevel_rows(rows: List[List[str]]) -> Optional[Dict[str, A
         first = normalized[0] if len(normalized) > 0 else ''
         second = normalized[1] if len(normalized) > 1 else ''
 
-        # Header rows
-        if first.lower() == 'cycle id':
+        # Header rows — accept both "Cycle ID/Step ID/Record ID" and "Cycle Index/Step Index/DataPoint"
+        if first.lower() in ('cycle id', 'cycle index'):
             cycle_header = [_normalize_header_value(cell) for cell in raw_row]
             continue
-        if first == '' and second.lower() == 'step id':
+        if first == '' and second.lower() in ('step id', 'step index'):
             step_header = ['Cycle ID'] + [_normalize_header_value(cell) for cell in raw_row[1:]]
+            # Determine which column within the raw step row holds 'Step Type'
+            for _col_i, _cell in enumerate(raw_row):
+                if _normalize_header_value(_cell).lower() == 'step type':
+                    _step_type_offset = _col_i
+                    break
             continue
-        if first == '' and second == '' and len(normalized) > 2 and normalized[2].lower() == 'record id':
+        if (first == '' and second == '' and len(normalized) > 2
+                and normalized[2].lower() in ('record id', 'datapoint', 'data point')):
             record_header = ['Cycle ID', 'Step ID', 'Step Type'] + [
                 _normalize_header_value(cell) for cell in raw_row[2:]
             ]
@@ -369,7 +390,7 @@ def _parse_neware_multilevel_rows(rows: List[List[str]]) -> Optional[Dict[str, A
         # Step summary row (belongs to current cycle)
         if first == '' and second != '':
             current_step_id = second
-            current_step_name = normalized[2] if len(normalized) > 2 else ''
+            current_step_name = normalized[_step_type_offset] if len(normalized) > _step_type_offset else ''
             step_rows.append([current_cycle_id or '', second] + normalized[2:])
             continue
 
@@ -2392,6 +2413,87 @@ def _compute_dqdv_from_capacity(capacity: np.ndarray,
         grad[~np.isfinite(grad)] = np.nan
         dqdv[start:end] = grad
     return dqdv
+
+
+def compute_dqdv_numerical(
+    cap_x: np.ndarray,
+    voltage: np.ndarray,
+    cycles: np.ndarray,
+    charge_mask: np.ndarray,
+    discharge_mask: np.ndarray,
+    smooth_window: int = 11,
+    smooth_poly: int = 3,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """Compute dQ/dV numerically from per-point GC data.
+
+    Used as a fallback when a battery cycler CSV contains no pre-calculated
+    dQ/dV column (e.g. the Neware 'Cycle Index/Step Index/DataPoint' format).
+    Applies Savitzky-Golay smoothing (via scipy) per charge/discharge segment
+    when scipy is available; otherwise the raw np.gradient result is returned.
+
+    Args:
+        cap_x:          Capacity array (mAh/g for specific, mAh for absolute).
+        voltage:        Voltage array (V).
+        cycles:         Cycle-number array (int, 1-indexed).
+        charge_mask:    Boolean mask — True for charging data points.
+        discharge_mask: Boolean mask — True for discharging data points.
+        smooth_window:  Savitzky-Golay window length (odd integer, >= 5).
+        smooth_poly:    Savitzky-Golay polynomial order.
+
+    Returns:
+        (voltage, dqdv, cycles, charge_mask, discharge_mask, y_label)
+        Same 6-tuple format as read_ec_csv_dqdv_file / read_mpt_dqdv_file.
+        y_label is always the specific-capacity form; call sites should adjust
+        the label when cap_x is in absolute capacity units.
+    """
+    dqdv_raw = _compute_dqdv_from_capacity(cap_x, voltage, charge_mask)
+
+    dqdv_out = dqdv_raw.copy()
+    try:
+        from scipy.signal import savgol_filter as _savgol  # type: ignore
+        _has_savgol = True
+    except ImportError:
+        _has_savgol = False
+
+    if _has_savgol:
+        n = len(voltage)
+        cyc_int = np.array(cycles, dtype=int)
+        active_mask = charge_mask | discharge_mask
+        i = 0
+        while i < n:
+            if not active_mask[i]:
+                i += 1
+                continue
+            is_chg = bool(charge_mask[i])
+            cyc = cyc_int[i]
+            seg_start = i
+            j = i + 1
+            while (j < n and active_mask[j]
+                   and bool(charge_mask[j]) == is_chg
+                   and cyc_int[j] == cyc):
+                j += 1
+            seg = dqdv_raw[seg_start:j]
+            valid = np.isfinite(seg)
+            n_valid = int(np.sum(valid))
+            if n_valid >= 5:
+                w = min(smooth_window, n_valid)
+                if w % 2 == 0:
+                    w -= 1
+                w = max(3, w)
+                p = min(smooth_poly, w - 1)
+                if w >= 5:
+                    try:
+                        valid_idx = np.where(valid)[0]
+                        smoothed_valid = _savgol(seg[valid], w, p)
+                        tmp = np.full(j - seg_start, np.nan)
+                        tmp[valid_idx] = smoothed_valid
+                        dqdv_out[seg_start:j] = tmp
+                    except Exception:
+                        pass
+            i = j
+
+    y_label = r'dQm/dV (mAh g$^{-1}$ V$^{-1}$)'
+    return voltage, dqdv_out, cycles, charge_mask, discharge_mask, y_label
 
 
 def read_mpt_dqdv_file(fname: str,

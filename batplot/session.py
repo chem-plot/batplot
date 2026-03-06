@@ -1920,6 +1920,7 @@ def dump_ec_session(
                 'position_inches': legend_xy_in,
                 'title': getattr(fig, '_ec_legend_title', None) or "Cycle",
             },
+            'legend_file_order': list(getattr(fig, '_ec_legend_file_order', None) or []) if (file_data is not None and len(file_data) > 1) else None,
             'wasd_state': wasd_state,
             'tick_state': tick_state,
             'tick_widths': tick_widths,
@@ -2495,6 +2496,9 @@ def load_ec_session(filename: str):
             pass
         if legend_xy is not None:
             fig._ec_legend_xy_in = legend_xy
+        legend_file_order = sess.get('legend_file_order')
+        if legend_file_order and file_data_out and len(legend_file_order) == len(file_data_out):
+            fig._ec_legend_file_order = list(legend_file_order)
         handles = []
         labels = []
         for ln in ax.lines:
@@ -2591,23 +2595,40 @@ def dump_cpc_session(
         x_d, y_d = _scatter_xy(sc_discharge)
         x_e, y_e = _scatter_xy(sc_eff)
         
-        # Colors and sizes
-        def _color_of(sc):
+        # Colors and sizes (for hollow markers use edgecolor)
+        def _color_and_hollow(sc):
+            """Return (color_hex, is_hollow). For hollow scatter use edgecolor."""
             try:
-                arr = getattr(sc, 'get_facecolors', lambda: None)()
-                if arr is not None and len(arr):
-                    return to_hex(arr[0])
+                fc = getattr(sc, 'get_facecolors', lambda: None)()
+                ec = getattr(sc, 'get_edgecolors', lambda: None)()
+                is_hollow = False
+                if fc is not None and len(fc):
+                    a = fc[0]
+                    if len(a) >= 4 and (a[3] == 0 or (hasattr(a[3], '__float__') and float(a[3]) < 0.01)):
+                        is_hollow = True
+                else:
+                    # facecolors='none' returns empty array; use edgecolor as hollow
+                    if ec is not None and len(ec):
+                        is_hollow = True
+                if is_hollow and ec is not None and len(ec):
+                    return (to_hex(ec[0]), True)
+                if fc is not None and len(fc):
+                    return (to_hex(fc[0]), False)
                 c = getattr(sc, 'get_color', lambda: None)()
                 if c is not None:
                     if isinstance(c, (list, tuple)) and c and not isinstance(c, str):
-                        return to_hex(c[0])
+                        return (to_hex(c[0]), False)
                     try:
-                        return to_hex(c)
+                        return (to_hex(c), False)
                     except Exception:
-                        return c
+                        return (c, False)
             except Exception:
                 pass
-            return None
+            return (None, False)
+
+        def _color_of(sc):
+            col, _ = _color_and_hollow(sc)
+            return col
         
         def _size_of(sc, default=32.0):
             try:
@@ -2739,33 +2760,38 @@ def dump_cpc_session(
                 'y_left_labelpad': float(getattr(ax.yaxis, 'labelpad', 0.0) or 0.0),
                 'y_right_labelpad': float(getattr(ax2.yaxis, 'labelpad', 0.0) or 0.0),
             },
-            'series': {
+            'series': (lambda ch=_color_and_hollow(sc_charge), dh=_color_and_hollow(sc_discharge), ef=_color_and_hollow(sc_eff): {
                 'charge': {
                     'x': x_c, 'y': y_c,
-                    'color': _color_of(sc_charge),
+                    'color': ch[0],
+                    'hollow': ch[1],
                     'size': _size_of(sc_charge, 32.0),
                     'alpha': (float(sc_charge.get_alpha()) if sc_charge.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_charge, 'get_visible', lambda: True)()),
                     'label': getattr(sc_charge, 'get_label', lambda: 'Charge capacity')() or 'Charge capacity',
+                    'marker': 's',  # CPC default: square for capacity
                 },
                 'discharge': {
                     'x': x_d, 'y': y_d,
-                    'color': _color_of(sc_discharge),
+                    'color': dh[0],
+                    'hollow': dh[1],
                     'size': _size_of(sc_discharge, 32.0),
                     'alpha': (float(sc_discharge.get_alpha()) if sc_discharge.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_discharge, 'get_visible', lambda: True)()),
                     'label': getattr(sc_discharge, 'get_label', lambda: 'Discharge capacity')() or 'Discharge capacity',
+                    'marker': 's',  # CPC default: square for capacity
                 },
                 'efficiency': {
                     'x': x_e, 'y': y_e,
-                    'color': _color_of(sc_eff) or '#2ca02c',
+                    'color': ef[0] or '#2ca02c',
+                    'hollow': ef[1],
                     'size': _size_of(sc_eff, 40.0),
                     'alpha': (float(sc_eff.get_alpha()) if sc_eff.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_eff, 'get_visible', lambda: True)()),
                     'label': getattr(sc_eff, 'get_label', lambda: 'Coulombic efficiency')() or 'Coulombic efficiency',
-                    'marker': '^',
+                    'marker': '^',  # CPC default: triangle for efficiency
                 },
-            },
+            })(),
             'legend': {
                 'xy_in': getattr(fig, '_cpc_legend_xy_in', None),
                 'visible': (bool(ax.get_legend().get_visible()) if ax.get_legend() is not None else False)
@@ -2783,6 +2809,7 @@ def dump_cpc_session(
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
             ),
+            'display_mode': getattr(fig, '_cpc_display_mode', 'both'),
         }
         
         # Add multi-file data if available
@@ -2790,6 +2817,7 @@ def dump_cpc_session(
             multi_files = []
             for f in file_data:
                 def _marker_of(sc, default_val):
+                    # PathCollection (scatter) has no get_marker(); use CPC defaults: s=square, ^=triangle
                     try:
                         m = getattr(sc, 'get_marker', lambda: default_val)()
                         if m is None:
@@ -2813,38 +2841,47 @@ def dump_cpc_session(
                         return sc.get_label() or default_val
                     except Exception:
                         return default_val
+                sc_ch = f.get('sc_charge', sc_charge)
+                sc_dh = f.get('sc_discharge', sc_discharge)
+                sc_ef = f.get('sc_eff', sc_eff)
+                ch_col, ch_hollow = _color_and_hollow(sc_ch)
+                dh_col, dh_hollow = _color_and_hollow(sc_dh)
+                ef_col, ef_hollow = _color_and_hollow(sc_ef)
                 file_info = {
                     'filename': f.get('filename', 'unknown'),
                     'visible': f.get('visible', True),
                     'charge': {
-                        'x': _np.array(_scatter_xy(f.get('sc_charge', sc_charge))[0]),
-                        'y': _np.array(_scatter_xy(f.get('sc_charge', sc_charge))[1]),
-                        'color': _color_of(f.get('sc_charge')),
-                        'size': _size_of(f.get('sc_charge'), 32.0),
-                        'alpha': _alpha_of(f.get('sc_charge')),
-                        'marker': _marker_of(f.get('sc_charge'), 'o'),
-                        'label': _label_of(f.get('sc_charge'), 'Charge capacity'),
-                        'visible': _visible_of(f.get('sc_charge')),
+                        'x': _np.array(_scatter_xy(sc_ch)[0]),
+                        'y': _np.array(_scatter_xy(sc_ch)[1]),
+                        'color': ch_col,
+                        'hollow': ch_hollow,
+                        'size': _size_of(sc_ch, 32.0),
+                        'alpha': _alpha_of(sc_ch),
+                        'marker': _marker_of(sc_ch, 's'),
+                        'label': _label_of(sc_ch, 'Charge capacity'),
+                        'visible': _visible_of(sc_ch),
                     },
                     'discharge': {
-                        'x': _np.array(_scatter_xy(f.get('sc_discharge', sc_discharge))[0]),
-                        'y': _np.array(_scatter_xy(f.get('sc_discharge', sc_discharge))[1]),
-                        'color': _color_of(f.get('sc_discharge')),
-                        'size': _size_of(f.get('sc_discharge'), 32.0),
-                        'alpha': _alpha_of(f.get('sc_discharge')),
-                        'marker': _marker_of(f.get('sc_discharge'), 's'),
-                        'label': _label_of(f.get('sc_discharge'), 'Discharge capacity'),
-                        'visible': _visible_of(f.get('sc_discharge')),
+                        'x': _np.array(_scatter_xy(sc_dh)[0]),
+                        'y': _np.array(_scatter_xy(sc_dh)[1]),
+                        'color': dh_col,
+                        'hollow': dh_hollow,
+                        'size': _size_of(sc_dh, 32.0),
+                        'alpha': _alpha_of(sc_dh),
+                        'marker': _marker_of(sc_dh, 's'),
+                        'label': _label_of(sc_dh, 'Discharge capacity'),
+                        'visible': _visible_of(sc_dh),
                     },
                     'efficiency': {
-                        'x': _np.array(_scatter_xy(f.get('sc_eff', sc_eff))[0]),
-                        'y': _np.array(_scatter_xy(f.get('sc_eff', sc_eff))[1]),
-                        'color': _color_of(f.get('sc_eff')),
-                        'size': _size_of(f.get('sc_eff'), 40.0),
-                        'alpha': _alpha_of(f.get('sc_eff')),
-                        'marker': _marker_of(f.get('sc_eff'), '^'),
-                        'label': _label_of(f.get('sc_eff'), 'Coulombic efficiency'),
-                        'visible': _visible_of(f.get('sc_eff')),
+                        'x': _np.array(_scatter_xy(sc_ef)[0]),
+                        'y': _np.array(_scatter_xy(sc_ef)[1]),
+                        'color': ef_col,
+                        'hollow': ef_hollow,
+                        'size': _size_of(sc_ef, 40.0),
+                        'alpha': _alpha_of(sc_ef),
+                        'marker': _marker_of(sc_ef, '^'),
+                        'label': _label_of(sc_ef, 'Coulombic efficiency'),
+                        'visible': _visible_of(sc_ef),
                     }
                 }
                 multi_files.append(file_info)
@@ -2983,7 +3020,12 @@ def load_cpc_session(filename: str):
             alpha = rec.get('alpha', None)
             marker = rec.get('marker', default_marker)
             lab = rec.get('label') or ''
-            sc = axX.scatter(x, y, color=col, s=s, alpha=alpha, marker=marker, label=lab, zorder=3)
+            hollow = bool(rec.get('hollow', False))
+            if hollow:
+                sc = axX.scatter(x, y, facecolors='none', edgecolors=col, s=s, alpha=alpha,
+                                 marker=marker, label=lab, zorder=3, linewidths=1.2)
+            else:
+                sc = axX.scatter(x, y, color=col, s=s, alpha=alpha, marker=marker, label=lab, zorder=3)
             try:
                 sc.set_visible(bool(rec.get('visible', True)))
             except Exception:
@@ -2997,8 +3039,14 @@ def load_cpc_session(filename: str):
                 ch_info = finfo.get('charge', {})
                 dh_info = finfo.get('discharge', {})
                 ef_info = finfo.get('efficiency', {})
-                sc_ch = _mk_sc(ax, ch_info, ch_info.get('marker', 'o') or 'o')
-                sc_dh = _mk_sc(ax, dh_info, dh_info.get('marker', 's') or 's')
+                _ch_m = ch_info.get('marker') or 's'
+                if _ch_m == 'o':  # Legacy: PathCollection has no get_marker, old sessions saved 'o'
+                    _ch_m = 's'
+                sc_ch = _mk_sc(ax, ch_info, _ch_m)
+                _dh_m = dh_info.get('marker') or 's'
+                if _dh_m == 'o':
+                    _dh_m = 's'
+                sc_dh = _mk_sc(ax, dh_info, _dh_m)
                 eff_marker = ef_info.get('marker', '^') or '^'
                 sc_ef = _mk_sc(ax2, ef_info, eff_marker)
                 # Respect overall file visibility
@@ -3011,25 +3059,64 @@ def load_cpc_session(filename: str):
                         sc_tmp.set_visible(sc_tmp.get_visible() and vis_file)
                     except Exception:
                         pass
+                ef_col = ef_info.get('color')
                 file_data.append({
                     'filename': finfo.get('filename', f'File {idx+1}'),
                     'visible': vis_file,
                     'sc_charge': sc_ch,
                     'sc_discharge': sc_dh,
                     'sc_eff': sc_ef,
+                    'eff_color': ef_col,
                 })
             # Use the first file as primary artists for interactive menu
             sc_charge = file_data[0]['sc_charge']
             sc_discharge = file_data[0]['sc_discharge']
             sc_eff = file_data[0]['sc_eff']
+            try:
+                fig._cpc_is_multi_file = True
+            except Exception:
+                pass
+            # Restore display_mode (charge/discharge/both)
+            dm = sess.get('display_mode', 'both')
+            if dm in ('charge', 'discharge', 'both'):
+                try:
+                    fig._cpc_display_mode = dm
+                    for f in file_data:
+                        sc_c = f.get('sc_charge')
+                        sc_d = f.get('sc_discharge')
+                        if sc_c is not None:
+                            sc_c.set_visible(dm in ('charge', 'both'))
+                        if sc_d is not None:
+                            sc_d.set_visible(dm in ('discharge', 'both'))
+                except Exception:
+                    pass
         else:
             # No multi-file info: fall back to single-file series
-            sc_charge = _mk_sc(ax, ch, 'o')
-            sc_discharge = _mk_sc(ax, dh, 's')
+            _ch_m = ch.get('marker') or 's'
+            if _ch_m == 'o':
+                _ch_m = 's'
+            _dh_m = dh.get('marker') or 's'
+            if _dh_m == 'o':
+                _dh_m = 's'
+            sc_charge = _mk_sc(ax, ch, _ch_m)
+            sc_discharge = _mk_sc(ax, dh, _dh_m)
             if 'marker' not in ef:
                 ef['marker'] = '^'
             sc_eff = _mk_sc(ax2, ef, '^')
             file_data = None
+            try:
+                fig._cpc_is_multi_file = False
+            except Exception:
+                pass
+            # Restore display_mode for single-file
+            dm = sess.get('display_mode', 'both')
+            if dm in ('charge', 'discharge', 'both'):
+                try:
+                    fig._cpc_display_mode = dm
+                    sc_charge.set_visible(dm in ('charge', 'both'))
+                    sc_discharge.set_visible(dm in ('discharge', 'both'))
+                except Exception:
+                    pass
         
         # Restore spines state (version 2+)
         try:
@@ -3275,64 +3362,29 @@ def load_cpc_session(filename: str):
                 ax2._stored_ylabel = stored_titles.get('right_ylabel', '')
                 
                 # Create top xlabel text if it was visible
-                if wasd_state.get('top', {}).get('title') and ax._stored_top_xlabel:
+                wasd = sess.get('wasd_state') or {}
+                if wasd.get('top', {}).get('title') and ax._stored_top_xlabel:
                     ax._top_xlabel_text = ax.text(0.5, 1.02, ax._stored_top_xlabel,
                                                    transform=ax.transAxes,
                                                    ha='center', va='bottom',
                                                    fontsize=ax.xaxis.label.get_fontsize(),
                                                    fontfamily=ax.xaxis.label.get_fontfamily())
+                    ax._top_xlabel_on = True
         except Exception:
             pass
         
-        # Legend
+        # Legend: use CPC's _rebuild_legend for correct format (compact multi-file, square patches, etc.)
         try:
-            handles1, labels1 = ax.get_legend_handles_labels()
-            handles2, labels2 = ax2.get_legend_handles_labels()
-            # Filter visible handles only
-            H, L = [], []
-            for h, l in list(zip(handles1, labels1)) + list(zip(handles2, labels2)):
-                try:
-                    if hasattr(h, 'get_visible') and not h.get_visible():
-                        continue
-                except Exception:
-                    pass
-                H.append(h); L.append(l)
             leg_meta = sess.get('legend', {})
             xy_in = leg_meta.get('xy_in')
             vis = bool(leg_meta.get('visible', True))
-            if H and vis:
-                if xy_in is not None:
-                    fw, fh = fig.get_size_inches()
-                    fx = 0.5 + float(xy_in[0]) / float(fw)
-                    fy = 0.5 + float(xy_in[1]) / float(fh)
-                    # Use same spacing parameters as _legend_no_frame for consistent legend appearance
-                    leg = ax.legend(H, L, loc='center', bbox_to_anchor=(fx, fy), bbox_transform=fig.transFigure, 
-                                   handlelength=1.0, handletextpad=0.35, labelspacing=0.25, 
-                                   borderaxespad=0.5, borderpad=0.3, columnspacing=0.6,
-                                   labelcolor='linecolor', frameon=False)
-                    # persist inches on fig for interactive menu
-                    try:
-                        fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1]))
-                    except Exception:
-                        pass
-                else:
-                    # Use same spacing parameters as _legend_no_frame for consistent legend appearance
-                    leg = ax.legend(H, L, loc='best', 
-                                   handlelength=1.0, handletextpad=0.35, labelspacing=0.25, 
-                                   borderaxespad=0.5, borderpad=0.3, columnspacing=0.6,
-                                   labelcolor='linecolor', frameon=False)
-                # Ensure legend frame is off (redundant but safe)
-                try:
-                    if leg is not None:
-                        leg.set_frame_on(False)
-                except Exception:
-                    pass
-            else:
-                try:
-                    fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
-                except Exception:
-                    pass
-                # ensure legend hidden
+            try:
+                fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
+            except Exception:
+                fig._cpc_legend_xy_in = None
+            from .cpc_interactive import _rebuild_legend
+            _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+            if not vis:
                 leg = ax.get_legend()
                 if leg is not None:
                     leg.set_visible(False)

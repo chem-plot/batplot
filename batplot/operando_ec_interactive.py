@@ -2286,7 +2286,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print("Crosshair OFF.")
     while True:
         try:
-            cmd = _safe_input("Press a key: ").strip().lower()
+            cmd = _safe_input(_colorize_prompt("Press a key: ")).strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -2434,7 +2434,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0)
                     print(_colorize_inline_commands(f"Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\", ec:{ec_h_offset:.3f}\"), q=cancel"))
-                    choice = _safe_input("v> ").strip().lower()
+                    choice = _safe_input(_colorize_prompt("v> ")).strip().lower()
                     if choice == '1':
                         # Toggle colorbar
                         cb_vis = cbar.ax.get_visible()
@@ -2540,7 +2540,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     # Operando-only mode: toggle colorbar or change label mode
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     print(_colorize_inline_commands(f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=cancel"))
-                    choice = _safe_input("v> ").strip().lower()
+                    choice = _safe_input(_colorize_prompt("v> ")).strip().lower()
                     if choice == '1':
                         cb_vis = cbar.ax.get_visible()
                         cbar.ax.set_visible(not cb_vis)
@@ -2642,7 +2642,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 print("  1: Find peaks in X range")
                 print("  e: Explanation of peak searching")
                 print("  q: Back to main menu")
-                sub = _safe_input("Choose option: ").strip().lower()
+                sub = _safe_input(_colorize_prompt("Choose option (q=back): ")).strip().lower()
                 
                 if sub == 'e':
                     print("\n" + "="*70)
@@ -2680,7 +2680,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     # Get X range
                     print(f"\nCurrent X range: {x_min:.6g} to {x_max:.6g}")
                     print("Enter X range for peak search (min max), or press Enter to use full range:")
-                    x_range_input = _safe_input("X range: ").strip()
+                    x_range_input = _safe_input(_colorize_prompt("X range (min max, or Enter for full, q=back): ")).strip()
                     
                     if x_range_input:
                         try:
@@ -2883,7 +2883,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print(f"\nFont submenu (current: family='{cur_family}', size={cur_size})")
             print(_colorize_inline_commands("  f: change family  |  s: change size  |  q: back"))
             while True:
-                sub = _safe_input("Font> ").strip().lower()
+                sub = _safe_input(_colorize_prompt("Font (f/s/q): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -2932,71 +2932,69 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu()
         elif cmd == 'l':
             # Line widths submenu for both operando and EC panes
-            print("Line widths: set frame (spines) and tick widths for both operando and EC")
-            print(_colorize_inline_commands("Enter frame/tick width (e.g., '1.5' or 'f t' for frame/tick separately)"))
-            print("Format examples:")
-            print(_colorize_inline_commands("  1.5      - set both frame and ticks to 1.5"))
-            print(_colorize_inline_commands("  1.5 2.5  - set frame=1.5, ticks=2.5"))
-            print(_colorize_inline_commands("  q        - cancel"))
-            
-            inp = _safe_input("Line widths> ").strip().lower()
-            if not inp or inp == 'q':
-                print_menu()
-                continue
-            
-            _snapshot("line-widths")
-            try:
-                parts = inp.split()
-                if len(parts) == 1:
-                    # Single value: apply to both frame and ticks
-                    val = float(parts[0])
-                    frame_w = tick_w = max(0.1, val)
-                elif len(parts) == 2:
-                    # Two values: frame and tick
-                    frame_w = max(0.1, float(parts[0]))
-                    tick_w = max(0.1, float(parts[1]))
-                else:
-                    print("Invalid format. Use 1 or 2 numbers.")
-                    print_menu()
-                    continue
+            while True:
+                print("Line widths: set frame (spines) and tick widths for both operando and EC")
+                print(_colorize_inline_commands("Enter frame/tick width (e.g., '1.5' or 'f t' for frame/tick separately)"))
+                print("Format examples:")
+                print(_colorize_inline_commands("  1.5      - set both frame and ticks to 1.5"))
+                print(_colorize_inline_commands("  1.5 2.5  - set frame=1.5, ticks=2.5"))
+                print(_colorize_inline_commands("  q        - back"))
                 
-                # Apply to operando pane (ax)
-                for spine in ax.spines.values():
-                    spine.set_linewidth(frame_w)
-                ax.tick_params(axis='both', which='major', width=tick_w)
-                ax.tick_params(axis='both', which='minor', width=tick_w)
+                inp = _safe_input(_colorize_prompt("Line widths (value or 'f t', q=back): ")).strip().lower()
+                if not inp or inp == 'q':
+                    break
                 
-                # Apply to EC pane (ec_ax) if present
-                if ec_ax is not None:
-                    for spine in ec_ax.spines.values():
-                        spine.set_linewidth(frame_w)
-                    ec_ax.tick_params(axis='both', which='major', width=tick_w)
-                    ec_ax.tick_params(axis='both', which='minor', width=tick_w)
-                
-                # Also apply to colorbar if present
-                if cbar is not None:
-                    try:
-                        for spine in cbar.ax.spines.values():
-                            spine.set_linewidth(frame_w)
-                        cbar.ax.tick_params(axis='both', which='major', width=tick_w)
-                        cbar.ax.tick_params(axis='both', which='minor', width=tick_w)
-                    except Exception:
-                        pass
-                
+                _snapshot("line-widths")
                 try:
-                    fig.canvas.draw()
-                except Exception:
-                    fig.canvas.draw_idle()
-                
-                if ec_ax is not None:
-                    print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando, EC, and colorbar")
-                else:
-                    print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando and colorbar")
-            except ValueError:
-                print("Invalid number format.")
-            except Exception as e:
-                print(f"Error: {e}")
-            
+                    parts = inp.split()
+                    if len(parts) == 1:
+                        # Single value: apply to both frame and ticks
+                        val = float(parts[0])
+                        frame_w = tick_w = max(0.1, val)
+                    elif len(parts) == 2:
+                        # Two values: frame and tick
+                        frame_w = max(0.1, float(parts[0]))
+                        tick_w = max(0.1, float(parts[1]))
+                    else:
+                        print("Invalid format. Use 1 or 2 numbers.")
+                        continue
+                    
+                    # Apply to operando pane (ax)
+                    for spine in ax.spines.values():
+                        spine.set_linewidth(frame_w)
+                    ax.tick_params(axis='both', which='major', width=tick_w)
+                    ax.tick_params(axis='both', which='minor', width=tick_w)
+                    
+                    # Apply to EC pane (ec_ax) if present
+                    if ec_ax is not None:
+                        for spine in ec_ax.spines.values():
+                            spine.set_linewidth(frame_w)
+                        ec_ax.tick_params(axis='both', which='major', width=tick_w)
+                        ec_ax.tick_params(axis='both', which='minor', width=tick_w)
+                    
+                    # Also apply to colorbar if present
+                    if cbar is not None:
+                        try:
+                            for spine in cbar.ax.spines.values():
+                                spine.set_linewidth(frame_w)
+                            cbar.ax.tick_params(axis='both', which='major', width=tick_w)
+                            cbar.ax.tick_params(axis='both', which='minor', width=tick_w)
+                        except Exception:
+                            pass
+                    
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
+                    
+                    if ec_ax is not None:
+                        print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando, EC, and colorbar")
+                    else:
+                        print(f"Applied: frame={frame_w:.2f}, ticks={tick_w:.2f} to operando and colorbar")
+                except ValueError:
+                    print("Invalid number format.")
+                except Exception as e:
+                    print(f"Error: {e}")
             print_menu()
         elif cmd == 't':
             # Unified WASD ticks/labels/spines submenu for either pane
@@ -3087,7 +3085,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print(_colorize_inline_commands("Choose pane: o=operando, e=ec, q=back"))
                 else:
                     print(_colorize_inline_commands("Choose pane: o=operando, q=back"))
-                pane = _safe_input("ot> ").strip().lower()
+                pane = _safe_input(_colorize_prompt("ot (o/e/q): ")).strip().lower()
                 if not pane:
                     continue
                 if pane == 'q':
@@ -4371,6 +4369,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 _snapshot("operando-yrange")
                 try:
                     lo, hi = map(float, line.split())
+                    lo, hi = min(lo, hi), max(lo, hi)
                     ax.set_ylim(lo, hi)
                     fig.canvas.draw_idle()
                 except Exception as e:
@@ -4561,101 +4560,102 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu()
         elif cmd == 'oc':
             # Change operando colormap (perceptually uniform suggestions)
-            # Show current colormap if one is applied
-            try:
-                current_cmap = getattr(im, '_operando_cmap_name', None)
-                if current_cmap is None:
-                    current_cmap = getattr(im.get_cmap(), 'name', None)
-                if current_cmap:
-                    print(f"Current operando colormap: {current_cmap}")
-            except Exception:
-                pass
-            def _refresh_available():
-                return set(name.lower() for name in plt.colormaps())
-            available = _refresh_available()
-            optional = []
-            for extra in ('turbo', 'batlow', 'batlowK', 'batlowW'):
-                if extra == 'turbo':
-                    if extra in plt.colormaps():
-                        optional.append(extra)
-                else:
-                    _ensure_operando_colormap(extra)
-                    available = _refresh_available()
-                    optional.append(extra)
-            print("Recommended colormaps for scientific publications:")
-            rec_palettes = [
-                ("viridis", "Perceptually uniform (blue→yellow), colorblind-friendly"),
-                ("plasma", "Perceptually uniform (purple→yellow), high contrast"),
-                ("inferno", "Perceptually uniform (black→yellow), good for dark backgrounds"),
-                ("cividis", "Perceptually uniform, optimized for color vision deficiency"),
-                ("magma", "Perceptually uniform (black→white), excellent for grayscale"),
-            ]
-            if _ensure_operando_colormap('batlow'):
-                rec_palettes.append(("batlow", "Colorblind-friendly sequential (cmcrameri)"))
-            for idx, (name, desc) in enumerate(rec_palettes, 1):
-                bar = palette_preview(name)
-                print(f"  {idx}. {name} - {desc}")
-                if bar:
-                    print(f"      {bar}")
-            if optional:
-                print("\nOther available: " + ", ".join(optional))
-            print(_colorize_inline_commands("Append _r to reverse (e.g., viridis_r or 1_r). Blank to cancel."))
-            choice = _safe_input(f"Palette name or number (1-{len(rec_palettes)}): ").strip()
-            if not choice:
-                print_menu(); continue
-            try:
-                _snapshot("operando-colormap")
-                
-                # Map numeric selections to palette names
-                palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
-                
-                # Check for reversed palette (number_r or name_r)
-                if choice.endswith('_r'):
-                    base_choice = choice[:-2]
-                    if base_choice in palette_map:
-                        choice = palette_map[base_choice] + '_r'
-                    # else keep original choice (e.g., "viridis_r")
-                elif choice in palette_map:
-                    choice = palette_map[choice]
-
-                reversed_choice = choice.lower().endswith('_r')
-                base_choice = choice[:-2] if reversed_choice else choice
-                palette_obj = None
-                if _ensure_operando_colormap(base_choice):
-                    available = _refresh_available()
-                if base_choice.lower() not in available:
-                    custom = _CUSTOM_CMAPS.get(base_choice.lower())
-                    if custom:
-                        palette_obj = LinearSegmentedColormap.from_list(base_choice.lower(), custom, N=256)
+            while True:
+                # Show current colormap if one is applied
+                try:
+                    current_cmap = getattr(im, '_operando_cmap_name', None)
+                    if current_cmap is None:
+                        current_cmap = getattr(im.get_cmap(), 'name', None)
+                    if current_cmap:
+                        print(f"Current operando colormap: {current_cmap}")
+                except Exception:
+                    pass
+                def _refresh_available():
+                    return set(name.lower() for name in plt.colormaps())
+                available = _refresh_available()
+                optional = []
+                for extra in ('turbo', 'batlow', 'batlowK', 'batlowW'):
+                    if extra == 'turbo':
+                        if extra in plt.colormaps():
+                            optional.append(extra)
                     else:
-                        raise ValueError(f"Unknown colormap '{choice}'")
-                if palette_obj is None:
-                    try:
-                        palette_obj = cm.get_cmap(base_choice)
+                        _ensure_operando_colormap(extra)
+                        available = _refresh_available()
+                        optional.append(extra)
+                print("Recommended colormaps for scientific publications:")
+                rec_palettes = [
+                    ("viridis", "Perceptually uniform (blue→yellow), colorblind-friendly"),
+                    ("plasma", "Perceptually uniform (purple→yellow), high contrast"),
+                    ("inferno", "Perceptually uniform (black→yellow), good for dark backgrounds"),
+                    ("cividis", "Perceptually uniform, optimized for color vision deficiency"),
+                    ("magma", "Perceptually uniform (black→white), excellent for grayscale"),
+                ]
+                if _ensure_operando_colormap('batlow'):
+                    rec_palettes.append(("batlow", "Colorblind-friendly sequential (cmcrameri)"))
+                for idx, (name, desc) in enumerate(rec_palettes, 1):
+                    bar = palette_preview(name)
+                    print(f"  {idx}. {name} - {desc}")
+                    if bar:
+                        print(f"      {bar}")
+                if optional:
+                    print("\nOther available: " + ", ".join(optional))
+                print(_colorize_inline_commands("Append _r to reverse (e.g., viridis_r or 1_r). q=back."))
+                choice = _safe_input(f"Palette name or number (1-{len(rec_palettes)}): ").strip()
+                if not choice or choice.lower() == 'q':
+                    break
+                try:
+                    _snapshot("operando-colormap")
+                    
+                    # Map numeric selections to palette names
+                    palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
+                    
+                    # Check for reversed palette (number_r or name_r)
+                    if choice.endswith('_r'):
+                        base_choice = choice[:-2]
+                        if base_choice in palette_map:
+                            choice = palette_map[base_choice] + '_r'
+                        # else keep original choice (e.g., "viridis_r")
+                    elif choice in palette_map:
+                        choice = palette_map[choice]
+
+                    reversed_choice = choice.lower().endswith('_r')
+                    base_choice = choice[:-2] if reversed_choice else choice
+                    palette_obj = None
+                    if _ensure_operando_colormap(base_choice):
+                        available = _refresh_available()
+                    if base_choice.lower() not in available:
+                        custom = _CUSTOM_CMAPS.get(base_choice.lower())
+                        if custom:
+                            palette_obj = LinearSegmentedColormap.from_list(base_choice.lower(), custom, N=256)
+                        else:
+                            raise ValueError(f"Unknown colormap '{choice}'")
+                    if palette_obj is None:
+                        try:
+                            palette_obj = cm.get_cmap(base_choice)
+                            if reversed_choice:
+                                palette_obj = palette_obj.reversed()
+                            im.set_cmap(palette_obj)
+                        except Exception:
+                            raise ValueError(f"Unknown colormap '{choice}'")
+                    else:
                         if reversed_choice:
                             palette_obj = palette_obj.reversed()
                         im.set_cmap(palette_obj)
+                    # Store the colormap name explicitly so it can be retrieved reliably when saving
+                    setattr(im, '_operando_cmap_name', choice)
+                    try:
+                        # Update custom colorbar with new colormap
+                        if cbar is not None:
+                            _update_custom_colorbar(cbar.ax, im)
                     except Exception:
-                        raise ValueError(f"Unknown colormap '{choice}'")
-                else:
-                    if reversed_choice:
-                        palette_obj = palette_obj.reversed()
-                    im.set_cmap(palette_obj)
-                # Store the colormap name explicitly so it can be retrieved reliably when saving
-                setattr(im, '_operando_cmap_name', choice)
-                try:
-                    # Update custom colorbar with new colormap
-                    if cbar is not None:
-                        _update_custom_colorbar(cbar.ax, im)
-                except Exception:
-                    pass
-                try:
-                    fig.canvas.draw()
-                except Exception:
-                    fig.canvas.draw_idle()
-                print(f"Applied colormap: {choice}")
-            except Exception as e:
-                print(f"Error applying colormap: {e}")
+                        pass
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
+                    print(f"Applied colormap: {choice}")
+                except Exception as e:
+                    print(f"Error applying colormap: {e}")
             print_menu()
         elif cmd == 'p':
             # Print current style and offer export
@@ -5939,7 +5939,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 if not hasattr(ax, '_custom_labels'):
                     ax._custom_labels = {'x': None, 'y': None}
-                print(_colorize_inline_commands("Rename Operando Axes: x=rename X label, y=rename Y label, q=back"))
+                print("Rename Operando Axes:")
+                print("  " + _colorize_menu("x: x-axis"))
+                print("  " + _colorize_menu("y: y-axis"))
+                print("  " + _colorize_menu("q: back"))
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
@@ -5994,7 +5997,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             try:
                 if not hasattr(ec_ax, '_custom_labels'):
                     ec_ax._custom_labels = {'x': None, 'y_time': None, 'y_ions': None}
-                print(_colorize_inline_commands("Rename EC Axes: x=rename X label, y=rename Y label (mode-aware), q=back"))
+                print("Rename EC Axes:")
+                print("  " + _colorize_menu("x: x-axis"))
+                print("  " + _colorize_menu("y: y-axis (mode-aware)"))
+                print("  " + _colorize_menu("q: back"))
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
@@ -6281,6 +6287,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 _snapshot("ec-time-range")
                 try:
                     lo, hi = map(float, line.split())
+                    lo, hi = min(lo, hi), max(lo, hi)
                     ec_ax.set_ylim(lo, hi)
                     # Persist chosen time-mode limits so ey toggles won't override
                     try:
@@ -6749,64 +6756,67 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             print_menu()
         elif cmd == 'g':
             # Preserve legacy size submenu
-            cur_w, cur_h = _get_fig_size(fig)
-            print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
-            print("Canvas: only figure size will change; panel widths/gaps are not altered.")
-            line = _safe_input(_colorize_inline_commands("New canvas size 'W H' (blank=cancel): ")).strip()
-            if line:
-                _snapshot("canvas-size")
-                try:
-                    parts = line.split()
-                    if len(parts) == 2:
-                        W = max(1.0, float(parts[0])); H = max(1.0, float(parts[1]))
-                        
-                        # Capture current panel dimensions in inches before resize
-                        old_w, old_h = cur_w, cur_h
-                        cb_pos = cbar.ax.get_position()
-                        ax_pos = ax.get_position()
-                        ec_pos = ec_ax.get_position() if ec_ax else None
-                        
-                        cb_w_in = cb_pos.width * old_w
-                        cb_h_in = cb_pos.height * old_h
-                        cb_gap_in = (ax_pos.x0 - (cb_pos.x0 + cb_pos.width)) * old_w
-                        ax_w_in = ax_pos.width * old_w
-                        ax_h_in = ax_pos.height * old_h
-                        if ec_ax:
-                            ec_gap_in = (ec_pos.x0 - (ax_pos.x0 + ax_pos.width)) * old_w
-                            ec_w_in = ec_pos.width * old_w
-                        
-                        # Resize figure
-                        fig.set_size_inches(W, H, forward=True)
-                        
-                        # Recalculate fractional positions to maintain inch-based dimensions
-                        total_w_in = cb_w_in + cb_gap_in + ax_w_in
-                        if ec_ax:
-                            total_w_in += ec_gap_in + ec_w_in
-                        
-                        # Center the group horizontally
-                        group_left = max(0.0, (W - total_w_in) / (2.0 * W))
-                        y0 = max(0.0, (H - ax_h_in) / (2.0 * H))
-                        
-                        # Set new fractional positions
-                        cb_x0 = group_left
-                        cb_wf = cb_w_in / W
-                        cb_hf = ax_h_in / H
-                        cbar.ax.set_position([cb_x0, y0, cb_wf, cb_hf])
-                        
-                        ax_x0 = cb_x0 + cb_wf + (cb_gap_in / W)
-                        ax_wf = ax_w_in / W
-                        ax_hf = ax_h_in / H
-                        ax.set_position([ax_x0, y0, ax_wf, ax_hf])
-                        
-                        if ec_ax:
-                            ec_x0 = ax_x0 + ax_wf + (ec_gap_in / W)
-                            ec_wf = ec_w_in / W
-                            ec_hf = ax_h_in / H
-                            ec_ax.set_position([ec_x0, y0, ec_wf, ec_hf])
-                        
-                        fig.canvas.draw_idle()
-                except Exception as e:
-                    print(f"Canvas resize failed: {e}")
+            while True:
+                cur_w, cur_h = _get_fig_size(fig)
+                print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
+                print("Canvas: only figure size will change; panel widths/gaps are not altered.")
+                line = _safe_input(_colorize_inline_commands("New canvas size 'W H' (q=back): ")).strip()
+                if not line or line.lower() == 'q':
+                    break
+                if line:
+                    _snapshot("canvas-size")
+                    try:
+                        parts = line.split()
+                        if len(parts) == 2:
+                            W = max(1.0, float(parts[0])); H = max(1.0, float(parts[1]))
+                            
+                            # Capture current panel dimensions in inches before resize
+                            old_w, old_h = cur_w, cur_h
+                            cb_pos = cbar.ax.get_position()
+                            ax_pos = ax.get_position()
+                            ec_pos = ec_ax.get_position() if ec_ax else None
+                            
+                            cb_w_in = cb_pos.width * old_w
+                            cb_h_in = cb_pos.height * old_h
+                            cb_gap_in = (ax_pos.x0 - (cb_pos.x0 + cb_pos.width)) * old_w
+                            ax_w_in = ax_pos.width * old_w
+                            ax_h_in = ax_pos.height * old_h
+                            if ec_ax:
+                                ec_gap_in = (ec_pos.x0 - (ax_pos.x0 + ax_pos.width)) * old_w
+                                ec_w_in = ec_pos.width * old_w
+                            
+                            # Resize figure
+                            fig.set_size_inches(W, H, forward=True)
+                            
+                            # Recalculate fractional positions to maintain inch-based dimensions
+                            total_w_in = cb_w_in + cb_gap_in + ax_w_in
+                            if ec_ax:
+                                total_w_in += ec_gap_in + ec_w_in
+                            
+                            # Center the group horizontally
+                            group_left = max(0.0, (W - total_w_in) / (2.0 * W))
+                            y0 = max(0.0, (H - ax_h_in) / (2.0 * H))
+                            
+                            # Set new fractional positions
+                            cb_x0 = group_left
+                            cb_wf = cb_w_in / W
+                            cb_hf = ax_h_in / H
+                            cbar.ax.set_position([cb_x0, y0, cb_wf, cb_hf])
+                            
+                            ax_x0 = cb_x0 + cb_wf + (cb_gap_in / W)
+                            ax_wf = ax_w_in / W
+                            ax_hf = ax_h_in / H
+                            ax.set_position([ax_x0, y0, ax_wf, ax_hf])
+                            
+                            if ec_ax:
+                                ec_x0 = ax_x0 + ax_wf + (ec_gap_in / W)
+                                ec_wf = ec_w_in / W
+                                ec_hf = ax_h_in / H
+                                ec_ax.set_position([ec_x0, y0, ec_wf, ec_hf])
+                            
+                            fig.canvas.draw_idle()
+                    except Exception as e:
+                        print(f"Canvas resize failed: {e}")
             print_menu()
         elif cmd == 'oe':
             # Overwrite last exported figure
