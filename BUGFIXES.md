@@ -4,6 +4,101 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-06: Display mode (d) ignored cycle selection in EC modes
+
+### Summary
+When selecting cycles in c: cycles/colors (e.g. 1 2) and then changing display mode (d: c/d/b), all cycles were shown instead of only the selected ones. Display mode was overwriting cycle visibility for hidden cycles.
+
+### Root Cause
+`_apply_display_mode` iterated over all cycles and set charge/discharge visibility based on mode, without checking whether each cycle was selected by the user. Hidden cycles (3..150) had their charge curves set visible when switching to charge-only mode.
+
+### Solution
+(1) In `_apply_display_mode`: skip cycles that are not selected (both charge and discharge hidden); only apply display mode to cycles that have at least one visible curve. (2) After cycle selection in c: cycles/colors, re-apply the current display mode so newly added cycles get correct charge/discharge visibility. (3) Added `display_mode` to EC session dump/load for consistency.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/session.py`
+
+---
+
+## 2026-03-06: EC/CPC legend: curve line and label not horizontally aligned
+
+### Summary
+In EC mode (GC, dQdV, CV) and CPC mode, the legend curve/symbol and its corresponding label were not horizontally aligned—the line or symbol appeared higher than the text baseline.
+
+### Root Cause
+Matplotlib's default legend layout draws Line2D handles (and patch handles) slightly higher than the text baseline. The existing nudge (`shift_pts = fs * 0.15`) was too small to compensate, and removing it made the misalignment worse.
+
+### Solution
+Increased the text nudge from `fs * 0.15` to `fs * 0.5` in both `electrochem_interactive._legend_no_frame` and `cpc_interactive._legend_no_frame`. This moves the text up by enough points to align with the handle. The shift is in points (DPI-invariant) so it stays correct on display and export.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-03-03: Incorrect Python version warning (required 3.13)
+
+### Summary
+batplot showed "⚠️ WARNING: Python version mismatch detected! batplot requires Python 3.13" when run on Python 3.9–3.12, even though pyproject.toml specifies `requires-python = ">=3.9"` and supports 3.9–3.13.
+
+### Solution
+Removed the hardcoded Python 3.13 check from cli.py. The package already enforces the minimum Python version at install time via pyproject.toml.
+
+### Affected Files
+- `batplot/cli.py`
+
+---
+
+## 2026-03-03: --ro (swap axes) with --ry (dual y-axis): right y-axis label not set
+
+### Summary
+When using `--ro` (swap x and y axes) together with `--ry` (dual y-axis), the right y-axis (ax2) did not receive the correct label. The left axis was correctly swapped (x_label on y, y_label on x), but ax2's ylabel was never set, leaving it empty or default.
+
+### Solution
+(1) In batplot.py: When setting axis labels, if ax2 exists (dual y-axis), set `ax2.set_ylabel()` to match the left y-axis label—`x_label` when `--ro` is active, `y_label` otherwise. (2) In session.py: When saving a session with dual axes, use `ax2.get_ylabel()` for `right_y` in axis_title_texts instead of the duplicate-axis artist. (3) In batplot.py session restore: When restoring a session with ax2_loaded, set `ax2_loaded.set_ylabel(right_text)` from the saved right_y.
+
+### Affected Files
+- `batplot/batplot.py`
+- `batplot/session.py`
+
+---
+
+## 2026-03-03: Interactive menu: second-layer commands not highlighted
+
+### Summary
+Second-layer and deeper submenu commands (e.g., font family options "1: Arial", "2: DejaVu Sans"; smooth methods; spine colors; palette lists; EC line submenu) were printed without highlighting. Users could not easily distinguish selectable options from descriptive text.
+
+### Solution
+Applied `_colorize_menu` (or `colorize_menu` in interactive.py) to all sub-layer menu options across all interactive modules: (1) Font submenus: numbered font families, "Or enter custom font name directly", "u: edit saved colors"; (2) Spine color menus: "q: back to main menu", saved color lists; (3) Cycles/colors: palette lists, saved color lists, "u: edit saved colors"; (4) CPC capacity/efficiency color lists and palettes; (5) Operando EC line submenu: c/l/q options, saved colors; (6) Interactive: font options, smooth methods, legend "q: back". Applied `_colorize_prompt` (or `colorize_prompt`) to input prompts in sub-menus (e.g., "Selection (palette/number/u/q): ", "el> ", "Color (current=...): ").
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/interactive.py`
+
+---
+
+## 2026-03-06: Unified flags to double-dash (--) form
+
+### Summary
+All command-line flags now use the double-dash (`--`) form consistently. Short single-dash forms (`-h`, `-v`, `-m`, `-i`, `-d`, `-r`, `-o`, `-c`, `-b`) were removed from the parser. Documentation (USER_MANUAL.md, FLAGS_REFERENCE.md, README.md), help messages (args.py), and error messages (batplot.py, batch.py, version_check.py, manual.py, interactive.py) now show only `--help`, `--version`, `--manual`, `--interactive`, `--delta`, `--xrange`, `--out`, `--convert`, `--b`. For backward compatibility, a preprocessing step in `parse_args` converts single-dash short forms to their long equivalents before parsing, so existing scripts using `-i`, `-h`, etc. continue to work.
+
+### Affected Files
+- `batplot/args.py`
+- `batplot/batplot.py`
+- `batplot/batch.py`
+- `batplot/version_check.py`
+- `batplot/manual.py`
+- `batplot/interactive.py`
+- `USER_MANUAL.md`
+- `FLAGS_REFERENCE.md`
+- `README.md`
+
+---
+
 ## 2026-03-05: CPC legend: efficiency hidden (ry) but legend still showed Efficiency
 
 ### Summary

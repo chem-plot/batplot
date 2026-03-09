@@ -62,3 +62,6 @@
 - Improved interactive menu functionality for cpc mode
 - Improved interactive menu display
 - Bug fixes
+
+## 1.8.28
+- Bug fixes

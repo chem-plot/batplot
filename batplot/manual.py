@@ -157,7 +157,7 @@ def _cache_dir() -> Path:
 	WHY CACHE?
 	---------
 	The manual is generated from Markdown and cached to avoid regenerating it
-	on every run. This speeds up the 'batplot -m' command.
+	on every run. This speeds up the 'batplot --manual' command.
 	
 	WHY PLATFORM-SPECIFIC?
 	----------------------

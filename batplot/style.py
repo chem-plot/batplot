@@ -281,7 +281,7 @@ def _resolve_palette_cmap(palette_name: str):
     return None
 
 
-def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
+def _apply_curve_palette(ax, record: Dict[str, Any], fig=None) -> bool:
     """
     Apply a color palette to curves when loading a saved style/session file.
     
@@ -338,7 +338,9 @@ def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
         zero_based = []
     
     # Filter out invalid indices (curves that don't exist)
-    zero_based = [i for i in zero_based if 0 <= i < len(ax.lines)]
+    _lines = (getattr(fig, '_xy_lines_by_curve', None) if fig else None) or ax.lines
+    _n = len(_lines) if hasattr(_lines, '__len__') else len(ax.lines)
+    zero_based = [i for i in zero_based if 0 <= i < _n]
     if not zero_based:
         return False
     
@@ -369,7 +371,9 @@ def _apply_curve_palette(ax, record: Dict[str, Any]) -> bool:
     # Loop through curve indices and assign corresponding color
     for idx, color in zip(zero_based, colors):
         try:
-            ax.lines[idx].set_color(color)
+            ln = _lines[idx] if hasattr(_lines, '__getitem__') else ax.lines[idx]
+            if ln is not None:
+                ln.set_color(color)
         except Exception:
             # Skip if curve doesn't exist (shouldn't happen due to filtering above)
             pass
@@ -434,7 +438,16 @@ def print_style_info(
     if rotation_angle != 0:
         print(f"Rotation angle: {rotation_angle}°")
 
-    # ---- Toggle axes (t) ----
+    # ---- Dual y-axis (--ry, --txaxis) ----
+    right_y_indices = getattr(fig, '_xy_right_y_curve_indices', frozenset())
+    use_top_x = bool(getattr(fig, '_xy_use_top_x', False))
+    if right_y_indices:
+        idx_str = ", ".join(str(i + 1) for i in sorted(right_y_indices))
+        print(f"\n--- Dual y-axis (--ry) ---")
+        print(f"Right y-axis curves: [{idx_str}]")
+        print(f"Top x-axis for right-y (--txaxis): {'yes' if use_top_x else 'no'}")
+
+    # ---- Toggle spines (t) ----
     sides = (
         ('s', 'bottom',
          ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else False,
@@ -461,7 +474,7 @@ def print_style_info(
          tick_state.get('r_labels', tick_state.get('ry', False)),
          bool(getattr(ax, '_right_ylabel_on', False))),
     )
-    print(f"\n--- Toggle axes (t) ---")
+    print(f"\n--- Toggle spines (t) ---")
     print("WASD (w=top, a=left, s=bottom, d=right): 1=spine 2=ticks 3=minor 4=labels 5=title")
     for key, _name, spine, mj, mn, lbl, title in sides:
         print(f"  {key}1:{_onoff(spine)} {key}2:{_onoff(mj)} {key}3:{_onoff(mn)} {key}4:{_onoff(lbl)} {key}5:{_onoff(title)}")
@@ -533,7 +546,11 @@ def print_style_info(
 
     # ---- Curves (c, o) ----
     print("\n--- Curves (c, o) ---")
-    for i, ln in enumerate(ax.lines):
+    _curves_src = getattr(fig, '_xy_lines_by_curve', None) or ax.lines
+    _curves_iter = enumerate(_curves_src) if _curves_src else enumerate(ax.lines)
+    for i, ln in _curves_iter:
+        if ln is None:
+            continue
         col_val = ln.get_color()
         col_hex = _color_to_hex(col_val)
         col_disp = f"{color_block(col_hex)} {col_hex}" if col_hex else str(col_val)
@@ -694,7 +711,8 @@ def export_style_config(
                     "alpha": ln.get_alpha(),
                     "offset": offsets_list[i] if i < len(offsets_list) else 0.0,
                 }
-                for i, ln in enumerate(ax.lines)
+                for i, ln in enumerate(getattr(fig, '_xy_lines_by_curve', None) or ax.lines)
+                if ln is not None
             ],
             }
         bottom_label_text = _get_primary_axis_text(ax, 'x')
@@ -724,6 +742,9 @@ def export_style_config(
         cfg["rotation_angle"] = getattr(ax, '_rotation_angle', 0)
         # Track whether data axes were swapped via --ro when this style was saved
         cfg["ro_active"] = bool(getattr(fig, '_ro_active', False))
+        # Dual y-axis (--ry, --txaxis): metadata for documentation; session (.pkl) restores structure
+        cfg["right_y_curve_indices"] = list(getattr(fig, '_xy_right_y_curve_indices', frozenset()))
+        cfg["txaxis"] = bool(getattr(fig, '_xy_use_top_x', False))
         
         # Save curve names visibility
         cfg["curve_names_visible"] = True  # Default to visible
@@ -1279,12 +1300,16 @@ def apply_style_config(
                 if "visible" in sp_dict:
                     ax.spines[name].set_visible(sp_dict["visible"])
 
-    # Lines
+    # Lines (support dual y-axis: fig._xy_lines_by_curve when --ry)
+        _lines_src = getattr(fig, '_xy_lines_by_curve', None) or ax.lines
+        _nlines = len(_lines_src) if hasattr(_lines_src, '__len__') else len(ax.lines)
         for entry in cfg.get("lines", []):
             idx = entry.get("index")
-            if idx is None or not (0 <= idx < len(ax.lines)):
+            if idx is None or not (0 <= idx < _nlines):
                 continue
-            ln = ax.lines[idx]
+            ln = _lines_src[idx] if _lines_src is not None and idx < len(_lines_src) else ax.lines[idx]
+            if ln is None:
+                continue
             if "color" in entry and entry["color"] is not None:
                 ln.set_color(entry["color"])
             if "linewidth" in entry:
@@ -1351,7 +1376,7 @@ def apply_style_config(
         if palette_cfg:
             sanitized_history = []
             for rec in palette_cfg:
-                if _apply_curve_palette(ax, rec):
+                if _apply_curve_palette(ax, rec, fig=fig):
                     sanitized_history.append({
                         'palette': rec.get('palette'),
                         'indices': list(rec.get('indices', [])),

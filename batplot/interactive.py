@@ -193,6 +193,20 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     if not hasattr(fig, '_label_anchor_left'):
         fig._label_anchor_left = False
 
+    # Line lookup for dual y-axis (--ry): curve index -> Line2D (ax or ax2)
+    _lines_by_curve = getattr(fig, '_xy_lines_by_curve', None)
+    def _line(i):
+        if _lines_by_curve is not None and 0 <= i < len(_lines_by_curve):
+            return _lines_by_curve[i]
+        try:
+            return ax.lines[i]
+        except (IndexError, TypeError):
+            return None
+    def _nlines():
+        return len(_lines_by_curve) if _lines_by_curve is not None else _nlines()
+    def _iter_lines():
+        return enumerate(_lines_by_curve) if _lines_by_curve is not None else enumerate(ax.lines)
+
     # ANSI color codes for menu highlighting
     def colorize_menu(text):
         """Colorize menu items: command in cyan, colon in white, description in default."""
@@ -266,7 +280,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
     is_diffraction = use_Q or (not use_r and not use_E and not use_k and not use_rft)  # 2θ or Q
     def print_main_menu():
-        col1 = ["c: colors", "f: font", "l: line", "t: toggle axes", "g: size", "h: legend", "sm: smooth"]
+        col1 = ["c: colors", "f: font", "l: line", "t: toggle spines", "g: size", "h: legend", "sm: smooth"]
         # Place CIF submenu entry under Geometries; always show it so users
         # discover CIF support even before adding CIF files.
         col2 = ["a: rearrange", "o: offset", "r: rename", "x: change X", "y: change Y", "d: derivative", "cif: CIF ticks"]
@@ -296,7 +310,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         w2 = max(len("(Geometries)"), *(len(s) for s in col2), 16)
         w3 = max(len("(Options)"), *(len(s) for s in col3), 16)
         rows = max(len(col1), len(col2), len(col3))
-        print("\n\033[1mInteractive menu:\033[0m")  # Bold title
+        print("\n\033[1m1D Interactive Menu:\033[0m")  # Bold title
         print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Geometries)':<{w2}}\033[0m \033[93m{'(Options)':<{w3}}\033[0m")  # Yellow headers
         for i in range(rows):
             p1 = colorize_menu(col1[i]) if i < len(col1) else ""
@@ -901,7 +915,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
              tick_state.get('r_labels', False),
              bool(getattr(ax, '_right_ylabel_on', False))),
         )
-        print(f"\033[1mToggle axes state:\033[0m")
+        print(f"\033[1mToggle spines state:\033[0m")
         print(f"  {'Side':<7}  spine  major  minor  labels title")
         for name, spine, mj, mn, lbl, title in sides:
             print(f"  {_C}{name:<7}{_R} {onoff(spine)}  {onoff(mj)}   {onoff(mn)}   {onoff(lbl)}  {onoff(title)}")
@@ -1280,7 +1294,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             return (False, 0, 0)
         reset_count = 0
         total_points = 0
-        for i in range(min(len(fig._original_x_data_list), len(ax.lines))):
+        for i in range(min(len(fig._original_x_data_list), _nlines())):
             try:
                 orig_x = fig._original_x_data_list[i]
                 orig_y = fig._original_y_data_list[i]
@@ -1289,7 +1303,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     orig_y_with_offset = orig_y + offsets_list[i]
                 else:
                     orig_y_with_offset = orig_y.copy()
-                ax.lines[i].set_data(orig_x, orig_y_with_offset)
+                _line(i).set_data(orig_x, orig_y_with_offset)
                 x_data_list[i] = orig_x.copy()
                 y_data_list[i] = orig_y_with_offset.copy()
                 reset_count += 1
@@ -1303,9 +1317,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
     def _apply_data_changes():
         """Update plot and data lists after data modification."""
-        for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
+        for i in range(min(_nlines(), len(x_data_list), len(y_data_list))):
             try:
-                ax.lines[i].set_data(x_data_list[i], y_data_list[i])
+                _line(i).set_data(x_data_list[i], y_data_list[i])
             except Exception:
                 pass
         try:
@@ -1463,7 +1477,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             return (False, 0, 0)
         reset_count = 0
         total_points = 0
-        for i in range(min(len(fig._pre_derivative_x_data_list), len(ax.lines))):
+        for i in range(min(len(fig._pre_derivative_x_data_list), _nlines())):
             try:
                 pre_x = fig._pre_derivative_x_data_list[i]
                 pre_y = fig._pre_derivative_y_data_list[i]
@@ -1472,7 +1486,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     pre_y_with_offset = pre_y + offsets_list[i]
                 else:
                     pre_y_with_offset = pre_y.copy()
-                ax.lines[i].set_data(pre_x, pre_y_with_offset)
+                _line(i).set_data(pre_x, pre_y_with_offset)
                 x_data_list[i] = pre_x.copy()
                 y_data_list[i] = pre_y_with_offset.copy()
                 reset_count += 1
@@ -1620,7 +1634,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             except Exception:
                 pass
             # Line + data arrays
-            for i, ln in enumerate(ax.lines):
+            for i, ln in _iter_lines():
                 snap["lines"].append({
                     "index": i,
                     "x": np.array(ln.get_xdata(), copy=True),
@@ -1867,10 +1881,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             labels[:] = snap["labels"]
 
             # Data & lines
-            if len(snap["lines"]) == len(ax.lines):
+            if len(snap["lines"]) == _nlines():
                 for item in snap["lines"]:
                     i = item["index"]
-                    ln = ax.lines[i]
+                    ln = _line(i)
                     ln.set_data(item["x"], item["y"])
                     ln.set_color(item["color"]) 
                     ln.set_linewidth(item["lw"]) 
@@ -1955,9 +1969,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             
             # Update line data with restored values from snapshot
             # This ensures line visual data matches the snapshotted data lists exactly
-            for i in range(min(len(ax.lines), len(x_data_list), len(y_data_list))):
+            for i in range(min(_nlines(), len(x_data_list), len(y_data_list))):
                 try:
-                    ax.lines[i].set_data(x_data_list[i], y_data_list[i])
+                    _line(i).set_data(x_data_list[i], y_data_list[i])
                 except Exception:
                     pass
 
@@ -2096,8 +2110,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             if not has_cif:
                 print("\nNo CIF tick labels are available.")
                 print("To enable CIF ticks, include one or more CIF files when launching batplot, e.g.:")
-                print("  batplot data.xy phase.cif:1.5406 --i # plot in 2theta space")
-                print("  batplot data.xy:0.709 phase.cif --i # plot in Q space")
+                print("  batplot data.xy phase.cif:1.5406 --interactive # plot in 2theta space")
+                print("  batplot data.xy:0.709 phase.cif --interactive # plot in Q space")
                 continue
 
             # Local state mirrors operando CIF submenu: hkl and title visibility flags.
@@ -2914,7 +2928,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     else:
                         colors = [cmap(p) for p in np.linspace(low_clip, high_clip, nsel)]
                     for c_idx, line_idx in enumerate(indices):
-                        ax.lines[line_idx].set_color(colors[c_idx])
+                        _line(line_idx).set_color(colors[c_idx])
                     update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                     fig.canvas.draw()
                     try:
@@ -2963,7 +2977,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print("\n\033[1mColors>\033[0m  Current curves:")
                     for idx, label in enumerate(labels):
                         try:
-                            cur = ax.lines[idx].get_color()
+                            cur = _line(idx).get_color()
                         except Exception:
                             cur = None
                         print(f"  {idx+1}: {color_block(cur)} {label}")
@@ -3179,7 +3193,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print(f"Index out of range: {idx_str}")
                                 continue
                             resolved = resolve_color_token(color_spec, fig)
-                            ax.lines[line_idx].set_color(resolved)
+                            _line(line_idx).set_color(resolved)
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                         try:
                             fig._curve_palette_history = []
@@ -3356,7 +3370,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     push_state("rearrange")
 
                     original_styles = []
-                    for ln in ax.lines:
+                    for ln in (_lines_by_curve if _lines_by_curve else ax.lines):
                         original_styles.append({
                             "color": ln.get_color(),
                             "linewidth": ln.get_linewidth(),
@@ -3385,7 +3399,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             y_plot_offset = y_norm + offset_local
                             y_data_list[i] = y_plot_offset
                             offsets_list[i] = offset_local
-                            ln = ax.lines[i]
+                            ln = _line(i)
                             ln.set_data(x_plot, y_plot_offset)
                             ln.set_color(style["color"]) 
                             ln.set_linewidth(style["linewidth"]) 
@@ -3404,7 +3418,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             y_plot_offset = y_norm + offset_local
                             y_data_list[i] = y_plot_offset
                             offsets_list[i] = offset_local
-                            ln = ax.lines[i]
+                            ln = _line(i)
                             ln.set_data(x_plot, y_plot_offset)
                             ln.set_color(style["color"]) 
                             ln.set_linewidth(style["linewidth"]) 
@@ -3431,7 +3445,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_xlim = ax.get_xlim()
                     print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                    rng = _safe_input(colorize_prompt("Enter x-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
+                    print("  " + colorize_menu("min max: set both limits"))
+                    print("  " + colorize_menu("w: upper only"))
+                    print("  " + colorize_menu("s: lower only"))
+                    print("  " + colorize_menu("a: auto (restore original)"))
+                    print("  " + colorize_menu("q: back"))
+                    rng = _safe_input(colorize_prompt("X (w/s/a/q): ")).strip()
                     if not rng or rng.lower() == 'q':
                         break
                     if rng.lower() == 'w':
@@ -3469,7 +3488,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         x_sub = np.asarray(x_current[mask], dtype=float).flatten()
                                         y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
                                         if x_sub.size == 0:
-                                            ax.lines[i].set_data([], [])
+                                            _line(i).set_data([], [])
                                             x_data_list[i] = np.array([], dtype=float)
                                             y_data_list[i] = np.array([], dtype=float)
                                             if i < len(orig_y):
@@ -3477,7 +3496,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                             continue
                                         if i < len(offsets_list):
                                             y_sub = y_sub + offsets_list[i]
-                                        ax.lines[i].set_data(x_sub, y_sub)
+                                        _line(i).set_data(x_sub, y_sub)
                                         x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
                                         y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
                                         # Update orig_y with robust method
@@ -3542,7 +3561,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         x_sub = np.asarray(x_current[mask], dtype=float).flatten()
                                         y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
                                         if x_sub.size == 0:
-                                            ax.lines[i].set_data([], [])
+                                            _line(i).set_data([], [])
                                             x_data_list[i] = np.array([], dtype=float)
                                             y_data_list[i] = np.array([], dtype=float)
                                             if i < len(orig_y):
@@ -3550,7 +3569,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                             continue
                                         if i < len(offsets_list):
                                             y_sub = y_sub + offsets_list[i]
-                                        ax.lines[i].set_data(x_sub, y_sub)
+                                        _line(i).set_data(x_sub, y_sub)
                                         x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
                                         y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
                                         # Update orig_y with robust method
@@ -3627,7 +3646,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 x_sub = np.asarray(xf[mask], dtype=float).flatten()
                                 y_sub_raw = np.asarray(yf_raw[mask], dtype=float).flatten()
                                 if x_sub.size == 0:
-                                    ax.lines[i].set_data([], [])
+                                    _line(i).set_data([], [])
                                     x_data_list[i] = np.array([], dtype=float)
                                     y_data_list[i] = np.array([], dtype=float)
                                     if i < len(orig_y):
@@ -3649,7 +3668,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     y_sub_norm = y_sub_raw
                                 offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
                                 y_with_offset = y_sub_norm + offset_val
-                                ax.lines[i].set_data(x_sub, y_with_offset)
+                                _line(i).set_data(x_sub, y_with_offset)
                                 x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
                                 y_data_list[i] = np.asarray(y_with_offset, dtype=float).flatten()
                                 # Ensure orig_y list has enough elements
@@ -3757,7 +3776,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             x_sub = np.asarray(x_current[mask], dtype=float).flatten()
                             y_sub = np.asarray(y_current_no_offset[mask], dtype=float).flatten()
                             if x_sub.size == 0:
-                                ax.lines[i].set_data([], [])
+                                _line(i).set_data([], [])
                                 x_data_list[i] = np.array([], dtype=float)
                                 y_data_list[i] = np.array([], dtype=float)
                                 if i < len(orig_y):
@@ -3766,7 +3785,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             # Restore offset
                             if i < len(offsets_list):
                                 y_sub = y_sub + offsets_list[i]
-                            ax.lines[i].set_data(x_sub, y_sub)
+                            _line(i).set_data(x_sub, y_sub)
                             x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
                             y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
                             # Update orig_y
@@ -3789,13 +3808,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             x_sub = np.asarray(x_current[mask], dtype=float).flatten()
                             y_sub = np.asarray(y_current[mask], dtype=float).flatten()
                             if x_sub.size == 0:
-                                ax.lines[i].set_data([], [])
+                                _line(i).set_data([], [])
                                 x_data_list[i] = np.array([], dtype=float)
                                 y_data_list[i] = np.array([], dtype=float)
                                 if i < len(orig_y):
                                     orig_y[i] = np.array([], dtype=float)
                                 continue
-                            ax.lines[i].set_data(x_sub, y_sub)
+                            _line(i).set_data(x_sub, y_sub)
                             x_data_list[i] = np.asarray(x_sub, dtype=float).flatten()
                             y_data_list[i] = np.asarray(y_sub, dtype=float).flatten()
                             # Update orig_y - use same robust method as in 'a' branch
@@ -3833,7 +3852,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             x_sub = np.array(xf[mask], copy=True)
                             y_sub_raw = np.array(yf_raw[mask], copy=True)
                             if x_sub.size == 0:
-                                ax.lines[i].set_data([], [])
+                                _line(i).set_data([], [])
                                 x_data_list[i] = np.array([])
                                 y_data_list[i] = np.array([])
                                 if i < len(orig_y):
@@ -3856,7 +3875,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 y_sub_norm = y_sub_raw
                             offset_val = offsets_list[i] if i < len(offsets_list) else 0.0
                             y_with_offset = y_sub_norm + offset_val
-                            ax.lines[i].set_data(x_sub, y_with_offset)
+                            _line(i).set_data(x_sub, y_with_offset)
                             x_data_list[i] = x_sub
                             y_data_list[i] = y_with_offset
                             if i < len(orig_y):
@@ -3882,7 +3901,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 try:
                     current_ylim = ax.get_ylim()
                     print(f"Current Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                    rng = _safe_input(colorize_prompt("Enter y-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip().lower()
+                    print("  " + colorize_menu("min max: set both limits"))
+                    print("  " + colorize_menu("w: upper only"))
+                    print("  " + colorize_menu("s: lower only"))
+                    print("  " + colorize_menu("a: auto (restore original)"))
+                    print("  " + colorize_menu("q: back"))
+                    rng = _safe_input(colorize_prompt("Y (w/s/a/q): ")).strip().lower()
                     if not rng or rng == 'q':
                         break
                     if rng == 'w':
@@ -4099,17 +4123,17 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     try:
                         push_state("reset-offsets")
                         for i in range(len(labels)):
-                            if i >= len(ax.lines):
+                            if i >= _nlines():
                                 continue
                             # Get current x-data from the line
-                            current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                            current_x = np.asarray(_line(i).get_xdata(), dtype=float)
                             # Reset to normalized data without any offset
                             y_norm = orig_y[i]
                             y_data_list[i] = y_norm.copy()
                             offsets_list[i] = 0.0
                             # Update x_data_list to match current line data
                             x_data_list[i] = current_x.copy()
-                            ax.lines[i].set_data(current_x, y_norm)
+                            _line(i).set_data(current_x, y_norm)
                         
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -4157,10 +4181,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         # Apply cumulative spacing starting from the minimum offset
                         current_offset = min_offset
                         for i, curve_idx in enumerate(curve_order):
-                            if curve_idx >= len(ax.lines):
+                            if curve_idx >= _nlines():
                                 continue
                             # Get current x-data from the line
-                            current_x = np.asarray(ax.lines[curve_idx].get_xdata(), dtype=float)
+                            current_x = np.asarray(_line(curve_idx).get_xdata(), dtype=float)
                             y_norm = orig_y[curve_idx]
                             
                             # Set new offset with spacing
@@ -4168,7 +4192,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             y_with_offset = y_norm + current_offset
                             y_data_list[curve_idx] = y_with_offset
                             x_data_list[curve_idx] = current_x.copy()
-                            ax.lines[curve_idx].set_data(current_x, y_with_offset)
+                            _line(curve_idx).set_data(current_x, y_with_offset)
                             
                             # Calculate spacing for next curve based on current curve's range
                             if i < len(curve_order) - 1:  # Not the last curve
@@ -4209,32 +4233,32 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         if args.stack:
                             current_offset = 0.0
                             for i, y_norm in enumerate(orig_y):
-                                if i >= len(ax.lines):
+                                if i >= _nlines():
                                     continue
                                 # Get current x-data from the line
-                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                                current_x = np.asarray(_line(i).get_xdata(), dtype=float)
                                 y_with_offset = y_norm + current_offset
                                 y_data_list[i] = y_with_offset
                                 offsets_list.append(current_offset)
                                 # Update x_data_list to match current line data
                                 x_data_list[i] = current_x.copy()
-                                ax.lines[i].set_data(current_x, y_with_offset)
+                                _line(i).set_data(current_x, y_with_offset)
                                 y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
                                 gap = y_range + (delta * (y_range if args.autoscale else 1.0))
                                 current_offset -= gap
                         else:
                             current_offset = 0.0
                             for i, y_norm in enumerate(orig_y):
-                                if i >= len(ax.lines):
+                                if i >= _nlines():
                                     continue
                                 # Get current x-data from the line
-                                current_x = np.asarray(ax.lines[i].get_xdata(), dtype=float)
+                                current_x = np.asarray(_line(i).get_xdata(), dtype=float)
                                 y_with_offset = y_norm + current_offset
                                 y_data_list[i] = y_with_offset
                                 offsets_list.append(current_offset)
                                 # Update x_data_list to match current line data
                                 x_data_list[i] = current_x.copy()
-                                ax.lines[i].set_data(current_x, y_with_offset)
+                                _line(i).set_data(current_x, y_with_offset)
                                 increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
                                 current_offset += increment
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -4255,7 +4279,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         
                         idx = curve_num - 1
-                        if idx >= len(ax.lines):
+                        if idx >= _nlines():
                             print("Invalid curve number.")
                             continue
                         
@@ -4271,7 +4295,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         push_state("curve-{}-offset".format(curve_num))
                         
                         # Get current x-data from the line to ensure we're working with actual displayed data
-                        current_x = np.asarray(ax.lines[idx].get_xdata(), dtype=float)
+                        current_x = np.asarray(_line(idx).get_xdata(), dtype=float)
                         # Apply individual offset to this curve
                         y_norm = orig_y[idx]
                         offsets_list[idx] = individual_offset
@@ -4279,7 +4303,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         y_data_list[idx] = y_with_offset
                         # Update x_data_list to match current line data
                         x_data_list[idx] = current_x.copy()
-                        ax.lines[idx].set_data(current_x, y_with_offset)
+                        _line(idx).set_data(current_x, y_with_offset)
                         
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -4395,8 +4419,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                     try:
                                         idx = int(idx_str) - 1
                                         lw = float(lw_str)
-                                        if 0 <= idx < len(ax.lines):
-                                            ax.lines[idx].set_linewidth(lw)
+                                        if 0 <= idx < _nlines():
+                                            _line(idx).set_linewidth(lw)
                                         else:
                                             print(f"Index out of range: {idx+1}")
                                     except ValueError:
@@ -4404,7 +4428,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             else:
                                 try:
                                     lw = float(spec)
-                                    for ln in ax.lines:
+                                    for ln in (_lines_by_curve if _lines_by_curve else ax.lines):
                                         ln.set_linewidth(lw)
                                 except ValueError:
                                     print("Invalid width value.")
@@ -4461,7 +4485,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         push_state("line-only")
                         for idx in targets:
-                            ln = ax.lines[idx]
+                            ln = _line(idx)
                             ln.set_linestyle('-')
                             ln.set_marker('None')
                         fig.canvas.draw()
@@ -4473,7 +4497,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         push_state("line+dots")
                         custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
                         for idx in targets:
-                            ln = ax.lines[idx]
+                            ln = _line(idx)
                             lw = ln.get_linewidth() or 1.0
                             ln.set_linestyle('-')
                             ln.set_marker('o')
@@ -4494,7 +4518,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         push_state("dots-only")
                         custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
                         for idx in targets:
-                            ln = ax.lines[idx]
+                            ln = _line(idx)
                             lw = ln.get_linewidth() or 1.0
                             ln.set_linestyle('None')
                             ln.set_marker('o')
@@ -4518,7 +4542,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         dash_len, gap_len = dash_vals
                         push_state("dashed-line")
                         for idx in targets:
-                            ln = ax.lines[idx]
+                            ln = _line(idx)
                             ln.set_marker('None')
                             ln.set_linestyle((0, (dash_len, gap_len)))
                         fig.canvas.draw()
@@ -4532,7 +4556,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         push_state("dash-dot")
                         for idx in targets:
-                            ln = ax.lines[idx]
+                            ln = _line(idx)
                             ln.set_marker('None')
                             ln.set_linestyle((0, dash_vals))
                         fig.canvas.draw()
@@ -4545,7 +4569,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
             cur_size = plt.rcParams.get('font.size', None)
             while True:
-                subkey = _safe_input(colorize_prompt(f"Font submenu (current: family='{cur_family}', size={cur_size}) - s=size, f=family, q=return: ")).strip().lower()
+                print(f"\nFont (current: family='{cur_family}', size={cur_size})")
+                print("  " + colorize_menu("f: family"))
+                print("  " + colorize_menu("s: size"))
+                print("  " + colorize_menu("q: back"))
+                subkey = _safe_input(colorize_prompt("Font (f/s/q): ")).strip().lower()
                 if subkey == 'q':
                     break
                 if subkey == '':
@@ -4553,7 +4581,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 if subkey == 's':
                     try:
                         cur_size = plt.rcParams.get('font.size', None)
-                        fs = _safe_input(f"Enter new font size (current: {cur_size}, q=cancel): ").strip()
+                        fs = _safe_input(colorize_prompt(f"Enter font size (current: {cur_size}, q=cancel): ")).strip()
                         if not fs or fs.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -4570,12 +4598,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     try:
                         cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
                         print("Common publication fonts:")
-                        print("  1) Arial")
-                        print("  2) Helvetica")
-                        print("  3) Times New Roman")
-                        print("  4) STIXGeneral")
-                        print("  5) DejaVu Sans")
-                        ft_raw = _safe_input(f"Enter font number or family name (current: '{cur_family}', q=cancel): ").strip()
+                        print("  " + colorize_menu("1: Arial"))
+                        print("  " + colorize_menu("2: Helvetica"))
+                        print("  " + colorize_menu("3: Times New Roman"))
+                        print("  " + colorize_menu("4: STIXGeneral"))
+                        print("  " + colorize_menu("5: DejaVu Sans"))
+                        ft_raw = _safe_input(colorize_prompt(f"Enter font number or family name (current: '{cur_family}', q=cancel): ")).strip()
                         if not ft_raw or ft_raw.lower() == 'q':
                             print("Canceled.")
                         else:
@@ -4601,7 +4629,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 'g':
             try:
                 while True:
-                    choice = _safe_input(colorize_prompt("Resize submenu: (p=plot frame, c=canvas, q=cancel): ")).strip().lower()
+                    print("  " + colorize_menu("p: plot frame"))
+                    print("  " + colorize_menu("c: canvas"))
+                    print("  " + colorize_menu("q: back"))
+                    choice = _safe_input(colorize_prompt("Resize (p/c/q): ")).strip().lower()
                     if not choice:
                         continue
                     if choice == 'q':
@@ -4625,7 +4656,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     print("  " + colorize_menu("v: show/hide curve names"))
                     current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
                     print("  " + colorize_menu(f"s: legend position (current: {current_pos})"))
-                    print("  q: back to main menu")
+                    print("  " + colorize_menu("q: back to main menu"))
                     sub_key = _safe_input(colorize_prompt("Choose (v/s/q): ")).strip().lower()
                     
                     if sub_key == 'q':
@@ -4679,8 +4710,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 while True:
                     _C = '\033[96m'; _R = '\033[0m'
-                    print("\033[1mToggle axes>\033[0m")
+                    print("\033[1mToggle spines>\033[0m")
                     print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
+                    if getattr(fig, '_xy_ax2', None) is not None:
+                        print(f"  Dual y-axis     : {_C}a{_R}=left y (ly)  {_C}d{_R}=right y (ry)")
                     print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
                     print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
                     print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
@@ -5723,10 +5756,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     while True:
                         print("\n\033[1mSmooth Data\033[0m")
                         print("Methods:")
-                        print("  1: Adjacent-Averaging (moving average)")
-                        print("  2: Savitzky-Golay (polynomial smoothing)")
-                        print("  3: FFT Filter (low-pass frequency filter)")
-                        print("  q: back to smooth menu")
+                        print("  " + colorize_menu("1: Adjacent-Averaging (moving average)"))
+                        print("  " + colorize_menu("2: Savitzky-Golay (polynomial smoothing)"))
+                        print("  " + colorize_menu("3: FFT Filter (low-pass frequency filter)"))
+                        print("  " + colorize_menu("q: back to smooth menu"))
                         method = _safe_input(colorize_prompt("sm>s> ")).strip().lower()
                         if not method or method == 'q':
                             break
@@ -6009,7 +6042,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         elif key == 'v':
             while True:
                 try:
-                    rng_in = _safe_input("Peak X range (min max, 'current' for axes limits, q=back): ").strip().lower()
+                    print("  " + colorize_menu("min max: set both limits"))
+                    print("  " + colorize_menu("current: use axes limits"))
+                    print("  " + colorize_menu("q: back"))
+                    rng_in = _safe_input(colorize_prompt("Peak X (min max/current/q): ")).strip().lower()
                     if not rng_in or rng_in == 'q':
                         break
                     if rng_in == 'current':

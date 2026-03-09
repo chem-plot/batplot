@@ -549,7 +549,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
         ax.set_xlabel('2θ (deg)')
     # No title for operando plot (requested)
 
-    # If an EC .mpt exists, attach it to the right with the same height (Voltage vs Time in hours)
+    # If an EC .mpt exists, attach it to the right with the same height (Potential vs Time in hours)
     if has_ec:
         try:
             ec_path = mpt_files[0]
@@ -589,7 +589,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                 # Check if we got labels (5 elements) or old format (3 elements)
                 if len(result) == 5:
                     x_data, y_data, current_mA, x_label, y_label = result
-                    # For EC-Lab files: x_label='Time (h)', y_label='Voltage (V)'
+                    # For EC-Lab files: x_label='Time (h)', y_label='Potential (V)'
                     # For simple files: x_label could be 'Time(h)', 'time', etc.
                     # EC-Lab files: read_mpt_file already converts time from seconds to hours
                     # operando plots with voltage on X-axis and time on Y-axis
@@ -598,19 +598,19 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                     x_lower = x_label.lower().replace(' ', '').replace('_', '')
                     y_lower = y_label.lower().replace(' ', '').replace('_', '')
                     has_time_in_x = 'time' in x_lower
-                    has_voltage_in_x = 'voltage' in x_lower or 'ewe' in x_lower
+                    has_voltage_in_x = 'voltage' in x_lower or 'potential' in x_lower or 'ewe' in x_lower
                     has_time_in_y = 'time' in y_lower
-                    has_voltage_in_y = 'voltage' in y_lower or 'ewe' in y_lower
+                    has_voltage_in_y = 'voltage' in y_lower or 'potential' in y_lower or 'ewe' in y_lower
                     
                     is_time_voltage = (has_time_in_x or has_time_in_y) and (has_voltage_in_x or has_voltage_in_y)
                     
-                    if x_label == 'Time (h)' and y_label == 'Voltage (V)':
+                    if x_label == 'Time (h)' and y_label == 'Potential (V)':
                         # EC-Lab file: time is already in hours from read_mpt_file, just swap axes
                         time_h = np.asarray(x_data, float)  # Already in hours, no conversion needed
                         voltage_v = np.asarray(y_data, float)
                         x_data = voltage_v
                         y_data = time_h
-                        x_label = 'Voltage (V)'
+                        x_label = 'Potential (V)'
                         y_label = 'Time (h)'
                     elif is_time_voltage:
                         # Simple file with time/voltage columns
@@ -621,7 +621,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                             voltage_v = np.asarray(y_data, float)
                             x_data = voltage_v
                             y_data = time_h
-                            x_label = 'Voltage (V)'
+                            x_label = 'Potential (V)'
                             y_label = 'Time (h)'
                         elif has_voltage_in_x and has_time_in_y:
                             # Columns are: Voltage, Time -> already correct order
@@ -629,7 +629,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                             time_h = np.asarray(y_data, float)
                             x_data = voltage_v
                             y_data = time_h
-                            x_label = 'Voltage (V)'
+                            x_label = 'Potential (V)'
                             y_label = 'Time (h)'
                         else:
                             # Ambiguous or both in same column - default behavior
@@ -645,7 +645,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                     x_data, y_data, current_mA, *_ = result
                     x_data = np.asarray(x_data, float)
                     y_data = np.asarray(y_data, float) / 3600.0
-                    x_label, y_label = 'Voltage (V)', 'Time (h)'
+                    x_label, y_label = 'Potential (V)', 'Time (h)'
             
             # Add the EC axes on the right
             ec_ax = fig.add_subplot(gs[0, 1])

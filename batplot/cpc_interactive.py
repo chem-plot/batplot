@@ -153,12 +153,11 @@ def _legend_no_frame(ax, *args, **kwargs):
             leg.set_frame_on(False)
             for t in leg.get_texts():
                 t.set_verticalalignment('center')
-            # Small nudge up: text sits slightly low with va='center'. Use points (DPI-invariant)
-            # so alignment is correct on both display and export (savefig uses different render context).
+            # Nudge text up so it aligns with the symbol handle (patches sit higher than text baseline)
             try:
                 sizes = [t.get_fontsize() for t in leg.get_texts() if t.get_text().strip()]
                 fs = float(np.mean(sizes)) if sizes else 10.0
-                shift_pts = fs * 0.15
+                shift_pts = fs * 0.5  # Points to move text up (was 0.15, increased for proper alignment)
                 for t in leg.get_texts():
                     t.set_position((0, shift_pts))
             except Exception:
@@ -366,9 +365,9 @@ def _print_menu(fig=None):
         " l: line",
         " m: marker sizes",
         " c: colors",
-        " d: display (charge/discharge)",
+        " d: display (Chg/Dch)",
         "ry: show/hide efficiency",
-        " t: toggle axes",
+        " t: toggle spines",
         " h: legend",
         " g: size",
         " v: show/hide files",
@@ -415,7 +414,7 @@ def _print_menu(fig=None):
     w2 = max(18, *(len(s) for s in col2))
     w3 = max(12, *(len(s) for s in col3))
     rows = max(len(col1), len(col2), len(col3))
-    print("\n\033[1mCPC interactive menu:\033[0m")  # Bold title
+    print("\n\033[1mCPC Interactive Menu:\033[0m")  # Bold title
     print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Geometries)':<{w2}}\033[0m \033[93m{'(Options)':<{w3}}\033[0m")  # Yellow headers
     for i in range(rows):
         p1 = _colorize_menu(col1[i]) if i < len(col1) else ""
@@ -1846,7 +1845,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     - c: colors (for charge, discharge, efficiency)
     - k: spine colors (plot border colors)
     - ry: show/hide efficiency (right Y-axis)
-    - t: toggle axes (show/hide tick labels)
+    - t: toggle spines (show/hide tick labels)
     - h: legend (show/hide)
     - g: size (figure and axes size)
     - v: show/hide files (multi-file mode)
@@ -2332,16 +2331,16 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         for i, f in enumerate(file_data, 1):
                             cur = _color_of(f['sc_charge'])
                             vis_mark = "●" if f.get('visible', True) else "○"
-                            print(f"  {i}. {vis_mark} {f['filename']}  {color_block(cur)} {cur}")
+                            print("  " + _colorize_menu(f"{i}: {vis_mark} {f['filename']}  {color_block(cur)} {cur}"))
                         uc = get_user_color_list(fig)
                         if uc:
                             print("\nSaved colors (refer as number or u#):")
                             for i, c in enumerate(uc, 1):
-                                print(f"  {i}: {color_block(c)} {c}")
+                                print("  " + _colorize_menu(f"{i}: {color_block(c)} {c}"))
                         print("\nPalettes:")
                         for idx, name in enumerate(palette_opts, 1):
                             bar = palette_preview(name)
-                            print(f"  {idx}. {name}")
+                            print("  " + _colorize_menu(f"{idx}: {name}"))
                             if bar:
                                 print(f"      {bar}")
                         _C, _R = "\033[96m", "\033[0m"
@@ -2441,16 +2440,16 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         for i, f in enumerate(file_data, 1):
                             cur = _color_of(f['sc_eff'])
                             vis_mark = "●" if f.get('visible', True) else "○"
-                            print(f"  {i}. {vis_mark} {f['filename']}  {color_block(cur)} {cur}")
+                            print("  " + _colorize_menu(f"{i}: {vis_mark} {f['filename']}  {color_block(cur)} {cur}"))
                         uc = get_user_color_list(fig)
                         if uc:
                             print("\nSaved colors (refer as number or u#):")
                             for i, c in enumerate(uc, 1):
-                                print(f"  {i}: {color_block(c)} {c}")
+                                print("  " + _colorize_menu(f"{i}: {color_block(c)} {c}"))
                         print("\nPalettes:")
                         for idx, name in enumerate(palette_opts, 1):
                             bar = palette_preview(name)
-                            print(f"  {idx}. {name}")
+                            print("  " + _colorize_menu(f"{idx}: {name}"))
                             if bar:
                                 print(f"      {bar}")
                         _C, _R = "\033[96m", "\033[0m"
@@ -2551,7 +2550,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         auto_enabled = getattr(fig, '_cpc_spine_auto', False)
                         auto_status = "ON" if auto_enabled else "OFF"
                         print(_colorize_inline_commands(f"  auto : auto-apply capacity color to left y-axis, efficiency to right y-axis [{auto_status}]"))
-                    print("q: back to main menu")
+                    print("  " + _colorize_menu("q: back to main menu"))
                     line = _safe_input(_colorize_prompt("Enter mappings (e.g., w:red a:#4561F7, q=back): ")).strip()
                     if not line or line.lower() == 'q':
                         break
@@ -2960,10 +2959,10 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"\n--- Font (f) ---")
                     print(f"Family='{ft.get('family', '')}', size={ft.get('size', '')}")
 
-                    # ---- Toggle axes (t) ----
+                    # ---- Toggle spines (t) ----
                     wasd = snap.get('wasd_state', {})
                     if wasd:
-                        print(f"\n--- Toggle axes (t) ---")
+                        print(f"\n--- Toggle spines (t) ---")
                         print("WASD (w=top, a=left, s=bottom, d=right): 1=spine 2=ticks 3=minor 4=labels 5=title")
                         for side_key, side_label in [('top', 'w'), ('left', 'a'), ('bottom', 's'), ('right', 'd')]:
                             s = wasd.get(side_key, {})
@@ -3698,11 +3697,14 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             _print_menu(); continue
         elif key == 'f':
             while True:
-                sub = _safe_input("Font: f=family, s=size, q=back: ").strip().lower()
+                print("  " + _colorize_menu("f: family"))
+                print("  " + _colorize_menu("s: size"))
+                print("  " + _colorize_menu("q: back"))
+                sub = _safe_input(_colorize_prompt("Font (f/s/q): ")).strip().lower()
                 if sub == 'q' or not sub:
                     break
                 if sub == 'f':
-                    fam = _safe_input("Enter font family (e.g., Arial, DejaVu Sans): ").strip()
+                    fam = _safe_input(_colorize_prompt("Enter font family (e.g., Arial, DejaVu Sans, q=cancel): ")).strip()
                     if fam:
                         try:
                             push_state("font-family")
@@ -3758,7 +3760,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         except Exception:
                             pass
                 elif sub == 's':
-                    val = _safe_input("Enter font size (number): ").strip()
+                    val = _safe_input(_colorize_prompt("Enter font size (number, q=cancel): ")).strip()
                     try:
                         size = float(val)
                         push_state("font-size")
@@ -4197,7 +4199,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     _Cw = '\033[96m'; _Rw = '\033[0m'
                     def b(v):
                         return 'ON ' if bool(v) else 'off'
-                    print(f"\033[1mToggle axes state:\033[0m")
+                    print(f"\033[1mToggle spines state:\033[0m")
                     print(f"  {'Side':<8}  spine  major  minor  labels title")
                     for side_key, side_code in [('top','w'),('bottom','s'),('left','a'),('right','d')]:
                         s = wasd[side_key]
@@ -4235,7 +4237,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"  Minor count     : {_Cw}x{_Rw}={_mn(ax.xaxis.get_minor_locator())}  {_Cw}y{_Rw}={_mn(ax.yaxis.get_minor_locator())}  {_Cw}r{_Rw}={_mn(ax2.yaxis.get_minor_locator())}")
 
                 _C = '\033[96m'; _R = '\033[0m'
-                print(f"\033[1mToggle axes>\033[0m")
+                print(f"\033[1mToggle spines>\033[0m")
                 print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
                 print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
                 print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
@@ -4717,8 +4719,10 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             _print_menu(fig); continue
         elif key == 'g':
             while True:
-                print("Geometry: p=plot frame, c=canvas, q=back")
-                sub = _safe_input("Geom> ").strip().lower()
+                print("  " + _colorize_menu("p: plot frame"))
+                print("  " + _colorize_menu("c: canvas"))
+                print("  " + _colorize_menu("q: back"))
+                sub = _safe_input(_colorize_prompt("Geom (p/c/q): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -5030,7 +5034,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             while True:
                 current_xlim = ax.get_xlim()
                 print(f"Current X range: {current_xlim[0]:.6g} to {current_xlim[1]:.6g}")
-                rng = _safe_input(_colorize_prompt("Enter x-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
+                print("  " + _colorize_menu("a: auto (restore original)"))
+                print("  " + _colorize_menu("q: back"))
+                rng = _safe_input(_colorize_prompt("X (w/s/a/q): ")).strip()
                 if not rng or rng.lower() == 'q':
                     break
                 if rng.lower() == 'w':
@@ -5139,7 +5148,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     while True:
                         current_ylim = ax.get_ylim()
                         print(f"Current left Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        rng = _safe_input(_colorize_prompt("Enter left y-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
+                        print("  " + _colorize_menu("min max: set both limits"))
+                        print("  " + _colorize_menu("w: upper only"))
+                        print("  " + _colorize_menu("s: lower only"))
+                        print("  " + _colorize_menu("a: auto (restore original)"))
+                        print("  " + _colorize_menu("q: back"))
+                        rng = _safe_input(_colorize_prompt("Left Y (w/s/a/q): ")).strip()
                         if not rng or rng.lower() == 'q':
                             break
                         if rng.lower() == 'w':
@@ -5242,7 +5256,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             break
                         current_ylim = ax2.get_ylim()
                         print(f"Current right Y range: {current_ylim[0]:.6g} to {current_ylim[1]:.6g}")
-                        rng = _safe_input(_colorize_prompt("Enter right y-range (min max, w=upper only, s=lower only, a=auto, q=back): ")).strip()
+                        print("  " + _colorize_menu("min max: set both limits"))
+                        print("  " + _colorize_menu("w: upper only"))
+                        print("  " + _colorize_menu("s: lower only"))
+                        print("  " + _colorize_menu("a: auto (restore original)"))
+                        print("  " + _colorize_menu("q: back"))
+                        rng = _safe_input(_colorize_prompt("Right Y (w/s/a/q): ")).strip()
                         if not rng or rng.lower() == 'q':
                             break
                         if rng.lower() == 'w':

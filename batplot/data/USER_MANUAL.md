@@ -149,7 +149,13 @@ By default, batplot reads the first two columns as x and y. Use `--readcol` to s
    # Two curves: (cols 1,2) and (cols 1,3) on the same figure
    ```
 
-3. **With wavelength**: When a file has per-file wavelength (e.g. `file.xy:1.54`), the x column is treated as 2θ and converted to Q using that wavelength.
+3. **Range**: Use `x y1-y2` to plot column x as shared x-axis and columns y1 through y2 as separate y-curves.
+   ```bash
+   batplot file.txt --readcol 1 2-20
+   # Column 1 as x; columns 2–20 as 19 curves
+   ```
+
+4. **With wavelength**: When a file has per-file wavelength (e.g. `file.xy:1.54`), the x column is treated as 2θ and converted to Q using that wavelength.
    ```bash
    batplot scan.xy:1.54 --readcol 2 3
    # Column 2 = 2θ, converted to Q using λ=1.54 Å; column 3 = intensity
@@ -284,7 +290,7 @@ batplot file1.chik file2.chik --k2chik --stack --interactive
 
 - Neware `.csv` (GC, dQdV, CPC - both raw data and summary format)
 - Biologic `.mpt` (GC, CV, CPC)
-- **Custom voltage–time `.mpt` (potential window)** — Two columns: voltage (V), time (h). Use `--pw V_MIN V_MAX --cd current_density` to plot as GC.
+- **Custom potential–time `.mpt` (potential window)** — Two columns: potential (V), time (h). Use `--pw V_MIN V_MAX --cd current_density` to plot as GC.
 - **Landt/Lanhe `.xlsx` (CPC)** - Chinese battery tester Excel files
 - **Summary CSV format (CPC)** - Cycle-level capacity data
 
@@ -311,7 +317,7 @@ Batplot supports **cycle-level summary files** for CPC plotting in both **CSV** 
 - `DChg. Spec. Cap.(mAh/g)` (or "Fangdian Bi Rongliang/mAh/g") - Discharge specific capacity
 - **Optional**: Efficiency column (`Chg.-DChg. Eff(%)` or "Xiaolv/%")
 
-**Note:** Voltage and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
+**Note:** Potential and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
 
 **Example usage:**
 ```bash
@@ -331,28 +337,28 @@ batplot --cpc summary.csv summary.xlsx neware_raw.csv biologic.mpt --mass 5.4 --
 
 ### Plotting Modes
 
-**GC (Galvanostatic Cycling)**: Voltage vs. capacity plots showing charge/discharge cycles.
+**GC (Galvanostatic Cycling)**: Potential vs. capacity plots showing charge/discharge cycles.
 
-**CV (Cyclic Voltammetry)**: Voltage vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load.
+**CV (Cyclic Voltammetry)**: Potential vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load.
 
-**dQdV**: Differential capacity analysis (dQ/dV vs. voltage).
+**dQdV**: Differential capacity analysis (dQ/dV vs. potential).
 
 **CPC (Capacity Per Cycle)**: Plot charge/discharge capacity and coulombic efficiency vs. cycle number. Supports multiple files with individual color customization.
 
-### Potential window mode (`--pw`, custom voltage–time to GC)
+### Potential window mode (`--pw`, custom potential–time to GC)
 
-For **custom .mpt files** that contain only two columns — **voltage (V)** and **time (hours)** — you can plot them as galvanostatic cycling (capacity vs. voltage) by converting time to capacity and using a potential window to separate charge and discharge.
+For **custom .mpt files** that contain only two columns — **potential (V)** and **time (hours)** — you can plot them as galvanostatic cycling (capacity vs. potential) by converting time to capacity and using a potential window to separate charge and discharge.
 
-**File format:** Plain text, tab- or space-separated: column 1 = voltage (V), column 2 = time (h). No header required.
+**File format:** Plain text, tab- or space-separated: column 1 = potential (V), column 2 = time (h). No header required.
 
 **Flags:**
 - `--pw V_MIN V_MAX` — Potential window (V). Data near these values are used to separate charge/discharge (e.g. `--pw 0.01 3`).
 - `--cd VALUE` — Current density in mA/g. Capacity (mAh/g) = current density × time (h). Required when using `--pw`.
-- `--b TOL_UPPER TOL_LOWER` — Optional. Tolerance in V for detecting the upper and lower voltage boundaries (default 0.05 and 0.005). Example: `--b 0.05 0.005`.
+- `--b TOL_UPPER TOL_LOWER` — Optional. Tolerance in V for detecting the upper and lower potential boundaries (default 0.05 and 0.005). Example: `--b 0.05 0.005`.
 
 **Examples:**
 ```bash
-# Basic: plot custom voltage–time .mpt as GC (capacity vs. voltage)
+# Basic: plot custom potential–time .mpt as GC (capacity vs. potential)
 batplot file.mpt --gc --cd 0.2 --pw 0.01 3
 
 # With custom boundary tolerances and interactive menu
@@ -372,14 +378,14 @@ batplot file.mpt --cv --interactive
 # Plot CV data with full interactive menu support
 
 batplot file.csv --xaxis time --interactive
-# Plot time (h) vs voltage (V) from CSV file with full interactive menu
+# Plot time (h) vs potential (V) from CSV file with full interactive menu
 # All interactive commands (p, i, s, b, f, l, etc.) are available
 
 batplot file.mpt --xaxis time --interactive
-# Plot time (h) vs voltage (V) from MPT file with interactive menu
+# Plot time (h) vs potential (V) from MPT file with interactive menu
 
 batplot file1.csv file2.csv --xaxis time --stack --interactive
-# Plot multiple time-voltage curves stacked with interactive menu
+# Plot multiple time-potential curves stacked with interactive menu
 
 batplot file1.csv file2.csv file3.mpt --cpc --mass 6.2 --interactive
 # Plot multiple CPC files on same axes with interactive menu
@@ -393,14 +399,14 @@ batplot file.csv --cpc --interactive
 
 ### Time Mode (`--xaxis time`)
 
-When using `--xaxis time` with CSV or MPT files, batplot plots time (in hours) on the X-axis and voltage (in volts) on the Y-axis, similar to the EC panel in operando mode. This mode supports:
+When using `--xaxis time` with CSV or MPT files, batplot plots time (in hours) on the X-axis and potential (in volts) on the Y-axis, similar to the EC panel in operando mode. This mode supports:
 - Full interactive menu with all features (p, i, s, b, f, l, m, etc.)
 - Multiple file plotting
 - Stack mode (`--stack`) for offset curves
 - Range control (`--xrange`)
 - All standard styling and export options
 
-The time mode automatically extracts time columns (e.g., "Total Time", "time/s") and voltage columns (e.g., "Voltage(V)", "Ewe/V") from the file and converts time to hours.
+The time mode automatically extracts time columns (e.g., "Total Time", "time/s") and potential columns (e.g., "Voltage(V)", "Ewe/V") from the file and converts time to hours.
 
 ### CPC Interactive Menu Features
 
@@ -564,7 +570,7 @@ Use `--operando` or `--contour` (identical behavior).
 ### Requirements
 
 - Place operando files (`.xye`, `.qye`, `.xy`, `.dat`) in the directory.
-- Optionally include a `.mpt` file for dual-panel mode (side panel: time/voltage/temperature etc.).
+- Optionally include a `.mpt` file for dual-panel mode (side panel: time/potential/temperature etc.).
 - Navigate to the folder before running Batplot.
 
 ### Example Usage
@@ -583,7 +589,7 @@ batplot --operando --wl 0.25995 --interactive
 
 ### Interactive Menu
 
-The operando interactive menu has four columns: **(Styles)**, **(Operando)**, **(Side Panel)**, **(Options)**. The Side Panel column contains commands for the optional time/voltage (or other) trace when a `.mpt` file is present.
+The operando interactive menu has four columns: **(Styles)**, **(Operando)**, **(Side Panel)**, **(Options)**. The Side Panel column contains commands for the optional time/potential (or other) trace when a `.mpt` file is present.
 
 ### Operando-Only Mode
 

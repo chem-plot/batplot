@@ -645,7 +645,8 @@ def batch_process(directory: str, args):
                 else:
                     x, y = data[:, 0], data[:, 1]
                     e = data[:, 2] if data.shape[1] >= 3 else None
-                axis_mode = args.xaxis if args.xaxis else '2theta'
+                ax = (args.xaxis or '').strip()
+                axis_mode = 'Q' if ax.upper() == 'Q' else (args.xaxis if args.xaxis else '2theta')
             else:
                 data = robust_loadtxt_skipheader(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
@@ -689,7 +690,9 @@ def batch_process(directory: str, args):
                 elif 'chir' in ext:
                     axis_mode = 'rft'
                 elif args.xaxis:
-                    axis_mode = args.xaxis
+                    axis_mode = args.xaxis.strip()
+                    if axis_mode.upper() == 'Q':
+                        axis_mode = 'Q'
                     # Print note once per unknown extension type
                     if not hasattr(args, '_batch_warned_extensions'):
                         args._batch_warned_extensions = set()
@@ -697,7 +700,7 @@ def batch_process(directory: str, args):
                         args._batch_warned_extensions.add(ext)
                         print(f"  Note: Reading '{ext}' files as 2-column (x, y) data with x-axis = {args.xaxis}")
                 else:
-                    raise ValueError(f"Unknown file type: {fname}. Use --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
+                    raise ValueError(f"Unknown file type: {fname}. Use --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
 
             # Convert to Q if needed
             if axis_mode == 'Q' and ext not in ('.qye', '.gr', '.nor'):
@@ -1062,7 +1065,7 @@ def batch_process_ec(directory: str, args):
                                      color=color, linewidth=1.5, alpha=0.8, label=str(cyc))
                 
                 ax_b.set_xlabel(x_label)
-                ax_b.set_ylabel('Voltage (V)')
+                ax_b.set_ylabel('Potential (V)')
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
                 legend.get_title().set_fontsize('small')
@@ -1099,7 +1102,7 @@ def batch_process_ec(directory: str, args):
                         ax_b.plot(voltage[mask], current[mask], '-', 
                                  color=color, linewidth=1.5, alpha=0.8, label=str(cyc))
                 
-                ax_b.set_xlabel('Voltage (V)')
+                ax_b.set_xlabel('Potential (V)')
                 ax_b.set_ylabel('Current (mA)')
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
@@ -1185,7 +1188,7 @@ def batch_process_ec(directory: str, args):
                             ax_b.plot(voltage[mask_d], dqdv[mask_d], '-', 
                                      color=color, linewidth=1.5, alpha=0.8, label=str(cyc))
                 
-                ax_b.set_xlabel('Voltage (V)')
+                ax_b.set_xlabel('Potential (V)')
                 ax_b.set_ylabel(y_label)
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')

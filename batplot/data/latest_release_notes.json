@@ -1,9 +1,7 @@
 {
-  "version": "1.8.27",
-  "custom_message": "- Improved interactive menu functionality for cpc mode",
+  "version": "1.8.28",
+  "custom_message": "- Bug fixes",
   "update_notes": [
-    "- Improved interactive menu functionality for cpc mode",
-    "- Improved interactive menu display",
     "- Bug fixes"
   ]
 }

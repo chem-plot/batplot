@@ -12,7 +12,7 @@
 - **Interactive plotting**: Real-time editing customized for each type of plottings
 - **Session Persistence**: Save and reload complete plot states with `.pkl` files
 - **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files
-- **Batch Processing**: Plot multiple files simultaneously with automatic SVG export
+- **Batch Processing**: Export each file separately with `--all`
 
 ## Installation
 
@@ -22,115 +22,259 @@ pip install batplot
 
 ## Quick Start
 
-Tutorial
-https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
+Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
 
-### XRD / PDF / XAS and much more
+---
+
+## 1D (XY) Mode — XRD, PDF, XAS and much more
+
+In batplot, --xaxis is frequently used to indicate the data type.
+
+### Basic plotting
 
 ```bash
-# Single diffraction pattern in 2theta
+
+# Specify X-axis type (Q, 2theta, r, k, energy, time or any user defined names)
+# By defauly, batplot will skip the header lines, plot the first and second columns as x and y
+# Q and q are equivalent (case-insensitive)
 batplot pattern.xye --xaxis 2theta
+batplot data.qye --xaxis q
+batplot data.txt --xaxis whatever
 
-# Interactive styling
-batplot pattern.xye --i
+# Set X-axis range
+batplot pattern.xye --xaxis 2theta --xrange 10 80
 
-# Plot all XY files in directory on same figure
-batplot allfiles
-batplot allfiles --stack --i
-batplot allfiles --xaxis 2theta --xrange 10 80
-
-# Only plot a specific extension (natural-sorted)
-batplot allxyfiles
-batplot "/path/to/data" allnorfiles --i
-
-# Batch mode: export all XY files to SVG
-batplot --all
-
-# Batch mode with options: custom axis and range
-batplot --all --xaxis 2theta --xrange 10 80
-
-# Normalize data (--stack mode auto-normalizes by default)
-batplot allfiles --norm
-
-# Batch mode: convert 2theta to Q
-batplot --all --wl 1.5406
+# Save to file (default .svg if no extension)
+batplot pattern.xye --xaxis 2theta --out figure
+batplot pattern.txt --xaxis Energy --out figure.png
 ```
 
-### Electrochemistry
+### Wavelength and Q conversion for XRD data
 
 ```bash
-# Galvanostatic cycling with interactive menu
-batplot battery.csv --gc --i
+# Convert 2θ to Q using wavelength (Å), --xaxis is no longer needed as providing wavelength is implying that user wants to convert and plot the data in Q space
+batplot data.raw --wl 1.5406 
 
-# Cyclic voltammetry
-batplot cyclic.mpt --cv --i
+# Per-file wavelength: file.xye:1.54, in this case --xaxis is also not needed and files will be plotted in Q space
+batplot scan1.brml:1.5406 scan2.xye:0.7093
 
-# Differential capacity
+# Convert and export to converted/ subfolder (q and Q equivalent)
+batplot data.xye --convert 1.54 q
+batplot data.qye --convert q 1.54
+```
+
+### Stacking and normalization
+
+```bash
+# Stack curves vertically (auto-normalizes)
+batplot file1.xy file2.xy --stack
+
+# Control spacing between stacked curves
+batplot file1.xy file2.xy --stack --delta 0.15
+
+# Normalize intensity to 0–1 (without stacking)
+batplot file.xy --norm
+```
+
+### Dual y-axis (right y-axis)
+
+```bash
+# Plot selected files on the right y-axis (--ry disables --stack)
+batplot file1.xy --ry file2.xy --ry file3.xy file4.xy --ry --interactive
+# Files 1, 2, 4 use right y-axis; file 3 uses left y-axis
+
+# With --txaxis: right y-axis curves use the top x-axis (default: shared bottom x)
+batplot file1.xy --ry file2.xy --txaxis --interactive
+```
+
+### Column selection and multi-curve
+
+```bash
+# Read columns 2 and 3 as X, Y (1-indexed)
+batplot data.xy --readcol 2 3
+
+# Per-file columns
+batplot file1.xy --readcol 2 3 file2.xy --readcol 4 5
+
+# Multiple curves from same file (cols 1,2 and 1,3)
+batplot data.xy --readcol 1 2 1 3
+
+# Range: col 1 as x, cols 2–20 as 19 y-curves
+batplot file.txt --readcol 1 2-20
+```
+
+### Derivatives and EXAFS
+
+```bash
+# Plot first derivative (dy/dx)
+batplot file.xy --1d --stack
+
+# EXAFS k-weighting
+batplot data.chik --chik           # χ(k)
+batplot data.chik --k2chik        # k²χ(k), most common
+batplot data.chik --k3chik --xrange 2 12
+```
+
+### Interactive menu
+
+```bash
+# Open interactive menu for styling, ranges, export, session save
+batplot pattern.xye --interactive
+batplot file1.xy file2.xy --stack --interactive
+batplot allfiles --xaxis 2theta --xrange 15 75 --interactive
+```
+
+---
+
+## Electrochemistry Mode
+
+### Data export requirements from instruments
+
+- **Neware**: Customized report — check all boxes
+- **Biologic**: Export all info to .mpt file
+
+### Galvanostatic cycling (GC)
+
+```bash
+# From .csv (capacity in file)
+batplot battery.csv --gc
+
+# From .mpt (requires --mass in mg)
+batplot battery.mpt --gc --mass 7.0
+
+# With interactive menu
+batplot battery.csv --gc --interactive
+```
+
+### Cyclic voltammetry (CV)
+
+```bash
+batplot cyclic.mpt --cv
+batplot cyclic.mpt --cv --interactive
+```
+
+### Differential capacity (dQ/dV)
+
+```bash
 batplot battery.csv --dqdv
-
-# Capacity per cycle - single file
-batplot stability.mpt --cpc --mass 5.4 --i
-
-# Capacity per cycle - multiple files with individual color control
-batplot file1.csv file2.csv file3.mpt --cpc --mass 5.4 --i
-
-# Batch processing: export all EC files to SVG
-batplot --gc --all --mass 7.0       # All .mpt/.csv files (.mpt needs --mass, .csv doesn't)
-batplot --cv --all                  # All .mpt files (CV mode)
-batplot --dqdv --all                # All .csv files (dQdV mode)
-batplot --cpc --all --mass 6.2      # All .mpt/.csv files (.mpt needs --mass, .csv doesn't)
-
-# Batch processing with style/geometry: apply consistent formatting to all files
-batplot --all mystyle.bps --gc --mass 7.0   # Apply .bps style to all GC files
-batplot --all config.bpsg --cv              # Apply .bpsg style+geometry to all CV files
-batplot --all style.bps --dqdv              # Apply style to all dQdV files
-batplot --all geom.bpsg --cpc --mass 5.4    # Apply style+geometry to all CPC files
+batplot battery.csv --dqdv --interactive
 ```
 
-### Operando Analysis
+### Capacity per cycle (CPC)
 
 ```bash
-# Correlate in-situ XRD with electrochemistry
-# (Place both .xye and .mpt files in same directory)
-batplot --operando --i
-# or: batplot --contour --i  (same as --operando)
+# Single file
+batplot stability.csv --cpc
+batplot stability.mpt --cpc --mass 5.4
 
-# Operando mode without electrochemistry data
-# (Only .xye files, no .mpt file)
-batplot --operando --i
+# Multiple files with individual colors
+batplot file1.csv file2.mpt --cpc --mass 6.0 --interactive
 ```
 
-Interactive menu: (Styles) | (Operando) | (Side Panel) | (Options) — Side Panel for the time/voltage trace when .mpt is present.
+### Time vs potential
+
+```bash
+# Plot time (h) vs potential from CSV/MPT
+batplot battery.csv --xaxis time --interactive
+```
+
+### Potential window (custom potential–time .mpt)
+
+```bash
+# Two columns: potential, time. Use --pw and --cd to plot as GC
+batplot custom.mpt --gc --pw 0.01 3 --cd 0.2 --interactive
+```
+
+---
+
+## Operando Mode
+
+```bash
+# Contour from folder of .xy/.xye/.qye/.dat
+batplot --operando --interactive
+
+# With folder path
+batplot /path/to/data --operando --interactive
+
+# Q conversion from 2θ
+batplot --operando --wl 0.25995 --interactive
+
+# Derivative contour
+batplot --operando --1d --interactive
+
+# With CIF tick labels
+batplot folder phase.cif:1.54 --operando --interactive
+```
+
+---
+
+## Plotting multiple files
+
+```bash
+# All XY files in current directory on same figure
+batplot allfiles
+batplot allfiles --stack --interactive
+
+# Only specific extension (natural-sorted)
+batplot allxyfiles
+batplot "/path/to/data" allnorfiles --interactive
+
+# Explicit file list
+batplot file1.xye file2.qye structure.cif:1.54 --stack --interactive
+```
+
+---
+
+## Batch export (--all)
+
+Export each file as a separate figure to `batplot_svg/`:
+
+```bash
+batplot --all
+batplot --all --format png
+batplot --all --xaxis 2theta --xrange 10 80
+batplot --all style.bps --gc --mass 7
+```
+
+---
 
 ## Supported File Formats
 
 | Type | Formats |
 |------|---------|
-| **Electrochemistry** | `.csv` (Neware raw data; summary format for CPC), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe summary for CPC) |
-| **XRD / PDF** | Any text-based file (`.xye`, `.xy`, `.qye`, `.dat`, `.csv`, `.txt`, etc.); use `--readcol` and `--xaxis` as needed. Bruker `.brml` and `.raw` are read natively. |
+| **Electrochemistry** | `.csv` (Neware), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe CPC) |
+| **XRD / PDF** | `.xye`, `.xy`, `.qye`, `.dat`, `.csv`, `.txt`; Bruker `.brml`, `.raw` |
 | **XAS** | `.nor`, `.chik`, `.chir` |
-| **Others** | `user defined` (skip the header lines and plot first two columns as x and y, alternatively using --readcol flag) |
+| **Generic** | Use `--readcol` and `--xaxis` for custom formats |
+
+---
 
 ## Interactive Features
 
-When launched with `--interactive/--i`:
+With `--interactive`:
 - **Cycle/Scan Control**: Toggle visibility, change colors
-- **Styling**: Line widths, markers, transparency
+- **Styling**: Line widths, markers, fonts
 - **Axes**: Labels, limits, ticks, spine styles
-- **Export**: Save sessions (`.pkl`), styles (`.bps`/`.bpsg`), or high-res images
+- **Export**: Sessions (`.pkl`), styles (`.bps`/`.bpsg`), high-res images
 - **Live Preview**: All changes update in real-time
 
-## Documentation
+---
 
-For detailed usage, see [USER_MANUAL.md](USER_MANUAL.md).
-
-After installing from PyPI you can read the packaged manual straight from a
-terminal:
+## Help & Documentation
 
 ```bash
-# Stream the manual (.txt)
-batplot -m
+batplot --help              # General help
+batplot --help xy           # XY mode guide
+batplot --help ec           # Electrochemistry guide
+batplot --help op           # Operando guide
+batplot --version           # Version and release notes
+batplot --manual            # Open illustrated manual
 ```
+
+- [USER_MANUAL.md](USER_MANUAL.md) — Detailed usage and workflows
+- [FLAGS_REFERENCE.md](FLAGS_REFERENCE.md) — Complete flag reference by mode
+
+---
 
 ## Requirements
 
@@ -144,10 +288,10 @@ See [LICENSE](LICENSE)
 
 ## Author & Contact
 
-Tian Dai
-tianda@uio.no
-University of Oslo
-https://www.mn.uio.no/kjemi/english/people/aca/tianda/
+Tian Dai  
+tianda@uio.no  
+University of Oslo  
+https://www.mn.uio.no/kjemi/english/people/aca/tianda/  
 https://github.com/chem-plot/
 
-**Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates, feature announcements, and community feedback. If you are not from UiO, send an email to sympa@kjemi.uio.no with the exact subject line with your name: "subscribe batplot-lab@kjemi.uio.no your-name"
+**Subscribe for Updates**: Join batplot-lab@kjemi.uio.no for updates. If not from UiO, email sympa@kjemi.uio.no with subject: "subscribe batplot-lab@kjemi.uio.no your-name"

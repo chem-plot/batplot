@@ -3,7 +3,7 @@
 This module implements the core plotting logic for each supported mode:
 
 Supported Modes:
-    - CV (Cyclic Voltammetry): voltage vs current curves by cycle
+    - CV (Cyclic Voltammetry): potential vs current curves by cycle
     - GC (Galvanostatic Cycling): capacity vs voltage curves by cycle
     - dQ/dV: differential capacity analysis
     - CPC (Capacity-per-Cycle): capacity and efficiency vs cycle number
@@ -297,9 +297,9 @@ def handle_cv_mode(args) -> int:
         # Swap axis labels if --ro flag is set
         if getattr(args, 'ro', False):
             ax.set_xlabel('Current (mA)', labelpad=8.0)
-            ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            ax.set_ylabel('Potential (V)', labelpad=8.0)
         else:
-            ax.set_xlabel('Voltage (V)', labelpad=8.0)
+            ax.set_xlabel('Potential (V)', labelpad=8.0)
             ax.set_ylabel('Current (mA)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
@@ -412,7 +412,7 @@ def handle_cv_mode(args) -> int:
 def handle_gc_mode(args) -> int:
     """Handle galvanostatic cycling (GC) plotting mode.
     
-    Galvanostatic cycling plots show voltage vs. capacity curves for each cycle.
+    Galvanostatic cycling plots show potential vs. capacity curves for each cycle.
     This is the primary visualization for battery cycling data, showing charge/
     discharge behavior, capacity fade, and voltage plateaus.
     
@@ -738,11 +738,11 @@ def handle_gc_mode(args) -> int:
                 
         # Swap x and y if --ro flag is set
         if getattr(args, 'ro', False):
-            ax.set_xlabel('Voltage (V)', labelpad=8.0)
+            ax.set_xlabel('Potential (V)', labelpad=8.0)
             ax.set_ylabel(x_label_gc, labelpad=8.0)
         else:
             ax.set_xlabel(x_label_gc, labelpad=8.0)
-            ax.set_ylabel('Voltage (V)', labelpad=8.0)
+            ax.set_ylabel('Potential (V)', labelpad=8.0)
         legend = ax.legend(title='Cycle')
         legend.get_title().set_fontsize('medium')
         fig._ec_legend_title = "Cycle"

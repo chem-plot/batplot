@@ -868,7 +868,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "el: ec curve",
                 "ew: ec width",
                 " v: toggle colorbar/ec",
-                " t: toggle axes",
+                " t: toggle spines",
                 " l: line",
                 " h: height",
                 " f: fonts",
@@ -916,7 +916,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             w3 = max(len("(Side Panel)"), *(len(s) for s in col3), 14)
             w4 = max(len("(Options)"), *(len(s) for s in col4), 16)
             rows = max(len(col1), len(col2), len(col3), len(col4))
-            print("\n\033[1mInteractive menu:\033[0m")  # Bold title
+            print("\n\033[1mContourplot Interactive Menu:\033[0m")  # Bold title
             print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Operando)':<{w2}}\033[0m \033[93m{'(Side Panel)':<{w3}}\033[0m \033[93m{'(Options)':<{w4}}\033[0m")  # Yellow headers
             for i in range(rows):
                 p1 = _colorize_menu(col1[i]) if i < len(col1) else ""
@@ -935,7 +935,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 "oc: op colormap",
                 "ow: op width",
                 " v: toggle colorbar",
-                " t: toggle axes",
+                " t: toggle spines",
                 " l: line",
                 " h: height",
                 " f: fonts",
@@ -974,7 +974,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             w2 = max(len("(Operando)"), *(len(s) for s in col2), 14)
             w3 = max(len("(Options)"), *(len(s) for s in col3), 16)
             rows = max(len(col1), len(col2), len(col3))
-            print("\n\033[1mInteractive menu:\033[0m")  # Bold title
+            print("\n\033[1mContourplot Interactive Menu:\033[0m")  # Bold title
             print(f"  \033[93m{'(Styles)':<{w1}}\033[0m \033[93m{'(Operando)':<{w2}}\033[0m \033[93m{'(Options)':<{w3}}\033[0m")  # Yellow headers
             for i in range(rows):
                 p1 = _colorize_menu(col1[i]) if i < len(col1) else ""
@@ -993,7 +993,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             "el: ec curve",
             "ew: ec width",
             " k: spine colors",
-            " t: toggle axes",
+            " t: toggle spines",
             " l: line",
             " h: height",
             " f: fonts",
@@ -1028,7 +1028,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         w3 = max(len("(Side Panel)"), *(len(s) for s in col3), 14)
         w4 = max(len("(Options)"), *(len(s) for s in col4), 16)
         rows = max(len(col1), len(col2), len(col3), len(col4))
-        print("\nInteractive menu:")
+        print("\nContourplot Interactive Menu:")
         print(f"  {'(Styles)':<{w1}} {'(Operando)':<{w2}} {'(Side Panel)':<{w3}} {'(Options)':<{w4}}")
         for i in range(rows):
             p1 = col1[i] if i < len(col1) else ""
@@ -2433,8 +2433,15 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     # Dual-panel mode: toggle both colorbar and EC, or change colorbar labels
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0)
-                    print(_colorize_inline_commands(f"Toggle: 1=colorbar, 2=EC panel, 3=both, 4=colorbar label mode, 5=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\", ec:{ec_h_offset:.3f}\"), q=cancel"))
-                    choice = _safe_input(_colorize_prompt("v> ")).strip().lower()
+                    print(f"  Colorbar offset: {cb_h_offset:.3f}\", EC offset: {ec_h_offset:.3f}\"")
+                    print("  " + _colorize_menu("1: toggle colorbar"))
+                    print("  " + _colorize_menu("2: toggle EC panel"))
+                    print("  " + _colorize_menu("3: toggle both"))
+                    print("  " + _colorize_menu("4: colorbar label mode"))
+                    print("  " + _colorize_menu("5: colorbar label text"))
+                    print("  " + _colorize_menu("m: move horizontal position"))
+                    print("  " + _colorize_menu("q: back"))
+                    choice = _safe_input(_colorize_prompt("v (1/2/3/4/5/m/q): ")).strip().lower()
                     if choice == '1':
                         # Toggle colorbar
                         cb_vis = cbar.ax.get_visible()
@@ -2488,8 +2495,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"  Colorbar offset: {cb_h_offset:.3f}\" (positive=right, negative=left)")
                             if ec_ax is not None:
                                 print(f"  EC panel offset: {ec_h_offset:.3f}\" (positive=right, negative=left)")
-                            print(_colorize_inline_commands("Commands: c=colorbar, e=EC panel, q=back"))
-                            sub = _safe_input("m> ").strip().lower()
+                            print("  " + _colorize_menu("c: colorbar"))
+                            print("  " + _colorize_menu("e: EC panel"))
+                            print("  " + _colorize_menu("q: back"))
+                            sub = _safe_input(_colorize_prompt("Move (c/e/q): ")).strip().lower()
                             if not sub or sub == 'q':
                                 break
                             if sub == 'c':
@@ -2577,8 +2586,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                             print(f"\nHorizontal position (relative to canvas center):")
                             print(f"  Colorbar offset: {cb_h_offset:.3f}\" (positive=right, negative=left)")
-                            print(_colorize_inline_commands("Commands: c=colorbar, q=back"))
-                            sub = _safe_input("m> ").strip().lower()
+                            print("  " + _colorize_menu("c: colorbar"))
+                            print("  " + _colorize_menu("q: back"))
+                            sub = _safe_input(_colorize_prompt("Move (c/q): ")).strip().lower()
                             if not sub or sub == 'q':
                                 break
                             if sub == 'c':
@@ -2638,11 +2648,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 # Create x-axis array
                 x_axis = np.linspace(x_min, x_max, n_x_points)
                 
-                print("\nPeak Search Menu:")
-                print("  1: Find peaks in X range")
-                print("  e: Explanation of peak searching")
-                print("  q: Back to main menu")
-                sub = _safe_input(_colorize_prompt("Choose option (q=back): ")).strip().lower()
+                print("\nPeak Search:")
+                print("  " + _colorize_menu("1: find peaks in X range"))
+                print("  " + _colorize_menu("e: explanation"))
+                print("  " + _colorize_menu("q: back"))
+                sub = _safe_input(_colorize_prompt("Peak (1/e/q): ")).strip().lower()
                 
                 if sub == 'e':
                     print("\n" + "="*70)
@@ -2679,8 +2689,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 if sub == '1' or sub == '':
                     # Get X range
                     print(f"\nCurrent X range: {x_min:.6g} to {x_max:.6g}")
-                    print("Enter X range for peak search (min max), or press Enter to use full range:")
-                    x_range_input = _safe_input(_colorize_prompt("X range (min max, or Enter for full, q=back): ")).strip()
+                    print("  " + _colorize_menu("min max: set both limits"))
+                    print("  " + _colorize_menu("Enter: use full range"))
+                    print("  " + _colorize_menu("q: back"))
+                    x_range_input = _safe_input(_colorize_prompt("Peak X (min max/enter/q): ")).strip()
                     
                     if x_range_input:
                         try:
@@ -2843,7 +2855,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # Always read fresh value from attribute to avoid stale cached value
             ax_h_in = getattr(ax, '_fixed_ax_h_in', ax_h_in)
             print(f"Current height: {ax_h_in:.2f} in")
-            val = _safe_input("New height (inches): ").strip()
+            print("  " + _colorize_menu("inches: new height (inches)"))
+            print("  " + _colorize_menu("q: back"))
+            val = _safe_input(_colorize_prompt("Height (inches, q=back): ")).strip()
             if val:
                 _snapshot("height")
                 try:
@@ -2880,9 +2894,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # Font submenu with numbered options
             cur_family = plt.rcParams.get('font.sans-serif', [''])[0]
             cur_size = plt.rcParams.get('font.size', None)
-            print(f"\nFont submenu (current: family='{cur_family}', size={cur_size})")
-            print(_colorize_inline_commands("  f: change family  |  s: change size  |  q: back"))
             while True:
+                print(f"\nFont (current: family='{cur_family}', size={cur_size})")
+                print("  " + _colorize_menu("f: family"))
+                print("  " + _colorize_menu("s: size"))
+                print("  " + _colorize_menu("q: back"))
                 sub = _safe_input(_colorize_prompt("Font (f/s/q): ")).strip().lower()
                 if not sub:
                     continue
@@ -2894,9 +2910,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                              'Times New Roman', 'Courier New', 'Verdana', 'Tahoma']
                     print("\nCommon font families:")
                     for i, font in enumerate(fonts, 1):
-                        print(f"  {i}: {font}")
-                    print("Or enter custom font name directly.")
-                    choice = _safe_input("Font family (number or name): ").strip()
+                        print("  " + _colorize_menu(f"{i}: {font}"))
+                    print("  " + _colorize_menu("Or enter custom font name directly"))
+                    choice = _safe_input(_colorize_prompt("Font family (number or name, q=cancel): ")).strip()
                     if not choice:
                         continue
                     _snapshot("font-family")
@@ -2916,7 +2932,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 elif sub == 's':
                     # Show current size and accept direct input
                     cur_size = plt.rcParams.get('font.size', None)
-                    choice = _safe_input(f"Font size (current: {cur_size}): ").strip()
+                    choice = _safe_input(_colorize_prompt(f"Font size (current: {cur_size}, q=cancel): ")).strip()
                     if not choice:
                         continue
                     _snapshot("font-size")
@@ -3305,7 +3321,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             _ui_position_right_ylabel(axis, fig, current_tick_state)
                 
                 _C = '\033[96m'; _R = '\033[0m'
-                print(f"\033[1mToggle axes>\033[0m")
+                print(f"\033[1mToggle spines>\033[0m")
                 print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
                 print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
                 print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
@@ -3491,7 +3507,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         _Col = '\033[96m'; _Rol = '\033[0m'
                         def b_op(v): return 'ON ' if bool(v) else 'off'
                         pane_label = 'EC' if target is ec_ax else 'Operando'
-                        print(f"\033[1mToggle axes state ({pane_label}):\033[0m")
+                        print(f"\033[1mToggle spines state ({pane_label}):\033[0m")
                         print(f"  {'Side':<8}  spine  major  minor  labels title")
                         if target is ec_ax:
                             for side_key, side_code in [('top','w'),('bottom','s'),('right','d')]:
@@ -3869,7 +3885,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             # CIF tick labels submenu (only when CIF data is present)
             cif_series = getattr(ax, '_operando_cif_tick_series', None)
             if not cif_series:
-                print("No CIF tick labels. Add CIF files when launching: batplot folder phase.cif:1.54 --operando -i")
+                print("No CIF tick labels. Add CIF files when launching: batplot folder phase.cif:1.54 --operando --interactive")
                 print_menu()
                 continue
             axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
@@ -4031,17 +4047,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     fam_display = cur.get('family') or rc_family
                     sz_display = cur.get('size') if cur.get('size') is not None else rc_size
                     while True:
-                        print(_colorize_inline_commands("CIF title font submenu:"))
-                        print("  " + _colorize_inline_commands(f"f: family (current: {fam_display})"))
-                        print("  " + _colorize_inline_commands(f"s: size (current: {sz_display})"))
-                        print("  " + _colorize_inline_commands("q: back"))
-                        font_sub = _safe_input(_colorize_prompt("f> ")).strip().lower()
+                        print(f"\nCIF title font (current: family={fam_display}, size={sz_display})")
+                        print("  " + _colorize_menu("f: family"))
+                        print("  " + _colorize_menu("s: size"))
+                        print("  " + _colorize_menu("q: back"))
+                        font_sub = _safe_input(_colorize_prompt("CIF font (f/s/q): ")).strip().lower()
                         if not font_sub or font_sub == 'q':
                             break
                         if font_sub == 'f':
                             print(_colorize_inline_commands("Common: Arial, DejaVu Sans, Times New Roman, Courier New"))
-                            new_fam = _safe_input(f"Font family (current: {fam_display}, Enter to keep): ").strip()
-                            if new_fam:
+                            new_fam = _safe_input(_colorize_prompt(f"Font family (current: {fam_display}, Enter=keep, q=back): ")).strip()
+                            if new_fam and new_fam.lower() != 'q':
                                 font_dict = dict(cur)
                                 font_dict['family'] = new_fam
                                 fig._operando_cif_title_font = font_dict
@@ -4051,8 +4067,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                                 fig.canvas.draw_idle()
                                 print(f"CIF title font family: {fam_display}")
                         elif font_sub == 's':
-                            new_sz = _safe_input(f"Font size (current: {sz_display}, Enter to keep): ").strip()
-                            if new_sz:
+                            new_sz = _safe_input(_colorize_prompt(f"Font size (current: {sz_display}, Enter=keep, q=back): ")).strip()
+                            if new_sz and new_sz.lower() != 'q':
                                 try:
                                     val = max(6, int(float(new_sz)))
                                     font_dict = dict(cur)
@@ -4227,7 +4243,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'ox':
             while True:
                 cur = ax.get_xlim(); print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input(_colorize_inline_commands("New X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
+                print("  " + _colorize_menu("a: auto (restore original)"))
+                print("  " + _colorize_menu("q: back"))
+                line = _safe_input(_colorize_prompt("Operando X (w/s/a/q): ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -4304,7 +4325,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
         elif cmd == 'oy':
             while True:
                 cur = ax.get_ylim(); print(f"Current operando Y: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input(_colorize_inline_commands("New Y range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
+                print("  " + _colorize_menu("a: auto (restore original)"))
+                print("  " + _colorize_menu("q: back"))
+                line = _safe_input(_colorize_prompt("Operando Y (w/s/a/q): ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -4433,10 +4459,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                     print(f"Could not compute intensity range in visible area: {e}")
                     auto_available = False
                 
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
                 if auto_available:
-                    line = _safe_input(_colorize_inline_commands("New intensity range (min max, w=upper only, s=lower only, a=auto-fit to visible, q=back): ")).strip()
+                    print("  " + _colorize_menu("a: auto-fit to visible"))
+                print("  " + _colorize_menu("q: back"))
+                if auto_available:
+                    line = _safe_input(_colorize_prompt("Intensity (w/s/a/q): ")).strip()
                 else:
-                    line = _safe_input(_colorize_inline_commands("New intensity range (min max, w=upper only, s=lower only, q=back): ")).strip()
+                    line = _safe_input(_colorize_prompt("Intensity (w/s/q): ")).strip()
                 
                 if not line or line.lower() == 'q':
                     break
@@ -4527,7 +4559,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ax_w_in = getattr(ax, '_fixed_ax_w_in', ax_w_in)
                 print(f"Current operando width: {ax_w_in:.2f} in")
-                val = _safe_input(_colorize_inline_commands("New width (inches, q=back): ")).strip()
+                print("  " + _colorize_menu("inches: new width (inches)"))
+                print("  " + _colorize_menu("q: back"))
+                val = _safe_input(_colorize_prompt("Operando width (inches, q=back): ")).strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("operando-width")
@@ -4547,7 +4581,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 ec_w_in = getattr(ec_ax, '_fixed_ec_w_in', ec_w_in)
                 print(f"Current EC width: {ec_w_in:.2f} in")
-                val = _safe_input(_colorize_inline_commands("New EC width (inches, q=back): ")).strip()
+                print("  " + _colorize_menu("inches: new width (inches)"))
+                print("  " + _colorize_menu("q: back"))
+                val = _safe_input(_colorize_prompt("EC width (inches, q=back): ")).strip()
                 if not val or val.lower() == 'q':
                     break
                 _snapshot("ec-width")
@@ -4665,7 +4701,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             #   ew: EC width
             #   h:  height
             #   el: EC curve (color, linewidth)
-            #   t:  toggle axes (WASD states for both panes)
+            #   t:  toggle spines (WASD states for both panes)
             #   l:  line widths (frame and tick widths for both panes)
             #   f:  fonts (family, size)
             #   g:  canvas size
@@ -4820,8 +4856,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             mn_str = str(minor) if minor is not None else 'auto'
                             print(f"Tick length (t>l): major={maj}, minor={mn_str}")
                     
-                    # Toggle axes (t) - WASD visibility
-                    print("\n--- Toggle axes (t) ---")
+                    # Toggle spines (t) - WASD visibility
+                    print("\n--- Toggle spines (t) ---")
                     def _onoff(v): return 'ON ' if bool(v) else 'off'
                     op_ts = getattr(ax, '_saved_tick_state', {})
                     op_wasd = {
@@ -6161,9 +6197,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 if ln is None:
                     print("No EC line found to style.")
                     print_menu(); continue
-                print(_colorize_inline_commands("EC line submenu: c=color, l=linewidth, q=back"))
+                print("  " + _colorize_menu("c: color"))
+                print("  " + _colorize_menu("l: linewidth"))
+                print("  " + _colorize_menu("q: back"))
                 while True:
-                    sub = _safe_input("el> ").strip().lower()
+                    sub = _safe_input(_colorize_prompt("el> ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -6175,11 +6213,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         if user_colors:
                             print("\nSaved colors (refer as number or u#):")
                             for idx, color in enumerate(user_colors, 1):
-                                print(f"  {idx}: {color_block(color)} {color}")
+                                print("  " + _colorize_menu(f"{idx}: {color_block(color)} {color}"))
                         else:
-                            print("\nNo saved colors. Type 'u' to manage saved colors.")
+                            print("\nNo saved colors.")
+                            print("  " + _colorize_menu("u: manage saved colors"))
                         print("  (Enter color name/hex, saved color number, or 'u' to manage)")
-                        val = _safe_input(f"Color (current={cur}, blank=cancel): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Color (current={cur}, blank=cancel): ")).strip()
                         if not val:
                             continue
                         if val.lower() == 'u':
@@ -6196,7 +6235,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                             print(f"Invalid color: {e}")
                     elif sub == 'l':
                         cur = ln.get_linewidth()
-                        val = _safe_input(f"Line width (current={cur}, blank=cancel): ").strip()
+                        val = _safe_input(_colorize_prompt(f"Line width (current={cur}, blank=cancel): ")).strip()
                         if not val:
                             continue
                         _snapshot("ec-line-width")
@@ -6221,7 +6260,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 continue
             while True:
                 cur = ec_ax.get_ylim(); print(f"Current EC time range (Y): {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input(_colorize_inline_commands("New time range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
+                print("  " + _colorize_menu("a: auto (restore original)"))
+                print("  " + _colorize_menu("q: back"))
+                line = _safe_input(_colorize_prompt("EC time (w/s/a/q): ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -6670,7 +6714,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 cur = ec_ax.get_xlim()
                 print(f"Current EC X range: {cur[0]:.4g} {cur[1]:.4g}")
-                line = _safe_input(_colorize_inline_commands("New EC X range (min max), w=upper only, s=lower only, a=auto (restore original), q=back: ")).strip()
+                print("  " + _colorize_menu("min max: set both limits"))
+                print("  " + _colorize_menu("w: upper only"))
+                print("  " + _colorize_menu("s: lower only"))
+                print("  " + _colorize_menu("a: auto (restore original)"))
+                print("  " + _colorize_menu("q: back"))
+                line = _safe_input(_colorize_prompt("EC X (w/s/a/q): ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line.lower() == 'w':
@@ -6759,8 +6808,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
             while True:
                 cur_w, cur_h = _get_fig_size(fig)
                 print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
-                print("Canvas: only figure size will change; panel widths/gaps are not altered.")
-                line = _safe_input(_colorize_inline_commands("New canvas size 'W H' (q=back): ")).strip()
+                print("  " + _colorize_menu("W H: new width and height (inches)"))
+                print("  " + _colorize_menu("q: back"))
+                print("(Panel widths/gaps are not altered)")
+                line = _safe_input(_colorize_prompt("Canvas (W H, q=back): ")).strip()
                 if not line or line.lower() == 'q':
                     break
                 if line:

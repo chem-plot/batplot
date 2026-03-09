@@ -777,11 +777,11 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
     This function automatically detects the format and parses accordingly.
     
     Modes Explained:
-        - 'gc' (Galvanostatic Cycling): Returns capacity vs voltage curves
+        - 'gc' (Galvanostatic Cycling): Returns capacity vs potential curves
           Calculates specific capacity from Q(discharge) and active material mass
           Identifies charge/discharge segments from current sign
           
-        - 'cv' (Cyclic Voltammetry): Returns voltage vs current curves
+        - 'cv' (Cyclic Voltammetry): Returns potential vs current curves
           Used for electrochemical characterization
           
         - 'cpc' (Capacity Per Cycle): Returns cycle statistics
@@ -804,7 +804,7 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
         'gc' mode: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
             (specific_capacity, voltage, cycles, charge_mask, discharge_mask)
             - specific_capacity: Specific capacity in mAh/g
-            - voltage: Voltage in V
+            - voltage: Potential in V
             - cycles: Cycle number for each data point
             - charge_mask: Boolean array, True for charging points
             - discharge_mask: Boolean array, True for discharging points
@@ -843,7 +843,7 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
         if first_line.startswith('EC-Lab ASCII FILE'):
             is_eclab_format = True
     
-    # Handle simple 2-column time/voltage export format (for operando time mode)
+    # Handle simple 2-column time/potential export format (for operando time mode)
     if not is_eclab_format and mode == 'time':
         try:
             # Read with flexible delimiter (tab or whitespace) and handle European comma decimal separator
@@ -1178,7 +1178,7 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
         return (specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask)
     
     elif mode == 'time':
-        # Time series: time vs voltage/current
+        # Time series: time vs potential/current
         time_col = col_map.get('time/s', None)
         voltage_col = col_map.get('Ewe/V', None)
         if voltage_col is None:
@@ -1200,10 +1200,10 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
         current_data = data[:, current_col] if current_col is not None else None
         
         # For EC-Lab files, return standard labels
-        return (time_data, voltage_data, current_data, 'Time (h)', 'Voltage (V)')
+        return (time_data, voltage_data, current_data, 'Time (h)', 'Potential (V)')
     
     elif mode == 'cv':
-        # Cyclic voltammetry: voltage vs current, split by cycle
+        # Cyclic voltammetry: potential vs current, split by cycle
         voltage_col = col_map.get('Ewe/V', None)
         if voltage_col is None:
             voltage_col = col_map.get('Ewe', None)
@@ -1370,7 +1370,7 @@ def read_biologic_txt_file(fname: str, mode: str = 'cv') -> Tuple[np.ndarray, np
     col_map = {name: i for i, name in enumerate(column_names)}
     
     if mode == 'cv':
-        # Cyclic voltammetry: voltage vs current, split by cycle
+        # Cyclic voltammetry: potential vs current, split by cycle
         voltage_col = col_map.get('Ewe/V', None)
         if voltage_col is None:
             voltage_col = col_map.get('Ewe', None)
@@ -1484,7 +1484,7 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
                 - Continuous across charge/discharge (discharge starts where charge ends)
                 - Example: [0, 50, 100, 150, 100, 50, 0] for one cycle (charge 0→150, discharge 150→0)
             
-            voltage (np.ndarray): Y-axis voltage values in V
+            voltage (np.ndarray): Y-axis potential values in V
                 - Length: N data points (matches capacity_x)
                 - Typical range: 2.5-4.2 V for Li-ion cells
             
@@ -2026,7 +2026,7 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
     
     Differential capacity analysis (dQ/dV vs V plots) is used to identify electrochemical phase
     transitions and reaction mechanisms in battery materials. Peaks in dQ/dV correspond to flat
-    voltage plateaus in the galvanostatic profile, revealing redox reactions and structural changes.
+    potential plateaus in the galvanostatic profile, revealing redox reactions and structural changes.
     
     This function extracts pre-calculated dQ/dV data from cycler software exports (e.g., Neware),
     supporting both absolute (dQ/dV in mAh/V) and specific (dQm/dV in mAh g⁻¹ V⁻¹) units.
@@ -2037,13 +2037,13 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
     
     Where:
         - Q: Capacity (charge passed, mAh or mAh/g)
-        - V: Voltage (V)
+        - V: Potential (V)
         - I: Current (mA)
         - t: Time (hours)
     
     Physical interpretation:
-        - High dQ/dV: Voltage changes slowly with capacity (flat plateau) → sharp peak in plot
-        - Low dQ/dV: Voltage changes rapidly with capacity (sloped region) → baseline in plot
+        - High dQ/dV: Potential changes slowly with capacity (flat plateau) → sharp peak in plot
+        - Low dQ/dV: Potential changes rapidly with capacity (sloped region) → baseline in plot
         - Peaks identify specific phase transitions, intercalation stages, or side reactions
     
     Common applications:
@@ -2059,7 +2059,7 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
         - Line 2: Additional columns (first cell empty, merged with Line 1)
     
     Required columns:
-        - 'Voltage(V)': X-axis for dQ/dV plot (typical range 2.5-4.2 V for Li-ion)
+        - 'Voltage(V)': X-axis for dQ/dV plot (potential, typical range 2.5-4.2 V for Li-ion)
         - At least one dQ/dV column:
             * 'dQm/dV(mAh/V.g)': Specific differential capacity (preferred for comparing materials)
             * 'dQ/dV(mAh/V)': Absolute differential capacity (for single cell analysis)
@@ -2171,7 +2171,7 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
         >>> plt.figure()
         >>> plt.plot(v[chg], dqdv[chg], 'r-', label='Charge')
         >>> plt.plot(v[dchg], dqdv[dchg], 'b-', label='Discharge')
-        >>> plt.xlabel('Voltage (V)')
+        >>> plt.xlabel('Potential (V)')
         >>> plt.ylabel(ylabel)
         >>> plt.legend()
         >>> 
@@ -2971,10 +2971,10 @@ def read_mpt_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
 
 def read_batx_file(fname: str, v_min: float, v_max: float, current_density: float,
                    tol_upper: float = 0.05, tol_lower: float = 0.005) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Read custom .mpt file for potential-window mode (voltage vs time) and convert to GC format.
+    """Read custom .mpt file for potential-window mode (potential vs time) and convert to GC format.
     
     This function reads a simple two-column .mpt file where:
-    - Column 1: Voltage (V)
+    - Column 1: Potential (V)
     - Column 2: Time (hours)
     
     And converts it to galvanostatic cycling format using:
@@ -3112,7 +3112,7 @@ def read_indexed_voltage_time_file(
 
     Format:
         col 0: segment index (1, 2, 3, ...) alternating discharge/charge segments
-        col 1: voltage (V)
+        col 1: potential (V)
         col 2: time (hours)
 
     Segment roles:

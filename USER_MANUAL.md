@@ -20,6 +20,7 @@ pip install batplot
 2. [XY Mode](#normal-xy-mode)
 3. [Electrochemistry Mode](#electrochemistry-mode)
 4. [Operando Mode](#operando-mode)
+5. [Command-Line Flags Reference](#command-line-flags-reference)
 
 ---
 
@@ -45,7 +46,7 @@ Batplot supports three main figure types:
 - PDF: `.gr`
 - XAS: `.nor` (energy), `.chik` (k), `.chir` (FT-EXAFS R)
 - Crystallography: `.cif` (reflection ticks/labels only)
-- Generic/undefined: `.xy`, `.dat` or other types (will read the first two columns and plot as x and y)
+- Generic/undefined: `.xy`, `.dat`, `.txt` or other types (will read the first two columns and plot as x and y)
 
 ### Plotting Modes
 
@@ -71,34 +72,34 @@ batplot file1.xye:1.54 file2.qye
 batplot file1.xye file2.dat --wl 1.54
 # Plot two 2theta files in Q space with wavelength 1.54 Å
 
-batplot file1.xye file2.xye --xaxis 2theta --interactive
+batplot file1.xye file2.xye --xaxis 2theta --i
 # Plot with 2theta as X axis and open interactive menu
 
-batplot file1.xye:0.25995 file2.qye --stack --interactive
+batplot file1.xye:0.25995 file2.qye --stack --i
 # Stack two files and open the interactive menu
 
-batplot file1.xye file2.xye. --wl 1.54 --stack --interactive
+batplot file1.xye file2.xye. --wl 1.54 --stack --i
 # Stack two files and open the interactive menu
 
-batplot file1.xye:0.25995 file2.qye structure1.cif structure2.cif --stack --interactive
+batplot file1.xye:0.25995 file2.qye structure1.cif structure2.cif --stack --i
 # Stack two files with reference cif ticks and open the interactive menu
 
 batplot allfiles
 # Plot all XY files in current directory on the same figure
 
-batplot allfiles --stack --interactive
+batplot allfiles --stack --i
 # Plot all XY files stacked with interactive menu
 
-batplot allfiles --xaxis 2theta --xrange 10 80 --interactive
+batplot allfiles --xaxis 2theta --xrange 10 80 --i
 # Plot all files with custom axis, range, and interactive menu
 
-batplot allfiles --norm --interactive
+batplot allfiles --norm --i
 # Plot all files with normalized intensities
 
 batplot allxyfiles
 # Only plot .xy files (natural ordering: file2 before file10)
 
-batplot "/path/to/data" allnorfiles --interactive
+batplot "/path/to/data" allnorfiles --i
 # Plot only .nor files from a folder with the interactive menu
 
 batplot --all
@@ -182,6 +183,8 @@ By default, batplot reads the first two columns as x and y. Use `--readcol` to s
 
 Batplot supports flexible wavelength specification for XRD data conversion and CIF tick calculation. You can specify wavelengths globally using `--wl` or per-file using colon syntax.
 
+**Note:** For `--xaxis` and `--convert`, **Q and q are equivalent** (case-insensitive). Use either `--xaxis Q` or `--xaxis q`, and `--convert 1.54 q` or `--convert 1.54 Q`.
+
 **Per-file wavelength syntax:**
 
 1. **Single wavelength**: `file:wl`
@@ -196,8 +199,9 @@ Batplot supports flexible wavelength specification for XRD data conversion and C
 **Examples:**
 
 ```bash
-# Single wavelength for Q conversion
+# Single wavelength for Q conversion (Q and q are equivalent for --xaxis)
 batplot data.xye:1.5406 --xaxis Q
+batplot data.xye:1.5406 --xaxis q
 # Converts 2theta data to Q using Cu Kα wavelength
 
 # CIF file with wavelength for 2theta tick calculation
@@ -256,7 +260,7 @@ batplot file1.chik file2.chik --k2chik --stack --interactive
 
 - Neware `.csv` (GC, dQdV, CPC - both raw data and summary format)
 - Biologic `.mpt` (GC, CV, CPC)
-- **Custom voltage–time `.mpt` (potential window)** — Two columns: voltage (V), time (h). Use `--pw V_MIN V_MAX --cd current_density` to plot as GC.
+- **Custom potential–time `.mpt` (potential window)** — Two columns: potential (V), time (h). Use `--pw V_MIN V_MAX --cd current_density` to plot as GC.
 - **Landt/Lanhe `.xlsx` (CPC)** - Chinese battery tester Excel files
 - **Summary CSV format (CPC)** - Cycle-level capacity data
 
@@ -283,7 +287,7 @@ Batplot supports **cycle-level summary files** for CPC plotting in both **CSV** 
 - `DChg. Spec. Cap.(mAh/g)` (or "Fangdian Bi Rongliang/mAh/g") - Discharge specific capacity
 - **Optional**: Efficiency column (`Chg.-DChg. Eff(%)` or "Xiaolv/%")
 
-**Note:** Voltage and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
+**Note:** Potential and current columns are optional for summary files. If not present, synthetic values are generated internally for compatibility.
 
 **Example usage:**
 ```bash
@@ -303,28 +307,28 @@ batplot --cpc summary.csv summary.xlsx neware_raw.csv biologic.mpt --mass 5.4 --
 
 ### Plotting Modes
 
-**GC (Galvanostatic Cycling)**: Voltage vs. capacity plots showing charge/discharge cycles.
+**GC (Galvanostatic Cycling)**: Potential vs. capacity plots showing charge/discharge cycles.
 
-**CV (Cyclic Voltammetry)**: Voltage vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load.
+**CV (Cyclic Voltammetry)**: Potential vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load.
 
-**dQdV**: Differential capacity analysis (dQ/dV vs. voltage).
+**dQdV**: Differential capacity analysis (dQ/dV vs. potential).
 
 **CPC (Capacity Per Cycle)**: Plot charge/discharge capacity and coulombic efficiency vs. cycle number. Supports multiple files with individual color customization.
 
-### Potential window mode (`--pw`, custom voltage–time to GC)
+### Potential window mode (`--pw`, custom potential–time to GC)
 
-For **custom .mpt files** that contain only two columns — **voltage (V)** and **time (hours)** — you can plot them as galvanostatic cycling (capacity vs. voltage) by converting time to capacity and using a potential window to separate charge and discharge.
+For **custom .mpt files** that contain only two columns — **potential (V)** and **time (hours)** — you can plot them as galvanostatic cycling (capacity vs. potential) by converting time to capacity and using a potential window to separate charge and discharge.
 
-**File format:** Plain text, tab- or space-separated: column 1 = voltage (V), column 2 = time (h). No header required.
+**File format:** Plain text, tab- or space-separated: column 1 = potential (V), column 2 = time (h). No header required.
 
 **Flags:**
 - `--pw V_MIN V_MAX` — Potential window (V). Data near these values are used to separate charge/discharge (e.g. `--pw 0.01 3`).
 - `--cd VALUE` — Current density in mA/g. Capacity (mAh/g) = current density × time (h). Required when using `--pw`.
-- `--b TOL_UPPER TOL_LOWER` — Optional. Tolerance in V for detecting the upper and lower voltage boundaries (default 0.05 and 0.005). Example: `--b 0.05 0.005`.
+- `--b TOL_UPPER TOL_LOWER` — Optional. Tolerance in V for detecting the upper and lower potential boundaries (default 0.05 and 0.005). Example: `--b 0.05 0.005`.
 
 **Examples:**
 ```bash
-# Basic: plot custom voltage–time .mpt as GC (capacity vs. voltage)
+# Basic: plot custom potential–time .mpt as GC (capacity vs. potential)
 batplot file.mpt --gc --cd 0.2 --pw 0.01 3
 
 # With custom boundary tolerances and interactive menu
@@ -344,14 +348,14 @@ batplot file.mpt --cv --interactive
 # Plot CV data with full interactive menu support
 
 batplot file.csv --xaxis time --interactive
-# Plot time (h) vs voltage (V) from CSV file with full interactive menu
+# Plot time (h) vs potential (V) from CSV file with full interactive menu
 # All interactive commands (p, i, s, b, f, l, etc.) are available
 
 batplot file.mpt --xaxis time --interactive
-# Plot time (h) vs voltage (V) from MPT file with interactive menu
+# Plot time (h) vs potential (V) from MPT file with interactive menu
 
 batplot file1.csv file2.csv --xaxis time --stack --interactive
-# Plot multiple time-voltage curves stacked with interactive menu
+# Plot multiple time-potential curves stacked with interactive menu
 
 batplot file1.csv file2.csv file3.mpt --cpc --mass 6.2 --interactive
 # Plot multiple CPC files on same axes with interactive menu
@@ -365,14 +369,14 @@ batplot file.csv --cpc --interactive
 
 ### Time Mode (`--xaxis time`)
 
-When using `--xaxis time` with CSV or MPT files, batplot plots time (in hours) on the X-axis and voltage (in volts) on the Y-axis, similar to the EC panel in operando mode. This mode supports:
+When using `--xaxis time` with CSV or MPT files, batplot plots time (in hours) on the X-axis and potential (in volts) on the Y-axis, similar to the EC panel in operando mode. This mode supports:
 - Full interactive menu with all features (p, i, s, b, f, l, m, etc.)
 - Multiple file plotting
 - Stack mode (`--stack`) for offset curves
 - Range control (`--xrange`)
 - All standard styling and export options
 
-The time mode automatically extracts time columns (e.g., "Total Time", "time/s") and voltage columns (e.g., "Voltage(V)", "Ewe/V") from the file and converts time to hours.
+The time mode automatically extracts time columns (e.g., "Total Time", "time/s") and potential columns (e.g., "Voltage(V)", "Ewe/V") from the file and converts time to hours.
 
 ### CPC Interactive Menu Features
 
@@ -500,7 +504,7 @@ Use `--operando` or `--contour` (identical behavior).
 ### Requirements
 
 - Place operando files (`.xye`, `.qye`, `.xy`, `.dat`) in the directory.
-- Optionally include a `.mpt` file for dual-panel mode (side panel: time/voltage/temperature etc.).
+- Optionally include a `.mpt` file for dual-panel mode (side panel: time/potential/temperature etc.).
 - Optionally add CIF files for phase tick labels (below or above the operando panel).
 - Navigate to the folder before running Batplot.
 
@@ -512,10 +516,10 @@ You can overlay CIF reflection tick labels on the operando contour, using the sa
 batplot folder phase.cif:1.54 --operando --interactive
 # Add CIF tick labels below the operando panel (λ=1.54 Å for 2θ mode)
 
-batplot folder phase1.cif:1.54 phase2.cif:0.71 --operando --wl 1.54 -i
+batplot folder phase1.cif:1.54 phase2.cif:0.71 --operando --wl 1.54 --interactive
 # Multiple CIF phases with different wavelengths
 
-batplot folder phase.cif:0.71 --operando --wl 0.709 --xaxis 2theta -i
+batplot folder phase.cif:0.71 --operando --wl 0.709 --xaxis 2theta --interactive
 # Operando data (e.g. .qye in Q) is converted to 2θ using --wl; CIF tick positions
 # are converted to 2θ from the CIF reflections using the same wavelength
 ```
@@ -549,11 +553,162 @@ batplot --operando --wl 0.25995 --interactive
 
 ### Interactive Menu
 
-The operando interactive menu has four columns: **(Styles)**, **(Operando)**, **(Side Panel)**, **(Options)**. The Side Panel column contains commands for the optional time/voltage (or other) trace when a `.mpt` file is present: **et** (time range), **ex** (X range), **ey** (Y-axis type), **er** (rename), **eg** (grid lines).
+The operando interactive menu has four columns: **(Styles)**, **(Operando)**, **(Side Panel)**, **(Options)**. The Side Panel column contains commands for the optional time/potential (or other) trace when a `.mpt` file is present: **et** (time range), **ex** (X range), **ey** (Y-axis type), **er** (rename), **eg** (grid lines).
 
 ### Operando-Only Mode
 
 If no `.mpt` file is present, operando mode displays only the contour plot. The interactive menu adapts to allow full control of all four spines (left, right, top, bottom) for the single panel.
+
+---
+
+## 5. Command-Line Flags Reference
+
+This section summarizes all command-line flags by mode, with usage examples. For detailed descriptions of each flag, see [FLAGS_REFERENCE.md](FLAGS_REFERENCE.md).
+
+### 1D (XY) Mode
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--interactive` | Open interactive menu for styling, ranges, fonts, export | `batplot file.xy --interactive` |
+| `--delta` | Spacing between stacked curves | `batplot file1.xy file2.xy --stack --delta 0.1` |
+| `--norm` | Normalize intensity to 0–1 range | `batplot file.xy --norm` |
+| `--xrange` | Set X-axis range (min max) | `batplot file.xy --xrange 10 80` |
+| `--out` | Save figure to file | `batplot file.xy --out plot.svg` |
+| `--xaxis` | X-axis type: Q, 2theta, r, k, energy, time. Q and q equivalent | `batplot file.xy --xaxis 2theta` |
+| `--wl` | Wavelength (Å) for Q conversion | `batplot file.xye --wl 1.5406 --xaxis Q` |
+| `--ro` | Swap X and Y axes | `batplot file.csv --xaxis time --ro` |
+| `--stack` | Stack curves vertically | `batplot file1.xy file2.xy --stack` |
+| `--1d` / `--2d` | Plot first derivative (dy/dx) | `batplot file.xy --1d --stack` |
+| `--chik` | EXAFS χ(k) plot | `batplot data.chik --chik` |
+| `--kchik` | EXAFS kχ(k) plot | `batplot data.chik --kchik` |
+| `--k2chik` | EXAFS k²χ(k) plot | `batplot data.chik --k2chik` |
+| `--k3chik` | EXAFS k³χ(k) plot | `batplot data.chik --k3chik` |
+| `--readcol` | Columns for X and Y (1-indexed) | `batplot file.xy --readcol 2 3` |
+| `--readcolxy` | Columns for .xy files only | `batplot file.xy --readcolxy 2 3` |
+| `--readcolxye` | Columns for .xye files only | `batplot file.xye --readcolxye 2 3` |
+| `--readcolqye` | Columns for .qye files only | `batplot file.qye --readcolqye 2 3` |
+| `--readcolnor` | Columns for .nor files only | `batplot file.nor --readcolnor 2 3` |
+| `--readcoldat` | Columns for .dat files only | `batplot file.dat --readcoldat 2 3` |
+| `--readcolcsv` | Columns for .csv files only | `batplot file.csv --readcolcsv 2 3` |
+| `--convert` | Convert XRD data (wl→wl, wl→q, q→wl). q and Q equivalent | `batplot file.xye --convert 1.54 q` |
+| `--all` | Batch mode: export each file separately | `batplot --all` |
+| `--format` | Export format: svg, png, pdf, jpg, eps, tif | `batplot --all --format png` |
+
+**1D examples:**
+
+```bash
+# Basic plot with interactive menu
+batplot file1.xye file2.qye --interactive
+
+# Stack with wavelength and spacing
+batplot file1.xye:1.54 file2.xye --stack --delta 0.2 --interactive
+
+# Derivative plot
+batplot file1.xy file2.xy --1d --stack --interactive
+
+# Batch export with style
+batplot --all style.bps --xaxis 2theta --xrange 10 80
+
+# Per-file column selection
+batplot file1.xy --readcol 2 3 file2.xy --readcol 4 5
+```
+
+---
+
+### EC (Electrochemistry) Mode
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--gc` | Galvanostatic cycling (capacity vs potential) | `batplot file.mpt --gc --mass 7` |
+| `--dqdv` | Differential capacity (dQ/dV vs potential) | `batplot file.csv --dqdv` |
+| `--cv` | Cyclic voltammetry (potential vs current) | `batplot file.mpt --cv` |
+| `--cpc` | Capacity per cycle (capacity & efficiency vs cycle) | `batplot file.csv --cpc` |
+| `--mass` | Active mass in mg (required for .mpt in GC/CPC) | `batplot file.mpt --gc --mass 6.5` |
+| `--interactive` | Open interactive menu | `batplot file.csv --gc --interactive` |
+| `--xaxis time` | Plot time vs potential (EC CSV/MPT) | `batplot file.csv --xaxis time --interactive` |
+| `--ro` | Swap X and Y axes | `batplot file.mpt --gc --ro --mass 7` |
+| `--pw` | Potential window (V_MIN V_MAX) for custom potential–time | `batplot file.mpt --gc --pw 0.01 3 --cd 0.2` |
+| `--cd` | Current density (mA/g) for --pw mode | `batplot file.mpt --gc --pw 0.01 3 --cd 0.2` |
+| `--b` | Boundary tolerance for --pw (upper lower) | `batplot file.mpt --gc --pw 0.01 3 --cd 0.2 --b 0.05 0.005` |
+| `--all` | Batch mode: export each EC file separately | `batplot --gc --all --mass 7` |
+| `--format` | Export format | `batplot --gc --all --mass 7 --format png` |
+| `--out` | Save figure to file | `batplot file.csv --gc --out plot.svg` |
+
+**EC examples:**
+
+```bash
+# GC from .mpt (requires --mass)
+batplot file.mpt --gc --mass 7.0 --interactive
+
+# GC from .csv (capacity in file)
+batplot file.csv --gc --interactive
+
+# CPC with per-file mass
+batplot f1.mpt --mass 6.5 f2.csv f3.mpt --mass 7.0 --cpc
+
+# dQ/dV
+batplot file.csv --dqdv --interactive
+
+# CV
+batplot file.mpt --cv --interactive
+
+# Time vs potential
+batplot file.csv --xaxis time --interactive
+
+# Batch with style
+batplot --all style.bps --gc --mass 7
+
+# Potential window mode (custom potential–time .mpt)
+batplot file.mpt --gc --pw 0.01 3 --cd 0.2 --interactive
+```
+
+---
+
+### Operando Mode
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--operando` | Operando contour mode | `batplot --operando --interactive` |
+| `--contour` | Alias for --operando | `batplot --contour --interactive [FOLDER]` |
+| `--interactive` | Open interactive menu | `batplot --operando --interactive` |
+| `--wl` | Wavelength for Q conversion | `batplot --operando --wl 0.25995 --interactive` |
+| `--xaxis` | X-axis type (e.g. 2theta) | `batplot --operando --xaxis 2theta` |
+| `--1d` / `--2d` | Plot derivatives as contour | `batplot --operando --1d --interactive` |
+
+**Operando examples:**
+
+```bash
+# Basic operando with interactive menu
+batplot --operando --interactive
+
+# With folder path
+batplot --contour --interactive /path/to/data
+
+# Q conversion from 2theta
+batplot --operando --wl 0.25995 --interactive
+
+# 2theta axis
+batplot --operando --xaxis 2theta --interactive
+
+# Derivative contour
+batplot --operando --1d --interactive
+
+# With CIF tick labels
+batplot folder phase.cif:1.54 --operando --interactive
+```
+
+---
+
+### Shared Flags (All Modes)
+
+| Flag | Description |
+|------|-------------|
+| `--help` | Show help |
+| `--help xy` | XY mode help |
+| `--help ec` | EC mode help |
+| `--help op` | Operando mode help |
+| `--version` | Show version |
+| `--manual` | Open illustrated manual |
 
 ---
 

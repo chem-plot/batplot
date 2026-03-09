@@ -371,9 +371,9 @@ def _handle_cv_mode(args) -> int:
             # Swap axis labels if --ro flag is set
             if getattr(args, 'ro', False):
                 ax.set_xlabel('Current (mA)', labelpad=8.0)
-                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel('Potential (V)', labelpad=8.0)
             else:
-                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_xlabel('Potential (V)', labelpad=8.0)
                 ax.set_ylabel('Current (mA)', labelpad=8.0)
             legend = ax.legend(title='Cycle')
             if legend is not None:
@@ -549,7 +549,7 @@ def batplot_main() -> int:  # type: ignore
     # If no files AND no special flags, nothing to do
     if not args.files and not has_special_flag:
         print("No input provided, nothing to do.")
-        print("Use 'batplot -v' for version and release info, 'batplot -h' for CLI help, or 'batplot -m' to open the txt manual.")
+        print("Use 'batplot --version' for version and release info, 'batplot --help' for CLI help, or 'batplot --manual' to open the txt manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
     # ====================================================================
@@ -599,7 +599,7 @@ def batplot_main() -> int:  # type: ignore
             batch_process_ec(os.path.abspath(sole), args)
             exit()
 
-    # --- CV mode: plot voltage vs current for each cycle from .mpt ---
+    # --- CV mode: plot potential vs current for each cycle from .mpt ---
     if getattr(args, 'cv', False):
         return _handle_cv_mode(args)
 
@@ -906,11 +906,11 @@ def batplot_main() -> int:  # type: ignore
                 print("GC multi-file: no files loaded.")
                 exit(1)
             if getattr(args, 'ro', False):
-                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_xlabel('Potential (V)', labelpad=8.0)
                 ax.set_ylabel(x_label_gc, labelpad=8.0)
             else:
                 ax.set_xlabel(x_label_gc, labelpad=8.0)
-                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel('Potential (V)', labelpad=8.0)
             ax.legend(title='Cycle')
             fig._ec_legend_title = "Cycle"
             fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
@@ -1202,11 +1202,11 @@ def batplot_main() -> int:  # type: ignore
                 # Labels with consistent labelpad
                 # Swap axis labels if --ro flag is set
                 if getattr(args, 'ro', False):
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                    ax.set_xlabel('Potential (V)', labelpad=8.0)
                     ax.set_ylabel(x_label_gc, labelpad=8.0)
                 else:
                     ax.set_xlabel(x_label_gc, labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                    ax.set_ylabel('Potential (V)', labelpad=8.0)
                 legend = ax.legend(title='Cycle')
                 if legend is not None:
                     try:
@@ -1989,9 +1989,9 @@ def batplot_main() -> int:  # type: ignore
                 exit(1)
             if getattr(args, 'ro', False):
                 ax.set_xlabel(y_label_used or 'dQ/dV', labelpad=8.0)
-                ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                ax.set_ylabel('Potential (V)', labelpad=8.0)
             else:
-                ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                ax.set_xlabel('Potential (V)', labelpad=8.0)
                 ax.set_ylabel(y_label_used or 'dQ/dV', labelpad=8.0)
             ax.legend(title='Cycle')
             fig._ec_legend_title = "Cycle"
@@ -2157,10 +2157,10 @@ def batplot_main() -> int:  # type: ignore
                 # Swap axis labels if --ro flag is set
                 if getattr(args, 'ro', False):
                     ax.set_xlabel(y_label, labelpad=8.0)
-                    ax.set_ylabel('Voltage (V)', labelpad=8.0)
+                    ax.set_ylabel('Potential (V)', labelpad=8.0)
                 else:
 
-                    ax.set_xlabel('Voltage (V)', labelpad=8.0)
+                    ax.set_xlabel('Potential (V)', labelpad=8.0)
                 ax.set_ylabel(y_label, labelpad=8.0)
                 legend = ax.legend(title='Cycle')
                 if legend is not None:
@@ -2295,7 +2295,7 @@ def batplot_main() -> int:  # type: ignore
     if getattr(args, 'operando', False):
         try:
             # Determine target folder and optional CIF files
-            # Usage: batplot folder [phase.cif:1.54 ...] --operando -i
+            # Usage: batplot folder [phase.cif:1.54 ...] --operando --interactive
             folder = None
             cif_files = []
             for f in args.files:
@@ -2703,6 +2703,8 @@ def batplot_main() -> int:  # type: ignore
         if derivative_reversed is not None:
             fig._derivative_reversed = bool(derivative_reversed)
         n_curves = len(x_loaded)
+        right_y_loaded = frozenset(sess.get('right_y_curve_indices', []))
+        ax2_loaded = None
         for i in range(n_curves):
             # Ensure arrays are 1D and have matching shapes
             x_arr = np.asarray(x_loaded[i], dtype=float).flatten()
@@ -2723,7 +2725,15 @@ def batplot_main() -> int:  # type: ignore
             x_data_list.append(x_arr)
             orig_y.append(base)
             y_data_list.append(y_plot)
-            ax.plot(x_arr, y_plot, lw=1)
+            is_right = i in right_y_loaded
+            if is_right:
+                if ax2_loaded is None:
+                    ax2_loaded = ax.twinx()
+                    if sess.get('txaxis', False):
+                        ax2_loaded = ax2_loaded.twiny()
+                ax2_loaded.plot(x_arr, y_plot, lw=1)
+            else:
+                ax.plot(x_arr, y_plot, lw=1)
             x_full_list.append(x_arr.copy())
             raw_y_full_list.append(base.copy())
         offsets_list[:] = offsets_saved if offsets_saved else [0.0]*n_curves
@@ -2736,10 +2746,34 @@ def batplot_main() -> int:  # type: ignore
                     pass
         except Exception:
             pass
+        # Restore right-y state (--ry) for interactive
+        if ax2_loaded is not None:
+            fig._xy_ax2 = ax2_loaded
+            fig._xy_use_top_x = bool(sess.get('txaxis', False))
+            fig._xy_right_y_curve_indices = right_y_loaded
+            _left_idx = sorted(i for i in range(n_curves) if i not in right_y_loaded)
+            _right_idx = sorted(right_y_loaded)
+            _lines_by_curve = []
+            for i in range(n_curves):
+                if i in right_y_loaded:
+                    k = _right_idx.index(i)
+                    _lines_by_curve.append(ax2_loaded.lines[k] if k < len(ax2_loaded.lines) else None)
+                else:
+                    k = _left_idx.index(i)
+                    _lines_by_curve.append(ax.lines[k] if k < len(ax.lines) else None)
+            fig._xy_lines_by_curve = _lines_by_curve
+        else:
+            fig._xy_ax2 = None
+            fig._xy_right_y_curve_indices = frozenset()
+            fig._xy_lines_by_curve = None
+
         # Apply stored line styles (if any)
         try:
             stored_styles = sess.get('line_styles', [])
-            for ln, st in zip(ax.lines, stored_styles):
+            lines_to_style = (fig._xy_lines_by_curve if fig._xy_lines_by_curve else ax.lines)
+            for ln, st in zip(lines_to_style, stored_styles):
+                if ln is None:
+                    continue
                 if 'color' in st: ln.set_color(st['color'])
                 if 'linewidth' in st: ln.set_linewidth(st['linewidth'])
                 if 'linestyle' in st:
@@ -3316,6 +3350,9 @@ def batplot_main() -> int:  # type: ignore
                     ax._right_ylabel_artist.set_visible(False)
                 except Exception:
                     pass
+            # Right y-axis (--ry): set ax2 ylabel when dual axes exist
+            if ax2_loaded is not None and right_text:
+                ax2_loaded.set_ylabel(right_text, fontsize=16)
         except Exception:
             pass
         # Always open interactive menu for session files
@@ -3397,6 +3434,7 @@ def batplot_main() -> int:  # type: ignore
         # than the interactive default while still fitting comfortably on screen.
         figsize = (9.5, 6.4)
     fig, ax = plt.subplots(figsize=figsize)
+    ax2 = None  # Right y-axis (twinx), created when --ry curves exist
     
     # Set consistent margins for all modes.
     # This prevents labels/titles from being cut off at the edges.
@@ -3410,6 +3448,7 @@ def batplot_main() -> int:  # type: ignore
     labels_list = []
     orig_y = []
     label_text_objects = []
+    right_y_curve_indices = []  # Curve indices that use right y-axis (--ry)
     # New lists to preserve full data & offsets
     x_full_list = []
     raw_y_full_list = []
@@ -3424,7 +3463,7 @@ def batplot_main() -> int:  # type: ignore
     use_time_mode = any_csv and args.xaxis and args.xaxis.lower() == "time"
     
     if use_time_mode:
-        # Special mode: plot time (h) vs voltage (V) for electrochemistry CSV/MPT files
+        # Special mode: plot time (h) vs potential (V) for electrochemistry CSV/MPT files
         axis_mode = "time"
     else:
         # Regular XRD/PDF/XAS mode - proceed with normal detection
@@ -3471,7 +3510,7 @@ def batplot_main() -> int:  # type: ignore
                 # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
                 axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
             else:
-                raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
+                raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
         elif any_lambda or any_cif or any_xrd_vendor:
             # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies Q domain
             if args.xaxis and args.xaxis.lower() in ("2theta","two_theta","tth"):
@@ -3494,7 +3533,7 @@ def batplot_main() -> int:  # type: ignore
             # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
             axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
         else:
-            raise ValueError("Unknown file type. Use: batplot file.csv --xaxis [Q|2theta|r|k|energy|rft] or batplot -h for help.")
+            raise ValueError("Unknown file type. Use: batplot file.csv --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
 
     use_Q   = axis_mode == "Q"
     use_2th = axis_mode == "2theta"
@@ -3558,10 +3597,11 @@ def batplot_main() -> int:  # type: ignore
     # Store wavelength info per file for crosshair display
     file_wavelength_info = []  # List of dicts: {'original_wl': float or None, 'conversion_wl': float or None}
     
-    # Separate style files from data files
+    # Separate style files from data files; build right_y_data_indices (--ry)
     data_files = []
+    right_y_data_indices = set()
     style_file_path = None
-    for f in args.files:
+    for i, f in enumerate(args.files):
         ext = os.path.splitext(f)[1].lower()
         if ext in ('.bps', '.bpsg', '.bpcfg'):
             if style_file_path is None:
@@ -3570,6 +3610,12 @@ def batplot_main() -> int:  # type: ignore
                 print(f"Warning: Multiple style files provided, using first: {style_file_path}")
         else:
             data_files.append(f)
+            if i in getattr(args, 'right_y_indices', frozenset()):
+                right_y_data_indices.add(len(data_files) - 1)
+    
+    # --ry disables --stack (dual y-axis incompatible with stacked curves)
+    if right_y_data_indices:
+        args.stack = False
     
     # If no data files remain, exit
     if not data_files:
@@ -3640,7 +3686,7 @@ def batplot_main() -> int:  # type: ignore
         # ---- Read data (time mode for CSV/MPT or regular mode) ----
         curves_to_plot = None  # Set by each branch that produces plottable curves
         if use_time and file_ext in ('.csv', '.mpt'):
-            # Time mode: read time (h) vs voltage (V) for electrochemistry files
+            # Time mode: read time (h) vs potential (V) for electrochemistry files
             try:
                 if file_ext == '.csv':
                     x, y = read_csv_time_voltage(fname)
@@ -3957,8 +4003,18 @@ def batplot_main() -> int:  # type: ignore
             else:
                 y_norm = y_plot
 
+            is_right_y = idx_file in right_y_data_indices
             # ---- Apply offset (waterfall vs stack) ----
-            if args.stack:
+            if is_right_y:
+                # Right-y curves overlay on ax2 (no offset)
+                y_plot_offset = y_norm
+                offsets_list.append(0.0)
+                if ax2 is None:
+                    ax2 = ax.twinx()
+                    # With --txaxis: right-y curves use top x-axis (ax2.twiny())
+                    if getattr(args, 'txaxis', False):
+                        ax2 = ax2.twiny()
+            elif args.stack:
                 y_plot_offset = y_norm + offset
                 y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
                 gap = y_range + (args.delta * (y_range if args.autoscale else 1.0))
@@ -3978,15 +4034,21 @@ def batplot_main() -> int:  # type: ignore
                 x_plotted = x_plot
                 y_plotted = y_plot_offset
 
-            ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
+            target_ax = ax2 if is_right_y else ax
+            target_ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
             x_data_list.append(x_plotted)
             y_data_list.append(y_plotted.copy())
             labels_list.append(curve_label)
             orig_y.append(y_plotted.copy())
+            if is_right_y:
+                right_y_curve_indices.append(len(y_data_list) - 1)
 
     # ---------------- Force axis to fit all data before labels ----------------
     ax.relim()
     ax.autoscale_view()
+    if ax2 is not None:
+        ax2.relim()
+        ax2.autoscale_view()
     fig.canvas.draw()
 
     # Store the x/y limits that were used for data normalization (.bpsg save/restore)
@@ -4048,6 +4110,22 @@ def batplot_main() -> int:  # type: ignore
     # Initialize stack label position (default to top/max)
     fig._stack_label_at_bottom = False
     fig._label_anchor_left = False
+    # Right y-axis state (--ry): ax2, curve indices, and curve->line mapping
+    fig._xy_ax2 = ax2
+    fig._xy_use_top_x = bool(getattr(args, 'txaxis', False))
+    fig._xy_right_y_curve_indices = frozenset(right_y_curve_indices)
+    # Build curve index -> line mapping for interactive (ax.lines vs ax2.lines)
+    _lines_by_curve = []
+    _left_indices = sorted(i for i in range(len(y_data_list)) if i not in right_y_curve_indices)
+    _right_sorted = sorted(right_y_curve_indices)
+    for i in range(len(y_data_list)):
+        if i in right_y_curve_indices:
+            k = _right_sorted.index(i)
+            _lines_by_curve.append(ax2.lines[k] if ax2 and k < len(ax2.lines) else None)
+        else:
+            k = _left_indices.index(i)
+            _lines_by_curve.append(ax.lines[k] if k < len(ax.lines) else None)
+    fig._xy_lines_by_curve = _lines_by_curve
 
     # ---------------- CIF tick overlay (after labels placed) ----------------
     def _ensure_wavelength_for_2theta():
@@ -4453,7 +4531,7 @@ def batplot_main() -> int:  # type: ignore
         # Y-axis label: normalized if --stack or --norm, or voltage for time mode
         should_normalize = args.stack or getattr(args, 'norm', False)
         if use_time:
-            y_label = "Voltage (V)"
+            y_label = "Potential (V)"
         elif should_normalize:
             y_label = "Normalized intensity (a.u.)"
         else:
@@ -4463,10 +4541,15 @@ def batplot_main() -> int:  # type: ignore
     if getattr(args, 'ro', False):
         ax.set_xlabel(y_label, fontsize=16)
         ax.set_ylabel(x_label, fontsize=16)
+        # Right y-axis (--ry): same swap when ax2 exists
+        if ax2 is not None:
+            ax2.set_ylabel(x_label, fontsize=16)
     else:
-
         ax.set_xlabel(x_label, fontsize=16)
         ax.set_ylabel(y_label, fontsize=16)
+        # Right y-axis (--ry): same label as left when ax2 exists
+        if ax2 is not None:
+            ax2.set_ylabel(y_label, fontsize=16)
 
     # Store originals for axis-title toggle restoration (t menu bn/ln)
     try:

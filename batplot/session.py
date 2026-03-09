@@ -171,7 +171,7 @@ def _axis_label_text(ax, attr_name: str, getter):
     This function tries two sources:
     
     1. **Stored attribute**: Check if label was saved in a special attribute
-       - Example: ax._stored_xlabel might contain "Voltage (V)" even if label is hidden
+       - Example: ax._stored_xlabel might contain "Potential (V)" even if label is hidden
        - This preserves the label text when labels are temporarily hidden
     
     2. **Current label**: Get text from the actual label object
@@ -600,8 +600,11 @@ def dump_session(
                     'markersize': ln.get_markersize(),
                     'markerfacecolor': ln.get_markerfacecolor(),
                     'markeredgecolor': ln.get_markeredgecolor(),
-                } for ln in ax.lines
+                } for ln in (getattr(fig, '_xy_lines_by_curve', None) or ax.lines)
+                if ln is not None
             ],
+            'right_y_curve_indices': list(getattr(fig, '_xy_right_y_curve_indices', frozenset())),
+            'txaxis': bool(getattr(fig, '_xy_use_top_x', False)),
             'delta': float(delta),
             'label_layout': label_layout,
             'axis_mode': axis_mode_session,
@@ -653,11 +656,15 @@ def dump_session(
             'has_bottom_x': bool(ax.xaxis.label.get_visible()),
             'has_left_y': bool(ax.yaxis.label.get_visible()),
         }
+        right_y_text = _get_duplicate_axis_label(ax, 'right', _get_primary_axis_label(ax, 'y'))
+        ax2_xy = getattr(fig, '_xy_ax2', None)
+        if ax2_xy is not None:
+            right_y_text = ax2_xy.get_ylabel() or right_y_text
         sess['axis_title_texts'] = {
             'bottom_x': _get_primary_axis_label(ax, 'x'),
             'left_y': _get_primary_axis_label(ax, 'y'),
             'top_x': _get_duplicate_axis_label(ax, 'top', _get_primary_axis_label(ax, 'x')),
-            'right_y': _get_duplicate_axis_label(ax, 'right', _get_primary_axis_label(ax, 'y')),
+            'right_y': right_y_text,
         }
         # Save curve names visibility
         sess['curve_names_visible'] = bool(getattr(fig, '_curve_names_visible', True))
@@ -1392,7 +1399,7 @@ def load_operando_session(filename: str):
         # Set xlabel (respecting WASD title state for bottom)
         bottom_title_on = ec_wasd.get('bottom', {}).get('title', True) if ec_wasd else True
         if bottom_title_on:
-            ec_ax.set_xlabel((ec.get('custom_labels') or {}).get('x') or 'Voltage (V)')
+            ec_ax.set_xlabel((ec.get('custom_labels') or {}).get('x') or 'Potential (V)')
         else:
             ec_ax.set_xlabel('')  # Hidden by user via s5
         
@@ -1930,6 +1937,7 @@ def dump_ec_session(
             'titles': titles,
             'title_offsets': title_offsets,
             'mode': getattr(ax, '_is_dqdv_mode', None),  # Store dQdV mode flag
+            'display_mode': getattr(fig, '_ec_display_mode', 'both'),  # charge/discharge/both
             'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),  # Store rotation angle
             'source_paths': list(getattr(fig, '_bp_source_paths', []) or []),
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
@@ -2335,6 +2343,13 @@ def load_ec_session(filename: str):
         try:
             rotation_angle = sess.get('rotation_angle', 0)
             setattr(fig, '_ec_rotation_angle', rotation_angle)
+        except Exception:
+            pass
+        # Restore display_mode (charge/discharge/both) for consistency
+        try:
+            dm = sess.get('display_mode', 'both')
+            if dm in ('charge', 'discharge', 'both'):
+                setattr(fig, '_ec_display_mode', dm)
         except Exception:
             pass
     else:

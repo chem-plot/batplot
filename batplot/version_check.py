@@ -101,11 +101,9 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Improved interactive menu functionality for cpc mode',
+    'custom_message': '- Bug fixes',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Improved interactive menu functionality for cpc mode',
-        '- Improved interactive menu display',
         '- Bug fixes'
     ],
     'show_update_notes': True,
@@ -318,9 +316,9 @@ def _print_update_message(current: str, latest: str, versions_behind: int = 0) -
 
     print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
     if versions_behind > 1:
-        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — run 'batplot -v' for full release notes)\033[0m" + " " * max(0, box_width - 58) + "\033[93m│\033[0m")
+        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — run 'batplot --version' for full release notes)\033[0m" + " " * max(0, box_width - 65) + "\033[93m│\033[0m")
     else:
-        print(f"\033[93m│\033[0m  \033[1mRun 'batplot -v' for full release notes\033[0m" + " " * max(0, box_width - 42) + "\033[93m│\033[0m")
+        print(f"\033[93m│\033[0m  \033[1mRun 'batplot --version' for full release notes\033[0m" + " " * max(0, box_width - 49) + "\033[93m│\033[0m")
     print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * max(0, box_width - 45) + "\033[93m│\033[0m")
     print(f"\033[93m╰{'─' * box_width}╯\033[0m\n")
 
