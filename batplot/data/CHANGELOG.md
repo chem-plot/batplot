@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.29] - 2026-03-10
+- Improved compatibility of `--convert` with `--readcol`: conversion now respects per-file, per-extension, and global column selection
+- Use custom columns when converting XRD data: `batplot data.csv --readcol 3 4 --convert 1.54 q`
+- Per-file columns for convert: `batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q`
+- Fixed `--all style.bps --readcol 2 3`: style files (.bps, .bpsg, .bpcfg) no longer steal readcol; global readcol now applies to all data files
+
 ## [1.8.16] - 2026-03-09
 - GC and dQdV modes now support multiple files
 

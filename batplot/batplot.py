@@ -3416,7 +3416,7 @@ def batplot_main() -> int:  # type: ignore
             print("Error: --convert requires file(s) to convert")
             exit(1)
         from_param, to_param = args.convert
-        convert_xrd_data(args.files, from_param, to_param)
+        convert_xrd_data(args.files, from_param, to_param, args=args)
         exit()
 
     # ---------------- Plotting ----------------
@@ -4035,7 +4035,17 @@ def batplot_main() -> int:  # type: ignore
                 y_plotted = y_plot_offset
 
             target_ax = ax2 if is_right_y else ax
-            target_ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
+            # With --ry: assign explicit colors so plot, Colors menu (c), labels, and p/i/s/b stay consistent.
+            # Matplotlib twinx uses a separate color cycle; explicit colors avoid mismatch across axes.
+            if right_y_data_indices:
+                try:
+                    curve_idx = len(y_data_list)
+                    curve_color = plt.cm.tab10(curve_idx % 10)
+                    target_ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8, color=curve_color)
+                except Exception:
+                    target_ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
+            else:
+                target_ax.plot(x_plotted, y_plotted, "-", lw=1, alpha=0.8)
             x_data_list.append(x_plotted)
             y_data_list.append(y_plotted.copy())
             labels_list.append(curve_label)
@@ -4102,19 +4112,11 @@ def batplot_main() -> int:  # type: ignore
                           transform=ax.transAxes)
             label_text_objects.append(txt)
 
-    # Ensure consistent initial placement (especially for stacked mode)
-    update_labels(ax, y_data_list, label_text_objects, args.stack, False)
-    
-    # Initialize curve names visibility (default to visible)
-    fig._curve_names_visible = True
-    # Initialize stack label position (default to top/max)
-    fig._stack_label_at_bottom = False
-    fig._label_anchor_left = False
-    # Right y-axis state (--ry): ax2, curve indices, and curve->line mapping
+    # Right y-axis state (--ry): build curve->line mapping BEFORE first update_labels
+    # so label colors correctly match curves on both axes (plotting.py uses fig._xy_lines_by_curve)
     fig._xy_ax2 = ax2
     fig._xy_use_top_x = bool(getattr(args, 'txaxis', False))
     fig._xy_right_y_curve_indices = frozenset(right_y_curve_indices)
-    # Build curve index -> line mapping for interactive (ax.lines vs ax2.lines)
     _lines_by_curve = []
     _left_indices = sorted(i for i in range(len(y_data_list)) if i not in right_y_curve_indices)
     _right_sorted = sorted(right_y_curve_indices)
@@ -4126,6 +4128,15 @@ def batplot_main() -> int:  # type: ignore
             k = _left_indices.index(i)
             _lines_by_curve.append(ax.lines[k] if k < len(ax.lines) else None)
     fig._xy_lines_by_curve = _lines_by_curve
+
+    # Ensure consistent initial placement (especially for stacked mode)
+    update_labels(ax, y_data_list, label_text_objects, args.stack, False)
+    
+    # Initialize curve names visibility (default to visible)
+    fig._curve_names_visible = True
+    # Initialize stack label position (default to top/max)
+    fig._stack_label_at_bottom = False
+    fig._label_anchor_left = False
 
     # ---------------- CIF tick overlay (after labels placed) ----------------
     def _ensure_wavelength_for_2theta():

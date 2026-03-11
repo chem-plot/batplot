@@ -4,6 +4,25 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-11: --ry (dual y-axis) color mismatch: plot vs Colors menu vs labels
+
+### Summary
+With `--ry` (dual y-axis), curve colors were inconsistent: the plot could show one color (e.g. black) while the Colors menu (c) showed another (e.g. blue). Label colors for right-y curves did not match their curve colors. Commands p, i, s, b needed to correctly reflect --ry curve colors.
+
+### Root Cause
+1. **Label colors**: `update_labels()` in plotting.py used `ax.lines[i]` for color matching. With --ry, right-y curves live on `ax2`, so `ax.lines` only contains left-axis curves. For curve index 1 (right-y), `ax.lines[1]` was out of range, so label 2 kept the default (black) instead of matching the curve.
+2. **Initial plot colors**: When plotting with --ry, no explicit color was passed; matplotlib's `twinx()` axes use a separate color cycle. The first line on each axis could get the same or different colors depending on backend/version, causing plot vs menu mismatch.
+
+### Solution
+1. In `plotting.py`: Added `_line_for_curve(i)` helper that uses `fig._xy_lines_by_curve` when available (--ry mode). Replaced all `ax.lines[i]` color lookups with `_line_for_curve(i)` so label colors correctly match curves on both axes.
+2. In `batplot.py`: When `right_y_data_indices` is non-empty, assign explicit colors via `plt.cm.tab10(curve_idx % 10)` when plotting each curve. This ensures plot, Colors menu, labels, and p/i/s/b commands all stay consistent across platforms.
+
+### Affected Files
+- `batplot/plotting.py`
+- `batplot/batplot.py`
+
+---
+
 ## 2026-03-06: Display mode (d) ignored cycle selection in EC modes
 
 ### Summary

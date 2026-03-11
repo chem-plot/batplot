@@ -73,6 +73,18 @@ def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: b
     fig = getattr(ax, 'figure', None)
     label_anchor_left = bool(getattr(fig, '_label_anchor_left', False)) if fig is not None else False
 
+    # Line lookup for dual y-axis (--ry): curve index -> Line2D (ax or ax2)
+    # When --ry is used, curves are split between ax and ax2; _xy_lines_by_curve maps correctly.
+    def _line_for_curve(i):
+        lines_src = getattr(fig, '_xy_lines_by_curve', None) if fig else None
+        if lines_src is not None and 0 <= i < len(lines_src):
+            ln = lines_src[i]
+            if ln is not None:
+                return ln
+        if i < len(ax.lines):
+            return ax.lines[i]
+        return None
+
     # ====================================================================
     if stack_mode:
         # Get plot edges in data coordinates
@@ -118,9 +130,9 @@ def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: b
             
             # Set label color to match curve color (makes identification easier)
             try:
-                if i < len(ax.lines):
-                    # Get color from corresponding line object
-                    txt.set_color(ax.lines[i].get_color())
+                ln = _line_for_curve(i)
+                if ln is not None:
+                    txt.set_color(ln.get_color())
             except Exception:
                 # If color matching fails, keep default color
                 pass
@@ -182,8 +194,9 @@ def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: b
                 
                 # Match label color to curve color
                 try:
-                    if i < len(ax.lines):
-                        txt.set_color(ax.lines[i].get_color())
+                    ln = _line_for_curve(i)
+                    if ln is not None:
+                        txt.set_color(ln.get_color())
                 except Exception:
                     pass
         else:
@@ -213,8 +226,9 @@ def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: b
                 
                 # Match label color to curve color
                 try:
-                    if i < len(ax.lines):
-                        txt.set_color(ax.lines[i].get_color())
+                    ln = _line_for_curve(i)
+                    if ln is not None:
+                        txt.set_color(ln.get_color())
                 except Exception:
                     pass
     

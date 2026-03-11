@@ -101,10 +101,13 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Bug fixes',
+    'custom_message': '- Improved compatibility of --convert with --readcol: conversion now respects per-file, per-extension, and global column selection',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Bug fixes'
+        '- Improved compatibility of --convert with --readcol: conversion now respects per-file, per-extension, and global column selection',
+        '- Use custom columns when converting XRD data: batplot data.csv --readcol 3 4 --convert 1.54 q',
+        '- Per-file columns for convert: batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q',
+        '- Fixed --all style.bps --readcol 2 3: style files no longer steal readcol; global readcol applies to all data files'
     ],
     'show_update_notes': True,
 }

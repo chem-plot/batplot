@@ -61,6 +61,10 @@ batplot scan1.brml:1.5406 scan2.xye:0.7093
 # Convert and export to converted/ subfolder (q and Q equivalent)
 batplot data.xye --convert 1.54 q
 batplot data.qye --convert q 1.54
+
+# With --readcol for custom column layout (e.g. 2θ in col 3, intensity in col 4)
+batplot data.csv --readcol 3 4 --convert 1.54 q
+batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
 ```
 
 ### Stacking and normalization
@@ -101,6 +105,9 @@ batplot data.xy --readcol 1 2 1 3
 
 # Range: col 1 as x, cols 2–20 as 19 y-curves
 batplot file.txt --readcol 1 2-20
+
+# With --convert: use custom columns when converting XRD data
+batplot data.csv --readcol 3 4 --convert 1.54 q
 ```
 
 ### Derivatives and EXAFS
@@ -134,6 +141,8 @@ batplot allfiles --xaxis 2theta --xrange 15 75 --interactive
 - **Biologic**: Export all info to .mpt file
 
 ### Galvanostatic cycling (GC)
+
+GC mode plots potential vs. capacity for each charge/discharge cycle—the primary visualization for battery cycling data. Batplot automatically detects cycles from Neware `.csv` or Biologic `.mpt` files, assigns each cycle a distinct color, and supports both specific capacity (mAh/g) and raw capacity. For `.mpt` files, pass `--mass` (mg) to compute specific capacity. Discontinuous or paused experiments are handled by splitting data into contiguous charge/discharge segments. Use the interactive menu to customize colors, visibility, and export.
 
 ```bash
 # From .csv (capacity in file)
@@ -227,13 +236,17 @@ batplot file1.xye file2.qye structure.cif:1.54 --stack --interactive
 
 ## Batch export (--all)
 
-Export each file as a separate figure to `batplot_svg/`:
+Export each file as a separate figure to `Figures/`:
 
 ```bash
 batplot --all
 batplot --all --format png
 batplot --all --xaxis 2theta --xrange 10 80
 batplot --all style.bps --gc --mass 7
+
+# With --readcol for custom columns (put --readcol before style file)
+batplot --all --readcol 2 3 --xaxis 2theta
+batplot --all --readcol 2 3 style.bps --xaxis 2theta
 ```
 
 ---

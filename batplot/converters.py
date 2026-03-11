@@ -46,10 +46,85 @@ Physical meaning:
 from __future__ import annotations
 
 import os
+from typing import Any, Optional
+
 import numpy as np
 
 
-def convert_xrd_data(filenames, from_param: str, to_param: str):
+def _resolve_readcol_for_file(
+    fname: str,
+    readcol_by_file: Optional[dict[str, Any]] = None,
+    readcol_by_ext: Optional[dict[str, tuple[int, int]]] = None,
+    readcol_global: Optional[Any] = None,
+) -> Optional[tuple[int, int, Optional[int]]]:
+    """
+    Resolve which columns to use for a file (x_col, y_col, e_col).
+    Returns (x_col, y_col, e_col) 1-indexed, or None to use defaults (1, 2, 3).
+    e_col is optional; if None, no error column. Uses first pair for multi-curve.
+    """
+    if not readcol_by_file and not readcol_by_ext and not readcol_global:
+        return None
+
+    # Try per-file match (multiple strategies for cross-platform path matching)
+    rc = None
+    if readcol_by_file:
+        norm_fname = os.path.normpath(fname)
+        abs_fname = os.path.abspath(fname)
+        base_fname = os.path.basename(fname)
+        for key in readcol_by_file:
+            key_norm = os.path.normpath(key)
+            key_abs = os.path.abspath(key)
+            key_base = os.path.basename(key)
+            # Prefer exact/normpath/abspath match; use basename only as last resort
+            if fname == key or norm_fname == key_norm or abs_fname == key_abs:
+                rc = readcol_by_file[key]
+                break
+        # Basename fallback only if no match and exactly one key has this basename
+        if rc is None and base_fname:
+            matches = [k for k in readcol_by_file if os.path.basename(k) == base_fname]
+            if len(matches) == 1:
+                rc = readcol_by_file[matches[0]]
+
+    # Fall back to per-extension
+    if rc is None and readcol_by_ext:
+        _, ext = os.path.splitext(fname)
+        ext_lower = ext.lower() if ext else ""
+        rc = readcol_by_ext.get(ext_lower)
+
+    # Fall back to global
+    if rc is None and readcol_global is not None:
+        rc = readcol_global
+
+    if rc is None:
+        return None
+
+    # Normalize to single (x, y) pair; for multi-curve use first pair
+    if isinstance(rc, (list, tuple)) and len(rc) >= 2:
+        first = rc[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2:
+            x_col, y_col = int(first[0]), int(first[1])
+        else:
+            x_col, y_col = int(rc[0]), int(rc[1])
+    elif isinstance(rc, (list, tuple)) and len(rc) == 1:
+        first = rc[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2:
+            x_col, y_col = int(first[0]), int(first[1])
+        else:
+            return None
+    else:
+        return None
+
+    # Optional error column: use y_col + 1 if user might have x, y, e layout
+    e_col = y_col + 1
+    return (x_col, y_col, e_col)
+
+
+def convert_xrd_data(
+    filenames,
+    from_param: str,
+    to_param: str,
+    args: Optional[Any] = None,
+):
     """
     Convert XRD data files between different representations.
     
@@ -85,6 +160,9 @@ def convert_xrd_data(filenames, from_param: str, to_param: str):
         filenames: List of file paths to convert (e.g., ['data.xy', 'pattern.xye'])
         from_param: Source parameter - either a wavelength (float as string) or 'q'
         to_param: Target parameter - either a wavelength (float as string) or 'q'
+        args: Optional parsed args with readcol_by_file, readcol_by_ext, readcol for
+              column selection (1-indexed). When provided, uses these instead of
+              default columns 1, 2, 3. Compatible with --readcol, --readcolxy, etc.
     
     Output:
         Creates converted files in a 'converted' subfolder within the directory
@@ -137,6 +215,7 @@ def convert_xrd_data(filenames, from_param: str, to_param: str):
         return
     
     # Process each file
+    output_dirs = set()
     for fname in filenames:
         # Validate file exists
         if not os.path.isfile(fname):
@@ -158,11 +237,35 @@ def convert_xrd_data(filenames, from_param: str, to_param: str):
         if data.shape[1] < 2:
             print(f"Invalid data format in {fname}: need at least 2 columns (x, y)")
             continue
-        
-        # Extract columns
-        x = data[:, 0]  # X values (2θ or Q)
-        y = data[:, 1]  # Intensity values
-        e = data[:, 2] if data.shape[1] >= 3 else None  # Error bars (optional)
+
+        # Resolve column selection (--readcol, --readcolxy, etc.)
+        readcol_by_file = getattr(args, "readcol_by_file", None) or {}
+        readcol_by_ext = getattr(args, "readcol_by_ext", None) or {}
+        readcol_global = getattr(args, "readcol", None)
+        resolved = _resolve_readcol_for_file(
+            fname, readcol_by_file, readcol_by_ext, readcol_global
+        )
+
+        if resolved:
+            x_col, y_col, e_col = resolved
+            # Convert 1-indexed to 0-indexed
+            x_idx, y_idx = x_col - 1, y_col - 1
+            if x_idx < 0 or y_idx < 0 or x_idx >= data.shape[1] or y_idx >= data.shape[1]:
+                print(f"Error in {fname}: --readcol columns {x_col}, {y_col} out of range (file has {data.shape[1]} columns)")
+                continue
+            x = data[:, x_idx]
+            y = data[:, y_idx]
+            # Use error column if specified and exists
+            if e_col is not None and e_col <= data.shape[1]:
+                e_idx = e_col - 1
+                e = data[:, e_idx] if e_idx >= 0 else None
+            else:
+                e = None
+        else:
+            # Default: columns 0, 1, 2 (1-indexed: 1, 2, 3)
+            x = data[:, 0]
+            y = data[:, 1]
+            e = data[:, 2] if data.shape[1] >= 3 else None
         
         # Perform conversion based on type
         if conversion_type == "wavelength_to_wavelength":
@@ -227,8 +330,13 @@ def convert_xrd_data(filenames, from_param: str, to_param: str):
             # Use UTF-8 encoding to support Greek letters (θ) in headers on all platforms
             np.savetxt(output_fname, out_data, fmt="% .6f", header=header, encoding='utf-8')
             print(f"Saved {output_fname}")
+            output_dirs.add(output_dir)
         except Exception as e:
             print(f"Error saving {output_fname}: {e}")
+
+    if output_dirs:
+        dirs_str = ", ".join(sorted(output_dirs))
+        print(f"Exported to: {dirs_str}")
 
 
 def convert_to_qye(filenames, wavelength: float):

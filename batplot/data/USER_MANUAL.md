@@ -231,6 +231,21 @@ All converted files are saved in a `converted` subfolder within the directory co
 - Q-space files: `.qye` extension
 - 2θ files: `.xy` or original extension
 
+### Custom columns with --readcol
+
+When your file has 2θ or Q in non-standard columns, use `--readcol` with `--convert`:
+
+```bash
+# 2θ in column 3, intensity in column 4
+batplot data.csv --readcol 3 4 --convert 1.54 q
+
+# Per-file columns
+batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
+
+# Extension-specific: --readcoldat, --readcolcsv, etc.
+batplot file.dat --readcoldat 2 4 --convert 1.54 q
+```
+
 ### Examples
 
 ```bash

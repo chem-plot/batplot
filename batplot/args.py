@@ -227,6 +227,9 @@ def _print_xy_help() -> None:
         "                              - <wl1> <wl2>  : convert 2θ from wavelength1 to wavelength2\n"
         "                              - <wl> q or Q  : convert 2θ (with wavelength) to Q space (q and Q equivalent)\n"
         "                              - q or Q <wl>  : convert Q space to 2θ (with wavelength)\n"
+        "                              Works with --readcol for custom column layout (per-file, per-ext, or global):\n"
+        "                                batplot data.csv --readcol 3 4 --convert 1.54 q\n"
+        "                                batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q\n"
         "                              Examples:\n"
         "                                batplot file.xye --convert 1.54 0.25\n"
         "                                batplot file.xye --convert 1.54 q\n"
@@ -244,6 +247,7 @@ def _print_xy_help() -> None:
         "    Multi-curve: file.xy --readcol 1 2 1 3  (plot cols 1,2 and 1,3 as two curves)\n"
         "    Range: file.txt --readcol 1 2-20  (col 1 as x, cols 2..20 as 19 y-curves)\n"
         "    With wavelength: file.xy:1.54 --readcol 2 3  (col 2 as 2θ, convert to Q using λ=1.54 Å)\n"
+        "    With --convert: file.csv --readcol 3 4 --convert 1.54 q  (custom cols for conversion)\n"
         "  --readcolxy <x> <y>       : read columns for .xy files only\n"
         "  --readcolxye <x> <y>      : read columns for .xye files only\n"
         "  --readcolqye <x> <y>      : read columns for .qye files only\n"
@@ -574,17 +578,22 @@ def parse_args(argv=None):
     # does not consume it. When --readcol appears before any file (global),
     # store in global_readcol_expanded for post-parse.
     # Keys use the exact file token (e.g. "file.xy:1.54") for wavelength match.
+    # Style files (.bps, .bpsg, .bpcfg) are NOT treated as file tokens so that
+    # "batplot --all style.bps --readcol 2 3" uses global readcol, not per-file.
     # ====================================================================
     readcol_by_file = {}
     global_readcol_expanded = None
     filtered_argv = []
     last_file_token = None
+    _STYLE_EXTENSIONS = ('.bps', '.bpsg', '.bpcfg')
     i = 0
     while i < len(argv):
         arg = argv[i]
-        # Track non-option tokens as potential file specs
+        # Track non-option tokens as potential file specs (exclude style files)
         if not arg.startswith('-'):
-            last_file_token = arg
+            arg_lower = arg.lower()
+            if not arg_lower.endswith(_STYLE_EXTENSIONS):
+                last_file_token = arg
         if arg == '--readcol' and i + 1 < len(argv):
             tokens = []
             j = i + 1
