@@ -18,11 +18,14 @@
 
 ```bash
 pip install batplot
+# It is recommended to use separate environment for batplot to aviod compatability issues with dependencies.
 ```
 
 ## Quick Start
 
-Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
+- Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
+- Tutorial files: https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip
+- Manual: https://github.com/chem-plot/batplot/blob/main/batplot_user_manual.pdf
 
 ---
 
@@ -37,12 +40,12 @@ In batplot, --xaxis is frequently used to indicate the data type.
 # Specify X-axis type (Q, 2theta, r, k, energy, time or any user defined names)
 # By defauly, batplot will skip the header lines, plot the first and second columns as x and y
 # Q and q are equivalent (case-insensitive)
-batplot pattern.xye --xaxis 2theta
-batplot data.qye --xaxis q
-batplot data.txt --xaxis whatever
+batplot pattern.xye --xaxis 2theta --i
+batplot data.qye --xaxis q --i
+batplot data.txt --xaxis whatever --i
 
 # Set X-axis range
-batplot pattern.xye --xaxis 2theta --xrange 10 80
+batplot pattern.xye --xaxis 2theta --xrange 10 80 --i
 
 # Save to file (default .svg if no extension)
 batplot pattern.xye --xaxis 2theta --out figure
@@ -53,10 +56,10 @@ batplot pattern.txt --xaxis Energy --out figure.png
 
 ```bash
 # Convert 2θ to Q using wavelength (Å), --xaxis is no longer needed as providing wavelength is implying that user wants to convert and plot the data in Q space
-batplot data.raw --wl 1.5406 
+batplot data.raw --wl 1.5406 --i
 
 # Per-file wavelength: file.xye:1.54, in this case --xaxis is also not needed and files will be plotted in Q space
-batplot scan1.brml:1.5406 scan2.xye:0.7093
+batplot scan1.brml:1.5406 scan2.xye:0.7093 --i
 
 # Convert and export to converted/ subfolder (q and Q equivalent)
 batplot data.xye --convert 1.54 q
@@ -71,40 +74,40 @@ batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
 
 ```bash
 # Stack curves vertically (auto-normalizes)
-batplot file1.xy file2.xy --stack
+batplot file1.xy file2.xy --stack --i
 
 # Control spacing between stacked curves
 batplot file1.xy file2.xy --stack --delta 0.15
 
 # Normalize intensity to 0–1 (without stacking)
-batplot file.xy --norm
+batplot file.xy --norm --i
 ```
 
 ### Dual y-axis (right y-axis)
 
 ```bash
 # Plot selected files on the right y-axis (--ry disables --stack)
-batplot file1.xy --ry file2.xy --ry file3.xy file4.xy --ry --interactive
+batplot file1.xy --ry file2.xy --ry file3.xy file4.xy --ry --i
 # Files 1, 2, 4 use right y-axis; file 3 uses left y-axis
 
 # With --txaxis: right y-axis curves use the top x-axis (default: shared bottom x)
-batplot file1.xy --ry file2.xy --txaxis --interactive
+batplot file1.xy --ry file2.xy --txaxis --i
 ```
 
 ### Column selection and multi-curve
 
 ```bash
 # Read columns 2 and 3 as X, Y (1-indexed)
-batplot data.xy --readcol 2 3
+batplot data.xy --readcol 2 3 --wl 1.54 --i
 
 # Per-file columns
-batplot file1.xy --readcol 2 3 file2.xy --readcol 4 5
+batplot file1.xy --readcol 2 3 file2.xy --readcol 4 5 --xaxis r --i
 
 # Multiple curves from same file (cols 1,2 and 1,3)
-batplot data.xy --readcol 1 2 1 3
+batplot data.xy --readcol 1 2 1 3 --xaxis 2theta --i
 
 # Range: col 1 as x, cols 2–20 as 19 y-curves
-batplot file.txt --readcol 1 2-20
+batplot file.txt --readcol 1 2-20 --xaxis Energy --i
 
 # With --convert: use custom columns when converting XRD data
 batplot data.csv --readcol 3 4 --convert 1.54 q
@@ -114,10 +117,10 @@ batplot data.csv --readcol 3 4 --convert 1.54 q
 
 ```bash
 # Plot first derivative (dy/dx)
-batplot file.xy --1d --stack
+batplot file.xy --1d --stack --i
 
 # EXAFS k-weighting
-batplot data.chik --chik           # χ(k)
+batplot data.chik --chik   --i        # χ(k)
 batplot data.chik --k2chik        # k²χ(k), most common
 batplot data.chik --k3chik --xrange 2 12
 ```
@@ -126,9 +129,9 @@ batplot data.chik --k3chik --xrange 2 12
 
 ```bash
 # Open interactive menu for styling, ranges, export, session save
-batplot pattern.xye --interactive
-batplot file1.xy file2.xy --stack --interactive
-batplot allfiles --xaxis 2theta --xrange 15 75 --interactive
+batplot pattern.xye --i
+batplot file1.xy file2.xy --stack --i
+batplot allfiles --xaxis 2theta --xrange 15 75 --i
 ```
 
 ---
@@ -146,52 +149,49 @@ GC mode plots potential vs. capacity for each charge/discharge cycle—the prima
 
 ```bash
 # From .csv (capacity in file)
-batplot battery.csv --gc
+batplot battery.csv --gc --i
 
 # From .mpt (requires --mass in mg)
-batplot battery.mpt --gc --mass 7.0
+batplot battery.mpt --gc --mass 7.0 --i
 
-# With interactive menu
-batplot battery.csv --gc --interactive
 ```
 
 ### Cyclic voltammetry (CV)
 
 ```bash
-batplot cyclic.mpt --cv
-batplot cyclic.mpt --cv --interactive
+batplot cyclic.mpt --cv --i
+batplot cyclic.mpt --cv --i
 ```
 
 ### Differential capacity (dQ/dV)
 
 ```bash
-batplot battery.csv --dqdv
-batplot battery.csv --dqdv --interactive
+batplot battery.csv --dqdv --i
 ```
 
 ### Capacity per cycle (CPC)
 
 ```bash
 # Single file
-batplot stability.csv --cpc
-batplot stability.mpt --cpc --mass 5.4
+batplot stability.csv --cpc --i
+batplot stability.mpt --cpc --mass 5.4 --i
 
 # Multiple files with individual colors
-batplot file1.csv file2.mpt --cpc --mass 6.0 --interactive
+batplot file1.csv file2.mpt --cpc --mass 6.0 --i
 ```
 
 ### Time vs potential
 
 ```bash
 # Plot time (h) vs potential from CSV/MPT
-batplot battery.csv --xaxis time --interactive
+batplot battery.csv --xaxis time --i
 ```
 
 ### Potential window (custom potential–time .mpt)
 
 ```bash
 # Two columns: potential, time. Use --pw and --cd to plot as GC
-batplot custom.mpt --gc --pw 0.01 3 --cd 0.2 --interactive
+batplot custom.mpt --gc --pw 0.01 3 --cd 0.2 --i
 ```
 
 ---
@@ -200,20 +200,27 @@ batplot custom.mpt --gc --pw 0.01 3 --cd 0.2 --interactive
 
 ```bash
 # Contour from folder of .xy/.xye/.qye/.dat
-batplot --operando --interactive
+batplot --operando --wl 1.54 --i
 
 # With folder path
-batplot /path/to/data --operando --interactive
+batplot /path/to/data --operando --xaxis 2theta --i
 
 # Q conversion from 2θ
-batplot --operando --wl 0.25995 --interactive
+batplot --operando --wl 0.25995 --i
+
+# Column selection: --readcolc for contour, --readcols for side panel (.mpt)
+batplot --operando --readcolc 2 3 --readcols 1 2 --i
 
 # Derivative contour
-batplot --operando --1d --interactive
+batplot --operando --1d --i
 
 # With CIF tick labels
-batplot folder phase.cif:1.54 --operando --interactive
+batplot folder phase.cif:1.54 --operando --i
 ```
+
+Operando column selection:
+- `--readcolc <x> <y>`: columns for the contour plot (from .xy/.xye/.qye/.dat files)
+- `--readcols <x> <y>`: columns for the side panel (from .mpt file)
 
 ---
 
@@ -222,14 +229,14 @@ batplot folder phase.cif:1.54 --operando --interactive
 ```bash
 # All XY files in current directory on same figure
 batplot allfiles
-batplot allfiles --stack --interactive
+batplot allfiles --stack --i
 
 # Only specific extension (natural-sorted)
 batplot allxyfiles
-batplot "/path/to/data" allnorfiles --interactive
+batplot "/path/to/data" allnorfiles --i
 
 # Explicit file list
-batplot file1.xye file2.qye structure.cif:1.54 --stack --interactive
+batplot file1.xye file2.qye structure.cif:1.54 --stack --i
 ```
 
 ---

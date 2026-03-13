@@ -1,43 +1,43 @@
 # Changelog
 
-## [1.8.29] - 2026-03-10
-- Improved compatibility of `--convert` with `--readcol`: conversion now respects per-file, per-extension, and global column selection
-- Use custom columns when converting XRD data: `batplot data.csv --readcol 3 4 --convert 1.54 q`
-- Per-file columns for convert: `batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q`
-- Fixed `--all style.bps --readcol 2 3`: style files (.bps, .bpsg, .bpcfg) no longer steal readcol; global readcol now applies to all data files
-
-## [1.8.16] - 2026-03-09
-- GC and dQdV modes now support multiple files
+## [1.8.25] - 2026-03-13
+- Improved interactive menu functionality for colors/ticks
+- Bug fixes
 
 
-## [1.8.17] - 2026-03-09
-- Add support for BatX GC plot
+## [1.8.26] - 2026-03-13
+- Improved interactive menu functionality for ec mode
+- Bug fixes
 
 
-## [1.8.18] - 2026-03-09
-- Add support for GC plot with only Potential vs Time
+## [1.8.27] - 2026-03-13
+- Improved interactive menu functionality for cpc mode
+- Improved interactive menu display
+- Bug fixes
 
 
-## [1.8.19] - 2026-03-09
-- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data
+## [1.8.28] - 2026-03-13
+- Bug fixes
 
 
-## [1.8.20] - 2026-03-09
-- Operando mode now supports CIF tick labels, add cif files in your command together with operando path to try!
+## [1.8.29] - 2026-03-13
+- Improved compatibility of --convert with --readcol: conversion now respects per-file, per-extension, and global column selection
+- Use custom columns when converting XRD data: batplot data.csv --readcol 3 4 --convert 1.54 q
+- Per-file columns for convert: batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
+- Fixed --all style.bps --readcol 2 3: style files no longer steal readcol; global readcol applies to all data files
 
 
-## [1.8.21] - 2026-03-09
-- Improved functionality in operando mode with CIF files
+## [1.8.30] - 2026-03-13
+- Bug fixes
+- Improved reader for different data formats
 
 
-## [1.8.22] - 2026-03-09
-- Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files
-- Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file
-    e.g. batplot file1.xy --readcol 1 2 file2.xy --readcol 4 6 this will plot col 1 as x and col 2 as y for file1, and col 4 as x and col 6 as y for file2
-         batplot file.xy --readcol 1 2 1 3 1 4 1 5 this will plot 4 curves with col 1 as x and col 2, 3, 4, 5 as y
+## [1.8.24] - 2026-03-03
+- Improved interactive menu functionality for colors/ticks
+- Bug fixes
 
 
-## [1.8.23] - 2026-03-09
+## [1.8.23] - 2026-02-28
 - Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files (still testing)
 - .brml and .raw are also supported in operando mode
 - Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file
@@ -45,26 +45,42 @@
          batplot file.xy --readcol 1 2 1 3 1 4 1 5 this will plot 4 curves with col 1 as x and col 2, 3, 4, 5 as y
 
 
-## [1.8.24] - 2026-03-09
-- Improved interactive menu functionality for colors/ticks
-- Bug fixes
+## [1.8.22] - 2026-02-27
+- Major update: batplot now support Bruker .brml and .raw files, you can treat them the same as .xy files
+- Improved --readcol flag, now you can assign the columns to read for each file by using --readcol m n after each file
+    e.g. batplot file1.xy --readcol 1 2 file2.xy --readcol 4 6 this will plot col 1 as x and col 2 as y for file1, and col 4 as x and col 6 as y for file2
+         batplot file.xy --readcol 1 2 1 3 1 4 1 5 this will plot 5 curves with col 1 as x and col 2, 3, 4, 5 as y
 
 
-## [1.8.25] - 2026-03-09
-- Improved interactive menu functionality for colors/ticks
-- Bug fixes
+## [1.8.21] - 2026-02-13
+- Improved functionality in operando mode with CIF files
 
 
-## [1.8.26] - 2026-03-09
-- Improved interactive menu functionality for ec mode
-- Bug fixes
+## [1.8.20] - 2026-02-12
+- Operando mode now supports CIF tick labels, add cif files in your command together with operando path to try!
 
 
-## [1.8.27] - 2026-03-09
-- Improved interactive menu functionality for cpc mode
-- Improved interactive menu display
-- Bug fixes
+## [1.8.19] - 2026-02-10
+- Add support for GC data with user defined segments to separate charge and discharge, useful for BatX EC data
 
 
-## [1.8.28] - 2026-03-09
-- Bug fixes
+## [1.8.18] - 2026-02-10
+- Add support for GC plot with only Potential vs Time
+
+
+## [1.8.17] - 2026-02-09
+- Add support for BatX GC plot
+
+
+## [1.8.16] - 2026-02-08
+- GC and dQdV modes now support multiple files
+
+
+## [1.8.15] - 2026-02-08
+- GC and dQdV modes now support multiple files
+
+
+## [1.8.14] - 2026-02-07
+- Fixed title offset command crash in EC/GC interactive menu
+- Fixed bugs in color command
+- Major update: GC and dQdV modes now support multiple files

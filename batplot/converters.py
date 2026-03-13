@@ -50,6 +50,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from .readers import loadtxt_with_decimal_comma
+
 
 def _resolve_readcol_for_file(
     fname: str,
@@ -224,7 +226,7 @@ def convert_xrd_data(
         
         # Read data from file
         try:
-            data = np.loadtxt(fname, comments="#")
+            data = loadtxt_with_decimal_comma(fname)
         except Exception as e:
             print(f"Error reading {fname}: {e}")
             continue

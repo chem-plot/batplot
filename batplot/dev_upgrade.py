@@ -218,7 +218,6 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
         print(f"    - BUGFIXES.md")
         print(f"    - README.md")
         print(f"    - RELEASE_NOTES.txt")
-        print(f"    - USER_MANUAL.md")
         
         try:
             choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
@@ -238,7 +237,6 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             "BUGFIXES.md",
             "README.md",
             "RELEASE_NOTES.txt",
-            "USER_MANUAL.md",
         ]
         
         for f in root_files_to_commit:
@@ -248,6 +246,10 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
         
         # Stage all changes (including deletions) under batplot/ only
         subprocess.run(["git", "add", "-A", "batplot"], cwd=project_root, check=True)
+        # Exclude USER_MANUAL.md from commit (no longer uploaded to GitHub/PyPI)
+        user_manual_path = project_root / "batplot" / "data" / "USER_MANUAL.md"
+        if user_manual_path.exists():
+            subprocess.run(["git", "reset", "batplot/data/USER_MANUAL.md"], cwd=project_root, capture_output=True)
         
         # Create commit message
         commit_msg = f"Release v{new_version}\n\n"

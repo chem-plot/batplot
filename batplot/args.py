@@ -339,6 +339,10 @@ def _print_op_help() -> None:
         "  • If a .mpt file is present, a side panel is added for dual-panel mode (time/potential/temp/etc.).\n"
         "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n"
         "  • --1d / --2d: plot the first derivative (dy/dx) of each scan as a contour plot.\n\n"
+        "Column selection (operando-specific):\n"
+        "  --readcolc <x> <y>  : columns for contour plot (x,y in .xy/.xye/.qye/.dat files)\n"
+        "  --readcols <x> <y>  : columns for side panel (x,y in .mpt file)\n"
+        "  Example: batplot --operando --readcolc 2 3 --readcols 1 2 --i\n\n"
         "Interactive (--i): menu has (Styles), (Operando), (Side Panel), (Options) columns.\n"
         "Resize axes/canvas, change colormap, set intensity range (oz), side-panel options,\n"
         "geometry tweaks, toggle spines/ticks/labels, print/export/import style, save session.\n"
@@ -468,6 +472,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help=argparse.SUPPRESS)
     parser.add_argument("--readcolcsv", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
                        help=argparse.SUPPRESS)
+    parser.add_argument("--readcolc", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcols", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
     parser.add_argument("--1d", action="store_true", dest="derivative_1d", help=argparse.SUPPRESS)
     parser.add_argument("--2d", action="store_true", dest="derivative_2d", help=argparse.SUPPRESS)
     return parser
@@ -541,8 +549,8 @@ def parse_args(argv=None):
         match = re.match(r'^--readcol([a-z0-9]+)$', arg)
         if match:
             ext = match.group(1)  # Extract extension name
-            # Skip predefined extensions (already in parser)
-            if ext not in ['xy', 'xye', 'qye', 'nor', 'dat', 'csv']:
+            # Skip predefined extensions (already in parser) and operando-specific (readcolc, readcols)
+            if ext not in ['xy', 'xye', 'qye', 'nor', 'dat', 'csv', 'c', 's']:
                 custom_readcol_exts.add(ext)
         i += 1
     

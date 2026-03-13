@@ -4,6 +4,74 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-11: NameError in Contourplot Interactive Menu (n: crosshair, q: quit)
+
+### Summary
+Pressing `n` (crosshair) or `q` (quit) in the Contourplot Interactive Menu raised `NameError: name 'mpl_plt' is not defined` or `NameError: name '_plt' is not defined`.
+
+### Root Cause
+In `operando_ec_interactive.py`, two typos used non-existent variable names: (1) `mpl_plt.rcParams` at line 2176—the module imports `matplotlib as mpl` and `matplotlib.pyplot as plt`, but `mpl_plt` was never defined. (2) `_plt.close(fig)` at line 2302—`_plt` was never defined; the correct name is `plt`.
+
+### Solution
+(1) Replaced `mpl_plt.rcParams` with `mpl.rcParams` in the crosshair fontsize calculation. (2) Replaced `_plt.close(fig)` with `plt.close(fig)` in the quit handler. Both `mpl` and `plt` are imported at module level.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-11: Comma as decimal separator not supported in data reading
+
+### Summary
+Data files using comma as decimal separator (European locale, e.g. `1,5` instead of `1.5`) failed to parse. Only period (.) was supported for decimal numbers across data readers.
+
+### Root Cause
+`np.loadtxt`, `np.genfromtxt`, and manual `float()` parsing expected period as decimal separator. `robust_loadtxt_skipheader` replaced all commas with spaces, which broke values like `1,5` (becoming `1 5` as two tokens). CSV row parsing used `float(val)` without handling comma decimals.
+
+### Solution
+(1) Added `_to_float_decimal(s)` helper that converts string/bytes to float, trying `float(val)` first and falling back to `float(val.replace(',', '.'))`. (2) Added `_parse_numeric_tokens(line)` to parse lines with comma as decimal or delimiter. (3) Added `loadtxt_with_decimal_comma(fname, **kwargs)` wrapping `np.loadtxt` with converters for all columns. (4) Updated `robust_loadtxt_skipheader` to use `_parse_numeric_tokens` instead of replacing comma with space. (5) Updated all `np.loadtxt` calls in batch.py, converters.py, and readers.py (read_batx_file, read_indexed_voltage_time_file) to use `loadtxt_with_decimal_comma`. (6) Updated `read_csv_file` to pass `converters` to `np.genfromtxt`. (7) Updated `read_csv_time_voltage`, `read_gr_file`, `read_fullprof_rowwise`, and all `_to_float` helpers in read_ec_csv_file / read_ec_csv_dqdv_file to use `_to_float_decimal`. Works on Windows, macOS, and Linux.
+
+### Affected Files
+- `batplot/readers.py`
+- `batplot/batch.py`
+- `batplot/converters.py`
+
+---
+
+## 2026-03-11: Pyright "could not be resolved" for matplotlib, numpy, scipy, cmcrameri
+
+### Summary
+basedpyright reported "Import could not be resolved" for matplotlib, numpy, scipy, and cmcrameri in operando_ec_interactive.py and other modules, despite these packages being in pyproject.toml and working at runtime.
+
+### Root Cause
+pyrightconfig.json had a hardcoded `"pythonPath": "/opt/miniconda3/bin/python3"` (Linux path). On macOS or when that path does not exist, Pyright could not locate the Python environment and thus could not resolve any third-party imports.
+
+### Solution
+(1) Removed the hardcoded `pythonPath` from pyrightconfig.json so Pyright uses the workspace's selected Python interpreter (Cursor/VSCode: Python: Select Interpreter). (2) Added `"reportMissingImports": "none"` and `"reportMissingModuleSource": "none"` so unresolved imports are not reported—packages in pyproject.toml work at runtime; the checker may still fail to find them in some IDE configurations. (3) Added .vscode/settings.json for consistent Python analysis.
+
+### Affected Files
+- `pyrightconfig.json`
+- `.vscode/settings.json` (new)
+
+---
+
+## 2026-03-11: Stop uploading USER_MANUAL.md in --dev-upgrade
+
+### Summary
+USER_MANUAL.md was being committed to GitHub and included in PyPI packages when using `batplot --dev-upgrade`. The user requested to stop uploading it.
+
+### Solution
+(1) Removed USER_MANUAL.md from MANIFEST.in (root-level include) and changed `recursive-include batplot/data *.md` to `recursive-include batplot/data CHANGELOG.md` so USER_MANUAL.md is excluded from source distributions. (2) Removed `data/USER_MANUAL.md` from pyproject.toml package-data so it is not included in wheels. (3) In dev_upgrade.py: removed USER_MANUAL.md from root_files_to_commit and added `git reset batplot/data/USER_MANUAL.md` after staging batplot/ so it is not committed to GitHub.
+
+**Note:** The `--manual` command loads from batplot/data/USER_MANUAL.md. After this change, pip-installed users will get FileNotFoundError when running `batplot --manual` unless the manual is provided by another mechanism (e.g. external URL, batplot_user_manual.docx).
+
+### Affected Files
+- `MANIFEST.in`
+- `pyproject.toml`
+- `batplot/dev_upgrade.py`
+
+---
+
 ## 2026-03-11: --ry (dual y-axis) color mismatch: plot vs Colors menu vs labels
 
 ### Summary

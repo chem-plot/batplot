@@ -450,13 +450,25 @@ def _load_csv_header_and_rows(fname: str) -> Tuple[List[str], List[List[str]], O
 
 
 def read_csv_file(fname: str):
-    for delim in [",", ";", "\t"]:
+    # Try ; and \t before , so European format (semicolon + comma decimal) parses correctly
+    for delim in [";", "\t", ","]:
         try:
-            data = np.genfromtxt(fname, delimiter=delim, comments="#")
+            # Infer column count from first line to build converters (genfromtxt errors if too many)
+            ncols = 2
+            with open(fname, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.strip() and not line.strip().startswith("#"):
+                        ncols = max(ncols, len(line.strip().split(delim)))
+                        break
+            _conv = {i: _to_float_decimal for i in range(min(ncols, 256))}
+            data = np.genfromtxt(fname, delimiter=delim, comments="#", converters=_conv)
             if data.ndim == 1:
                 data = data.reshape(1, -1)
             if data.shape[1] >= 2:
-                return data
+                # Reject if first 2 columns have excessive NaN (wrong delimiter)
+                valid = np.isfinite(data[:, 0]) & np.isfinite(data[:, 1])
+                if np.sum(valid) >= 1:
+                    return data
         except Exception:
             continue
     raise ValueError(f"Invalid CSV format in {fname}, need at least 2 columns (x,y).")
@@ -703,65 +715,95 @@ def read_xrd_vendor_file(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[n
 
 
 def read_gr_file(fname: str):
-    """Read a PDF .gr file (r, G(r))."""
+    """Read a PDF .gr file (r, G(r)). Supports comma as decimal separator."""
     r_vals = []
     g_vals = []
-    with open(fname, "r") as f:
+    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             ls = line.strip()
             if not ls or ls.startswith("#"):
                 continue
-            parts = ls.replace(",", " ").split()
-            floats = []
-            for p in parts:
-                try:
-                    floats.append(float(p))
-                except ValueError:
-                    break
-            if len(floats) >= 2:
-                r_vals.append(floats[0])
-                g_vals.append(floats[1])
+            parsed = _parse_numeric_tokens(ls.replace("\t", " "))
+            if parsed is not None and len(parsed) >= 2:
+                r_vals.append(parsed[0])
+                g_vals.append(parsed[1])
     if not r_vals:
         raise ValueError(f"No numeric data found in {fname}")
     return np.array(r_vals, dtype=float), np.array(g_vals, dtype=float)
 
 
 def read_fullprof_rowwise(fname: str):
-    with open(fname, "r") as f:
+    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()[1:]
     y_rows = []
     for line in lines:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        y_rows.extend([float(val) for val in line.split()])
+        y_rows.extend([_to_float_decimal(val) for val in line.split()])
     y = np.array(y_rows)
     return y, len(lines)
+
+
+def _to_float_decimal(s: str | bytes) -> float:
+    """Convert string/bytes to float, supporting comma as decimal separator (European locale)."""
+    raw = s.decode() if isinstance(s, bytes) else str(s)
+    val = raw.strip()
+    try:
+        return float(val)
+    except ValueError:
+        return float(val.replace(",", "."))
+
+
+def _parse_numeric_tokens(line: str) -> Optional[List[float]]:
+    """Parse a line into numeric tokens, supporting comma as decimal and comma as delimiter."""
+    tokens = line.replace("\t", " ").split()
+    result: List[float] = []
+    for t in tokens:
+        try:
+            result.append(float(t.replace(",", ".")))
+        except ValueError:
+            parts = t.split(",")
+            if len(parts) >= 2:
+                try:
+                    result.extend([float(p.strip()) for p in parts])
+                except ValueError:
+                    return None
+            else:
+                return None
+    return result
+
+
+def loadtxt_with_decimal_comma(fname: str, comments: str = "#", **kwargs: Any) -> np.ndarray:
+    """Load numeric data with np.loadtxt, supporting comma as decimal separator."""
+    # Infer column count from first valid line to avoid "invalid column" errors
+    ncols = 2
+    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            ls = line.strip()
+            if not ls or ls.startswith(comments):
+                continue
+            ncols = max(ncols, len(line.split()))
+            break
+    conv = {i: _to_float_decimal for i in range(min(ncols, 256))}
+    return np.loadtxt(fname, comments=comments, converters=conv, **kwargs)
 
 
 def robust_loadtxt_skipheader(fname: str):
     """Skip comments/non-numeric lines and load at least 2-column numeric data.
     
     Flexibly handles comma, space, tab, or mixed delimiters.
+    Supports comma as decimal separator (European locale, e.g. 1,5 for 1.5).
     """
-    data_lines = []
-    with open(fname, "r") as f:
+    data_lines: List[str] = []
+    with open(fname, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             ls = line.strip()
             if not ls or ls.startswith("#"):
                 continue
-            # Normalize delimiters: replace commas and tabs with spaces
-            # This handles CSV (comma), TSV (tab), space-separated, and mixed formats
-            ls_normalized = ls.replace(",", " ").replace("\t", " ")
-            floats = []
-            for p in ls_normalized.split():
-                try:
-                    floats.append(float(p))
-                except ValueError:
-                    break
-            if len(floats) >= 2:
-                # Store the normalized line (with all delimiters converted to spaces)
-                data_lines.append(ls_normalized)
+            parsed = _parse_numeric_tokens(ls.replace("\t", " "))
+            if parsed is not None and len(parsed) >= 2:
+                data_lines.append(" ".join(str(v) for v in parsed))
     if not data_lines:
         raise ValueError(f"No numeric data found in {fname}")
     return np.loadtxt(StringIO("\n".join(data_lines)))
@@ -1616,10 +1658,10 @@ def read_ec_csv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.ndarr
     
     def _to_float(val: str) -> float:
         try:
-            return float(val.strip()) if isinstance(val, str) else float(val)
-        except Exception:
+            return _to_float_decimal(val) if (val is not None and str(val).strip()) else np.nan
+        except (ValueError, TypeError):
             return np.nan
-    
+
     # Special handling for summary files (charge/discharge capacities per cycle, no point-by-point data)
     if is_summary_file:
         # For summary files, create synthetic points: one charge point and one discharge point per cycle
@@ -2238,8 +2280,8 @@ def read_ec_csv_dqdv_file(fname: str, prefer_specific: bool = True) -> Tuple[np.
     current = np.zeros(n, dtype=float)
     def _to_float(val: str) -> float:
         try:
-            return float(val.strip()) if isinstance(val, str) else float(val)
-        except Exception:
+            return _to_float_decimal(val) if (val is not None and str(val).strip()) else np.nan
+        except (ValueError, TypeError):
             return np.nan
 
     for k, row in enumerate(rows):
@@ -2595,10 +2637,10 @@ def read_cs_b_csv_file(fname: str, mode: str = 'gc') -> Tuple:
     def _to_float(val: str) -> float:
         try:
             val_str = str(val).strip().replace('\t', '')
-            return float(val_str) if val_str else np.nan
-        except Exception:
+            return _to_float_decimal(val_str) if val_str else np.nan
+        except (ValueError, TypeError):
             return np.nan
-    
+
     # Read all data
     n = len(rows)
     voltage = np.empty(n, dtype=float)
@@ -2847,23 +2889,23 @@ def read_csv_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
             parts = val.split(':')
             try:
                 if len(parts) == 3:  # HH:MM:SS
-                    h, m, s = float(parts[0]), float(parts[1]), float(parts[2])
+                    h, m, s = _to_float_decimal(parts[0]), _to_float_decimal(parts[1]), _to_float_decimal(parts[2])
                     return h * 3600 + m * 60 + s
                 elif len(parts) == 2:  # MM:SS
-                    m, s = float(parts[0]), float(parts[1])
+                    m, s = _to_float_decimal(parts[0]), _to_float_decimal(parts[1])
                     return m * 60 + s
-            except:
+            except (ValueError, TypeError):
                 pass
-        # Try as plain number (seconds)
+        # Try as plain number (seconds), supporting comma as decimal
         try:
-            return float(val)
-        except:
+            return _to_float_decimal(val) if val else np.nan
+        except (ValueError, TypeError):
             return np.nan
-    
+
     def _to_float(val: str) -> float:
         try:
-            return float(str(val).strip()) if val else np.nan
-        except:
+            return _to_float_decimal(val) if val else np.nan
+        except (ValueError, TypeError):
             return np.nan
     
     for k, row in enumerate(rows):
@@ -3007,7 +3049,7 @@ def read_batx_file(fname: str, v_min: float, v_max: float, current_density: floa
         6. Convert time to capacity: capacity = current_density * time
     """
     # Load data: column 1 = voltage, column 2 = time (hours)
-    data = np.loadtxt(fname)
+    data = loadtxt_with_decimal_comma(fname)
     if data.ndim == 1:
         data = data.reshape(1, -1)
     if data.shape[1] < 2:
@@ -3132,7 +3174,7 @@ def read_indexed_voltage_time_file(
     Returns:
         (capacity, voltage, cycles, charge_mask, discharge_mask)
     """
-    data = np.loadtxt(fname)
+    data = loadtxt_with_decimal_comma(fname)
     if data.ndim == 1:
         data = data.reshape(1, -1)
     if data.shape[1] < 3:

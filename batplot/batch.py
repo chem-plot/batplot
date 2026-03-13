@@ -14,6 +14,7 @@ from .readers import (
     read_gr_file,
     read_xrd_vendor_file,
     is_bruker_raw,
+    loadtxt_with_decimal_comma,
     robust_loadtxt_skipheader,
     read_mpt_file,
     read_ec_csv_file,
@@ -593,20 +594,20 @@ def batch_process(directory: str, args):
                 x, y = read_gr_file(fpath); e = None
                 axis_mode = 'r'
             elif ext == '.nor':
-                data = np.loadtxt(fpath, comments="#")
+                data = loadtxt_with_decimal_comma(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
                 if data.shape[1] < 2: raise ValueError("Invalid .nor format")
                 x, y = data[:,0], data[:,1]
                 e = data[:,2] if data.shape[1] >= 3 else None
                 axis_mode = 'energy'
             elif 'chik' in ext:
-                data = np.loadtxt(fpath, comments="#")
+                data = loadtxt_with_decimal_comma(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
                 if data.shape[1] < 2: raise ValueError("Invalid .chik data")
                 x, y = data[:,0], data[:,1]; e = data[:,2] if data.shape[1] >= 3 else None
                 axis_mode = 'k'
             elif 'chir' in ext:
-                data = np.loadtxt(fpath, comments="#")
+                data = loadtxt_with_decimal_comma(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
                 if data.shape[1] < 2: raise ValueError("Invalid .chir data")
                 x, y = data[:,0], data[:,1]; e = data[:,2] if data.shape[1] >= 3 else None

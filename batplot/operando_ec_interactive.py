@@ -2173,7 +2173,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 # Create text annotations for coordinates
                 coord_text = fig.text(0.02, 0.98, '', transform=fig.transFigure, 
                                      verticalalignment='top', 
-                                     fontsize=max(9, int(0.6 * mpl_plt.rcParams.get('font.size', 16))),
+                                     fontsize=max(9, int(0.6 * mpl.rcParams.get('font.size', 16))),
                                      color='0.15',
                                      bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
             except Exception as e:
@@ -2299,7 +2299,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                 ans = 'y'
             if ans == 'y':
                 try:
-                    _plt.close(fig)
+                    plt.close(fig)
                 except Exception:
                     pass
                 break

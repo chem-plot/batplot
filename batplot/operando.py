@@ -376,7 +376,10 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
     loaded_filenames = []  # track which files made it into the contour (some may be skipped)
     for f in files:
         readcol = None
-        if hasattr(args, 'readcol_by_file') and args.readcol_by_file:
+        # Operando-specific: --readcolc for contour plot columns
+        if hasattr(args, 'readcolc') and args.readcolc is not None:
+            readcol = tuple(args.readcolc)
+        if readcol is None and hasattr(args, 'readcol_by_file') and args.readcol_by_file:
             for key in (str(f), f.name):
                 if key in args.readcol_by_file:
                     rc = args.readcol_by_file[key]
@@ -554,9 +557,11 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
         try:
             ec_path = mpt_files[0]
             
-            # Check if user specified custom columns via --readcolmpt
+            # Check if user specified custom columns: --readcols (operando) or --readcolmpt
             readcol_mpt = None
-            if hasattr(args, 'readcol_by_ext') and '.mpt' in args.readcol_by_ext:
+            if hasattr(args, 'readcols') and args.readcols is not None:
+                readcol_mpt = tuple(args.readcols)
+            if readcol_mpt is None and hasattr(args, 'readcol_by_ext') and '.mpt' in args.readcol_by_ext:
                 readcol_mpt = args.readcol_by_ext['.mpt']
             
             if readcol_mpt:
