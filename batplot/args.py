@@ -135,7 +135,7 @@ def _print_general_help() -> None:
         "What it does:\n"
         "  • XY: XRD/PDF/XAS/User defined curves\n"
         "  • EC: Galvanostatic cycling(GC)/Capacity per cycle(CPC)/Diffrential capacity(dQdV)/Cyclic Voltammetry(CV) from Neware (.csv) or Biologic (.mpt)\n"
-        "  • Operando: contour maps from a folder of .xy/.xye/.dat/.txt and optional .mpt file as side panel\n"
+        "  • Operando: contour from .xy/.xye/.dat/.brml; Bruker .brml (cyc1/cyc2/cyc3) with optional .mpt or DataLogger CSV side panel\n"
         "  • Batch: export vector plots for all files in a directory\n"
         "  • Interactive mode: --i flag opens a menu for styling, ranges, export, and save\n\n"
         "How to run (basics):\n"
@@ -156,7 +156,8 @@ def _print_general_help() -> None:
         "    batplot --cv file.mpt --i                 # Cyclic voltammetry\n"
         "    batplot --cpc file.csv --mass 3.52 --i     # Capacity per cycle\n\n"
         "  [Operando]\n"
-        "    batplot --operando --i [FOLDER]  # Contour from folder\n\n"
+        "    batplot --operando --i [FOLDER]  # Contour from folder\n"
+        "    batplot Path/to/file --operando --wl 0.709 --i  # Bruker .brml, Q conversion\n\n"
         "Features:\n"
         "  • Interactive (--i): styling, ranges, fonts, export, sessions\n"
         "  • XRD wavelength: --wl 1.54 or file.xye:1.5406 for Q conversion\n"
@@ -336,7 +337,14 @@ def _print_op_help() -> None:
         "  batplot --operando --xaxis 2theta              # Using 2theta axis\n"
         "  batplot --operando --1d --i           # Plot derivatives as contour with interactive menu\n"
         "  batplot --operando --2d --i          # Plot derivatives (alias for --1d)\n\n"
-        "  • Folder should contain XY files (.xy/.xye/.qye/.dat).\n"
+        "Bruker operando (.brml):\n"
+        "  • Place .brml files (e.g. XX_cyc1.brml, XX_cyc2.brml) in the folder.\n"
+        "  • Each .brml is expanded into per-scan rows; files sorted by cyc1/cyc2/cyc3.\n"
+        "  • Use --wl for Q conversion: batplot RA_O5 --operando --wl 0.709 --i\n"
+        "  • EC side panel: .mpt or Biologic DataLogger CSV (*--DataLogger.csv), sorted by cyc.\n"
+        "  • Time vs potential is concatenated across files (continuous time axis).\n\n"
+        "Standard XY files:\n"
+        "  • Folder should contain .xy/.xye/.qye/.dat files.\n"
         "  • Intensity scale is auto-adjusted between min/max values.\n"
         "  • If no .qye present, provide --xaxis 2theta or set --wl for Q conversion.\n"
         "  • If a .mpt file is present, a side panel is added for dual-panel mode (time/potential/temp/etc.).\n"
@@ -428,6 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--xaxis", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--convert", nargs=2, metavar=("FROM", "TO"), 
                         help="Convert XRD data: wavelength-to-wavelength (e.g., 1.54 0.25), wavelength-to-Q (e.g., 1.54 q), or Q-to-wavelength (e.g., q 1.54). Exports to 'converted' subfolder.")
+    parser.add_argument("--extract-brml-scans", nargs="?", const="", metavar="OUT_DIR",
+                        help="Extract each XRD scan from .brml file to separate .xy files. Optional OUT_DIR (default: <brml_stem>_scans).")
     parser.add_argument("--wl", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--fullprof", nargs="+", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--norm", action="store_true", help=argparse.SUPPRESS)

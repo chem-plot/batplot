@@ -1,36 +1,45 @@
 # Changelog
 
-## [1.8.25] - 2026-03-13
+## [1.8.25] - 2026-03-16
 - Improved interactive menu functionality for colors/ticks
 - Bug fixes
 
 
-## [1.8.26] - 2026-03-13
+## [1.8.26] - 2026-03-16
 - Improved interactive menu functionality for ec mode
 - Bug fixes
 
 
-## [1.8.27] - 2026-03-13
+## [1.8.27] - 2026-03-16
 - Improved interactive menu functionality for cpc mode
 - Improved interactive menu display
 - Bug fixes
 
 
-## [1.8.28] - 2026-03-13
+## [1.8.28] - 2026-03-16
 - Bug fixes
 
 
-## [1.8.29] - 2026-03-13
+## [1.8.29] - 2026-03-16
 - Improved compatibility of --convert with --readcol: conversion now respects per-file, per-extension, and global column selection
 - Use custom columns when converting XRD data: batplot data.csv --readcol 3 4 --convert 1.54 q
 - Per-file columns for convert: batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
 - Fixed --all style.bps --readcol 2 3: style files no longer steal readcol; global readcol applies to all data files
 
 
-## [1.8.30] - 2026-03-13
+## [1.8.30] - 2026-03-16
 - Bug fixes
 - Improved reader for different data formats
 
+
+## [1.8.31] - 2026-03-16
+- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i
+
+
+## [Unreleased]
+- EC/CV/dQdV: Simplified multi-file palette: press c, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4`—no intermediate file selection step
+- CPC: In ly/ry color submenu, added file range palette: `1-5 viridis`, `1 3 5 4` to apply palette to files 1–5 or 1,3,5
+- EC/CV/dQdV: File-palette colors persist via p (print style), i (import style), s (save session), or b (undo). Style export now includes per-file cycle styles for multi-file plots.
 
 ## [1.8.24] - 2026-03-03
 - Improved interactive menu functionality for colors/ticks

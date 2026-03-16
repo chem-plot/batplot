@@ -40,6 +40,10 @@ from .readers import (
     read_mpt_time_voltage,
     read_cs_b_csv_file,
     is_cs_b_format,
+    is_biologic_datalogger_csv,
+    read_biologic_datalogger_csv,
+    read_biologic_datalogger_dqdv_file,
+    read_biologic_datalogger_time_voltage,
     _load_csv_header_and_rows,
     read_biologic_txt_file,
     read_batx_file,
@@ -797,15 +801,23 @@ def batplot_main() -> int:  # type: ignore
                         specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = read_mpt_file(ec_file, mode='gc', mass_mg=mass_mg)
                         cap_x = specific_capacity
                     elif ec_file.lower().endswith('.csv'):
-                        try:
-                            header, _, _ = _load_csv_header_and_rows(ec_file)
-                            if is_cs_b_format(header):
-                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
-                            else:
-                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                        except Exception:
+                        if is_biologic_datalogger_csv(ec_file):
+                            if mass_mg is None:
+                                continue
+                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_biologic_datalogger_csv(
+                                ec_file, mass_mg=mass_mg
+                            )
                             header = None
-                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                        else:
+                            try:
+                                header, _, _ = _load_csv_header_and_rows(ec_file)
+                                if is_cs_b_format(header):
+                                    cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
+                                else:
+                                    cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                            except Exception:
+                                header = None
+                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
                         # If we only have absolute capacity and the user supplied --mass,
                         # convert Capacity(mAh) → Specific Capacity (mAh g⁻¹).
                         if header is not None:
@@ -1004,19 +1016,27 @@ def batplot_main() -> int:  # type: ignore
                         x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
                         cap_x = specific_capacity
                 elif ec_file.lower().endswith('.csv'):
-                    # Check if this is CS-B format
                     header = None
-                    try:
-                        header, _, _ = _load_csv_header_and_rows(ec_file)
-                        if is_cs_b_format(header):
-                            # Use CS-B format reader
-                            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
-                        else:
-                            # Use standard CSV reader
+                    if is_biologic_datalogger_csv(ec_file):
+                        if mass_mg is None:
+                            print("GC mode (Biologic DataLogger CSV): --mass parameter is required (active material mass in milligrams).")
+                            print("Example: batplot file.csv --gc --mass 7.0")
+                            if len(data_files) > 1:
+                                continue
+                            else:
+                                exit(1)
+                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_biologic_datalogger_csv(
+                            ec_file, mass_mg=mass_mg
+                        )
+                    else:
+                        try:
+                            header, _, _ = _load_csv_header_and_rows(ec_file)
+                            if is_cs_b_format(header):
+                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_cs_b_csv_file(ec_file, mode='gc')
+                            else:
+                                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
+                        except Exception:
                             cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-                    except Exception:
-                        # Fallback to standard reader
-                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
                     # Decide whether we should treat cap_x as absolute or specific capacity.
                     x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
                     # If the CSV only has absolute capacity and no specific capacity, rescale
@@ -1893,38 +1913,46 @@ def batplot_main() -> int:  # type: ignore
                         voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_mpt_dqdv_file(ec_file, mass_mg=_mf_mass, prefer_specific=True)
                     else:
                         _mf_dqdv_header = None
-                        try:
-                            _mf_dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
-                        except Exception:
-                            pass
-
                         _mf_loaded = False
-                        if _mf_dqdv_header is not None and is_cs_b_format(_mf_dqdv_header):
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                        if is_biologic_datalogger_csv(ec_file):
+                            if _mf_mass is None or _mf_mass <= 0:
+                                continue
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_biologic_datalogger_dqdv_file(
+                                ec_file, mass_mg=_mf_mass, prefer_specific=True
+                            )
                             _mf_loaded = True
-
-                        if not _mf_loaded:
+                        else:
                             try:
-                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
-                                _mf_loaded = True
-                            except ValueError:
+                                _mf_dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
+                            except Exception:
                                 pass
 
-                        if not _mf_loaded:
-                            _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm = read_ec_csv_file(ec_file, prefer_specific=True)
-                            if _mf_dqdv_header is not None:
-                                _mf_hdrs = [h.strip().replace('\t', '') for h in _mf_dqdv_header]
-                                _mf_has_spec = any('Spec. Cap.(mAh/g)' in h for h in _mf_hdrs)
-                                _mf_has_abs = any(h == 'Capacity(mAh)' for h in _mf_hdrs)
-                                if _mf_has_abs and not _mf_has_spec:
-                                    if _mf_mass and _mf_mass > 0:
-                                        _mf_gc_cap = _mf_gc_cap * (1000.0 / float(_mf_mass))
-                                    else:
-                                        print(f"dQ/dV mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) — pass --mass <mg>.")
-                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = compute_dqdv_numerical(
-                                _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm
-                            )
-                            print(f"dQ/dV mode: computing numerically from GC data for {os.path.basename(ec_file)!r}.")
+                            if _mf_dqdv_header is not None and is_cs_b_format(_mf_dqdv_header):
+                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                                _mf_loaded = True
+
+                            if not _mf_loaded:
+                                try:
+                                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_ec_csv_dqdv_file(ec_file, prefer_specific=True)
+                                    _mf_loaded = True
+                                except ValueError:
+                                    pass
+
+                            if not _mf_loaded:
+                                _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm = read_ec_csv_file(ec_file, prefer_specific=True)
+                                if _mf_dqdv_header is not None:
+                                    _mf_hdrs = [h.strip().replace('\t', '') for h in _mf_dqdv_header]
+                                    _mf_has_spec = any('Spec. Cap.(mAh/g)' in h for h in _mf_hdrs)
+                                    _mf_has_abs = any(h == 'Capacity(mAh)' for h in _mf_hdrs)
+                                    if _mf_has_abs and not _mf_has_spec:
+                                        if _mf_mass and _mf_mass > 0:
+                                            _mf_gc_cap = _mf_gc_cap * (1000.0 / float(_mf_mass))
+                                        else:
+                                            print(f"dQ/dV mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) — pass --mass <mg>.")
+                                voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = compute_dqdv_numerical(
+                                    _mf_gc_cap, _mf_gc_volt, _mf_gc_cyc, _mf_gc_chgm, _mf_gc_dchm
+                                )
+                                print(f"dQ/dV mode: computing numerically from GC data for {os.path.basename(ec_file)!r}.")
                     if y_label_used is None:
                         y_label_used = y_label
                     segments = _mask_segments(charge_mask, 'charge') + _mask_segments(discharge_mask, 'discharge')
@@ -2058,15 +2086,25 @@ def batplot_main() -> int:  # type: ignore
                 else:
                     # Load header for format detection and mass-scaling check
                     _dqdv_header = None
-                    try:
-                        _dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
-                    except Exception:
-                        pass
-
                     _loaded_dqdv = False
-                    if _dqdv_header is not None and is_cs_b_format(_dqdv_header):
-                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                    if is_biologic_datalogger_csv(ec_file):
+                        if _dqdv_mass is None or _dqdv_mass <= 0:
+                            print(f"dQ/dV mode (Biologic DataLogger CSV): --mass parameter is required.")
+                            print(f"Example: batplot {ec_file} --dqdv --mass 7.0")
+                            continue
+                        voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_biologic_datalogger_dqdv_file(
+                            ec_file, mass_mg=_dqdv_mass, prefer_specific=True
+                        )
                         _loaded_dqdv = True
+                    else:
+                        try:
+                            _dqdv_header, _, _ = _load_csv_header_and_rows(ec_file)
+                        except Exception:
+                            pass
+
+                        if _dqdv_header is not None and is_cs_b_format(_dqdv_header):
+                            voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = read_cs_b_csv_file(ec_file, mode='dqdv')
+                            _loaded_dqdv = True
 
                     if not _loaded_dqdv:
                         try:
@@ -2086,11 +2124,11 @@ def batplot_main() -> int:  # type: ignore
                                 if _dqdv_mass and _dqdv_mass > 0:
                                     _gc_cap = _gc_cap * (1000.0 / float(_dqdv_mass))
                                 else:
-                                    print(f"dQ/dV mode: {file_basename!r} contains only Capacity(mAh) — pass --mass <mg> for specific dQ/dV.")
+                                    print(f"dQ/dV mode: {os.path.basename(ec_file)!r} contains only Capacity(mAh) — pass --mass <mg> for specific dQ/dV.")
                         voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = compute_dqdv_numerical(
                             _gc_cap, _gc_volt, _gc_cyc, _gc_chgm, _gc_dchm
                         )
-                        print(f"dQ/dV mode: no dQ/dV column found — computing numerically from GC data for {file_basename!r}.")
+                        print(f"dQ/dV mode: no dQ/dV column found — computing numerically from GC data for {os.path.basename(ec_file)!r}.")
 
                 # Create the plot
                 fig, ax = plt.subplots(figsize=(10, 6))
@@ -3689,7 +3727,10 @@ def batplot_main() -> int:  # type: ignore
             # Time mode: read time (h) vs potential (V) for electrochemistry files
             try:
                 if file_ext == '.csv':
-                    x, y = read_csv_time_voltage(fname)
+                    if is_biologic_datalogger_csv(fname):
+                        x, y = read_biologic_datalogger_time_voltage(fname)
+                    else:
+                        x, y = read_csv_time_voltage(fname)
                 elif file_ext == '.mpt':
                     x, y = read_mpt_time_voltage(fname)
                 e = None

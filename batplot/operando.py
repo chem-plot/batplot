@@ -24,7 +24,7 @@ HOW IT WORKS:
 3. Create a common X-axis grid (interpolate all scans to same grid)
 4. Stack all scans vertically to form a 2D array
 5. Display as intensity contour (color map)
-6. Optionally add electrochemistry/temperature/other data as side panel (if .mpt file present)
+6. Optionally add electrochemistry side panel (if .mpt or Biologic DataLogger CSV present)
 
 AXIS MODE DETECTION:
 -------------------
@@ -47,7 +47,15 @@ import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
 
 from .converters import convert_to_qye
-from .readers import robust_loadtxt_skipheader, read_mpt_file, is_bruker_raw, read_xrd_vendor_file
+from .readers import (
+    robust_loadtxt_skipheader,
+    read_mpt_file,
+    is_bruker_raw,
+    read_xrd_vendor_file,
+    is_biologic_datalogger_csv,
+    read_biologic_datalogger_time_voltage,
+    extract_bruker_brml_scans,
+)
 from .cif import cif_reflection_positions, list_reflections_with_hkl, build_hkl_label_map_from_list
 from .utils import natural_sort_key
 from matplotlib.transforms import blended_transform_factory  # type: ignore[import]
@@ -74,10 +82,18 @@ DEFAULT_COLORBAR_WIDTH_IN = 0.23
 _two_theta_re = re.compile(r"2[tT]heta|2th", re.IGNORECASE)
 _q_re = re.compile(r"^q$", re.IGNORECASE)
 _r_re = re.compile(r"^r(adial)?$", re.IGNORECASE)
+_cyc_re = re.compile(r"cyc\s*(\d+)", re.IGNORECASE)
+
+
+def _extract_cyc_number(name: str) -> int:
+    """Extract cycle number from filename (e.g. RA_O5_cyc1.brml -> 1). Returns 0 if not found."""
+    m = _cyc_re.search(name)
+    return int(m.group(1)) if m else 0
 
 def _infer_axis_mode(args, any_qye: bool, has_unknown_ext: bool):
-    # Priority: explicit --xaxis, else .qye presence (Q), else wavelength (Q), else default 2theta with warning
-    # If unknown extensions are present, use "user defined" mode
+    # Priority: --wl (2θ→Q conversion), explicit --xaxis, .qye presence (Q), else default 2theta
+    if getattr(args, 'wl', None) is not None:
+        return "Q"
     if has_unknown_ext and not args.xaxis:
         return "user_defined"
     if args.xaxis:
@@ -371,51 +387,70 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
     axis_mode = _infer_axis_mode(args, any_qye, has_unknown_ext)
     wl = getattr(args, 'wl', None)
 
+    brml_files = sorted([f for f in files if f.suffix.lower() == ".brml"],
+                        key=lambda f: (_extract_cyc_number(f.name), natural_sort_key(f.name)))
+    other_files = [f for f in files if f.suffix.lower() != ".brml"]
+
     x_arrays = []
     y_arrays = []
     loaded_filenames = []  # track which files made it into the contour (some may be skipped)
-    for f in files:
-        readcol = None
-        # Operando-specific: --readcolc for contour plot columns
-        if hasattr(args, 'readcolc') and args.readcolc is not None:
-            readcol = tuple(args.readcolc)
-        if readcol is None and hasattr(args, 'readcol_by_file') and args.readcol_by_file:
-            for key in (str(f), f.name):
-                if key in args.readcol_by_file:
-                    rc = args.readcol_by_file[key]
-                    readcol = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
-                    break
-        if readcol is None and hasattr(args, 'readcol_by_ext') and f.suffix.lower() in args.readcol_by_ext:
-            readcol = args.readcol_by_ext[f.suffix.lower()]
-        if readcol is None:
-            readcol = getattr(args, 'readcol', None)
-            if readcol and isinstance(readcol, list) and readcol and isinstance(readcol[0], (tuple, list)):
-                readcol = readcol[0]
-        try:
-            x, y = _load_curve(f, readcol=readcol)
-        except Exception as e:
-            print(f"Skip {f.name}: {e}")
-            continue
-        # Convert axis if needed (but not for user_defined mode)
-        if axis_mode == "Q":
-            if f.suffix.lower() == ".qye":
-                pass  # already Q
-            else:
-                if wl is None:
-                    # If user wants Q without wavelength we cannot proceed for this file
-                    print(f"Skip {f.name}: need wavelength (--wl) for Q conversion")
-                    continue
-                x = _maybe_convert_to_Q(x, wl)
-        elif axis_mode == "2theta" and f.suffix.lower() == ".qye":
-            # .qye files are in Q; user wants 2theta → convert Q to 2theta
-            if wl is None:
-                print(f"Skip {f.name}: need wavelength (--wl) for Q→2theta conversion")
+
+    if brml_files:
+        # Multi-.brml mode: extract per-scan from each .brml, sort by cyc1/cyc2/cyc3, stack bottom-to-top
+        # Scan numbering: cyc1 scans 0..N1-1, cyc2 scans N1..N1+N2-1, etc.
+        for brml_path in brml_files:
+            try:
+                scans = extract_bruker_brml_scans(str(brml_path), out_dir=None)
+            except Exception as e:
+                print(f"Skip {brml_path.name}: {e}")
                 continue
-            x = _maybe_convert_Q_to_2theta(x, wl)
-        # No normalization - keep raw intensity values
-        x_arrays.append(x)
-        y_arrays.append(y)
-        loaded_filenames.append(f.name)
+            for i, (x, y) in enumerate(scans):
+                x = np.asarray(x, float)
+                y = np.asarray(y, float)
+                if axis_mode == "Q" and wl is not None:
+                    x = _maybe_convert_to_Q(x, wl)
+                x_arrays.append(x)
+                y_arrays.append(y)
+                loaded_filenames.append(f"{brml_path.name}#{i + 1}")
+    else:
+        # Standard mode: each file = one scan
+        for f in other_files:
+            readcol = None
+            if hasattr(args, 'readcolc') and args.readcolc is not None:
+                readcol = tuple(args.readcolc)
+            if readcol is None and hasattr(args, 'readcol_by_file') and args.readcol_by_file:
+                for key in (str(f), f.name):
+                    if key in args.readcol_by_file:
+                        rc = args.readcol_by_file[key]
+                        readcol = rc[0] if isinstance(rc, list) and rc and isinstance(rc[0], (tuple, list)) else rc
+                        break
+            if readcol is None and hasattr(args, 'readcol_by_ext') and f.suffix.lower() in args.readcol_by_ext:
+                readcol = args.readcol_by_ext[f.suffix.lower()]
+            if readcol is None:
+                readcol = getattr(args, 'readcol', None)
+                if readcol and isinstance(readcol, list) and readcol and isinstance(readcol[0], (tuple, list)):
+                    readcol = readcol[0]
+            try:
+                x, y = _load_curve(f, readcol=readcol)
+            except Exception as e:
+                print(f"Skip {f.name}: {e}")
+                continue
+            if axis_mode == "Q":
+                if f.suffix.lower() == ".qye":
+                    pass
+                else:
+                    if wl is None:
+                        print(f"Skip {f.name}: need wavelength (--wl) for Q conversion")
+                        continue
+                    x = _maybe_convert_to_Q(x, wl)
+            elif axis_mode == "2theta" and f.suffix.lower() == ".qye":
+                if wl is None:
+                    print(f"Skip {f.name}: need wavelength (--wl) for Q→2theta conversion")
+                    continue
+                x = _maybe_convert_Q_to_2theta(x, wl)
+            x_arrays.append(x)
+            y_arrays.append(y)
+            loaded_filenames.append(f.name)
 
     if not x_arrays:
         raise RuntimeError("No curves loaded after filtering/conversion.")
@@ -503,10 +538,17 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                 Z_deriv[i, :] = np.nan
         Z = Z_deriv
 
-    # Detect an electrochemistry .mpt file in the same folder (if any)
-    # Filter out macOS resource fork files (starting with ._)
-    mpt_files = sorted([f for f in p.iterdir() if f.suffix.lower() == ".mpt" and not f.name.startswith("._")], key=lambda p: natural_sort_key(p.name))  # pick first if present
-    has_ec = len(mpt_files) > 0
+    # Detect electrochemistry: .mpt and/or Biologic DataLogger CSV (cyc1, cyc2, cyc3...)
+    # Sort by cyc number; if multiple, concatenate with time offset (same as --xaxis time)
+    mpt_files = sorted([f for f in p.iterdir() if f.suffix.lower() == ".mpt" and not f.name.startswith("._")],
+                       key=lambda f: (_extract_cyc_number(f.name), natural_sort_key(f.name)))
+    datalogger_files = sorted(
+        [f for f in p.iterdir() if f.suffix.lower() == ".csv" and not f.name.startswith("._")
+         and is_biologic_datalogger_csv(str(f))],
+        key=lambda f: (_extract_cyc_number(f.name), natural_sort_key(f.name)))
+    # Prefer DataLogger when present (cyc-named); else use .mpt
+    ec_files = datalogger_files if datalogger_files else mpt_files
+    has_ec = len(ec_files) > 0
     ec_ax = None
 
     if has_ec:
@@ -552,106 +594,83 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
         ax.set_xlabel('2θ (deg)')
     # No title for operando plot (requested)
 
-    # If an EC .mpt exists, attach it to the right with the same height (Potential vs Time in hours)
+    # If EC files exist (.mpt and/or DataLogger CSV), attach panel (Potential vs Time in hours)
+    # Multiple files: concatenate with time offset (cyc1, cyc2, cyc3...) same as --xaxis time
     if has_ec:
         try:
-            ec_path = mpt_files[0]
-            
-            # Check if user specified custom columns: --readcols (operando) or --readcolmpt
-            readcol_mpt = None
-            if hasattr(args, 'readcols') and args.readcols is not None:
-                readcol_mpt = tuple(args.readcols)
-            if readcol_mpt is None and hasattr(args, 'readcol_by_ext') and '.mpt' in args.readcol_by_ext:
-                readcol_mpt = args.readcol_by_ext['.mpt']
-            
-            if readcol_mpt:
-                # User explicitly specified columns - respect their choice
-                data = robust_loadtxt_skipheader(str(ec_path))
-                if data.ndim == 1:
-                    data = data.reshape(1, -1)
-                if data.shape[1] < 2:
-                    raise ValueError(f"MPT file {ec_path.name} has insufficient columns")
-                
-                # Apply column selection (1-indexed -> 0-indexed)
-                x_col, y_col = readcol_mpt
-                x_col_idx = x_col - 1
-                y_col_idx = y_col - 1
-                if x_col_idx < 0 or x_col_idx >= data.shape[1]:
-                    raise ValueError(f"X column {x_col} out of range in {ec_path.name} (has {data.shape[1]} columns)")
-                if y_col_idx < 0 or y_col_idx >= data.shape[1]:
-                    raise ValueError(f"Y column {y_col} out of range in {ec_path.name} (has {data.shape[1]} columns)")
-                
-                x_data = data[:, x_col_idx]
-                y_data = data[:, y_col_idx]
-                current_mA = None
-                # User-specified: plot exactly as specified (X on x-axis, Y on y-axis)
-                x_label = f'Column {x_col}'
-                y_label = f'Column {y_col}'
-            else:
-                # Auto-detect format: Read time series from .mpt
-                result = read_mpt_file(str(ec_path), mode='time')
-                
-                # Check if we got labels (5 elements) or old format (3 elements)
-                if len(result) == 5:
-                    x_data, y_data, current_mA, x_label, y_label = result
-                    # For EC-Lab files: x_label='Time (h)', y_label='Potential (V)'
-                    # For simple files: x_label could be 'Time(h)', 'time', etc.
-                    # EC-Lab files: read_mpt_file already converts time from seconds to hours
-                    # operando plots with voltage on X-axis and time on Y-axis
-                    
-                    # Check if labels indicate time/voltage data (flexible matching)
-                    x_lower = x_label.lower().replace(' ', '').replace('_', '')
-                    y_lower = y_label.lower().replace(' ', '').replace('_', '')
-                    has_time_in_x = 'time' in x_lower
-                    has_voltage_in_x = 'voltage' in x_lower or 'potential' in x_lower or 'ewe' in x_lower
-                    has_time_in_y = 'time' in y_lower
-                    has_voltage_in_y = 'voltage' in y_lower or 'potential' in y_lower or 'ewe' in y_lower
-                    
-                    is_time_voltage = (has_time_in_x or has_time_in_y) and (has_voltage_in_x or has_voltage_in_y)
-                    
-                    if x_label == 'Time (h)' and y_label == 'Potential (V)':
-                        # EC-Lab file: time is already in hours from read_mpt_file, just swap axes
-                        time_h = np.asarray(x_data, float)  # Already in hours, no conversion needed
-                        voltage_v = np.asarray(y_data, float)
-                        x_data = voltage_v
-                        y_data = time_h
-                        x_label = 'Potential (V)'
-                        y_label = 'Time (h)'
-                    elif is_time_voltage:
-                        # Simple file with time/voltage columns
-                        # Determine which column is which, then arrange: voltage on X, time on Y
-                        if has_time_in_x and has_voltage_in_y:
-                            # Columns are: Time, Voltage -> swap to Voltage, Time
-                            time_h = np.asarray(x_data, float)
-                            voltage_v = np.asarray(y_data, float)
-                            x_data = voltage_v
-                            y_data = time_h
-                            x_label = 'Potential (V)'
-                            y_label = 'Time (h)'
-                        elif has_voltage_in_x and has_time_in_y:
-                            # Columns are: Voltage, Time -> already correct order
-                            voltage_v = np.asarray(x_data, float)
-                            time_h = np.asarray(y_data, float)
-                            x_data = voltage_v
-                            y_data = time_h
-                            x_label = 'Potential (V)'
-                            y_label = 'Time (h)'
-                        else:
-                            # Ambiguous or both in same column - default behavior
-                            x_data = np.asarray(x_data, float)
-                            y_data = np.asarray(y_data, float)
-                    else:
-                        # Generic file: use raw data as-is, keep original labels
-                        x_data = np.asarray(x_data, float)
-                        y_data = np.asarray(y_data, float)
+            x_parts = []
+            y_parts = []
+            current_mA = None
+            time_offset = 0.0
+            x_label = 'Potential (V)'
+            y_label = 'Time (h)'
+
+            for ec_path in ec_files:
+                is_datalogger = ec_path.suffix.lower() == ".csv" and is_biologic_datalogger_csv(str(ec_path))
+
+                if is_datalogger:
+                    time_h, voltage_v = read_biologic_datalogger_time_voltage(str(ec_path))
+                    time_h = np.asarray(time_h, float)
+                    voltage_v = np.asarray(voltage_v, float)
+                    if time_offset != 0:
+                        time_h = time_h + time_offset
+                    if len(time_h) > 0:
+                        time_offset = float(np.nanmax(time_h))
+                    x_parts.append(voltage_v)
+                    y_parts.append(time_h)
                 else:
-                    # Old format compatibility (shouldn't happen anymore)
-                    # Support both 3-tuple and 4+/5-tuple returns by ignoring any extra elements.
-                    x_data, y_data, current_mA, *_ = result
-                    x_data = np.asarray(x_data, float)
-                    y_data = np.asarray(y_data, float) / 3600.0
-                    x_label, y_label = 'Potential (V)', 'Time (h)'
-            
+                    # .mpt file
+                    readcol_mpt = None
+                    if hasattr(args, 'readcols') and args.readcols is not None:
+                        readcol_mpt = tuple(args.readcols)
+                    if readcol_mpt is None and hasattr(args, 'readcol_by_ext') and '.mpt' in getattr(args, 'readcol_by_ext', {}):
+                        readcol_mpt = args.readcol_by_ext['.mpt']
+
+                    if readcol_mpt:
+                        data = robust_loadtxt_skipheader(str(ec_path))
+                        if data.ndim == 1:
+                            data = data.reshape(1, -1)
+                        if data.shape[1] < 2:
+                            raise ValueError(f"MPT file {ec_path.name} has insufficient columns")
+                        x_col, y_col = readcol_mpt
+                        x_col_idx, y_col_idx = x_col - 1, y_col - 1
+                        # EC panel: voltage on X, time on Y; assume x_col=time, y_col=voltage (EC-Lab order)
+                        v_raw = np.asarray(data[:, y_col_idx], float)
+                        t_raw = np.asarray(data[:, x_col_idx], float)
+                    else:
+                        result = read_mpt_file(str(ec_path), mode='time')
+                        if len(result) == 5:
+                            x_data, y_data, current_mA, x_lbl, y_lbl = result
+                            x_lower = x_lbl.lower().replace(' ', '').replace('_', '')
+                            y_lower = y_lbl.lower().replace(' ', '').replace('_', '')
+                            has_time_in_x = 'time' in x_lower
+                            has_voltage_in_y = 'voltage' in y_lower or 'potential' in y_lower or 'ewe' in y_lower
+                            if x_lbl == 'Time (h)' and y_lbl == 'Potential (V)':
+                                t_raw = np.asarray(x_data, float)
+                                v_raw = np.asarray(y_data, float)
+                            elif has_time_in_x and has_voltage_in_y:
+                                t_raw = np.asarray(x_data, float)
+                                v_raw = np.asarray(y_data, float)
+                            elif 'voltage' in x_lower or 'potential' in x_lower:
+                                v_raw = np.asarray(x_data, float)
+                                t_raw = np.asarray(y_data, float)
+                            else:
+                                v_raw = np.asarray(x_data, float)
+                                t_raw = np.asarray(y_data, float)
+                        else:
+                            x_data, y_data, current_mA, *_ = result
+                            v_raw = np.asarray(x_data, float)
+                            t_raw = np.asarray(y_data, float) / 3600.0
+                    if time_offset != 0:
+                        t_raw = t_raw + time_offset
+                    if len(t_raw) > 0:
+                        time_offset = float(np.nanmax(t_raw))
+                    x_parts.append(v_raw)
+                    y_parts.append(t_raw)
+
+            x_data = np.concatenate(x_parts) if len(x_parts) > 1 else x_parts[0]
+            y_data = np.concatenate(y_parts) if len(y_parts) > 1 else y_parts[0]
+
             # Add the EC axes on the right
             ec_ax = fig.add_subplot(gs[0, 1])
             ln_ec, = ec_ax.plot(x_data, y_data, lw=1.0, color='tab:blue')
@@ -857,8 +876,9 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
             fig._operando_cif_set_visible = None
             fig._operando_cif_placement = 'below'
             fig._operando_cif_y_positions = list(getattr(fig, '_operando_cif_y_positions', []))
-            fig._operando_axis_mode = axis_mode
-            fig._operando_wl = wl
+    # Always set axis_mode and wl for interactive menu and session save (--wl 0.709 → Q conversion)
+    fig._operando_axis_mode = axis_mode
+    fig._operando_wl = wl
 
     meta = {
         'files': [f.name for f in files],

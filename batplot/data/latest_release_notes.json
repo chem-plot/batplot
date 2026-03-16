@@ -1,8 +1,7 @@
 {
-  "version": "1.8.30",
-  "custom_message": "- Bug fixes",
+  "version": "1.8.31",
+  "custom_message": "- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i",
   "update_notes": [
-    "- Bug fixes",
-    "- Improved reader for different data formats"
+    "- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i"
   ]
 }

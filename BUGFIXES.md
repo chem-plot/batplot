@@ -4,6 +4,66 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-16: Operando mode: DataLogger EC + multi-.brml contour with cyc1/cyc2/cyc3
+
+### Summary
+Operando mode now supports (1) Biologic DataLogger CSV for the EC panel (time vs potential), in addition to .mpt; (2) multiple DataLogger or .mpt files sorted by cyc1/cyc2/cyc3, concatenated with continuous time (same as --xaxis time); (3) multiple .brml files: each .brml is expanded into per-scan rows, sorted by cyc number, stacked bottom-to-top with continuous scan numbering (cyc2 scans start at end_of_cyc1 + 1).
+
+### Root Cause
+Operando only looked for .mpt for EC; only one .mpt was used; .brml was treated as one concatenated scan per file.
+
+### Solution
+- EC: Collect .mpt and DataLogger CSV; sort by _extract_cyc_number(name); prefer DataLogger when present; concatenate with time offset across files.
+- Contour: If .brml files present, use extract_bruker_brml_scans per file, sort by cyc, stack; else keep existing logic (each file = one scan). Cross-platform.
+
+### Affected Files
+- `batplot/operando.py`
+
+---
+
+## 2026-03-16: BRML operando multi-scan format not parsed; no per-scan extraction
+
+### Summary
+Bruker .brml files from operando XRD (e.g. RA_O5_cyc1.brml) use a different XML layout: `ScaleAxisInfo` instead of `ScanAxisInfo`, and single-row `Datum` with (MeasuredTime, AbsorptionFactor, count0, count1, ...) instead of per-point rows. The parser failed to extract XRD data. There was also no way to extract each scan as a separate dataset.
+
+### Root Cause
+`read_bruker_brml` only looked for `ScanAxisInfo` and assumed multi-row Datum with columns (time, absorption, 2θ, theta, count). Operando BRML uses `ScaleAxisInfo` in ScaleAxes and a single Datum row with 2θ implied by Start/Stop/Increment. RawData0/1 contain Biologic electrochemistry (no 2θ axis) and were incorrectly parsed.
+
+### Solution
+(1) Extended `_parse_brml_raw_xml` to support both `ScanAxisInfo` and `ScaleAxisInfo`. (2) Added Format A: single row with ≥10 values → y = cols 2:, x = start + arange(n)*step. (3) Skip RawData with no 2θ axis (non-XRD). (4) Added `extract_bruker_brml_scans(fname, out_dir)` to return per-scan (x,y) and optionally write scan_001.xy, scan_002.xy, etc. (5) Added `--extract-brml-scans` CLI flag; default output dir is `<brml_stem>_scans`. Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- `batplot/readers.py` (read_bruker_brml, _parse_brml_raw_xml, extract_bruker_brml_scans)
+- `batplot/args.py` (--extract-brml-scans)
+- `batplot/batplot.py` (extract handler)
+
+---
+
+## 2026-03-16: GC mode did not support Biologic DataLogger CSV format
+
+### Summary
+`batplot --gc --i --mass` could not extract galvanostatic cycling curves from Biologic DataLogger CSV files (e.g. `*--DataLogger.csv`). These files use semicolon separator and contain TimeStamp, modeActualCurrent, modeActualVoltage columns but no capacity column—unlike Neware CSV or .mpt which have capacity or Q columns.
+
+### Root Cause
+GC mode only supported (1) .mpt (with Q charge/discharge columns) and (2) Neware-style CSV (with capacity columns). Biologic DataLogger CSV has time, current, voltage only; capacity must be computed by integrating current over time.
+
+### Solution
+Added `is_biologic_datalogger_csv()` and `read_biologic_datalogger_csv()` in readers.py. Detection uses first-line `sep=;`, second-line `DataLogger`, and header containing TimeStamp, modeActualCurrent, modeActualVoltage. The reader parses with `csv.reader(delimiter=';')`, integrates Q = ∫ I dt (mAh), infers charge/discharge from current sign, and requires `--mass` for specific capacity (mAh/g). Each charge and discharge segment starts at capacity 0 (matching MPT/Neware convention). Wired into modes.py handle_gc_mode, batplot.py multi-file GC, and batch.py batch_process_ec. Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- `batplot/readers.py` (new functions)
+- `batplot/modes.py`
+- `batplot/batplot.py`
+- `batplot/batch.py`
+
+### Follow-up (dQ/dV support)
+Added `read_biologic_datalogger_dqdv_file()` to compute dQ/dV numerically from DataLogger CSV (no pre-calculated dQ/dV column). Wired into batplot.py and batch.py dQ/dV mode. Requires `--mass` for specific dQ/dV (mAh g⁻¹ V⁻¹).
+
+### Follow-up (--xaxis time support)
+Added `read_biologic_datalogger_time_voltage()` for time vs potential plots. When multiple DataLogger (or CSV/MPT) files are plotted with `--xaxis time`, curves are now connected: each file's time is offset so it continues from the end of the previous file (continuous time axis across files).
+
+---
+
 ## 2026-03-11: UnboundLocalError when applying file-palette (fall viridis) in EC color menu
 
 ### Summary

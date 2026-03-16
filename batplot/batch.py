@@ -21,6 +21,9 @@ from .readers import (
     read_ec_csv_dqdv_file,
     compute_dqdv_numerical,
     is_cs_b_format,
+    is_biologic_datalogger_csv,
+    read_biologic_datalogger_csv,
+    read_biologic_datalogger_dqdv_file,
     _load_csv_header_and_rows,
     read_biologic_txt_file,
 )
@@ -1013,8 +1016,16 @@ def batch_process_ec(directory: str, args):
                     cap_x = specific_capacity
                     x_label = r'Specific Capacity (mAh g$^{-1}$)'
                 elif ext == '.csv':
-                    cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = \
-                        read_ec_csv_file(fpath, prefer_specific=True)
+                    if is_biologic_datalogger_csv(fpath):
+                        if mass_mg is None:
+                            print(f"  Skipped {fname}: GC mode (Biologic DataLogger CSV) requires --mass parameter")
+                            plt.close(fig_b)
+                            continue
+                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = \
+                            read_biologic_datalogger_csv(fpath, mass_mg=mass_mg)
+                    else:
+                        cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = \
+                            read_ec_csv_file(fpath, prefer_specific=True)
                     x_label = r'Specific Capacity (mAh g$^{-1}$)'
                 else:
                     raise ValueError(f"Unsupported file type for GC: {ext}")
@@ -1116,13 +1127,21 @@ def batch_process_ec(directory: str, args):
 
                 # Try to load pre-calculated dQ/dV columns; fall back to numerical computation
                 _b_dqdv_header = None
-                try:
-                    _b_dqdv_header, _, _ = _load_csv_header_and_rows(fpath)
-                except Exception:
-                    pass
-
                 _b_loaded = False
-                if not _b_loaded:
+                if is_biologic_datalogger_csv(fpath):
+                    if mass_mg is None or mass_mg <= 0:
+                        print(f"  Skipped {fname}: dQ/dV (Biologic DataLogger CSV) requires --mass parameter")
+                        plt.close(fig_b)
+                        continue
+                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = \
+                        read_biologic_datalogger_dqdv_file(fpath, mass_mg=mass_mg, prefer_specific=True)
+                    _b_loaded = True
+                else:
+                    try:
+                        _b_dqdv_header, _, _ = _load_csv_header_and_rows(fpath)
+                    except Exception:
+                        pass
+
                     try:
                         voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = \
                             read_ec_csv_dqdv_file(fpath, prefer_specific=True)

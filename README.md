@@ -199,6 +199,23 @@ batplot custom.mpt --gc --pw 0.01 3 --cd 0.2 --i
 
 ## Operando Mode
 
+Contour plots from a folder of diffraction data, optionally with an electrochemistry side panel.
+
+### Bruker operando (.brml)
+
+For Bruker operando XRD (multi-scan .brml files named cyc1, cyc2, cyc3, etc.):
+
+```bash
+# Place .brml files (e.g. RA_O5_cyc1.brml, RA_O5_cyc2.brml) in the folder
+# Use --wl for Q conversion (e.g. synchrotron λ=0.709 Å)
+batplot RA_O5 --operando --wl 0.709 --i
+
+# EC side panel: .mpt or Biologic DataLogger CSV (*--DataLogger.csv), sorted by cyc
+# Time vs potential is concatenated across files (continuous time axis)
+```
+
+### Standard XY files
+
 ```bash
 # Contour from folder of .xy/.xye/.qye/.dat
 batplot --operando --wl 1.54 --i
@@ -263,8 +280,9 @@ batplot --all --readcol 2 3 style.bps --xaxis 2theta
 
 | Type | Formats |
 |------|---------|
-| **Electrochemistry** | `.csv` (Neware), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe CPC) |
+| **Electrochemistry** | `.csv` (Neware, Biologic DataLogger), `.mpt` (Biologic), `.xlsx` (Landt/Lanhe CPC) |
 | **XRD / PDF** | `.xye`, `.xy`, `.qye`, `.dat`, `.csv`, `.txt`; Bruker `.brml`, `.raw` |
+| **Operando** | `.xy`, `.xye`, `.qye`, `.dat`; Bruker `.brml` (cyc1/cyc2/cyc3); EC: `.mpt` or DataLogger `.csv` |
 | **XAS** | `.nor`, `.chik`, `.chir` |
 | **Generic** | Use `--readcol` and `--xaxis` for custom formats |
 

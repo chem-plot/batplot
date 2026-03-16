@@ -34,7 +34,14 @@ from typing import Dict, Any, Optional, Tuple, cast
 import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
 
-from .readers import read_mpt_file, read_ec_csv_file, read_ec_csv_dqdv_file, read_biologic_txt_file
+from .readers import (
+    read_mpt_file,
+    read_ec_csv_file,
+    read_ec_csv_dqdv_file,
+    read_biologic_txt_file,
+    is_biologic_datalogger_csv,
+    read_biologic_datalogger_csv,
+)
 from .electrochem_interactive import electrochem_interactive_menu
 
 
@@ -472,8 +479,21 @@ def handle_gc_mode(args) -> int:
             x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
             cap_x = specific_capacity
         elif ec_file.lower().endswith('.csv'):
-            cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(ec_file, prefer_specific=True)
-            x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+            if is_biologic_datalogger_csv(ec_file):
+                mass_mg = _resolve_mass(getattr(args, 'mass', None), 0)
+                if mass_mg is None:
+                    print("GC mode (Biologic DataLogger CSV): --mass parameter is required (active material mass in milligrams).")
+                    print("Example: batplot file.csv --gc --mass 7.0")
+                    return 1
+                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_biologic_datalogger_csv(
+                    ec_file, mass_mg=mass_mg
+                )
+                x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
+            else:
+                cap_x, voltage, cycle_numbers, charge_mask, discharge_mask = read_ec_csv_file(
+                    ec_file, prefer_specific=True
+                )
+                x_label_gc = r'Specific Capacity (mAh g$^{-1}$)'
         else:
             print("GC mode: file must be .mpt or .csv")
             return 1

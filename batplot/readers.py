@@ -692,6 +692,123 @@ def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
     return x_arr, y_arr, None, wavelength
 
 
+def _parse_brml_raw_xml(zip_f, raw_path):
+    """Parse a single RawData XML from BRML. Returns (x, y, start_deg, step_deg) or (None,)*4."""
+    with zip_f.open(raw_path, "r") as f:
+        tree = ET.parse(f)
+    root = tree.getroot()
+    dr = root.find(".//DataRoute")
+    if dr is None:
+        return None, None, None, None
+    start_deg = None
+    step_deg = None
+    si = dr.find("ScanInformation")
+    if si is not None:
+        for axis in si.findall(".//ScanAxisInfo"):
+            aname = axis.get("AxisName") or axis.get("AxisId") or ""
+            if "TwoTheta" in aname or "2Theta" in aname or "2theta" in aname.lower():
+                ref = float(axis.findtext("Reference") or "0")
+                start_deg = float(axis.findtext("Start") or "0") + ref
+                step_deg = float(axis.findtext("Increment") or "0")
+                break
+    if start_deg is None or step_deg is None:
+        for axis in root.findall(".//ScaleAxisInfo"):
+            aname = axis.get("AxisName") or axis.get("AxisId") or ""
+            if "TwoTheta" in aname or "2Theta" in aname or "2theta" in aname.lower():
+                ref = float(axis.findtext("Reference") or "0")
+                start_deg = float(axis.findtext("Start") or "0") + ref
+                step_deg = float(axis.findtext("Increment") or "0")
+                break
+    if start_deg is None or step_deg is None:
+        return None, None, None, None
+    datum_elts = dr.findall("Datum")
+    if not datum_elts:
+        return None, None, None, None
+    rows = []
+    for d in datum_elts:
+        if d.text:
+            rows.append([float(x) for x in d.text.strip().split(",")])
+    if not rows:
+        return None, None, None, None
+    arr = np.array(rows)
+    nrows, ncols = arr.shape
+    if nrows == 1 and ncols >= 10:
+        n_counts = ncols - 2
+        y_arr = np.asarray(arr[0, 2:], dtype=float)
+        if len(y_arr) != n_counts:
+            y_arr = np.asarray(arr[0, 2 : 2 + n_counts], dtype=float)
+        n_pts = len(y_arr)
+        x_arr = start_deg + np.arange(n_pts, dtype=float) * step_deg
+        return x_arr, y_arr, start_deg, step_deg
+    if ncols >= 5:
+        x_col, y_col = 2, 4
+    elif ncols >= 3:
+        x_col, y_col = 0, 1
+    else:
+        return None, None, None, None
+    x_arr = np.asarray(arr[:, x_col], dtype=float)
+    y_arr = np.asarray(arr[:, y_col], dtype=float)
+    return x_arr, y_arr, start_deg, step_deg
+
+
+def extract_bruker_brml_scans(
+    fname: str,
+    out_dir: Optional[str] = None,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Extract each XRD scan from a Bruker .brml file as separate (x, y) datasets.
+
+    Skips non-XRD RawData (e.g. Biologic electrochemistry in operando files).
+    Supports both ScanAxisInfo (older) and ScaleAxisInfo (newer) formats.
+
+    Args:
+        fname: Path to .brml file.
+        out_dir: If provided, write each scan to scan_001.xy, scan_002.xy, etc.
+
+    Returns:
+        List of (x, y) tuples; x = 2θ (degrees), y = intensity.
+    """
+    if not (fname and str(fname).lower().endswith(".brml")):
+        raise ValueError("extract_bruker_brml_scans expects a .brml file")
+
+    def _first_experiment_and_datacontainer(zip_f):
+        for name in zip_f.namelist():
+            if "/DataContainer.xml" in name and "Experiment" in name:
+                return name.split("/DataContainer.xml")[0], name
+        return None, None
+
+    def _raw_reference_list(zip_f, dc_path):
+        with zip_f.open(dc_path, "r") as f:
+            tree = ET.parse(f)
+        root = tree.getroot()
+        refs = root.findall(".//RawDataReferenceList/string")
+        if refs:
+            return [r.text.strip() for r in refs if r.text]
+        return []
+
+    scans: List[Tuple[np.ndarray, np.ndarray]] = []
+    with zipfile.ZipFile(fname, "r") as zf:
+        _exp_prefix, dc_path = _first_experiment_and_datacontainer(zf)
+        if not dc_path:
+            raise ValueError(f"No DataContainer.xml found in {fname}")
+        raw_list = _raw_reference_list(zf, dc_path)
+        if not raw_list:
+            raise ValueError(f"No RawDataReferenceList in {fname}")
+        for raw_path in raw_list:
+            x_arr, y_arr, _s, _st = _parse_brml_raw_xml(zf, raw_path)
+            if x_arr is not None and y_arr is not None:
+                scans.append((x_arr, y_arr))
+
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        for i, (x_arr, y_arr) in enumerate(scans):
+            out_path = os.path.join(out_dir, f"scan_{i + 1:03d}.xy")
+            with open(out_path, "w", encoding="utf-8") as f:
+                for xi, yi in zip(x_arr, y_arr):
+                    f.write(f"{xi}\t{yi}\n")
+
+    return scans
+
+
 def read_xrd_vendor_file(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
     """Read Bruker .raw or .brml (built-in parsers). Returns 2θ (degrees) and intensity.
 
@@ -2573,6 +2690,279 @@ def is_cs_b_format(header: List[str]) -> bool:
     has_cap_density = any('Capacity Density(mAh/g)' in h for h in header_stripped)
     has_dqdv = any('dQ/dV(mAh/V)' in h for h in header_stripped)
     return has_cap_density and has_dqdv
+
+
+def is_biologic_datalogger_csv(fname: str) -> bool:
+    """Check if CSV is Biologic DataLogger format (sep=;, TimeStamp, modeActualCurrent, modeActualVoltage)."""
+    try:
+        with open(fname, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = [f.readline() for _ in range(5)]
+    except OSError:
+        return False
+    if not lines or len(lines) < 4:
+        return False
+    first = (lines[0] or '').strip()
+    if not first.startswith('sep='):
+        return False
+    line2 = (lines[1] or '').lower()
+    if 'datalogger' not in line2 and 'dataloggerscan' not in line2:
+        return False
+    header_line = (lines[2] or '').lower()
+    has_ts = 'timestamp' in header_line
+    has_cur = 'modeactualcurrent' in header_line or 'actualcurrent' in header_line
+    has_volt = 'modeactualvoltage' in header_line or 'actualvoltage' in header_line
+    return bool(has_ts and has_cur and has_volt)
+
+
+def read_biologic_datalogger_csv(
+    fname: str,
+    mass_mg: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Read Biologic DataLogger CSV (time, current, voltage) and compute capacity for GC plots.
+
+    Biologic DataLogger exports use semicolon separator with columns:
+    - TimeStamp (s)
+    - modeActualCurrent (mA)
+    - modeActualVoltage (V)
+
+    Capacity is computed by integrating current over time: Q = integral(I dt).
+    Charge/discharge is inferred from current sign (positive=charge, negative=discharge).
+    Requires --mass (mg) for specific capacity (mAh/g).
+
+    Args:
+        fname: Path to DataLogger CSV file
+        mass_mg: Active material mass in mg (required for specific capacity)
+
+    Returns:
+        (capacity, voltage, cycles, charge_mask, discharge_mask)
+        capacity in mAh/g if mass_mg given, else mAh
+    """
+    if not is_biologic_datalogger_csv(fname):
+        raise ValueError(f"Not a Biologic DataLogger CSV: {fname}")
+
+    with open(fname, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f, delimiter=';')
+        all_rows = list(reader)
+
+    if len(all_rows) < 5:
+        raise ValueError(f"Biologic DataLogger CSV '{fname}' has insufficient rows")
+
+    # Line 0: sep=;, Line 1: Exp #..., Line 2: header, Line 3: units, Line 4+: data
+    header = [h.strip() for h in all_rows[2]]
+    units_row = all_rows[3]
+    data_rows = all_rows[4:]
+
+    def _find_col(*candidates: str) -> int:
+        for c in candidates:
+            for i, h in enumerate(header):
+                if c.lower() in (h or '').lower():
+                    return i
+        return -1
+
+    ts_idx = _find_col('TimeStamp', 'timestamp')
+    cur_idx = _find_col('modeActualCurrent', 'ActualCurrent', 'Current')
+    volt_idx = _find_col('modeActualVoltage', 'ActualVoltage', 'Voltage')
+
+    if ts_idx < 0 or cur_idx < 0 or volt_idx < 0:
+        raise ValueError(
+            f"Biologic DataLogger CSV missing required columns. "
+            f"Need TimeStamp, modeActualCurrent, modeActualVoltage. Found: {header}"
+        )
+
+    def _to_float(val: str) -> float:
+        try:
+            s = str(val).strip().replace(',', '.')
+            return float(s) if s else np.nan
+        except (ValueError, TypeError):
+            return np.nan
+
+    n = len(data_rows)
+    time_s = np.empty(n, dtype=float)
+    current_mA = np.empty(n, dtype=float)
+    voltage = np.empty(n, dtype=float)
+
+    for k, row in enumerate(data_rows):
+        if len(row) <= max(ts_idx, cur_idx, volt_idx):
+            row = row + [''] * (max(ts_idx, cur_idx, volt_idx) + 1 - len(row))
+        time_s[k] = _to_float(row[ts_idx])
+        current_mA[k] = _to_float(row[cur_idx])
+        voltage[k] = _to_float(row[volt_idx])
+
+    # Filter out invalid rows (NaN time/voltage)
+    valid = np.isfinite(time_s) & np.isfinite(voltage)
+    if not np.any(valid):
+        raise ValueError(f"No valid numeric data in {fname}")
+
+    time_s = time_s[valid]
+    current_mA = current_mA[valid]
+    voltage = voltage[valid]
+    n = len(time_s)
+
+    # Current threshold: treat |I| < 1e-10 as rest (exclude from charge/discharge)
+    rest_threshold = 1e-10
+    is_active = np.abs(current_mA) > rest_threshold
+
+    # Charge: I > 0, Discharge: I < 0
+    is_charge = current_mA > rest_threshold
+    is_discharge = current_mA < -rest_threshold
+
+    # For rest points, inherit from previous (or next) non-rest point
+    for k in range(n):
+        if not is_active[k]:
+            if k > 0:
+                is_charge[k] = is_charge[k - 1]
+                is_discharge[k] = is_discharge[k - 1]
+            else:
+                j = k + 1
+                while j < n and not is_active[j]:
+                    j += 1
+                if j < n:
+                    is_charge[k] = is_charge[j]
+                    is_discharge[k] = is_discharge[j]
+                else:
+                    is_charge[k] = True
+                    is_discharge[k] = False
+
+    charge_mask = is_charge & is_active
+    discharge_mask = is_discharge & is_active
+    # Include rest in the segment they belong to for continuity
+    charge_mask = is_charge
+    discharge_mask = is_discharge
+
+    # Segment boundaries (charge <-> discharge transitions)
+    run_starts = [0]
+    for k in range(1, n):
+        if is_charge[k] != is_charge[k - 1]:
+            run_starts.append(k)
+    run_starts.append(n)
+
+    # Integrate capacity: Q = integral(I dt), dQ = I * dt / 3600 (mA*s -> mAh)
+    # Each segment (charge or discharge) starts at 0, matching MPT/Neware convention
+    cap_continuous = np.zeros(n, dtype=float)
+    for seg_idx in range(len(run_starts) - 1):
+        start = run_starts[seg_idx]
+        end = run_starts[seg_idx + 1]
+        t = time_s[start:end]
+        i = current_mA[start:end]
+        dt = np.diff(t)
+        dt = np.concatenate(([0.0], dt))
+        dq_mah = i * dt / 3600.0
+        q_seg = np.cumsum(dq_mah)
+        q_start = q_seg[0]
+        if is_charge[start]:
+            # Charge: q_seg goes 0 to +Q, cap = q_seg - q_start (starts at 0)
+            cap_continuous[start:end] = q_seg - q_start
+        else:
+            # Discharge: q_seg goes 0 to -Q, use |integral| so cap goes 0 to +Q (capacity delivered)
+            cap_continuous[start:end] = -(q_seg - q_start)
+
+    # Convert to specific capacity if mass given
+    if mass_mg is not None and mass_mg > 0:
+        cap_continuous = cap_continuous * (1000.0 / float(mass_mg))
+
+    # Infer cycles
+    cycles = np.zeros(n, dtype=int)
+    cyc = 1
+    half = 0
+    for seg_idx in range(len(run_starts) - 1):
+        s, e = run_starts[seg_idx], run_starts[seg_idx + 1]
+        cycles[s:e] = cyc
+        half += 1
+        if half == 2:
+            cyc += 1
+            half = 0
+
+    return cap_continuous, voltage, cycles, charge_mask, discharge_mask
+
+
+def read_biologic_datalogger_time_voltage(fname: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Read time (in hours) and voltage from Biologic DataLogger CSV.
+
+    Uses TimeStamp (s) and modeActualVoltage columns. Converts time to hours.
+
+    Returns:
+        (time_h, voltage) where time_h is in hours and voltage in volts
+    """
+    if not is_biologic_datalogger_csv(fname):
+        raise ValueError(f"Not a Biologic DataLogger CSV: {fname}")
+
+    with open(fname, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f, delimiter=';')
+        all_rows = list(reader)
+
+    if len(all_rows) < 5:
+        raise ValueError(f"Biologic DataLogger CSV '{fname}' has insufficient rows")
+
+    header = [h.strip() for h in all_rows[2]]
+    data_rows = all_rows[4:]
+
+    def _find_col(*candidates: str) -> int:
+        for c in candidates:
+            for i, h in enumerate(header):
+                if c.lower() in (h or '').lower():
+                    return i
+        return -1
+
+    ts_idx = _find_col('TimeStamp', 'timestamp')
+    volt_idx = _find_col('modeActualVoltage', 'ActualVoltage', 'Voltage')
+
+    if ts_idx < 0 or volt_idx < 0:
+        raise ValueError(
+            f"Biologic DataLogger CSV missing TimeStamp or modeActualVoltage. Found: {header}"
+        )
+
+    def _to_float(val: str) -> float:
+        try:
+            s = str(val).strip().replace(',', '.')
+            return float(s) if s else np.nan
+        except (ValueError, TypeError):
+            return np.nan
+
+    n = len(data_rows)
+    time_s = np.empty(n, dtype=float)
+    voltage = np.empty(n, dtype=float)
+
+    for k, row in enumerate(data_rows):
+        if len(row) <= max(ts_idx, volt_idx):
+            row = row + [''] * (max(ts_idx, volt_idx) + 1 - len(row))
+        time_s[k] = _to_float(row[ts_idx])
+        voltage[k] = _to_float(row[volt_idx])
+
+    valid = np.isfinite(time_s) & np.isfinite(voltage)
+    if not np.any(valid):
+        raise ValueError(f"No valid numeric data in {fname}")
+
+    time_s = time_s[valid]
+    voltage = voltage[valid]
+    time_h = time_s / 3600.0
+    return time_h, voltage
+
+
+def read_biologic_datalogger_dqdv_file(
+    fname: str,
+    mass_mg: Optional[float] = None,
+    prefer_specific: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """Compute dQ/dV from Biologic DataLogger CSV (time, current, voltage).
+
+    DataLogger CSV has no dQ/dV column; dQ/dV is computed numerically from
+    capacity (integrated from current) and voltage. Requires --mass for specific
+    dQ/dV (mAh g⁻¹ V⁻¹).
+
+    Returns:
+        (voltage, dqdv, cycles, charge_mask, discharge_mask, y_label)
+    """
+    if not is_biologic_datalogger_csv(fname):
+        raise ValueError(f"Not a Biologic DataLogger CSV: {fname}")
+    if mass_mg is None or mass_mg <= 0:
+        raise ValueError("Biologic DataLogger dQ/dV requires --mass (mg) for specific dQ/dV.")
+
+    cap, voltage, cycles, charge_mask, discharge_mask = read_biologic_datalogger_csv(
+        fname, mass_mg=mass_mg
+    )
+    return compute_dqdv_numerical(
+        cap, voltage, cycles, charge_mask, discharge_mask
+    )
 
 
 def read_cs_b_csv_file(fname: str, mode: str = 'gc') -> Tuple:

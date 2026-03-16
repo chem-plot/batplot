@@ -76,3 +76,6 @@
 ## 1.8.30
 - Bug fixes
 - Improved reader for different data formats
+
+## 1.8.31
+- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i
