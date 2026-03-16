@@ -1943,6 +1943,11 @@ def dump_ec_session(
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
             ),
+            'xaxis_dual': {
+                'mode': getattr(fig, '_xaxis_mode', 'capacity'),
+                'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
+                'swapped': getattr(fig, '_xaxis_swapped', False),
+            },
         }
         if skip_confirm:
             target = filename
@@ -2492,6 +2497,71 @@ def load_ec_session(filename: str):
             ax._is_dqdv_mode = bool(mode)
     except Exception:
         pass
+
+    # Restore dual x-axis (capacity bottom, ions top) for EC GC mode
+    try:
+        xd = sess.get('xaxis_dual')
+        if xd and isinstance(xd, dict):
+            xmode = xd.get('mode', 'capacity')
+            c_th = xd.get('c_theoretical')
+            swapped = bool(xd.get('swapped', False))
+            fig._xaxis_mode = xmode
+            fig._xaxis_c_theoretical = c_th
+            fig._xaxis_swapped = swapped
+            if xmode == 'dual' and c_th is not None:
+                c_th = float(c_th)
+                if swapped:
+                    def _bottom_to_top_ions(ions):
+                        return ions * c_th
+                    def _top_to_bottom_capacity(capacity):
+                        return capacity / c_th
+                    bottom_to_top = _bottom_to_top_ions
+                    top_to_bottom = _top_to_bottom_capacity
+                else:
+                    def _bottom_to_top_capacity(capacity):
+                        return capacity / c_th
+                    def _top_to_bottom_ions(ions):
+                        return ions * c_th
+                    bottom_to_top = _bottom_to_top_capacity
+                    top_to_bottom = _top_to_bottom_ions
+                try:
+                    secax = ax.secondary_xaxis('top', functions=(bottom_to_top, top_to_bottom))
+                    fig._xaxis_secondary = secax
+                    capacity_label = "Specific Capacity (mAh g$^{{-1}}$)"
+                    ions_label = f"Number of ions (C / {c_th:g} mAh g$^{{-1}}$)"
+                    if swapped:
+                        ax.set_xlabel(ions_label)
+                        secax.set_xlabel(capacity_label)
+                    else:
+                        ax.set_xlabel(capacity_label)
+                        secax.set_xlabel(ions_label)
+                    try:
+                        font_fam = plt.rcParams.get('font.sans-serif', [''])
+                        font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
+                        font_size = plt.rcParams.get('font.size', None)
+                        if font_fam_str:
+                            secax.xaxis.label.set_family(font_fam_str)
+                        if font_size is not None:
+                            secax.xaxis.label.set_size(font_size)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Warning: Could not restore dual x-axis: {e}")
+            elif xmode == 'ions' and c_th is not None:
+                c_th = float(c_th)
+                for ln in ax.lines:
+                    try:
+                        if not hasattr(ln, '_orig_xdata_gc'):
+                            x0 = np.asarray(ln.get_xdata(), dtype=float)
+                            setattr(ln, '_orig_xdata_gc', x0.copy())
+                        x_orig = getattr(ln, '_orig_xdata_gc')
+                        ln.set_xdata(x_orig / c_th)
+                    except Exception:
+                        continue
+                ions_label = f"Number of ions (C / {c_th:g} mAh g$^{{-1}}$)"
+                ax.set_xlabel(ions_label)
+    except Exception as e:
+        print(f"Warning: Could not restore xaxis_dual: {e}")
 
     # Legend visibility/position
     try:

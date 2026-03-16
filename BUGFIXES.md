@@ -4,6 +4,69 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-11: UnboundLocalError when applying file-palette (fall viridis) in EC color menu
+
+### Summary
+Applying a palette to files (e.g. `fall viridis`) in the EC cycles/colors menu (c) raised: "cannot access local variable 'all_ignored' where it is not associated with a value".
+
+### Root Cause
+`all_ignored` was only defined in the cycle-token (else) branch. When the file-palette branch was taken, `all_ignored` was never set, but the shared post-block code referenced it.
+
+### Solution
+Initialize `all_ignored = []` before the file_palette/else branches so it is always defined. When file-palette is used, it remains empty and the "Ignored cycles" message is not printed.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-11: Pyright "could not be resolved" for matplotlib/numpy in electrochem_interactive
+
+### Summary
+Pyright/basedpyright reported "Import could not be resolved" for matplotlib and numpy in electrochem_interactive.py (and operando_ec_interactive.py), despite packages being installed and working at runtime.
+
+### Solution
+(1) Added `# type: ignore[import-untyped]` to matplotlib and numpy imports in electrochem_interactive.py and operando_ec_interactive.py. (2) Removed hardcoded `pythonPath` from pyrightconfig.json (was Linux path, fails on macOS). (3) Added `reportMissingImports: "none"` and `reportMissingModuleSource: "none"` in pyrightconfig.json so unresolved third-party imports are not reported project-wide.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+- `pyrightconfig.json`
+
+---
+
+## 2026-03-11: Remove "both" option from rename; unify tips and shortcuts across menus
+
+### Summary
+The rename command in EC mode offered a "both" option to set x and y axes to the same label, which is rarely useful. Rename behavior (LaTeX tips, shortcuts, normalize_label_text) was inconsistent across interactive menus.
+
+### Solution
+(1) Removed "both" from EC rename options in electrochem_interactive.py. (2) Added "Shortcuts: g{super(-1)} → ..." tip line to EC rename. (3) Applied normalize_label_text to all axis label renames in EC, CPC, and operando modes for consistent Å⁻¹ etc. handling. (4) Dynamic prompt string for EC rename (x/y/tx/f/q) based on dual mode and file_data.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-11: EC dual axis (capacity bottom, ions top) not restored from saved pkl
+
+### Summary
+When using EC mode with dual x-axis (capacity on bottom, ions on top), saving the session to a .pkl file and reopening it did not restore the top axis. The ions display was lost. Commands p, i, s, b did not properly reflect or restore the dual axis state.
+
+### Root Cause
+`dump_ec_session` did not save `_xaxis_mode`, `_xaxis_c_theoretical`, or `_xaxis_swapped`. `load_ec_session` therefore had no data to recreate the secondary axis. The undo (b) restore set the fig attributes but did not recreate the secondary axis visually.
+
+### Solution
+(1) Added `xaxis_dual` (mode, c_theoretical, swapped) to `dump_ec_session` so pkl files persist the dual axis state. (2) In `load_ec_session`, after restoring other state, added logic to restore xaxis_dual and recreate the secondary axis (top) when mode is 'dual' or 'ions'. (3) In the import (i) command, when applying a style with ions/dual mode, added a prompt: "Use saved capacity [Enter] or enter new value" so users can keep the value from the p print or supply a new one. (4) In the undo (b) restore, added recreation of the secondary axis when restoring to dual mode so the top axis appears correctly. Works on Windows, macOS, and Linux.
+
+### Affected Files
+- `batplot/session.py`
+- `batplot/electrochem_interactive.py`
+
+---
+
 ## 2026-03-11: NameError in Contourplot Interactive Menu (n: crosshair, q: quit)
 
 ### Summary

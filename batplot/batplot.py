@@ -549,7 +549,7 @@ def batplot_main() -> int:  # type: ignore
     # If no files AND no special flags, nothing to do
     if not args.files and not has_special_flag:
         print("No input provided, nothing to do.")
-        print("Use 'batplot --version' for version and release info, 'batplot --help' for CLI help, or 'batplot --manual' to open the txt manual.")
+        print("Use 'batplot --v' for version and release info, 'batplot --h' for CLI help, or 'batplot --m' to open the user manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
     # ====================================================================

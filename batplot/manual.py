@@ -2,10 +2,12 @@
 
 Instead of generating a PDF, this module exposes the packaged Markdown
 manual as a plain text file and opens it in the user's preferred editor.
+When using batplot --m, opens the online PDF manual in the default browser.
 """
 
 from __future__ import annotations
 
+import webbrowser
 from pathlib import Path
 from typing import List
 
@@ -26,6 +28,7 @@ MANUAL_RESOURCE = ("batplot.data", "USER_MANUAL.md")
 TEXT_NAME = "batplot_manual.txt"
 HASH_NAME = "batplot_manual.sha256"
 MANUAL_RENDER_VERSION = "4"
+MANUAL_PDF_URL = "https://github.com/chem-plot/batplot/blob/main/batplot_user_manual.pdf"
 
 
 def _manual_text() -> str:
@@ -252,6 +255,14 @@ def _resolve_editor_command() -> List[str]:
 	return ["xdg-open"]
 
 
+def open_manual_url() -> None:
+	"""
+	Open the batplot user manual PDF in the default browser.
+	Cross-platform: uses webbrowser module (Windows, macOS, Linux).
+	"""
+	webbrowser.open(MANUAL_PDF_URL)
+
+
 def _open_editor(path: Path) -> None:
 	cmd = _resolve_editor_command()
 	try:
@@ -323,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
 	return 0
 
 
-__all__ = ["show_manual", "main"]
+__all__ = ["show_manual", "open_manual_url", "main"]
 
 
 if __name__ == "__main__":  # pragma: no cover

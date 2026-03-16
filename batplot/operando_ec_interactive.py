@@ -20,10 +20,10 @@ import os
 import sys
 import time
 
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import FuncFormatter, MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
-import numpy as np
+import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+from matplotlib.colors import LinearSegmentedColormap  # type: ignore[import-untyped]
+from matplotlib.ticker import FuncFormatter, MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator  # type: ignore[import-untyped]
+import numpy as np  # type: ignore[import-untyped]
 
 # Import UI positioning functions
 from .ui import position_top_xlabel as _ui_position_top_xlabel
@@ -40,22 +40,22 @@ from .color_utils import (
     manage_user_colors,
     ensure_colormap,
 )
-from matplotlib import colors as mcolors
+from matplotlib import colors as mcolors  # type: ignore[import-untyped]
 import re
 import traceback
 from io import StringIO
 
-import matplotlib as mpl
-import matplotlib.cm as cm
-import matplotlib.lines
-from matplotlib.ticker import ScalarFormatter
+import matplotlib as mpl  # type: ignore[import-untyped]
+import matplotlib.cm as cm  # type: ignore[import-untyped]
+import matplotlib.lines  # type: ignore[import-untyped]
+from matplotlib.ticker import ScalarFormatter  # type: ignore[import-untyped]
 
 from .operando import _draw_operando_cif_ticks
 from .session import dump_operando_session
 from .utils import (
     choose_style_file, convert_label_shortcuts, natural_sort_key,
     choose_save_path, list_files_in_subdirectory, get_organized_path,
-    ensure_exact_case_filename, _confirm_overwrite,
+    ensure_exact_case_filename, _confirm_overwrite, normalize_label_text,
 )
 try:
     import cmcrameri.cm as cmc
@@ -5993,7 +5993,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         cur = ax.get_xlabel() or ''
                         lab = _safe_input(f"New operando X label (blank=cancel, current='{cur}'): ")
                         if lab:
-                            lab = convert_label_shortcuts(lab)
+                            lab = normalize_label_text(convert_label_shortcuts(lab))
                             _snapshot("rename-op-x")
                             try:
                                 ax.set_xlabel(lab)
@@ -6007,7 +6007,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         cur = ax.get_ylabel() or ''
                         lab = _safe_input(f"New operando Y label (blank=cancel, current='{cur}'): ")
                         if lab:
-                            lab = convert_label_shortcuts(lab)
+                            lab = normalize_label_text(convert_label_shortcuts(lab))
                             _snapshot("rename-op-y")
                             try:
                                 ax.set_ylabel(lab)
@@ -6051,7 +6051,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         cur = ec_ax.get_xlabel() or ''
                         lab = _safe_input(f"New EC X label (blank=cancel, current='{cur}'): ")
                         if lab:
-                            lab = convert_label_shortcuts(lab)
+                            lab = normalize_label_text(convert_label_shortcuts(lab))
                             _snapshot("rename-ec-x")
                             try:
                                 ec_ax.set_xlabel(lab)
@@ -6064,7 +6064,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None):
                         cur = ec_ax.get_ylabel() or ''
                         lab = _safe_input(f"New EC Y label (blank=cancel, current='{cur}'): ")
                         if lab:
-                            lab = convert_label_shortcuts(lab)
+                            lab = normalize_label_text(convert_label_shortcuts(lab))
                             _snapshot("rename-ec-y")
                             try:
                                 ec_ax.set_ylabel(lab)

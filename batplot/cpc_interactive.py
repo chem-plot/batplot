@@ -74,6 +74,7 @@ from .utils import (
     _confirm_overwrite,
     choose_save_path,
     convert_label_shortcuts,
+    normalize_label_text,
     choose_style_file,
     list_files_in_subdirectory,
     get_organized_path,
@@ -379,6 +380,7 @@ def _print_menu(fig=None):
         "ie: invert efficiency",
     ]
     col3 = [
+        "n: crosshair",
         "p: print(export) style/geom",
         "i: import style/geom",
         "e: export figure",
@@ -2135,6 +2137,55 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     except Exception:
         pass
 
+    # Crosshair state for CPC
+    crosshair_cpc = {'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None}
+
+    def _toggle_crosshair_cpc():
+        if not crosshair_cpc['active']:
+            vline = ax.axvline(x=ax.get_xlim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            hline = ax.axhline(y=ax.get_ylim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            txt = ax.text(1.0, 1.0, "", ha='right', va='bottom', transform=ax.transAxes,
+                          fontsize=max(9, int(0.6 * plt.rcParams.get('font.size', 16))),
+                          color='0.15', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
+
+            def on_move(event):
+                if event.inaxes not in (ax, ax2):
+                    return
+                if event.x is None or event.y is None:
+                    return
+                try:
+                    pt_ax = ax.transData.inverted().transform((event.x, event.y))
+                    pt_ax2 = ax2.transData.inverted().transform((event.x, event.y))
+                    cycle = pt_ax[0]
+                    cap = pt_ax[1]
+                    eff = pt_ax2[1]
+                    vline.set_xdata([cycle, cycle])
+                    hline.set_ydata([cap, cap])
+                    txt.set_text(f"Cycle={cycle:.2g}\nCapacity={cap:.4g}\nEfficiency={eff:.2%}")
+                except Exception:
+                    if event.xdata is not None and event.ydata is not None:
+                        vline.set_xdata([event.xdata, event.xdata])
+                        hline.set_ydata([event.ydata, event.ydata])
+                        txt.set_text(f"x={event.xdata:.4g}\ny={event.ydata:.4g}")
+                fig.canvas.draw_idle()
+
+            cid = fig.canvas.mpl_connect('motion_notify_event', on_move)
+            crosshair_cpc.update({'active': True, 'hline': hline, 'vline': vline, 'text': txt, 'cid_motion': cid})
+            print("Crosshair ON. Move mouse over axes. Press 'n' again to turn off.")
+        else:
+            if crosshair_cpc['cid_motion'] is not None:
+                fig.canvas.mpl_disconnect(crosshair_cpc['cid_motion'])
+            for k in ('hline', 'vline', 'text'):
+                art = crosshair_cpc.get(k)
+                if art is not None:
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+            crosshair_cpc.update({'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None})
+            fig.canvas.draw_idle()
+            print("Crosshair OFF.")
+
     _print_menu(fig)
     pending_key = None
     while True:
@@ -2153,6 +2204,13 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
         if not key:
             continue
         
+        if key == 'n':
+            try:
+                _toggle_crosshair_cpc()
+            except Exception as e:
+                print(f"Error toggling crosshair: {e}")
+            _print_menu(fig)
+            continue
         # File visibility toggle command (v)
         if key == 'v':
             try:
@@ -2161,7 +2219,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print("  " + _colorize_menu("1, 1 2 3, 1-4: toggle file(s)"))
                     print("  " + _colorize_menu("a: toggle all"))
                     print("  " + _colorize_menu("q: back"))
-                    choice = _safe_input(_colorize_prompt(f"Toggle visibility (1-{len(file_data)}, a=all, q=back): ")).strip()
+                    choice = _safe_input(_colorize_prompt(f"Select file numbers (1-{len(file_data)}), a=all, q=back: ")).strip()
                     if choice.lower() == 'q':
                         _print_menu(fig)
                         _print_file_list(file_data, current_file_idx)
@@ -2280,6 +2338,44 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         vals = _np.linspace(0.08, 0.88, total)
                     rgb = cmap(vals[idx % len(vals)])
                     return mcolors.rgb2hex(rgb[:3])
+                def _parse_file_range_palette(tokens, n_files):
+                    """Parse '1-5 viridis' or '1 3 5 viridis'. Returns (file_indices_0based, palette_spec) or None."""
+                    if not tokens or len(tokens) < 2 or n_files < 1:
+                        return None
+                    last = tokens[-1]
+                    if ':' in last:
+                        return None
+                    try:
+                        cm.get_cmap(last)
+                        palette = last
+                    except Exception:
+                        if last.isdigit() and 1 <= int(last) <= len(palette_opts):
+                            palette = palette_opts[int(last) - 1]
+                        else:
+                            return None
+                    indices = []
+                    for t in tokens[:-1]:
+                        if ':' in t:
+                            return None
+                        if '-' in t and t.count('-') == 1:
+                            lo, hi = t.split('-', 1)
+                            try:
+                                a, b = int(lo.strip()), int(hi.strip())
+                                for i in range(a, b + 1):
+                                    if 1 <= i <= n_files:
+                                        indices.append(i - 1)
+                            except ValueError:
+                                return None
+                        else:
+                            try:
+                                idx = int(t)
+                                if 1 <= idx <= n_files:
+                                    indices.append(idx - 1)
+                            except ValueError:
+                                return None
+                    indices = sorted(set(indices))
+                    return (indices, palette) if indices else None
+
                 def _resolve_color(spec, idx=0, total=1, default_cmap='tab10'):
                     spec = spec.strip()
                     if not spec:
@@ -2346,6 +2442,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         _C, _R = "\033[96m", "\033[0m"
                         print()
                         print(f"Apply palette to ALL files:  {_C}all 1{_R}  or  {_C}all viridis{_R}  (or just  {_C}1{_R}  or  {_C}viridis{_R})")
+                        print(f"Apply palette to file range:  {_C}1-5 viridis{_R}  or  {_C}1 3 5 4{_R}")
                         print(f"Apply per file (file:color):  {_C}1:2{_R}  {_C}2:red{_R}  {_C}3:#455353{_R}")
                         print(f"  {_C}q{_R}: cancel")
                         color_input = _safe_input(_colorize_prompt("Colors (ly) (file:color or palette, q=back): ")).strip()
@@ -2353,11 +2450,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             continue
                         tokens = color_input.split()
                         spec = None
+                        file_range_result = _parse_file_range_palette(tokens, len(file_data))
                         if len(tokens) == 1 and ':' not in tokens[0]:
                             spec = tokens[0]
                         elif len(tokens) >= 2 and tokens[0].lower() in ('all', 'a'):
                             spec = tokens[1]
-                        if spec is not None:
+                        if spec is not None and file_range_result is None:
                             # Apply palette to all files
                             for i, f in enumerate(file_data):
                                 charge_col = _resolve_color(spec, i, len(file_data), default_cmap='tab10')
@@ -2382,6 +2480,28 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             except (ValueError, IndexError):
                                 pal_name = spec
                             print(f"Palette applied to all capacity curves ({pal_name}).")
+                        elif file_range_result is not None:
+                            # Apply palette to file range (e.g. 1-5 viridis)
+                            indices, pal_spec = file_range_result
+                            n = len(indices)
+                            for i, fi in enumerate(indices):
+                                charge_col = _resolve_color(pal_spec, i, n, default_cmap='tab10')
+                                if not charge_col:
+                                    continue
+                                discharge_col = _generate_similar_color(charge_col)
+                                try:
+                                    f = file_data[fi]
+                                    f['color'] = charge_col
+                                    f['sc_charge'].set_facecolor(charge_col)
+                                    f['sc_charge'].set_edgecolor(charge_col)
+                                    if hasattr(f['sc_discharge'], 'set_facecolors'):
+                                        f['sc_discharge'].set_facecolors('none')
+                                        f['sc_discharge'].set_edgecolors(discharge_col)
+                                    else:
+                                        f['sc_discharge'].set_color(discharge_col)
+                                except Exception as e:
+                                    print(f"Error setting color: {e}")
+                            print(f"Palette '{pal_spec}' applied to files {[i+1 for i in indices]}.")
                         else:
                             # Multiple tokens: parse file:color pairs (colon form only)
                             if any(t and ':' not in t for t in tokens):
@@ -2455,6 +2575,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         _C, _R = "\033[96m", "\033[0m"
                         print()
                         print(f"Apply palette to ALL files:  {_C}all 1{_R}  or  {_C}all viridis{_R}  (or just  {_C}1{_R}  or  {_C}viridis{_R})")
+                        print(f"Apply palette to file range:  {_C}1-5 viridis{_R}  or  {_C}1 3 5 4{_R}")
                         print(f"Apply per file (file:color):  {_C}1:2{_R}  {_C}2:red{_R}  {_C}3:#455353{_R}")
                         print(f"  {_C}q{_R}: cancel")
                         color_input = _safe_input(_colorize_prompt("Colors (ry) (file:color or palette, q=back): ")).strip()
@@ -2462,11 +2583,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             continue
                         tokens = color_input.split()
                         spec = None
+                        file_range_result_ry = _parse_file_range_palette(tokens, len(file_data))
                         if len(tokens) == 1 and ':' not in tokens[0]:
                             spec = tokens[0]
                         elif len(tokens) >= 2 and tokens[0].lower() in ('all', 'a'):
                             spec = tokens[1]
-                        if spec is not None:
+                        if spec is not None and file_range_result_ry is None:
                             # Apply palette to all files
                             for i, f in enumerate(file_data):
                                 col = _resolve_color(spec, i, len(file_data), default_cmap='viridis')
@@ -2483,6 +2605,22 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             except (ValueError, IndexError):
                                 pal_name = spec
                             print(f"Palette applied to all efficiency curves ({pal_name}).")
+                        elif file_range_result_ry is not None:
+                            # Apply palette to file range (e.g. 1-5 viridis)
+                            indices, pal_spec = file_range_result_ry
+                            n = len(indices)
+                            for i, fi in enumerate(indices):
+                                col = _resolve_color(pal_spec, i, n, default_cmap='viridis')
+                                if not col:
+                                    continue
+                                try:
+                                    f = file_data[fi]
+                                    f['sc_eff'].set_facecolor(col)
+                                    f['sc_eff'].set_edgecolor(col)
+                                    f['eff_color'] = col
+                                except Exception:
+                                    pass
+                            print(f"Palette '{pal_spec}' applied to files {[i+1 for i in indices]}.")
                         else:
                             # Multiple tokens: parse file:color pairs (colon form only)
                             if any(t and ':' not in t for t in tokens):
@@ -4868,7 +5006,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                         while True:
                             print("\nAvailable files:")
                             _print_file_list(file_data, current_file_idx)
-                            file_choice = _safe_input("Enter file number to rename (q=back): ").strip()
+                            file_choice = _safe_input(f"Select file number (1-{len(file_data)}) to rename (q=back): ").strip()
                             if not file_choice or file_choice.lower() == 'q':
                                 break
                             try:
@@ -4980,7 +5118,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"Current x-axis title: '{current}'")
                     new_title = _safe_input("Enter new x-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
-                        new_title = convert_label_shortcuts(new_title)
+                        new_title = normalize_label_text(convert_label_shortcuts(new_title))
                         try:
                             push_state("rename-x")
                             ax.set_xlabel(new_title)
@@ -5000,7 +5138,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"Current left y-axis title: '{current}'")
                     new_title = _safe_input("Enter new left y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
-                        new_title = convert_label_shortcuts(new_title)
+                        new_title = normalize_label_text(convert_label_shortcuts(new_title))
                         try:
                             push_state("rename-ly")
                             ax.set_ylabel(new_title)
@@ -5015,7 +5153,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     print(f"Current right y-axis title: '{current}'")
                     new_title = _safe_input("Enter new right y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
-                        new_title = convert_label_shortcuts(new_title)
+                        new_title = normalize_label_text(convert_label_shortcuts(new_title))
                         try:
                             push_state("rename-ry")
                             ax2.set_ylabel(new_title)
@@ -5361,7 +5499,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if is_multi_file:
                     _print_file_list(file_data, current_file_idx)
                     choice = _safe_input(
-                        f"Invert efficiency for file (1-{len(file_data)}), 'a' for all, or q=cancel: "
+                        f"Select file numbers (1-{len(file_data)}) to invert efficiency, a for all, or q=cancel: "
                     ).strip().lower()
                     if not choice or choice == 'q':
                         _print_menu(fig); continue

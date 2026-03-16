@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+- EC/CV/dQdV: Simplified multi-file palette: press c, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4`—no intermediate file selection step
+- CPC: In ly/ry color submenu, added file range palette: `1-5 viridis`, `1 3 5 4` to apply palette to files 1–5 or 1,3,5
+- EC/CV/dQdV: File-palette colors persist via p (print style), i (import style), s (save session), or b (undo). Style export now includes per-file cycle styles for multi-file plots.
+
 ## [1.8.24] - 2026-03-03
 - Improved interactive menu functionality for colors/ticks
 - Bug fixes

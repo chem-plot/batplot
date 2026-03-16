@@ -352,11 +352,11 @@ batplot --cpc summary.csv summary.xlsx neware_raw.csv biologic.mpt --mass 5.4 --
 
 ### Plotting Modes
 
-**GC (Galvanostatic Cycling)**: Potential vs. capacity plots showing charge/discharge cycles.
+**GC (Galvanostatic Cycling)**: Potential vs. capacity plots showing charge/discharge cycles. Multi-file: press `c`, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4`.
 
-**CV (Cyclic Voltammetry)**: Potential vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load.
+**CV (Cyclic Voltammetry)**: Potential vs. current plots for electrochemical characterization. Supports full interactive menu with cycle-by-cycle styling, colors, visibility control, and session save/load. Multi-file palette: same as GC.
 
-**dQdV**: Differential capacity analysis (dQ/dV vs. potential).
+**dQdV**: Differential capacity analysis (dQ/dV vs. potential). Multi-file palette: same as GC.
 
 **CPC (Capacity Per Cycle)**: Plot charge/discharge capacity and coulombic efficiency vs. cycle number. Supports multiple files with individual color customization.
 
@@ -430,6 +430,7 @@ When using `--cpc --interactive`, you get access to:
 - **Individual colors**: Use `c` command to select specific files by number and assign colors
   - Charge color is set directly; discharge color auto-generates a similar shade
   - Efficiency triangles can be colored independently
+  - **File range palette**: Apply a palette to selected files: `1-5 viridis`, `1 3 5 4` (ly/ry submenus)
 - **File visibility**: Toggle visibility of individual files with `v` command
 - **Clean export**: File numbering is removed from legend labels when exporting figures
 - **Session save**: Save complete project state including all files and styles with `s` command

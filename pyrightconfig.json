@@ -1,6 +1,7 @@
 {
-  "pythonPath": "/opt/miniconda3/bin/python3",
   "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
   "reportGeneralTypeIssues": "warning",
   "reportOptionalMemberAccess": "warning",
   "reportOptionalSubscript": "warning",

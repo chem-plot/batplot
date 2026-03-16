@@ -6,9 +6,10 @@
 
 ## Features
 
-- **Electrochemistry Modes**: Galvanostatic cycling (GC), cyclic voltammetry (CV), differential capacity (dQdV), capacity per cycle (CPC) with multi-file support
-- **Normal xy plot**: Designed for XRD, PDF, XAS (XANES/EXAFS) but also support other types
-- **Operando Analysis**: Correlate in-situ characterizations (XRD/PDF/XAS) with electrochemical data
+With a single line of command to easily plot publication-ready plots with customized, intuitive interactive editing features such as:
+- **Electrochemistry Plot**: Galvanostatic cycling (GC), cyclic voltammetry (CV), differential capacity (dQdV), capacity per cycle (CPC) with multi-file support
+- **1D XY plot**: Designed for XRD, PDF, XAS (XANES/EXAFS) but also support other types
+- **Operando Contour plot**: Correlate in-situ characterizations (XRD/PDF/XAS) with electrochemical data
 - **Interactive plotting**: Real-time editing customized for each type of plottings
 - **Session Persistence**: Save and reload complete plot states with `.pkl` files
 - **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files
@@ -273,9 +274,11 @@ batplot --all --readcol 2 3 style.bps --xaxis 2theta
 
 With `--interactive`:
 - **Cycle/Scan Control**: Toggle visibility, change colors
+- **Multi-file palette (EC/CV/dQdV)**: Press `c`, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4` (each file gets one color)
+- **CPC file palette**: In `ly`/`ry` color submenu, apply palette to file range: `1-5 viridis`, `1 3 5 4`
 - **Styling**: Line widths, markers, fonts
 - **Axes**: Labels, limits, ticks, spine styles
-- **Export**: Sessions (`.pkl`), styles (`.bps`/`.bpsg`), high-res images
+- **Export**: Sessions (`.pkl`), styles (`.bps`/`.bpsg`), high-res images. Colors persist via `p` (print style), `i` (import), `s` (save session), `b` (undo)
 - **Live Preview**: All changes update in real-time
 
 ---

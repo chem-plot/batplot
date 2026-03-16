@@ -313,8 +313,11 @@ def _print_ec_help() -> None:
         "  batplot file1.csv file2.csv ./Style/style.bps --dqdv                  # Style from relative path\n"
         "  batplot file1.csv file2.mpt style.bpsg --cpc --mass 6                 # CPC mode\n"
         "  batplot file1.csv file2.mpt ./Style/style.bpsg --cpc --mass 6         # Style+geom from relative path\n\n"
+        "Multi-file (EC/CV/dQdV): Press c, then type fall viridis (all files), f1-5 viridis (files 1–5), or f1 f3 f5 4.\n"
+        "CPC (ly/ry): Type 1-5 viridis or 1 3 5 4 for file range. Exported via p, restored via i/s/b.\n\n"
         "Interactive (--i): choose cycles, colors/palettes, line widths, axis scales (linear/log/symlog),\n"
         "rename axes, toggle ticks/titles/spines, print/export/import style (.bps/.bpsg), save session (.pkl).\n"
+        "Multi-file: In c (cycles/colors), type fall viridis (all files), f1-5 viridis (files 1–5), or f1 f3 f5 4 (files 1,3,5).\n"
         "Note: Batch mode (--all) exports SVG files automatically; --i is for single-file plotting only.\n\n"
         "Axis swapping:\n"
         "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
@@ -530,9 +533,11 @@ def parse_args(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     
-    # Normalize single-dash short forms to double-dash long forms (backward compatibility)
+    # Normalize short forms to long forms (both -x and --x for common flags)
     _SHORT_TO_LONG = {
-        '-h': '--help', '-v': '--version', '-V': '--version', '-m': '--manual',
+        '-h': '--help', '--h': '--help',
+        '-v': '--version', '-V': '--version', '--v': '--version',
+        '-m': '--manual', '--m': '--manual',
         '-i': '--i', '-d': '--delta', '-r': '--xrange', '-o': '--out', '-c': '--convert',
         '-b': '--b',
     }
@@ -674,13 +679,13 @@ def parse_args(argv=None):
     ns, _unknown = parser.parse_known_args(argv)
     if getattr(ns, "manual", False):
         try:
-            from .manual import show_manual  # Lazy import avoids matplotlib startup unless needed
-            pdf_path = show_manual(open_viewer=True)
+            from .manual import open_manual_url  # Lazy import avoids matplotlib startup unless needed
+            open_manual_url()
             if _HAS_RICH and _console:
-                _console.print(f"\n[green]Opened manual:[/green] {pdf_path}")
+                _console.print("\n[green]Opened manual in browser[/green]")
             else:
-                print(f"\nOpened manual: {pdf_path}")
-        except Exception as exc:  # pragma: no cover - rendering is best effort
+                print("\nOpened manual in browser")
+        except Exception as exc:  # pragma: no cover - best effort
             if _HAS_RICH and _console:
                 _console.print(f"\n[red]Failed to open manual:[/red] {exc}")
             else:

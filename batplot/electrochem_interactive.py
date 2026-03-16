@@ -11,10 +11,10 @@ import json
 import os
 import sys
 
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import numpy as np
-from matplotlib import colors as mcolors
+import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+import matplotlib.cm as cm  # type: ignore[import-untyped]
+import numpy as np  # type: ignore[import-untyped]
+from matplotlib import colors as mcolors  # type: ignore[import-untyped]
 from .ui import (
     resize_plot_frame, resize_canvas,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -24,7 +24,7 @@ from .ui import (
     position_left_ylabel as _ui_position_left_ylabel,
     set_spine_side_color as _ui_set_spine_side_color,
 )
-from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator
+from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator  # type: ignore[import-untyped]
 from .plotting import update_labels as _update_labels
 from .utils import (
     _confirm_overwrite,
@@ -38,9 +38,9 @@ from .utils import (
 )
 import re
 import time
-import matplotlib as mpl
+import matplotlib as mpl  # type: ignore[import-untyped]
 from .session import dump_ec_session
-from .utils import ensure_exact_case_filename
+from .utils import ensure_exact_case_filename, normalize_label_text
 from .color_utils import (
     color_block,
     color_bar,
@@ -400,6 +400,7 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         col2.append("ra: rearrange legend")
     
     col3 = [
+        "n: crosshair",
         "p: print(export) style/geom",
         "i: import style/geom",
         "e: export figure",
@@ -698,6 +699,52 @@ def _resolve_palette_alias(token: str, palette_map: dict) -> str:
     if base in palette_map:
         return palette_map[base] + suffix
     return token
+
+
+def _parse_file_palette_tokens(tokens: List[str], n_files: int, fig=None) -> Optional[Tuple[List[int], str]]:
+    """Parse file-palette syntax: f1-5 viridis, f1 f3 f5 viridis, fall viridis.
+    Returns (file_indices_0based, palette_name) or None if not matched."""
+    if not tokens or n_files < 1:
+        return None
+    palette_map = {'1': 'tab10', '2': 'Set2', '3': 'Dark2', '4': 'viridis', '5': 'plasma'}
+    last = tokens[-1]
+    alias = _resolve_palette_alias(last, palette_map) if last else last
+    try:
+        cm.get_cmap(alias)
+        palette = alias
+    except Exception:
+        return None
+    num_tokens = tokens[:-1]
+    if not num_tokens:
+        return None
+    file_indices = []
+    for t in num_tokens:
+        t = t.strip().lower()
+        if t == 'fall' or t == 'f':
+            file_indices = list(range(n_files))
+            break
+        if t.startswith('f'):
+            t = t[1:]
+        if '-' in t and t.count('-') == 1:
+            lo, hi = t.split('-', 1)
+            try:
+                a, b = int(lo.strip()), int(hi.strip())
+                for i in range(a, b + 1):
+                    if 1 <= i <= n_files:
+                        file_indices.append(i - 1)
+            except ValueError:
+                pass
+        else:
+            try:
+                idx = int(t)
+                if 1 <= idx <= n_files:
+                    file_indices.append(idx - 1)
+            except ValueError:
+                pass
+    file_indices = sorted(set(file_indices))
+    if not file_indices:
+        return None
+    return (file_indices, palette)
 
 
 def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], dict, Optional[str], bool]:
@@ -1924,6 +1971,42 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     fig._xaxis_mode = xd.get('mode', 'capacity')
                     fig._xaxis_c_theoretical = xd.get('c_theoretical')
                     fig._xaxis_swapped = bool(xd.get('swapped', False))
+                    # Recreate secondary axis for dual mode
+                    mode = fig._xaxis_mode
+                    c_th = fig._xaxis_c_theoretical
+                    swapped = fig._xaxis_swapped
+                    if hasattr(fig, '_xaxis_secondary') and fig._xaxis_secondary is not None:
+                        try:
+                            fig._xaxis_secondary.remove()
+                        except Exception:
+                            pass
+                        fig._xaxis_secondary = None
+                    if mode == 'dual' and c_th is not None:
+                        c_th = float(c_th)
+                        if swapped:
+                            def _bt_ions(v): return v * c_th
+                            def _tb_cap(v): return v / c_th
+                            bottom_to_top, top_to_bottom = _bt_ions, _tb_cap
+                        else:
+                            def _bt_cap(v): return v / c_th
+                            def _tb_ions(v): return v * c_th
+                            bottom_to_top, top_to_bottom = _bt_cap, _tb_ions
+                        try:
+                            secax = ax.secondary_xaxis('top', functions=(bottom_to_top, top_to_bottom))
+                            fig._xaxis_secondary = secax
+                            cap_lbl = "Specific Capacity (mAh g$^{{-1}}$)"
+                            ion_lbl = f"Number of ions (C / {c_th:g} mAh g$^{{-1}}$)"
+                            if swapped:
+                                ax.set_xlabel(ion_lbl)
+                                secax.set_xlabel(cap_lbl)
+                            else:
+                                ax.set_xlabel(cap_lbl)
+                                secax.set_xlabel(ion_lbl)
+                        except Exception:
+                            pass
+                    elif mode == 'ions' and c_th is not None:
+                        # Lines already restored from snap (x=ions); just set label
+                        ax.set_xlabel(f"Number of ions (C / {float(c_th):g} mAh g$^{{-1}}$)")
             except Exception:
                 pass
             # Restore dQ/dV smooth settings (sm command)
@@ -2002,6 +2085,62 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             pass
     current_file_idx = 0
     pending_key = None
+
+    # Crosshair state
+    crosshair = {'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None}
+
+    def _toggle_crosshair_ec():
+        if not crosshair['active']:
+            vline = ax.axvline(x=ax.get_xlim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            hline = ax.axhline(y=ax.get_ylim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
+            txt = ax.text(1.0, 1.0, "", ha='right', va='bottom', transform=ax.transAxes,
+                          fontsize=max(9, int(0.6 * plt.rcParams.get('font.size', 16))),
+                          color='0.15', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
+
+            def on_move(event):
+                if event.inaxes != ax or event.xdata is None or event.ydata is None:
+                    return
+                x = float(event.xdata)
+                y = float(event.ydata)
+                vline.set_xdata([x, x])
+                hline.set_ydata([y, y])
+                xmode = getattr(fig, '_xaxis_mode', 'capacity')
+                c_th = getattr(fig, '_xaxis_c_theoretical', None)
+                swapped = getattr(fig, '_xaxis_swapped', False)
+                if xmode == 'dual' and c_th is not None:
+                    c_th = float(c_th)
+                    if swapped:
+                        cap_val = x * c_th
+                        ions_val = x
+                        txt.set_text(f"Capacity={cap_val:.4g} mAh/g\nIons={ions_val:.4g}\nV={y:.4g}")
+                    else:
+                        cap_val = x
+                        ions_val = x / c_th
+                        txt.set_text(f"Capacity={cap_val:.4g} mAh/g\nIons={ions_val:.4g}\nV={y:.4g}")
+                elif xmode == 'ions' and c_th is not None:
+                    cap_val = x * float(c_th)
+                    txt.set_text(f"Ions={x:.4g}\nCapacity={cap_val:.4g} mAh/g\nV={y:.4g}")
+                else:
+                    txt.set_text(f"x={x:.4g}\nV={y:.4g}")
+                fig.canvas.draw_idle()
+
+            cid = fig.canvas.mpl_connect('motion_notify_event', on_move)
+            crosshair.update({'active': True, 'hline': hline, 'vline': vline, 'text': txt, 'cid_motion': cid})
+            print("Crosshair ON. Move mouse over axes. Press 'n' again to turn off.")
+        else:
+            if crosshair['cid_motion'] is not None:
+                fig.canvas.mpl_disconnect(crosshair['cid_motion'])
+            for k in ('hline', 'vline', 'text'):
+                art = crosshair.get(k)
+                if art is not None:
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+            crosshair.update({'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None})
+            fig.canvas.draw_idle()
+            print("Crosshair OFF.")
+
     while True:
         try:
             if pending_key is not None:
@@ -2013,6 +2152,13 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             print("\n\nExiting interactive menu...")
             break
         if not key:
+            continue
+        if key == 'n':
+            try:
+                _toggle_crosshair_ec()
+            except Exception as e:
+                print(f"Error toggling crosshair: {e}")
+            _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title)
             continue
         if key == 'v':
             # Show/hide files (multi-file only)
@@ -2922,8 +3068,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 except Exception:
                     legend_visible = None
                 
+                cycle_styles_per_file_cfg = cfg.get('cycle_styles_per_file')
                 cycle_styles_cfg = cfg.get('cycle_styles')
-                if cycle_styles_cfg:
+                if cycle_styles_per_file_cfg and is_multi_file and file_data and len(cycle_styles_per_file_cfg) == len(file_data):
+                    for i, f in enumerate(file_data):
+                        cl = f.get('cycle_lines')
+                        if cl and i < len(cycle_styles_per_file_cfg):
+                            _apply_cycle_styles(cl, cycle_styles_per_file_cfg[i])
+                elif cycle_styles_cfg:
                     if is_multi_file and file_data:
                         for f in file_data:
                             cl = f.get('cycle_lines')
@@ -2975,6 +3127,19 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         mode = xaxis_dual_cfg.get('mode', 'capacity')
                         c_th = xaxis_dual_cfg.get('c_theoretical')
                         swapped = xaxis_dual_cfg.get('swapped', False)
+                        
+                        # When ions/dual mode: prompt to use saved capacity or enter new
+                        if mode in ('ions', 'dual') and c_th is not None:
+                            try:
+                                c_th_val = float(c_th)
+                                prompt = f"Imported style uses ions display (capacity {c_th_val:g} mAh/g). Use this [Enter] or enter new value: "
+                                raw = input(prompt).strip()
+                                if raw:
+                                    new_c = float(raw)
+                                    if new_c > 0:
+                                        c_th = new_c
+                            except (ValueError, EOFError):
+                                pass
                         
                         # Store state on fig
                         fig._xaxis_mode = mode
@@ -3161,7 +3326,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 line_target_list = [cycle_lines]
                 if is_multi_file:
                     _print_file_list(file_data, current_file_idx)
-                    choice = _safe_input(f"Target file (1-{len(file_data)}), all (a), or q=cancel: ").strip().lower()
+                    choice = _safe_input(f"Select file numbers (1-{len(file_data)}), all (a), or q=cancel: ").strip().lower()
                     if choice == 'q':
                         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title)
                         _print_file_list(file_data, current_file_idx)
@@ -3512,17 +3677,18 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("Tip: Use LaTeX/mathtext for special characters:")
                 print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
                 print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
+                print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
                 while True:
                     print("Rename:")
                     print("  " + _colorize_menu("x: x-axis (bottom)"))
                     if is_dual_xaxis and secax is not None:
                         print("  " + _colorize_menu("tx: x-axis (top)"))
                     print("  " + _colorize_menu("y: y-axis"))
-                    print("  " + _colorize_menu("both: both axes"))
                     if file_data:
                         print("  " + _colorize_menu("f: file names (legend)"))
                     print("  " + _colorize_menu("q: back"))
-                    sub = _safe_input(_colorize_prompt("Rename (x/y/tx/both/f/q): ")).strip().lower()
+                    opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/q"
+                    sub = _safe_input(_colorize_prompt(f"Rename ({opts}): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -3566,10 +3732,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             except ValueError:
                                 print("Invalid input.")
                         continue
-                    if sub in ('x','both'):
+                    if sub == 'x':
                         txt = _safe_input("New X-axis label (blank=cancel): ")
                         if txt:
                             txt = convert_label_shortcuts(txt)
+                            txt = normalize_label_text(txt)
                             push_state("rename-x")
                             try:
                                 # Freeze layout and preserve existing pad for one-shot restore
@@ -3598,6 +3765,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         txt = _safe_input("New top X-axis label (blank=cancel): ")
                         if txt:
                             txt = convert_label_shortcuts(txt)
+                            txt = normalize_label_text(txt)
                             push_state("rename-tx")
                             try:
                                 secax.set_xlabel(txt)
@@ -3606,10 +3774,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                     secax._stored_xlabel = txt
                             except Exception as e:
                                 print(f"Error setting top x-axis label: {e}")
-                    if sub in ('y','both'):
+                    if sub == 'y':
                         txt = _safe_input("New Y-axis label (blank=cancel): ")
                         if txt:
                             txt = convert_label_shortcuts(txt)
+                            txt = normalize_label_text(txt)
                             push_state("rename-y")
                             base_ylabel = txt
                             try:
@@ -4161,41 +4330,27 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title)
             continue
         elif key == 'c':
-            # Multi-file: choose target file(s) for cycle/color edits
+            # Cycles/colors: multi-file defaults to all visible files; type fall viridis etc. directly
             while True:
-                target_cycle_lines_list = []  # list of (cycle_lines, sorted_cycles) per target
                 if is_multi_file:
-                    _print_file_list(file_data, current_file_idx)
-                    choice = _safe_input(f"Target file (1-{len(file_data)}), all (a), or q=back: ").strip().lower()
-                    if choice == 'q':
-                        break
-                    if choice in ('a', 'all'):
-                        target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys())) for f in file_data if f.get('visible', True)]
-                    else:
-                        try:
-                            idx = int(choice)
-                            if 1 <= idx <= len(file_data):
-                                f = file_data[idx - 1]
-                                target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys()))]
-                                current_file_idx = idx - 1
-                            else:
-                                print("Invalid file number.")
-                                continue
-                        except ValueError:
-                            print("Invalid input.")
-                            continue
+                    target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys())) for f in file_data if f.get('visible', True)]
                     if not target_cycle_lines_list:
-                        print("No visible files selected.")
-                        continue
+                        print("No visible files.")
+                        _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title)
+                        break
                 else:
                     target_cycle_lines_list = [(cycle_lines, all_cycles)]
-                # Show current palette if one is applied (this is informational only)
-                # Note: Individual cycles may use different colors, so we can't show a single "current" palette
+                if is_multi_file:
+                    _print_file_list(file_data, current_file_idx)
                 print(f"Total cycles: {len(all_cycles)}")
+                _C, _R = "\033[96m", "\033[0m"
+                if is_multi_file:
+                    print(f"  {_C}fall viridis{_R}  = palette to all files (one color per file)")
+                    print(f"  {_C}f1-5 viridis{_R}  = files 1–5  |  {_C}f1 f3 f5 4{_R}  = files 1,3,5 (4=viridis)")
                 print("Enter one of:")
                 print(_colorize_inline_commands("  - per-curve: e.g. 1:red 5:#00B006"))
-                print(_colorize_inline_commands("  - cycle numbers + palette name/number: e.g. 1 5 10 viridis  OR  1 5 10 3"))
-                print(_colorize_inline_commands("  - all (optionally with palette): e.g. all  OR  all viridis  OR  all 3"))
+                print(_colorize_inline_commands("  - cycle numbers + palette: e.g. 1 5 10 viridis  OR  1 5 10 3"))
+                print(_colorize_inline_commands("  - all cycles + palette: e.g. all viridis  OR  all 3"))
                 print("\nRecommended palettes for scientific publications:")
                 rec_palettes = [
                     ("tab10", "Distinct, colorblind-friendly (default matplotlib)"),
@@ -4224,96 +4379,143 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     manage_user_colors(fig)
                     continue
                 tokens = line.replace(',', ' ').split()
-                mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
-                push_state("cycles/colors")
                 all_ignored = []
-                # Apply to each target file
-                for cl, acyc in target_cycle_lines_list:
-                    # Filter to existing cycles in this target
-                    if use_all:
-                        existing = list(acyc)
-                        ignored = []
+                # Check file-palette mode first (multi-file only): f1-5 viridis, fall viridis
+                file_palette_result = None
+                if is_multi_file and len(tokens) >= 2:
+                    file_palette_result = _parse_file_palette_tokens(tokens, len(file_data), fig)
+                if file_palette_result is not None:
+                    file_indices, fp_palette = file_palette_result
+                    target_cycle_lines_list = [(file_data[i]['cycle_lines'], sorted((file_data[i].get('cycle_lines') or {}).keys())) for i in file_indices]
+                    push_state("cycles/colors")
+                    default_tab10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                    n_files = len(target_cycle_lines_list)
+                    if fp_palette and fp_palette.lower() in ('tab10', '1'):
+                        cols = [mcolors.to_rgba(default_tab10[i % len(default_tab10)]) for i in range(n_files)]
                     else:
-                        existing = [c for c in cycles if c in cl]
-                        ignored = [c for c in cycles if c not in cl]
-                        all_ignored.extend(ignored)
-                    if not existing and mode != 'numbers':
-                        continue
-                    if not existing:
-                        print("No valid cycles provided; keeping current visibility.")
-                    # Update visibility
-                    if existing:
-                        _set_visible_cycles(cl, existing)
-                    # Apply coloring by mode
-                    if mode == 'map' and mapping:
-                        mapping2 = {c: mapping[c] for c in existing if c in mapping}
-                        _apply_colors(cl, mapping2)
-                        if mapping2 and cl is target_cycle_lines_list[0][0]:
-                            print("Applied manual colors:")
-                            for cyc, col in mapping2.items():
-                                print(f"  Cycle {cyc}: {color_block(col)} {col}")
-                    elif mode == 'palette' and existing:
-                        # ====================================================================
-                        # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
-                        # ====================================================================
-                        #
-                        # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
-                        #
-                        # HOW IT WORKS:
-                        # Similar to XY mode, but works with cycles instead of individual files.
-                        # Each cycle gets a different color sampled from the colormap.
-                        #
-                        # Example with 10 cycles and 'viridis':
-                        #   Cycle 1 → dark purple
-                        #   Cycle 2 → purple-blue
-                        #   Cycle 3 → blue
-                        #   ...
-                        #   Cycle 10 → bright yellow
-                        #
-                        # This creates a visual progression showing how the battery changes
-                        # over multiple cycles (degradation, capacity fade, etc.)
-                        # ====================================================================
-                        
-                        # Special handling for Tab10 (default palette) to match hardcoded colors exactly
-                        default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                                               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                        
-                        if palette and palette.lower() in ('tab10', '1'):
-                            # Use the exact hardcoded Tab10 colors to match default behavior
-                            n = len(existing)
-                            cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
-                                    for i in range(n)]
+                        try:
+                            cmap = cm.get_cmap(fp_palette) if fp_palette else None
+                        except Exception:
+                            cmap = None
+                        if cmap is None:
+                            print(f"Unknown colormap '{fp_palette}'.")
+                            continue
                         else:
-                            try:
-                                cmap = cm.get_cmap(palette) if palette else None
-                            except Exception:
-                                cmap = None
-                            if cmap is None:
-                                print(f"Unknown colormap '{palette}'.")
-                                cols = []
-                            else:
-                                n = len(existing)
-                                if n == 1:
-                                    cols = [cmap(0.55)]
-                                elif n == 2:
-                                    cols = [cmap(0.15), cmap(0.85)]
-                                else:
-                                    cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
-                        if cols:
-                            _apply_colors(cl, {c: col for c, col in zip(existing, cols)})
-                            try:
-                                preview = color_bar([mcolors.to_hex(col) for col in cols])
-                            except Exception:
-                                preview = ""
-                            if preview and cl is target_cycle_lines_list[0][0]:
-                                palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
-                                print(f"Palette '{palette_display}' applied: {preview}")
-                    elif mode == 'numbers' and existing:
-                        pass
-                    # Reapply curve linewidth and smooth for this target
-                    _apply_curve_linewidth(fig, cl)
+                            cols = [cmap(t) for t in np.linspace(0.08, 0.88, n_files)] if n_files > 1 else [cmap(0.55)]
+                    for idx, (cl, acyc) in enumerate(target_cycle_lines_list):
+                        if idx < len(cols):
+                            col = cols[idx]
+                            mapping = {c: col for c in acyc}
+                            _apply_colors(cl, mapping)
+                            _set_visible_cycles(cl, list(acyc))
+                        _apply_curve_linewidth(fig, cl)
                     if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                        _apply_stored_smooth_settings(cl, fig)
+                        for cl, _ in target_cycle_lines_list:
+                            _apply_stored_smooth_settings(cl, fig)
+                    dm = getattr(fig, '_ec_display_mode', 'both')
+                    _apply_display_mode(dm)
+                    _rebuild_legend(ax)
+                    _apply_nice_ticks()
+                    try:
+                        fig.canvas.draw()
+                    except Exception:
+                        fig.canvas.draw_idle()
+                    try:
+                        preview = color_bar([mcolors.to_hex(col) for col in cols])
+                        print(f"Palette '{fp_palette}' applied to files {[i+1 for i in file_indices]}: {preview}")
+                    except Exception:
+                        print(f"Palette '{fp_palette}' applied to files {[i+1 for i in file_indices]}.")
+                else:
+                    mode, cycles, mapping, palette, use_all = _parse_cycle_tokens(tokens, fig)
+                    push_state("cycles/colors")
+                    all_ignored = []
+                    # Apply to each target file
+                    for cl, acyc in target_cycle_lines_list:
+                        # Filter to existing cycles in this target
+                        if use_all:
+                            existing = list(acyc)
+                            ignored = []
+                        else:
+                            existing = [c for c in cycles if c in cl]
+                            ignored = [c for c in cycles if c not in cl]
+                            all_ignored.extend(ignored)
+                        if not existing and mode != 'numbers':
+                            continue
+                        if not existing:
+                            print("No valid cycles provided; keeping current visibility.")
+                        # Update visibility
+                        if existing:
+                            _set_visible_cycles(cl, existing)
+                        # Apply coloring by mode
+                        if mode == 'map' and mapping:
+                            mapping2 = {c: mapping[c] for c in existing if c in mapping}
+                            _apply_colors(cl, mapping2)
+                            if mapping2 and cl is target_cycle_lines_list[0][0]:
+                                print("Applied manual colors:")
+                                for cyc, col in mapping2.items():
+                                    print(f"  Cycle {cyc}: {color_block(col)} {col}")
+                        elif mode == 'palette' and existing:
+                            # ====================================================================
+                            # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
+                            # ====================================================================
+                            #
+                            # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
+                            #
+                            # HOW IT WORKS:
+                            # Similar to XY mode, but works with cycles instead of individual files.
+                            # Each cycle gets a different color sampled from the colormap.
+                            #
+                            # Example with 10 cycles and 'viridis':
+                            #   Cycle 1 → dark purple
+                            #   Cycle 2 → purple-blue
+                            #   Cycle 3 → blue
+                            #   ...
+                            #   Cycle 10 → bright yellow
+                            #
+                            # This creates a visual progression showing how the battery changes
+                            # over multiple cycles (degradation, capacity fade, etc.)
+                            # ====================================================================
+                            
+                            # Special handling for Tab10 (default palette) to match hardcoded colors exactly
+                            default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                                                   '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                            
+                            if palette and palette.lower() in ('tab10', '1'):
+                                # Use the exact hardcoded Tab10 colors to match default behavior
+                                n = len(existing)
+                                cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
+                                        for i in range(n)]
+                            else:
+                                try:
+                                    cmap = cm.get_cmap(palette) if palette else None
+                                except Exception:
+                                    cmap = None
+                                if cmap is None:
+                                    print(f"Unknown colormap '{palette}'.")
+                                    cols = []
+                                else:
+                                    n = len(existing)
+                                    if n == 1:
+                                        cols = [cmap(0.55)]
+                                    elif n == 2:
+                                        cols = [cmap(0.15), cmap(0.85)]
+                                    else:
+                                        cols = [cmap(t) for t in np.linspace(0.08, 0.88, n)]
+                            if cols:
+                                _apply_colors(cl, {c: col for c, col in zip(existing, cols)})
+                                try:
+                                    preview = color_bar([mcolors.to_hex(col) for col in cols])
+                                except Exception:
+                                    preview = ""
+                                if preview and cl is target_cycle_lines_list[0][0]:
+                                    palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
+                                    print(f"Palette '{palette_display}' applied: {preview}")
+                        elif mode == 'numbers' and existing:
+                            pass
+                        # Reapply curve linewidth and smooth for this target
+                        _apply_curve_linewidth(fig, cl)
+                        if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
+                            _apply_stored_smooth_settings(cl, fig)
 
                 # Re-apply display mode so newly added cycles get correct charge/discharge visibility
                 dm = getattr(fig, '_ec_display_mode', 'both')
@@ -5194,7 +5396,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             smooth_target_list = [cycle_lines]
             if is_multi_file:
                 _print_file_list(file_data, current_file_idx)
-                choice = _safe_input(f"Target file (1-{len(file_data)}), all (a), or q=cancel: ").strip().lower()
+                choice = _safe_input(f"Select file numbers (1-{len(file_data)}), all (a), or q=cancel: ").strip().lower()
                 if choice == 'q':
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title)
                     _print_file_list(file_data, current_file_idx)
@@ -5855,6 +6057,44 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
         if entry:
             cycle_styles[str(cyc)] = entry
 
+    # Multi-file: capture cycle_styles per file for p/i persistence
+    cycle_styles_per_file = None
+    if file_data is not None and len(file_data) > 1:
+        cycle_styles_per_file = []
+        for f in file_data:
+            cl = f.get('cycle_lines')
+            if not cl:
+                cycle_styles_per_file.append({})
+                continue
+            per_file = {}
+            for cyc, parts in cl.items():
+                entry = {}
+                if isinstance(parts, dict):
+                    for role in ("charge", "discharge"):
+                        ln = parts.get(role)
+                        if ln is None:
+                            continue
+                        style = {}
+                        color_hex = _line_color_hex(ln)
+                        if color_hex:
+                            style['color'] = color_hex
+                        style['visible'] = bool(ln.get_visible())
+                        if style:
+                            entry[role] = style
+                else:
+                    ln = parts
+                    if ln is not None:
+                        style = {}
+                        color_hex = _line_color_hex(ln)
+                        if color_hex:
+                            style['color'] = color_hex
+                        style['visible'] = bool(ln.get_visible())
+                        if style:
+                            entry['line'] = style
+                if entry:
+                    per_file[str(cyc)] = entry
+            cycle_styles_per_file.append(per_file)
+
     # Build WASD state (20 parameters) from current axes state
     def _get_spine_visible(which: str) -> bool:
         sp = ax.spines.get(which)
@@ -5958,6 +6198,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
         'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),
         'cycle_styles': cycle_styles,
         'ro_active': bool(getattr(fig, '_ro_active', False)),
+        'cycle_styles_per_file': cycle_styles_per_file,
         'xaxis_dual': {
             'mode': getattr(fig, '_xaxis_mode', 'capacity'),
             'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
