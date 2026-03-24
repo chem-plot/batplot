@@ -14,7 +14,6 @@ Under **c: cycles/colors**, inputs like **`2-30 1`** (cycles 2 through 30 with p
 - Palette and numbers-only branches in **`_parse_cycle_tokens`** use this helper.
 - **c** menu text documents range + palette syntax; **d** (display Chg/Dch) menu notes that cycle visibility/colors are set from main menu **c**.
 - Palette apply confirmation can show a compact cycle summary (e.g. **`2-30`**).
-- **`_print_ec_main_menu_options_tip()`** reminds users that **q** returns to the main menu where **p i s b** (and related options) live, across EC submenus.
 
 ### Affected Files
 - `batplot/electrochem_interactive.py`

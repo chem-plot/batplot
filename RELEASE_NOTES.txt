@@ -85,3 +85,6 @@
 
 ## 1.8.33
 - Bug fixes
+
+## 1.8.34
+- Bug fixes

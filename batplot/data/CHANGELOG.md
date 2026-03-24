@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.34] - 2026-03-24
+- Bug fixes
+
+
 ## [1.8.32] - 2026-03-24
 - Improved multi-file support for EC mode
 

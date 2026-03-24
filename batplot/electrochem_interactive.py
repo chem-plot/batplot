@@ -904,11 +904,6 @@ def _format_cycles_compact(cycles: List[int]) -> str:
     return ", ".join(parts)
 
 
-def _print_ec_main_menu_options_tip():
-    """Reminder shown in top-level EC submenus: main menu includes p/i/s/b."""
-    print("  " + _colorize_menu("Tip: q → main menu (p i s b: export/import style, save session, undo)"))
-
-
 def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], dict, Optional[str], bool]:
     """Classify and parse tokens for the cycle command.
 
@@ -2370,7 +2365,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("  " + _colorize_menu("d: show only discharge curves (hide charge)"))
                     print("  " + _colorize_menu("b: show both charge and discharge"))
                     print("  " + _colorize_menu("Which cycles are shown & colors: main menu c (e.g. 2-30 1 = cycles 2–30, palette 1 / tab10)"))
-                    _print_ec_main_menu_options_tip()
                     print("  " + _colorize_menu("q: back"))
                     sub = _safe_input(_colorize_prompt("Display (c/d/b/q): ")).strip().lower()
                     if not sub or sub == 'q':
@@ -2602,7 +2596,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("Legend:")
                     print("  " + _colorize_menu("t: toggle"))
                     print("  " + _colorize_menu("p: set position"))
-                    _print_ec_main_menu_options_tip()
                     print("  " + _colorize_menu("q: back"))
                     sub = _safe_input(_colorize_prompt("Legend (t/p/q): ")).strip().lower()
                     if not sub:
@@ -2805,7 +2798,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     cfg = _get_style_snapshot(fig, ax, cycle_lines, tick_state, file_data=file_data if is_multi_file else None)
                     cfg['kind'] = 'ec_style'  # Default, will be updated if psg is chosen
                     _print_style_snapshot(cfg)
-                    _print_ec_main_menu_options_tip()
                     
                     # List available style files (.bps, .bpsg, .bpcfg) in Styles/ subdirectory
                     style_file_list = list_files_in_subdirectory(('.bps', '.bpsg', '.bpcfg'), 'style')
@@ -3545,7 +3537,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print(f"  {_colorize_menu('l  : show only lines (no markers) for all curves')}")
                     print(f"  {_colorize_menu('ld : show line and dots (markers) for all curves')}")
                     print(f"  {_colorize_menu('d  : show only dots (no connecting line) for all curves')}")
-                    _print_ec_main_menu_options_tip()
                     print(f"  {_colorize_menu('q  : return')}")
                     sub = _safe_input(_colorize_prompt("Choose (c/f/g/l/ld/d/q): ")).strip().lower()
                     if not sub:
@@ -3740,7 +3731,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         for idx, color in enumerate(user_colors, 1):
                             print("  " + _colorize_menu(f"{idx}: {color_block(color)} {color}"))
                         print("  " + _colorize_menu("u: edit saved colors"))
-                    _print_ec_main_menu_options_tip()
                     print("  " + _colorize_menu("q: back to main menu"))
                     line = _safe_input(_colorize_prompt("Enter mappings (e.g., a:red d:blue, q=back): ")).strip()
                     if not line or line.lower() == 'q':
@@ -3831,7 +3821,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("  " + _colorize_menu("y: y-axis"))
                     if file_data:
                         print("  " + _colorize_menu("f: file names (legend)"))
-                    _print_ec_main_menu_options_tip()
                     print("  " + _colorize_menu("q: back"))
                     opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/q"
                     sub = _safe_input(_colorize_prompt(f"Rename ({opts}): ")).strip().lower()
@@ -3962,7 +3951,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     continue
                 while True:
                     _print_file_list(file_data)
-                    _print_ec_main_menu_options_tip()
                     print("Current legend order (top to bottom):")
                     order = getattr(fig, '_ec_legend_file_order', None) or list(range(len(file_data)))
                     for i, idx in enumerate(order):
@@ -4167,7 +4155,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
                 print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
                 print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
-                _print_ec_main_menu_options_tip()
                 while True:
                     cmd = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
                     if not cmd:
@@ -4521,7 +4508,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     for idx, color in enumerate(user_colors, 1):
                         print("  " + _colorize_menu(f"{idx}: {color_block(color)} {color}"))
                     print("  " + _colorize_menu("u: edit saved colors before assigning"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back"))
                 line = _safe_input(_colorize_prompt("Selection: ")).strip()
                 if not line or line.lower() == 'q':
@@ -4827,7 +4813,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("  " + _colorize_menu("s : swap axes (switch top/bottom)"))
                 if c_th:
                     print("  " + _colorize_menu("u : update theoretical capacity"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q : back to main menu"))
                 
                 sub = _safe_input("X> ").strip().lower()
@@ -5367,7 +5352,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print(f"\nFont (current: family='{cur_family}', size={cur_size})")
                 print("  " + _colorize_menu("f: family"))
                 print("  " + _colorize_menu("s: size"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back"))
                 sub = _safe_input(_colorize_prompt("Font (f/s/q): ")).strip().lower()
                 if not sub:
@@ -5442,7 +5426,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("  " + _colorize_menu("w: upper only"))
                 print("  " + _colorize_menu("s: lower only"))
                 print("  " + _colorize_menu("a: auto (restore original)"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back"))
                 lim = _safe_input(_colorize_prompt("X (w/s/a/q): ")).strip()
                 if not lim or lim.lower() == 'q':
@@ -5532,7 +5515,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("  " + _colorize_menu("w: upper only"))
                 print("  " + _colorize_menu("s: lower only"))
                 print("  " + _colorize_menu("a: auto (restore original)"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back"))
                 lim = _safe_input(_colorize_prompt("Y (w/s/a/q): ")).strip()
                 if not lim or lim.lower() == 'q':
@@ -5623,7 +5605,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             while True:
                 print("  " + _colorize_menu("p: plot frame size"))
                 print("  " + _colorize_menu("c: canvas size"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back"))
                 sub = _safe_input(_colorize_prompt("Geom (p/c/q): ")).strip().lower()
                 if not sub:
@@ -5685,7 +5666,6 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("  " + _colorize_menu("d: DiffCap smooth (≥1 mV ΔV + Savitzky–Golay, order 3, window 9)"))
                 print("  " + _colorize_menu("o: remove outliers (removes abrupt dQ/dV spikes)"))
                 print("  " + _colorize_menu("r: reset to original data"))
-                _print_ec_main_menu_options_tip()
                 print("  " + _colorize_menu("q: back to main menu"))
                 sub = _safe_input(_colorize_prompt("dQ/dV (a/d/o/r/q): ")).strip().lower()
                 if not sub:
