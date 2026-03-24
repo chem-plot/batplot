@@ -168,6 +168,7 @@ def _print_general_help() -> None:
         
         "More help:\n"
         "  batplot --version       # Version and release info (with option to show full release notes)\n"
+        "  batplot --showcol FILE [FILE...]   # Preview column names + first 10 values per column\n"
         "  batplot --help          # This help\n"
         "  batplot --help xy       # XY file plotting guide\n"
         "  batplot --help ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
@@ -231,6 +232,8 @@ def _print_xy_help() -> None:
         "                              Works with --readcol for custom column layout (per-file, per-ext, or global):\n"
         "                                batplot data.csv --readcol 3 4 --convert 1.54 q\n"
         "                                batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q\n"
+        "                              Directory: pass a folder to convert all .xy/.xye/.qye/.dat/.csv/.txt files:\n"
+        "                                batplot /path/to/folder --convert 0.25448 1.54\n"
         "                              Examples:\n"
         "                                batplot file.xye --convert 1.54 0.25\n"
         "                                batplot file.xye --convert 1.54 q\n"
@@ -415,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help=argparse.SUPPRESS)  # SUPPRESS hides from auto-generated help
     parser.add_argument("--version", action="store_true", dest="version",
                         help="Show version and current release info, then exit.")
+    parser.add_argument(
+        "--showcol",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--manual", action="store_true", help=argparse.SUPPRESS)
     
     # ====================================================================
@@ -491,6 +499,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help=argparse.SUPPRESS)
     parser.add_argument("--1d", action="store_true", dest="derivative_1d", help=argparse.SUPPRESS)
     parser.add_argument("--2d", action="store_true", dest="derivative_2d", help=argparse.SUPPRESS)
+    parser.add_argument("--canvas", action="store_true", dest="canvas",
+                        help="Canvas mode: combine multiple .pkl sessions into one layout. Use numbers to edit each panel.")
     return parser
 
 

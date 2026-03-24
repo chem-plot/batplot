@@ -80,6 +80,7 @@ from .utils import (
     get_organized_path,
     natural_sort_key,
     ensure_exact_case_filename,
+    print_label_latex_tips,
 )
 from .color_utils import (
     resolve_color_token,
@@ -361,17 +362,18 @@ def _generate_similar_color(base_color):
 
 
 def _print_menu(fig=None):
+    """Print CPC interactive menu with Styles, Geometries, Options columns."""
     col1 = [
-        " f: font",
-        " l: line",
-        " m: marker sizes",
-        " c: colors",
-        " d: display (Chg/Dch)",
+        "f: font",
+        "l: line",
+        "m: marker sizes",
+        "c: colors",
+        "d: display (Chg/Dch)",
         "ry: show/hide efficiency",
-        " t: toggle spines",
-        " h: legend",
-        " g: size",
-        " v: show/hide files",
+        "t: toggle spines",
+        "h: legend",
+        "g: size",
+        "v: show/hide files",
     ]
     col2 = [
         "r: rename",
@@ -1806,7 +1808,7 @@ def _format_file_timestamp(filepath: str) -> str:
         return ""
 
 # pyright: ignore[reportGeneralTypeIssues]
-def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None):
+def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None, canvas_mode: bool = False):
     """
     Interactive menu for Capacity-Per-Cycle (CPC) plots.
     
@@ -2282,6 +2284,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             continue
         
         if key == 'q':
+            if canvas_mode:
+                break
             try:
                 confirm = _safe_input(_colorize_prompt("Quit CPC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except Exception:
@@ -4881,10 +4885,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
             _print_menu(fig); continue
         elif key == 'r':
             # Rename axis titles
-            print("Tip: Use LaTeX/mathtext for special characters:")
-            print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-            print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-            print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+            print_label_latex_tips()
             while True:
                 print("Rename:")
                 print("  " + _colorize_menu("x: x-axis"))

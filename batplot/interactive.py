@@ -32,6 +32,7 @@ from .utils import (
     convert_label_shortcuts,
     get_organized_path,
     natural_sort_key,
+    print_label_latex_tips,
 )
 import time
 from .session import dump_session as _bp_dump_session
@@ -110,7 +111,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                      label_text_objects, delta, x_label, args,
                      x_full_list, raw_y_full_list, offsets_list,
                      use_Q, use_r, use_E, use_k, use_rft,
-                     cif_globals: Optional[Dict[str, Any]] = None):
+                     cif_globals: Optional[Dict[str, Any]] = None,
+                     canvas_mode: bool = False):
     """Interactive menu for XY plots.
     
     Args:
@@ -280,6 +282,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
     is_diffraction = use_Q or (not use_r and not use_E and not use_k and not use_rft)  # 2θ or Q
     def print_main_menu():
+        """Print 1D/XY interactive menu. Hides o/y in --stack, n in non-diffraction."""
         col1 = ["c: colors", "f: font", "l: line", "t: toggle spines", "g: size", "h: legend", "sm: smooth"]
         # Place CIF submenu entry under Geometries; always show it so users
         # discover CIF support even before adding CIF files.
@@ -2085,6 +2088,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             continue
 
         if key == 'q':
+            if canvas_mode:
+                break
             try:
                 confirm = _safe_input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
             except (KeyboardInterrupt, EOFError):
@@ -3226,10 +3231,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if mode == '':
                         continue
                     if mode == 'c':
-                        print("Tip: Use LaTeX/mathtext for special characters:")
-                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                        print("  Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        print_label_latex_tips()
                         idx_in = _safe_input("Curve number to rename (q=cancel): ").strip()
                         if not idx_in or idx_in.lower() == 'q':
                             print("Canceled.")
@@ -3267,10 +3269,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 print("Index out of range."); continue
                         except ValueError:
                             print("Bad index."); continue
-                        print("Tip: Use LaTeX/mathtext for special characters:")
-                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                        print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        print_label_latex_tips()
                         new_name = _safe_input("New CIF tick label (q=cancel): ")
                         if not new_name or new_name.lower()=='q':
                             print("Canceled."); continue
@@ -3297,10 +3296,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             setattr(_bp, 'cif_extend_suspended', False)
                     elif mode in ('x','y'):
                         print("Enter new axis label (q=cancel).")
-                        print("Tip: Use LaTeX/mathtext for special characters:")
-                        print("  Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²")
-                        print("  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å")
-                        print("  Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O")
+                        print_label_latex_tips()
                         new_axis = _safe_input("New axis label: ")
                         if not new_axis or new_axis.lower() == 'q':
                             print("Canceled.")

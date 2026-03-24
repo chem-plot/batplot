@@ -830,23 +830,19 @@ def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args
                 if abs(pw - new_w_in) < tol and abs(ph - new_h_in) < tol:
                     same_axes = True
             if same_axes and hasattr(fig, '_last_user_margins'):
-                lm, bm, rm, tm = fig._last_user_margins
-                fig.subplots_adjust(left=lm, bottom=bm, right=rm, top=tm)
+                left, bottom, w, h = fig._last_user_margins
+                ax.set_position([left, bottom, w, h])
                 update_labels_func(ax, y_data_list, label_text_objects, args.stack)
                 fig.canvas.draw_idle()
                 print(f"Plot frame unchanged ({new_w_in:.2f} x {new_h_in:.2f} in); layout preserved.")
                 continue
             left = (1 - w_frac) / 2
-            right = left + w_frac
             bottom = (1 - h_frac) / 2
-            top = bottom + h_frac
-            # Apply exact size without margin clamping
-            fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+            # Use ax.set_position so it works for both standalone subplots and embedded add_axes
+            ax.set_position([left, bottom, w_frac, h_frac])
             update_labels_func(ax, y_data_list, label_text_objects, args.stack)
-            # Store the final size (exactly as requested, no text visibility adjustments)
-            sp = fig.subplotpars
             fig._last_user_axes_inches = (new_w_in, new_h_in)
-            fig._last_user_margins = (sp.left, sp.bottom, sp.right, sp.top)
+            fig._last_user_margins = (left, bottom, w_frac, h_frac)
             final_w_in = (sp.right - sp.left) * fig_w_in
             final_h_in = (sp.top - sp.bottom) * fig_h_in
             # Show the requested size (which is what was applied)
@@ -917,10 +913,8 @@ def resize_canvas(fig, ax):
                 desired_h_frac = max_h_frac
             left = (1 - desired_w_frac) / 2
             bottom = (1 - desired_h_frac) / 2
-            right = left + desired_w_frac
-            top = bottom + desired_h_frac
-            if right - left > 0.05 and top - bottom > 0.05:
-                fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+            if desired_w_frac > 0.05 and desired_h_frac > 0.05:
+                ax.set_position([left, bottom, desired_w_frac, desired_h_frac])
             fig._last_canvas_size = (new_w, new_h)
             bbox_final = ax.get_position()
             final_frame_w_in = bbox_final.width * new_w

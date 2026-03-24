@@ -79,3 +79,9 @@
 
 ## 1.8.31
 - Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i
+
+## 1.8.32
+- Improved multi-file support for EC mode
+
+## 1.8.33
+- Bug fixes

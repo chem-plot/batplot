@@ -4,6 +4,215 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-24: EC interactive **c** (cycles/colors) — hyphen ranges with palette (e.g. `2-30 1`)
+
+### Summary
+Under **c: cycles/colors**, inputs like **`2-30 1`** (cycles 2 through 30 with palette **1** / tab10) were ignored because cycle tokens were parsed with **`int(token)`** only, so **`2-30`** was dropped and no cycles were selected.
+
+### Solution
+- Added **`_expand_cycle_number_tokens`** to expand **`a-b`**, comma-separated lists, and mixed tokens into sorted unique cycle numbers (inclusive range; **`10-2`** → **2..10**).
+- Palette and numbers-only branches in **`_parse_cycle_tokens`** use this helper.
+- **c** menu text documents range + palette syntax; **d** (display Chg/Dch) menu notes that cycle visibility/colors are set from main menu **c**.
+- Palette apply confirmation can show a compact cycle summary (e.g. **`2-30`**).
+- **`_print_ec_main_menu_options_tip()`** reminds users that **q** returns to the main menu where **p i s b** (and related options) live, across EC submenus.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-03-24: Operando interactive — **p** / **i** / **ops**/**opsg** parity for operando-only (no EC panel)
+
+### Summary
+In **operando-only** mode (no `.mpt` / no EC axes), **`p`** had previously refused **e** (export `.bps`/`.bpsg`) and **`ops`/`opsg`** incorrectly required an EC panel. Style snapshots are now built by **`_build_operando_ec_style_config_v2`**, which works with or without **`ec_ax`**. The **`p`** submenu uses the same **e** / **o** / **q** / **r** flow as dual-pane mode (with **o** only when a last export path exists). **`i`** import of `.bpsg` no longer touches **`ec_ax`** when the EC panel is absent (avoids crashes). Export sets **`fig._last_style_export_path`** so **o** / **ops**/**opsg** work after a save.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-24: Unified LaTeX/mathtext rename tips and `{italic(...)}` shortcut across interactive menus
+
+### Summary
+Interactive rename prompts now share one helper, **`print_label_latex_tips()`** in `batplot/utils.py`, so **1D (XY)**, **CPC**, **electrochemistry (GC / CV / dQ/dV in one module)**, and **operando+EC** all show the same four lines (sub/superscript, bullet/Greek/Å, italic, super/sub shortcuts). Previously **XY CIF-tick and axis rename** and **operando `er` (EC rename)** omitted the bullet line. **`convert_label_shortcuts()`** now supports **`{italic(text)}`** → `$\mathit{text}$` for math italic.
+
+### Affected Files
+- `batplot/utils.py` (`print_label_latex_tips`, `convert_label_shortcuts`)
+- `batplot/interactive.py`, `batplot/cpc_interactive.py`, `batplot/electrochem_interactive.py`, `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-03-24: dQ/dV menu (sm → a): potential step filter crashed with boolean index mismatch
+
+### Summary
+Choosing **a** (apply potential step filter) under **dQ/dV Data Filtering (Neware method)** could raise  
+`boolean index did not match indexed array along axis 0` (e.g. axis size 64 vs boolean size 499).
+
+### Root Cause
+A **dedentation bug**: `ydata = …` and the entire filter body (mask, `filtered_x = xdata[mask]`, `filtered_y = ydata[mask]`, etc.) were aligned with the `for cyc, parts` loop instead of inside `for role in ("charge", "discharge")`.  
+So `xdata` was taken from the **last visible** curve in that cycle (often **charge**, fewer points) while `ydata` was still read from the **last assigned `ln`**, which after the inner loop could be the **discharge** `Line2D` (more points) when discharge was skipped (`not get_visible()`). That mixed two different curves’ arrays.
+
+### Solution
+1. Indent the block so **each** of charge/discharge lines gets `xdata` and `ydata` from the **same** `ln`, then filter and `set_*data` on that line only.  
+2. If `xdata` and `ydata` lengths still differ (malformed line), truncate to `min(len(x), len(y))` before masking.
+
+### Affected Files
+- `batplot/electrochem_interactive.py` (potential step filter under `key == 'sm'`, `sub == 'a'`)
+- `patches/dqdv_potential_step_filter_indent.patch` (unified diff for offline/OneDrive apply)
+
+---
+
+## 2026-03-20: CLI `--showcol` — preview columns and first 10 data points
+
+### Summary
+New flag **`--showcol`** prints, for each given file, numbered columns (1, 2, 3, …), header names when detected, and up to the first 10 data values per column. Supports `.csv` (including Neware-style multi-row headers via existing reader logic), `.xlsx`/`.xls` (requires `openpyxl`), BioLogic EC-Lab `.mpt`, Bruker `.brml` and Bruker `.raw` v4, and generic whitespace/CSV-like text (`.xy`, `.txt`, `.dat`, etc.). Style/session files and `.cif` are skipped with a short note. Paths with a wavelength suffix (`file.xye:1.54`) are resolved like the rest of batplot.
+
+### Affected Files
+- `batplot/showcol.py` (new)
+- `batplot/args.py` (`--showcol` argument)
+- `batplot/batplot.py` (early dispatch before plotting)
+- `FLAGS_REFERENCE.md`
+
+---
+
+## 2026-03-18: Canvas mode / XY session reload: wrong figure size (always 8×6)
+
+### Summary
+Importing XY/1D `.pkl` sessions in canvas mode (or reloading them) showed the wrong panel dimensions because `load_xy_session` always created `plt.subplots(figsize=(8, 6))` instead of using `sess['figure']['size']` saved by `dump_session`.
+
+### Root Cause
+EC/CPC/operando loaders use `sess['figure']['size']`; XY loader did not, so `get_size_inches()` during canvas probing was always (8, 6) unless the figure was resized later in the same function.
+
+### Solution
+Create the XY figure with `figsize` and `dpi=100` from `sess['figure']['size']` when present; fallback to (8, 6) for legacy sessions missing `size`.
+
+### Affected Files
+- batplot/session.py (`load_xy_session`)
+
+---
+
+## 2026-03-18: Canvas mode: insert image (p), text (t), drag/resize, session save
+
+### Summary
+Canvas mode now supports **p** (insert picture from file), **t** (add text via prompt), orange selection with corner handles to move/resize overlays, **Backspace** to delete selected overlay, and **canvas_annotations** persisted in `.pkl` save / reload with path resolution next to manifest.
+
+### Affected Files
+- batplot/canvas_interactive.py
+- INTERACTIVE_MENUS_REFERENCE.md
+
+---
+
+## 2026-03-18: --convert with directory not working
+
+### Summary
+`batplot /path/to/folder --all --convert 0.25448 1.54` did not work. Passing a directory with --convert caused batch mode to run instead (or "File not found" for directory path), and convert was never executed.
+
+### Root Cause
+Conversion handling ran after the sole/batch logic. When args.files contained a directory, batch_process was called and the script exited before reaching the convert block. convert_xrd_data also expects file paths, not directories.
+
+### Solution
+Handle --convert before batch/sole logic. When args.convert is set, expand any directory in args.files to the list of convertible XY files (.xy, .xye, .qye, .dat, .csv, .txt) in that directory, then call convert_xrd_data. Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- batplot/batplot.py (convert block moved before sole check; directory expansion)
+- batplot/args.py (help text: directory support for --convert)
+
+---
+
+## 2026-03-18: Canvas mode: quit not working, window always on top, font scaling on resize
+
+### Summary
+(1) Pressing 'q' in canvas mode did not quit; confirmation prompt used input() which required terminal focus. (2) Plot window stayed on top and could not be minimized; plt.pause(0.05) raised the window on each iteration. (3) Raster thumbnails (1D, CPC, operando) showed scaled fonts when resizing panels; image was stretched instead of re-rendered at new size.
+
+### Root Cause
+(1) input() blocks in the key callback; user typing in canvas window triggered repeated _do_quit() before terminal could receive 'y'. (2) matplotlib's default figure.raise_window=True causes windows to be raised on each draw/pause. (3) _load_and_render used session's default figure size; when axes were resized, the fixed-resolution image was stretched.
+
+### Solution
+(1) Double-tap q to quit: first 'q' prints "Press q again to quit", second 'q' exits. No terminal input needed. (2) Set mpl.rcParams['figure.raise_window'] = False at start of run_canvas_mode. (3) Pass target_size_inches to _load_and_render from panel rect; re-render raster panels after handle resize (invalidate cache, rebuild). Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- batplot/canvas_interactive.py (quit_pending, raise_window, _load_and_render target size, on_release re-render)
+
+---
+
+## 2026-03-18: Canvas mode: mouse-driven layout, event loop, remove geometry submenu
+
+### Summary
+Canvas mode rewritten with mouse-driven interaction: click panel to select (blue border), drag to move, drag corner handles to resize. Removed geometry submenu (g command) and sliders. Event-driven main loop using mpl_connect (key_press, button_press, motion_notify, button_release) with plt.pause(0.05). Keys 1-9 edit panel, e export, s save, q quit. Cross-platform (Windows, macOS, Linux) using figure coords (0-1) and fig.transFigure.inverted().transform for coordinate conversion.
+
+### Affected Files
+- batplot/canvas_interactive.py (full rewrite of interaction model)
+
+---
+
+## 2026-03-18: Canvas mode: white background, g geometry, hide g in panel menus
+
+### Summary
+(1) Canvas and plot backgrounds were grey (0.97); changed to white. (2) Replaced confusing x, y, p commands with single g (geometry) command: select panel, then p (position: x y) or s (size: w h), with d (drag bars/sliders) for interactive adjustment. (3) When editing EC panel embedded in canvas, hide "g: size" from the EC menu (geometry controlled from canvas).
+
+### Affected Files
+- batplot/canvas_interactive.py (facecolor white, g geometry, canvas_mode=True for EC)
+- batplot/electrochem_interactive.py (canvas_mode param, hide g when canvas_mode)
+
+---
+
+## 2026-03-18: Canvas mode: all interactive menu commands work for embedded EC panels
+
+### Summary
+Geometry commands (g→p plot frame, g→c canvas size) and style import (i) did not work when editing EC panels embedded in canvas mode. subplots_adjust was used, which only affects subplot layout, not axes created with add_axes.
+
+### Root Cause
+resize_plot_frame, resize_canvas (ui.py), electrochem style import (electrochem_interactive.py), and style apply (style.py) used fig.subplots_adjust(). Embedded canvas panels use fig.add_axes(rect), so subplots_adjust had no effect.
+
+### Solution
+Replace subplots_adjust with ax.set_position([left, bottom, width, height]) in:
+- ui.py: resize_plot_frame, resize_canvas
+- electrochem_interactive.py: style import (axes_fraction and frame_size)
+- canvas_interactive.py: sync panel_positions after in-place EC edit so export/save use correct layout
+
+Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- batplot/ui.py (resize_plot_frame, resize_canvas)
+- batplot/electrochem_interactive.py (style import)
+- batplot/style.py (apply_style_config)
+- batplot/canvas_interactive.py (sync panel_positions after edit)
+
+---
+
+## 2026-03-18: Canvas mode: canvas closed when editing panel; EC panels as raster instead of editable
+
+### Summary
+(1) When pressing 1–9 to edit a panel in canvas mode, the canvas window was closed and only the panel figure was visible; user lost the canvas layout. (2) Canvas displayed all panels as rasterized PNG thumbnails with white background instead of editable matplotlib axes.
+
+### Root Cause
+(1) The edit flow called `plt.close(fig_canvas)` before opening the panel, then recreated the canvas after the panel menu returned. (2) Canvas used `_figure_to_rgba` + `imshow` for all panels; no support for embedding real matplotlib axes.
+
+### Solution
+(1) Keep the canvas figure open when editing; open the panel in a separate window (or edit in-place for EC). Do not close or recreate the canvas. (2) Added `parent_fig` and `rect` parameters to `load_ec_session` for canvas embedding. EC/GC panels are now drawn as editable matplotlib axes directly in the canvas; editing runs in-place on the canvas axes. Operando, CPC, XY still use raster thumbnails. Canvas figure uses facecolor `0.97` for a neutral background. Cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- `batplot/canvas_interactive.py` (canvas stays visible; ec_gc embedding; export uses embedded EC)
+- `batplot/session.py` (load_ec_session parent_fig/rect for embedding)
+
+---
+
+## 2026-03-18: macOS IMKCFRunLoopWakeUpReliable warning when closing intensity bar (oz → b)
+
+### Summary
+When using the operando intensity bar (oz → b) to adjust the color scale range and then closing the slider window, macOS printed: `error messaging the mach port for IMKCFRunLoopWakeUpReliable` to stderr. This is a harmless system warning from the Input Method Kit but clutters the terminal.
+
+### Root Cause
+The `_FilterIMKWarning` stderr wrapper is only active during `_safe_input()` calls. The intensity slider runs in matplotlib's blocking event loop (`start_event_loop`); when the user closes the slider window, the macOS framework emits the IMK warning to stderr while our filter was not active.
+
+### Solution
+Wrap `sys.stderr` with `_FilterIMKWarning` for the entire duration of the intensity bar slider block (from before creating the slider until after closing it). Restore original stderr in a `finally` block. Cross-platform: only affects macOS; other platforms unaffected.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+
+---
+
 ## 2026-03-16: Operando mode: DataLogger EC + multi-.brml contour with cyc1/cyc2/cyc3
 
 ### Summary

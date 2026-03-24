@@ -101,10 +101,10 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i',
+    'custom_message': '- Bug fixes',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i'
+        '- Bug fixes'
     ],
     'show_update_notes': True,
 }

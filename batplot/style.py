@@ -1027,10 +1027,10 @@ def apply_style_config(
                 x0, y0, w, h = axes_frac
                 left = float(x0)
                 bottom = float(y0)
-                right = left + float(w)
-                top = bottom + float(h)
-                if 0 < left < right <= 1 and 0 < bottom < top <= 1:
-                    fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+                w_frac = float(w)
+                h_frac = float(h)
+                if 0 < left < left + w_frac <= 1 and 0 < bottom < bottom + h_frac <= 1:
+                    ax.set_position([left, bottom, w_frac, h_frac])
             elif frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
                 cur_fw, cur_fh = fig.get_size_inches()
                 des_w, des_h = float(frame_size[0]), float(frame_size[1])
@@ -1039,7 +1039,7 @@ def apply_style_config(
                 h_frac = min(des_h / cur_fh, 1 - 2 * min_margin)
                 left = (1 - w_frac) / 2
                 bottom = (1 - h_frac) / 2
-                fig.subplots_adjust(left=left, right=left + w_frac, bottom=bottom, top=bottom + h_frac)
+                ax.set_position([left, bottom, w_frac, h_frac])
         except Exception as e:
             print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
         if _style_debug:

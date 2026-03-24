@@ -14,6 +14,7 @@ With a single line of command to easily plot publication-ready plots with custom
 - **Session Persistence**: Save and reload complete plot states with `.pkl` files
 - **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files
 - **Batch Processing**: Export each file separately with `--all`
+- **Column preview**: `--showcol` prints numbered columns, header names when found, and the first 10 values per column (CSV, Excel, text, .mpt, .brml, Bruker .raw, etc.)
 
 ## Installation
 

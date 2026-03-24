@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.32] - 2026-03-24
+- Improved multi-file support for EC mode
+
+
+## [1.8.33] - 2026-03-24
+- Bug fixes
+
+
 ## [1.8.25] - 2026-03-16
 - Improved interactive menu functionality for colors/ticks
 - Bug fixes
@@ -37,6 +45,10 @@
 
 
 ## [Unreleased]
+- **Canvas mode** (`--canvas`): Combine multiple .pkl sessions into one layout. `batplot xrd.pkl operando.pkl gc.pkl dqdv.pkl --canvas` — displays all sessions in a grid; use numbers (1–9) to edit each panel with its interactive menu; layout commands (1x1, 2x2, etc.); export (e) or save canvas (s) to .pkl for later editing. Supports EC, operando, CPC sessions. XY/1D sessions not yet supported in canvas.
+- CV: Multi-file combined mode — when multiple .mpt/.txt files are provided with `--cv`, all files are overlaid on one figure (like GC/dQ/dV). Full c (cycles/colors) menu: fall:, f1:1,5,10, fall viridis, etc. p, i, s, b work correctly.
+- GC/CV/dQdV: `fall:1 2 3 5 4` — show cycles 1,2,3,5 for ALL files, one color per file from palette 4 (file 1→first color, file last→last color).
+- GC/CV/dQdV: Per-file cycle selection in c (cycles/colors): type `f1:1,5,10 f2:2,4,6 viridis` to show different cycles per file (file 1: cycles 1,5,10; file 2: cycles 2,4,6). Use `f1:all` for all cycles in a file.
 - EC/CV/dQdV: Simplified multi-file palette: press c, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4`—no intermediate file selection step
 - CPC: In ly/ry color submenu, added file range palette: `1-5 viridis`, `1 3 5 4` to apply palette to files 1–5 or 1,3,5
 - EC/CV/dQdV: File-palette colors persist via p (print style), i (import style), s (save session), or b (undo). Style export now includes per-file cycle styles for multi-file plots.

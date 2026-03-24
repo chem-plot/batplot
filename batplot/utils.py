@@ -39,7 +39,7 @@ import sys
 import shutil
 import subprocess
 import time
-from typing import Optional, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 
 def natural_sort_key(name: str) -> list:
@@ -567,28 +567,53 @@ def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: Opt
     return sorted(files, key=lambda x: natural_sort_key(x[0]))
 
 
+def print_label_latex_tips(colorize: Optional[Callable[[str], str]] = None) -> None:
+    """Print the standard LaTeX/mathtext hint block for interactive rename prompts.
+
+    If *colorize* is set (e.g. terminal highlighting), it is applied to each
+    line after the header. Pure strings only (works on Windows/macOS/Linux).
+    """
+    print("Tip: Use LaTeX/mathtext for special characters:")
+    bodies = (
+        "Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²",
+        "Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å",
+        "Italic: $\\mathit{abc}$  |  Shortcut: {italic(abc)} → $\\mathit{abc}$",
+        "Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O",
+    )
+    prefix = "  "
+    for body in bodies:
+        line = colorize(body) if colorize else body
+        print(prefix + line)
+
+
 def convert_label_shortcuts(text: str) -> str:
     """Convert shortcut syntax to LaTeX format for labels.
     
-    Converts {super(...)} and {sub(...)} shortcuts to LaTeX superscript/subscript format.
+    Converts {super(...)}, {sub(...)}, and {italic(...)} shortcuts to LaTeX.
     This allows easier input of mathematical notation without typing full LaTeX.
     
     Args:
-        text: Label text that may contain {super(...)} or {sub(...)} shortcuts
+        text: Label text that may contain {super(...)}, {sub(...)}, or {italic(...)} shortcuts
         
     Returns:
-        Text with shortcuts converted to LaTeX format (uses \\mathrm{} to prevent italic rendering).
+        Text with shortcuts converted to LaTeX format (sup/sub use \\mathrm{};
+        italic uses \\mathit{}).
         
     Examples:
         >>> convert_label_shortcuts("g{super(-1)}")
-        "g$^{\\mathrm{-1}}$"
+        'g$^{\\\\mathrm{-1}}$'
         >>> convert_label_shortcuts("Li{sub(2)}FeSeO")
-        "Li$_{\\mathrm{2}}$FeSeO"
+        'Li$_{\\\\mathrm{2}}$FeSeO'
         >>> convert_label_shortcuts("H{sub(2)}O")
-        "H$_{\\mathrm{2}}$O"
+        'H$_{\\\\mathrm{2}}$O'
+        >>> convert_label_shortcuts("{italic(Fe)}")
+        '$\\\\mathit{Fe}$'
     """
     if not text:
         return text
+
+    # Convert {italic(...)} to $\\mathit{...}$ (math italic)
+    text = re.sub(r'\{italic\(([^)]+)\)\}', r'$\\mathit{\1}$', text)
 
     # Convert {super(...)} to $^{\mathrm{...}}$ to prevent italic rendering
     # Pattern matches {super(anything inside)}

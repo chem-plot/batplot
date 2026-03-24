@@ -50,8 +50,15 @@ from matplotlib.ticker import (
 
 from .utils import _confirm_overwrite, ensure_exact_case_filename
 from .color_utils import ensure_colormap
-from .ui import set_spine_side_color as _set_spine_side_color
+from .ui import (
+    set_spine_side_color as _set_spine_side_color,
+    position_top_xlabel as _ui_position_top_xlabel,
+    position_right_ylabel as _ui_position_right_ylabel,
+    position_bottom_xlabel as _ui_position_bottom_xlabel,
+    position_left_ylabel as _ui_position_left_ylabel,
+)
 from .operando import _draw_operando_cif_ticks
+from .plotting import update_labels
 
 
 def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
@@ -1691,6 +1698,7 @@ __all__ = [
     "load_ec_session",
     "dump_cpc_session",
     "load_cpc_session",
+    "load_xy_session",
 ]
  
 # --------------------- Electrochem GC session helpers ---------------------------
@@ -1963,10 +1971,17 @@ def dump_ec_session(
         print(f"Error saving EC session: {e}")
 
 
-def load_ec_session(filename: str):
+def load_ec_session(
+    filename: str,
+    parent_fig: Optional[Any] = None,
+    rect: Optional[Tuple[float, float, float, float]] = None,
+):
     """Load an EC GC session and reconstruct figure, axes, and cycle_lines or file_data.
 
     Returns: (fig, ax, cycle_lines) for single-file sessions, or (fig, ax, None, file_data) for multi-file.
+
+    If parent_fig and rect are provided, draws into parent_fig.add_axes(rect) instead of creating
+    a new figure (for canvas embedding). rect is (left, bottom, width, height) in figure coords.
     """
     try:
         with open(filename, 'rb') as f:
@@ -2010,23 +2025,28 @@ def load_ec_session(filename: str):
         print("Not an EC GC session file.")
         return None
 
-    # Use standard DPI of 100 instead of saved DPI to avoid display-dependent issues
-    # (Retina displays, Windows scaling, etc. can cause saved DPI to differ)
-    fig = plt.figure(figsize=tuple(sess['figure']['size']), dpi=100)
+    embed = parent_fig is not None and rect is not None
+
+    if embed:
+        fig = parent_fig
+        ax = fig.add_axes(rect)
+    else:
+        # Use standard DPI of 100 instead of saved DPI to avoid display-dependent issues
+        fig = plt.figure(figsize=tuple(sess['figure']['size']), dpi=100)
+        try:
+            fig.set_layout_engine('none')
+        except Exception:
+            try:
+                fig.set_tight_layout(False)
+            except Exception:
+                pass
+        ax = fig.add_subplot(111)
+
     # Seed last-session path so 'os' overwrite command is available immediately
     try:
         fig._last_session_save_path = os.path.abspath(filename)
     except Exception:
         pass
-    # Preserve saved geometry by disabling auto layout
-    try:
-        fig.set_layout_engine('none')
-    except Exception:
-        try:
-            fig.set_tight_layout(False)
-        except Exception:
-            pass
-    ax = fig.add_subplot(111)
     try:
         fig._bp_source_paths = list(sess.get('source_paths', []) or [])
     except Exception:
@@ -2066,36 +2086,30 @@ def load_ec_session(filename: str):
     except Exception:
         pass
 
-    # Apply subplot margins early (prevents label clipping on draw)
-    try:
-        spm = sess.get('subplot_margins', {})
-        if all(k in spm for k in ('left','right','bottom','top')):
-            fig.subplots_adjust(left=float(spm['left']), right=float(spm['right']), bottom=float(spm['bottom']), top=float(spm['top']))
-        
-        # Restore exact frame size if stored (for precision)
-        frame_size = sess.get('frame_size')
-        if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
-            target_w_in, target_h_in = map(float, frame_size)
-            # Get current canvas size
-            canvas_w_in, canvas_h_in = fig.get_size_inches()
-            # Calculate needed fractions to achieve exact frame size
-            if canvas_w_in > 0 and canvas_h_in > 0:
-                # Get current position to preserve centering
-                bbox = ax.get_position()
-                center_x = (bbox.x0 + bbox.x1) / 2.0
-                center_y = (bbox.y0 + bbox.y1) / 2.0
-                # Calculate new fractions
-                new_w_frac = target_w_in / canvas_w_in
-                new_h_frac = target_h_in / canvas_h_in
-                # Reposition to maintain centering
-                new_left = center_x - new_w_frac / 2.0
-                new_right = center_x + new_w_frac / 2.0
-                new_bottom = center_y - new_h_frac / 2.0
-                new_top = center_y + new_h_frac / 2.0
-                # Apply
-                fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
-    except Exception:
-        pass
+    # Apply subplot margins early (prevents label clipping on draw) - skip when embedding
+    if not embed:
+        try:
+            spm = sess.get('subplot_margins', {})
+            if all(k in spm for k in ('left','right','bottom','top')):
+                fig.subplots_adjust(left=float(spm['left']), right=float(spm['right']), bottom=float(spm['bottom']), top=float(spm['top']))
+
+            frame_size = sess.get('frame_size')
+            if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+                target_w_in, target_h_in = map(float, frame_size)
+                canvas_w_in, canvas_h_in = fig.get_size_inches()
+                if canvas_w_in > 0 and canvas_h_in > 0:
+                    bbox = ax.get_position()
+                    center_x = (bbox.x0 + bbox.x1) / 2.0
+                    center_y = (bbox.y0 + bbox.y1) / 2.0
+                    new_w_frac = target_w_in / canvas_w_in
+                    new_h_frac = target_h_in / canvas_h_in
+                    new_left = center_x - new_w_frac / 2.0
+                    new_right = center_x + new_w_frac / 2.0
+                    new_bottom = center_y - new_h_frac / 2.0
+                    new_top = center_y + new_h_frac / 2.0
+                    fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
+        except Exception:
+            pass
 
     # Rebuild lines (single-file or multi-file)
     def _rebuild_lines_from_raw(raw: Dict) -> Dict[int, Any]:
@@ -3485,5 +3499,743 @@ def load_cpc_session(filename: str):
         return fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data
     except Exception as e:
         print(f"Error loading CPC session: {e}")
+        traceback.print_exc()
+        return None
+
+
+def load_xy_session(filename: str):
+    """Load an XY/1D session (sessions with 'version' and 'x_data' but no 'kind').
+
+    Replicates the reconstruction logic from batplot.py for XY sessions.
+    Returns (fig, ax, menu_kwargs) where menu_kwargs is a dict suitable for
+    interactive_menu. Returns None on failure.
+    """
+    try:
+        with open(filename, 'rb') as f:
+            sess = pickle.load(f)
+    except ModuleNotFoundError as e:
+        if '_core' in str(e) or 'numpy' in str(e).lower():
+            saved_versions = _try_extract_version_from_pickle(filename)
+            current_numpy = _get_current_numpy_version()
+            saved_numpy = saved_versions.get('numpy', 'unknown')
+            print(f"\nERROR: NumPy version mismatch detected when loading: {filename}")
+            print("This session was saved with a different NumPy version.")
+            print(f"\nSession was saved with:  NumPy {saved_numpy}")
+            print(f"Currently installed:     NumPy {current_numpy}")
+            print("\nSolutions: pip install matching numpy version or recreate session.")
+        else:
+            print(f"\nERROR: Module import error when loading: {filename}\nError: {e}")
+        return None
+    except Exception as e:
+        print(f"Failed to load session: {e}")
+        return None
+
+    if not isinstance(sess, dict) or 'version' not in sess or 'x_data' not in sess:
+        return None
+    if sess.get('kind') is not None:
+        return None
+
+    try:
+        # Match saved canvas geometry (same as EC/CPC/operando loaders) so e.g. canvas mode gets correct panel sizes
+        fig_cfg = sess.get('figure') or {}
+        sz = fig_cfg.get('size')
+        if sz and isinstance(sz, (list, tuple)) and len(sz) >= 2:
+            try:
+                fw, fh = float(sz[0]), float(sz[1])
+                if fw <= 0 or fh <= 0:
+                    fw, fh = 8.0, 6.0
+            except (TypeError, ValueError):
+                fw, fh = 8.0, 6.0
+        else:
+            fw, fh = 8.0, 6.0
+        fig, ax = plt.subplots(figsize=(fw, fh), dpi=100)
+        try:
+            fig._ro_active = bool(sess.get('ro_active', False))
+        except Exception:
+            pass
+        try:
+            fig._last_session_save_path = os.path.abspath(filename)
+        except Exception:
+            pass
+        try:
+            fig.set_layout_engine('none')
+        except AttributeError:
+            try:
+                fig.set_tight_layout(False)
+            except Exception:
+                pass
+
+        y_data_list: List[np.ndarray] = []
+        x_data_list: List[np.ndarray] = []
+        labels_list: List[str] = []
+        orig_y: List[np.ndarray] = []
+        label_text_objects: List[Any] = []
+        x_full_list: List[np.ndarray] = []
+        raw_y_full_list: List[np.ndarray] = []
+        offsets_list: List[float] = []
+
+        wasd_loaded = sess.get('wasd_state')
+        if wasd_loaded and isinstance(wasd_loaded, dict):
+            tick_state: Dict[str, Any] = {}
+            for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
+                s = wasd_loaded.get(side_key, {})
+                tick_state[f'{prefix}_ticks'] = bool(s.get('ticks', side_key in ('bottom', 'left')))
+                tick_state[f'{prefix}_labels'] = bool(s.get('labels', side_key in ('bottom', 'left')))
+                tick_state[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
+            tick_state['bx'] = tick_state.get('b_ticks', True)
+            tick_state['tx'] = tick_state.get('t_ticks', False)
+            tick_state['ly'] = tick_state.get('l_ticks', True)
+            tick_state['ry'] = tick_state.get('r_ticks', False)
+            tick_state['mbx'] = tick_state.get('mbx', False)
+            tick_state['mtx'] = tick_state.get('mtx', False)
+            tick_state['mly'] = tick_state.get('mly', False)
+            tick_state['mry'] = tick_state.get('mry', False)
+        else:
+            tick_state = sess.get('tick_state', {
+                'bx': True, 'tx': False, 'ly': True, 'ry': False,
+                'mbx': False, 'mtx': False, 'mly': False, 'mry': False
+            })
+
+        saved_stack = bool(sess.get('args_subset', {}).get('stack', False))
+        x_loaded = sess.get('x_data', [])
+        y_loaded = sess.get('y_data', [])
+        orig_loaded = sess.get('orig_y', [])
+        offsets_saved = sess.get('offsets', [])
+
+        original_x_data_list = sess.get('original_x_data_list')
+        original_y_data_list = sess.get('original_y_data_list')
+        smooth_settings = sess.get('smooth_settings')
+        if original_x_data_list is not None:
+            fig._original_x_data_list = [np.array(a) for a in original_x_data_list]
+        if original_y_data_list is not None:
+            fig._original_y_data_list = [np.array(a) for a in original_y_data_list]
+        full_processed_x_data_list = sess.get('full_processed_x_data_list')
+        full_processed_y_data_list = sess.get('full_processed_y_data_list')
+        if full_processed_x_data_list is not None:
+            fig._full_processed_x_data_list = [np.array(a) for a in full_processed_x_data_list]
+        if full_processed_y_data_list is not None:
+            fig._full_processed_y_data_list = [np.array(a) for a in full_processed_y_data_list]
+        if smooth_settings is not None:
+            fig._smooth_settings = dict(smooth_settings)
+        last_smooth_settings = sess.get('last_smooth_settings')
+        if last_smooth_settings is not None:
+            fig._last_smooth_settings = dict(last_smooth_settings)
+
+        pre_derivative_x_data_list = sess.get('pre_derivative_x_data_list')
+        pre_derivative_y_data_list = sess.get('pre_derivative_y_data_list')
+        pre_derivative_ylabel = sess.get('pre_derivative_ylabel')
+        derivative_order = sess.get('derivative_order')
+        if pre_derivative_x_data_list is not None:
+            fig._pre_derivative_x_data_list = [np.array(a) for a in pre_derivative_x_data_list]
+        if pre_derivative_y_data_list is not None:
+            fig._pre_derivative_y_data_list = [np.array(a) for a in pre_derivative_y_data_list]
+        if pre_derivative_ylabel is not None:
+            fig._pre_derivative_ylabel = str(pre_derivative_ylabel)
+        if derivative_order is not None:
+            fig._derivative_order = int(derivative_order)
+        derivative_reversed = sess.get('derivative_reversed')
+        if derivative_reversed is not None:
+            fig._derivative_reversed = bool(derivative_reversed)
+
+        n_curves = len(x_loaded)
+        right_y_loaded = frozenset(sess.get('right_y_curve_indices', []))
+        ax2_loaded = None
+        for i in range(n_curves):
+            x_arr = np.asarray(x_loaded[i], dtype=float).flatten()
+            off = offsets_saved[i] if i < len(offsets_saved) else 0.0
+            if orig_loaded and i < len(orig_loaded):
+                base = np.asarray(orig_loaded[i], dtype=float).flatten()
+            else:
+                y_arr_full = np.asarray(y_loaded[i], dtype=float).flatten() if i < len(y_loaded) else np.array([], dtype=float)
+                base = y_arr_full - off
+            if x_arr.size != base.size:
+                min_len = min(x_arr.size, base.size)
+                x_arr = x_arr[:min_len]
+                base = base[:min_len]
+            y_plot = base + off
+            x_data_list.append(x_arr)
+            orig_y.append(base)
+            y_data_list.append(y_plot)
+            is_right = i in right_y_loaded
+            if is_right:
+                if ax2_loaded is None:
+                    ax2_loaded = ax.twinx()
+                    if sess.get('txaxis', False):
+                        ax2_loaded = ax2_loaded.twiny()
+                ax2_loaded.plot(x_arr, y_plot, lw=1)
+            else:
+                ax.plot(x_arr, y_plot, lw=1)
+            x_full_list.append(x_arr.copy())
+            raw_y_full_list.append(base.copy())
+        offsets_list[:] = offsets_saved if offsets_saved else [0.0] * n_curves
+
+        try:
+            axes_bbox = sess.get('figure', {}).get('axes_bbox')
+            if _apply_axes_bbox(ax, axes_bbox):
+                try:
+                    fig._skip_initial_text_visibility = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        if ax2_loaded is not None:
+            fig._xy_ax2 = ax2_loaded
+            fig._xy_use_top_x = bool(sess.get('txaxis', False))
+            fig._xy_right_y_curve_indices = right_y_loaded
+            _left_idx = sorted(i for i in range(n_curves) if i not in right_y_loaded)
+            _right_idx = sorted(right_y_loaded)
+            _lines_by_curve = []
+            for i in range(n_curves):
+                if i in right_y_loaded:
+                    k = _right_idx.index(i)
+                    _lines_by_curve.append(ax2_loaded.lines[k] if k < len(ax2_loaded.lines) else None)
+                else:
+                    k = _left_idx.index(i)
+                    _lines_by_curve.append(ax.lines[k] if k < len(ax.lines) else None)
+            fig._xy_lines_by_curve = _lines_by_curve
+        else:
+            fig._xy_ax2 = None
+            fig._xy_right_y_curve_indices = frozenset()
+            fig._xy_lines_by_curve = None
+
+        try:
+            stored_styles = sess.get('line_styles', [])
+            lines_to_style = (fig._xy_lines_by_curve if fig._xy_lines_by_curve else ax.lines)
+            for ln, st in zip(lines_to_style, stored_styles):
+                if ln is None:
+                    continue
+                if 'color' in st:
+                    ln.set_color(st['color'])
+                if 'linewidth' in st:
+                    ln.set_linewidth(st['linewidth'])
+                if 'linestyle' in st:
+                    try:
+                        ln.set_linestyle(st['linestyle'])
+                    except Exception:
+                        pass
+                if 'alpha' in st and st['alpha'] is not None:
+                    ln.set_alpha(st['alpha'])
+                if 'marker' in st and st['marker'] is not None:
+                    try:
+                        ln.set_marker(st['marker'])
+                    except Exception:
+                        pass
+                if 'markersize' in st and st['markersize'] is not None:
+                    try:
+                        ln.set_markersize(st['markersize'])
+                    except Exception:
+                        pass
+                if 'markerfacecolor' in st and st['markerfacecolor'] is not None:
+                    try:
+                        ln.set_markerfacecolor(st['markerfacecolor'])
+                    except Exception:
+                        pass
+                if 'markeredgecolor' in st and st['markeredgecolor'] is not None:
+                    try:
+                        ln.set_markeredgecolor(st['markeredgecolor'])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        labels_list[:] = sess.get('labels', [f"Curve {i+1}" for i in range(len(y_data_list))])
+        delta = sess.get('delta', 0.0)
+        try:
+            ax.tick_params(axis='x',
+                          bottom=tick_state.get('b_ticks', tick_state.get('bx', True)),
+                          labelbottom=tick_state.get('b_labels', tick_state.get('bx', True)),
+                          top=tick_state.get('t_ticks', tick_state.get('tx', False)),
+                          labeltop=tick_state.get('t_labels', tick_state.get('tx', False)))
+            ax.tick_params(axis='y',
+                          left=tick_state.get('l_ticks', tick_state.get('ly', True)),
+                          labelleft=tick_state.get('l_labels', tick_state.get('ly', True)),
+                          right=tick_state.get('r_ticks', tick_state.get('ry', False)),
+                          labelright=tick_state.get('r_labels', tick_state.get('ry', False)))
+        except Exception:
+            pass
+        ax.set_xlabel(sess.get('axis', {}).get('xlabel', 'X'))
+        ax.set_ylabel(sess.get('axis', {}).get('ylabel', 'Intensity'))
+        try:
+            ax._saved_tick_state = dict(tick_state)
+        except Exception:
+            pass
+
+        axis_cfg = sess.get('axis', {})
+        if 'norm_xlim' in axis_cfg and axis_cfg['norm_xlim'] is not None:
+            ax._norm_xlim = tuple(axis_cfg['norm_xlim'])
+        if 'norm_ylim' in axis_cfg and axis_cfg['norm_ylim'] is not None:
+            ax._norm_ylim = tuple(axis_cfg['norm_ylim'])
+        if 'xlim' in axis_cfg:
+            ax.set_xlim(*axis_cfg['xlim'])
+        if 'ylim' in axis_cfg:
+            ax.set_ylim(*axis_cfg['ylim'])
+
+        fig_cfg = sess.get('figure', {})
+        try:
+            spine_specs = fig_cfg.get('spines', {})
+            if spine_specs:
+                for name, spec in spine_specs.items():
+                    spn = ax.spines.get(name)
+                    if not spn:
+                        continue
+                    if 'linewidth' in spec:
+                        spn.set_linewidth(spec['linewidth'])
+                    if 'color' in spec and spec['color'] is not None:
+                        spn.set_edgecolor(spec['color'])
+                    if 'visible' in spec:
+                        spn.set_visible(bool(spec['visible']))
+            else:
+                legacy_vis = fig_cfg.get('spine_vis', {})
+                for name, vis in legacy_vis.items():
+                    spn = ax.spines.get(name)
+                    if spn:
+                        spn.set_visible(bool(vis))
+            spm = fig_cfg.get('subplot_margins')
+            if spm and all(k in spm for k in ('left', 'right', 'bottom', 'top')):
+                fig.subplots_adjust(left=spm['left'], right=spm['right'], bottom=spm['bottom'], top=spm['top'])
+                try:
+                    fig._skip_initial_text_visibility = True
+                except Exception:
+                    pass
+            frame_size = fig_cfg.get('frame_size')
+            if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+                target_w_in, target_h_in = map(float, frame_size)
+                canvas_w_in, canvas_h_in = fig.get_size_inches()
+                if canvas_w_in > 0 and canvas_h_in > 0:
+                    bbox = ax.get_position()
+                    center_x = (bbox.x0 + bbox.x1) / 2.0
+                    center_y = (bbox.y0 + bbox.y1) / 2.0
+                    new_w_frac = target_w_in / canvas_w_in
+                    new_h_frac = target_h_in / canvas_h_in
+                    new_left = center_x - new_w_frac / 2.0
+                    new_right = center_x + new_w_frac / 2.0
+                    new_bottom = center_y - new_h_frac / 2.0
+                    new_top = center_y + new_h_frac / 2.0
+                    fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
+                    try:
+                        fig._skip_initial_text_visibility = True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        font_cfg = sess.get('font', {})
+        if font_cfg.get('chain'):
+            plt.rcParams['font.family'] = 'sans-serif'
+            plt.rcParams['font.sans-serif'] = font_cfg['chain']
+        if font_cfg.get('size'):
+            plt.rcParams['font.size'] = font_cfg['size']
+
+        saved_tick = sess.get('tick_state', {})
+        for k, v in saved_tick.items():
+            if k in tick_state:
+                tick_state[k] = v
+        try:
+            ax._saved_tick_state = dict(tick_state)
+        except Exception:
+            pass
+
+        try:
+            tw = sess.get('tick_widths', {})
+            if tw.get('x_major') is not None:
+                ax.tick_params(axis='x', which='major', width=float(tw['x_major']))
+            if tw.get('x_minor') is not None:
+                ax.tick_params(axis='x', which='minor', width=float(tw['x_minor']))
+            if tw.get('y_major') is not None:
+                ax.tick_params(axis='y', which='major', width=float(tw['y_major']))
+            if tw.get('y_minor') is not None:
+                ax.tick_params(axis='y', which='minor', width=float(tw['y_minor']))
+        except Exception:
+            pass
+
+        try:
+            tl = sess.get('tick_lengths', {})
+            if tl.get('x_major') is not None or tl.get('y_major') is not None:
+                major_len = tl.get('x_major') or tl.get('y_major')
+                ax.tick_params(axis='both', which='major', length=major_len)
+                if not hasattr(fig, '_tick_lengths'):
+                    fig._tick_lengths = {}
+                fig._tick_lengths['major'] = major_len
+            if tl.get('x_minor') is not None or tl.get('y_minor') is not None:
+                minor_len = tl.get('x_minor') or tl.get('y_minor')
+                ax.tick_params(axis='both', which='minor', length=minor_len)
+                if not hasattr(fig, '_tick_lengths'):
+                    fig._tick_lengths = {}
+                fig._tick_lengths['minor'] = minor_len
+        except Exception:
+            pass
+
+        try:
+            tick_direction = sess.get('tick_direction', 'out')
+            if tick_direction:
+                setattr(fig, '_tick_direction', tick_direction)
+                ax.tick_params(axis='both', which='both', direction=tick_direction)
+        except Exception:
+            pass
+
+        try:
+            wasd = sess.get('wasd_state', {})
+            if wasd:
+                stored_xlabel = ax.get_xlabel()
+                stored_ylabel = ax.get_ylabel()
+                for side in ('top', 'bottom', 'left', 'right'):
+                    state = wasd.get(side, {})
+                    sp = ax.spines.get(side)
+                    if sp and 'spine' in state:
+                        sp.set_visible(bool(state['spine']))
+                for side in ('top', 'bottom'):
+                    state = wasd.get(side, {})
+                    tick_key = 'tick1On' if side == 'top' else 'tick2On'
+                    label_key = 'label1On' if side == 'top' else 'label2On'
+                    if 'ticks' in state:
+                        ax.tick_params(axis='x', which='major', **{tick_key: bool(state['ticks'])})
+                    if 'labels' in state:
+                        ax.tick_params(axis='x', which='major', **{label_key: bool(state['labels'])})
+                    if 'minor' in state:
+                        ax.tick_params(axis='x', which='minor', **{tick_key: bool(state['minor'])})
+                for side in ('left', 'right'):
+                    state = wasd.get(side, {})
+                    tick_key = 'tick1On' if side == 'left' else 'tick2On'
+                    label_key = 'label1On' if side == 'left' else 'label2On'
+                    if 'ticks' in state:
+                        ax.tick_params(axis='y', which='major', **{tick_key: bool(state['ticks'])})
+                    if 'labels' in state:
+                        ax.tick_params(axis='y', which='major', **{label_key: bool(state['labels'])})
+                    if 'minor' in state:
+                        ax.tick_params(axis='y', which='minor', **{tick_key: bool(state['minor'])})
+                bottom_title_on = wasd.get('bottom', {}).get('title', True)
+                if bottom_title_on:
+                    ax.set_xlabel(stored_xlabel)
+                else:
+                    ax.set_xlabel('')
+                    if stored_xlabel:
+                        setattr(ax, '_stored_xlabel', stored_xlabel)
+                left_title_on = wasd.get('left', {}).get('title', True)
+                if left_title_on:
+                    ax.set_ylabel(stored_ylabel)
+                else:
+                    ax.set_ylabel('')
+                    if stored_ylabel:
+                        setattr(ax, '_stored_ylabel', stored_ylabel)
+                setattr(ax, '_top_xlabel_on', wasd.get('top', {}).get('title', False))
+                setattr(ax, '_right_ylabel_on', wasd.get('right', {}).get('title', False))
+        except Exception:
+            pass
+
+        for i, lab in enumerate(labels_list):
+            txt = ax.text(1.0, 1.0, f"{i+1}: {lab}", ha='right', va='top', transform=ax.transAxes,
+                          fontsize=plt.rcParams.get('font.size', 16))
+            label_text_objects.append(txt)
+        try:
+            curve_names_visible = bool(sess.get('curve_names_visible', True))
+            for txt in label_text_objects:
+                txt.set_visible(curve_names_visible)
+            fig._curve_names_visible = curve_names_visible
+        except Exception:
+            pass
+        try:
+            stack_label_at_bottom = bool(sess.get('stack_label_at_bottom', False))
+            fig._stack_label_at_bottom = stack_label_at_bottom
+        except Exception:
+            pass
+        try:
+            fig._label_anchor_left = bool(sess.get('label_anchor_left', False))
+        except Exception:
+            pass
+        try:
+            grid_state = bool(sess.get('grid', False))
+            if grid_state:
+                ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+            else:
+                ax.grid(False)
+        except Exception:
+            pass
+
+        cif_tick_series = sess.get('cif_tick_series') or []
+        cif_hkl_map = {k: [tuple(v) for v in val] for k, val in sess.get('cif_hkl_map', {}).items()}
+        cif_hkl_label_map = {k: dict(v) for k, v in sess.get('cif_hkl_label_map', {}).items()}
+        show_cif_hkl = bool(sess.get('show_cif_hkl', False))
+        show_cif_titles = bool(sess.get('show_cif_titles', True))
+
+        try:
+            _bp_module = sys.modules.get('__main__')
+            if _bp_module is not None and cif_tick_series:
+                setattr(_bp_module, 'cif_tick_series', list(cif_tick_series))
+                setattr(_bp_module, 'cif_hkl_map', cif_hkl_map)
+                setattr(_bp_module, 'cif_hkl_label_map', cif_hkl_label_map)
+                setattr(_bp_module, 'show_cif_hkl', bool(show_cif_hkl))
+                setattr(_bp_module, 'show_cif_titles', bool(show_cif_titles))
+                setattr(_bp_module, 'cif_extend_suspended', False)
+        except Exception:
+            pass
+
+        axis_mode_restored = sess.get('axis_mode', 'unknown')
+        use_Q = axis_mode_restored == 'Q'
+        use_r = axis_mode_restored == 'r'
+        use_E = axis_mode_restored == 'energy'
+        use_k = axis_mode_restored == 'k'
+        use_rft = axis_mode_restored == 'rft'
+        use_2th = axis_mode_restored == '2theta'
+        x_label = ax.get_xlabel() or 'X'
+
+        def _update_tick_visibility_local():
+            ax.tick_params(axis='x', bottom=tick_state['bx'], top=tick_state['tx'],
+                          labelbottom=tick_state['bx'], labeltop=tick_state['tx'])
+            ax.tick_params(axis='y', left=tick_state['ly'], right=tick_state['ry'],
+                          labelleft=tick_state['ly'], labelright=tick_state['ry'])
+            if tick_state.get('mbx') or tick_state.get('mtx'):
+                ax.xaxis.set_minor_locator(AutoMinorLocator())
+                ax.xaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='x', which='minor', bottom=tick_state.get('mbx', False),
+                              top=tick_state.get('mtx', False), labelbottom=False, labeltop=False)
+            else:
+                ax.tick_params(axis='x', which='minor', bottom=False, top=False, labelbottom=False, labeltop=False)
+            if tick_state.get('mly') or tick_state.get('mry'):
+                ax.yaxis.set_minor_locator(AutoMinorLocator())
+                ax.yaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='y', which='minor', left=tick_state.get('mly', False),
+                              right=tick_state.get('mry', False), labelleft=False, labelright=False)
+            else:
+                ax.tick_params(axis='y', which='minor', left=False, right=False, labelleft=False, labelright=False)
+        _update_tick_visibility_local()
+
+        stack_label_bottom = bool(sess.get('stack_label_at_bottom', False))
+        update_labels(ax, y_data_list, label_text_objects, saved_stack, stack_label_bottom)
+
+        if cif_tick_series:
+            def _session_q_to_2theta(peaksQ, wl):
+                if wl is None:
+                    return []
+                out = []
+                for q in peaksQ:
+                    s = q * wl / (4 * np.pi)
+                    if 0 <= s < 1:
+                        out.append(np.degrees(2 * np.arcsin(s)))
+                return out
+
+            def _session_ensure_wavelength(default_wl=1.5406):
+                for _lab, _fname, _peaks, _wl, _qmax, _color in cif_tick_series:
+                    if _wl is not None:
+                        return _wl
+                return default_wl
+
+            def _session_cif_draw():
+                if not cif_tick_series:
+                    return
+                try:
+                    prev_xlim = ax.get_xlim()
+                    prev_ylim = ax.get_ylim()
+                    if not hasattr(ax, '_cif_initial_ylim'):
+                        ax._cif_initial_ylim = tuple(prev_ylim)
+                    fixed_ylim = ax._cif_initial_ylim
+                    fixed_yr = fixed_ylim[1] - fixed_ylim[0]
+                    if fixed_yr <= 0:
+                        fixed_yr = 1.0
+                    show_titles_local = bool(show_cif_titles)
+                    try:
+                        if hasattr(fig, '_bp_show_cif_titles'):
+                            show_titles_local = bool(getattr(fig, '_bp_show_cif_titles', show_titles_local))
+                        _bp_module = sys.modules.get('__main__')
+                        if _bp_module is not None and hasattr(_bp_module, 'show_cif_titles'):
+                            show_titles_local = bool(getattr(_bp_module, 'show_cif_titles', show_titles_local))
+                    except Exception:
+                        pass
+                    show_hkl_local = False
+                    try:
+                        _bp_module = sys.modules.get('__main__')
+                        if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                            show_hkl_local = bool(getattr(_bp_module, 'show_cif_hkl', False))
+                    except Exception:
+                        pass
+                    if not show_hkl_local:
+                        show_hkl_local = bool(show_cif_hkl)
+                    if saved_stack or len(y_data_list) > 1:
+                        global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
+                        base = global_min - 0.08 * fixed_yr
+                        spacing = 0.05 * fixed_yr
+                    else:
+                        global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
+                        base = global_min - 0.06 * fixed_yr
+                        spacing = 0.04 * fixed_yr
+                    needed_min = base - (len(cif_tick_series) - 1) * spacing - 0.04 * fixed_yr
+                    if show_titles_local and needed_min < fixed_ylim[0]:
+                        ax.set_ylim(needed_min, fixed_ylim[1])
+                    else:
+                        ax.set_ylim(fixed_ylim)
+                    cur_ylim = ax.get_ylim()
+                    yr = cur_ylim[1] - cur_ylim[0]
+                    if yr <= 0:
+                        yr = 1.0
+                    for art in getattr(ax, '_cif_tick_art', []):
+                        try:
+                            art.remove()
+                        except Exception:
+                            pass
+                    new_art = []
+                    wl_any = _session_ensure_wavelength()
+                    for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
+                        y_line = base - i * spacing
+                        if use_2th:
+                            wl_use = wl if wl is not None else wl_any
+                            domain_peaks = _session_q_to_2theta(peaksQ, wl_use)
+                        else:
+                            domain_peaks = peaksQ
+                        xlow, xhigh = ax.get_xlim()
+                        domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
+                        label_map = {}
+                        if show_hkl_local:
+                            label_map = cif_hkl_label_map.get(fname, {})
+                        if show_hkl_local and len(domain_peaks) > 4000:
+                            show_hkl_local = False
+                            label_map = {}
+                        for p in domain_peaks:
+                            ln, = ax.plot([p, p], [y_line, y_line + 0.02 * yr], color=color, lw=1.0, alpha=0.9, zorder=3)
+                            new_art.append(ln)
+                            if show_hkl_local:
+                                if use_2th and (wl or wl_any):
+                                    theta = np.radians(p / 2.0)
+                                    Qp = 4 * np.pi * np.sin(theta) / (wl if wl is not None else wl_any)
+                                else:
+                                    Qp = p
+                                Qp_rounded = round(Qp, 6)
+                                lbl = label_map.get(Qp_rounded)
+                                if lbl:
+                                    t_hkl = ax.text(p, y_line + 0.022 * yr, lbl, ha='center', va='bottom',
+                                                    fontsize=7, rotation=90, color=color)
+                                    new_art.append(t_hkl)
+                        if show_titles_local:
+                            label_text = f" {lab}"
+                            txt = ax.text(prev_xlim[0], y_line, label_text,
+                                          ha='left', va='bottom',
+                                          fontsize=max(8, int(0.55 * plt.rcParams.get('font.size', 16))), color=color)
+                            new_art.append(txt)
+                    ax._cif_tick_art = new_art
+                    ax.set_xlim(prev_xlim)
+                    if not show_titles_local:
+                        ax.set_ylim(prev_ylim)
+                    elif needed_min >= prev_ylim[0]:
+                        ax.set_ylim(prev_ylim)
+                    else:
+                        new_ymin = min(needed_min, prev_ylim[0])
+                        ax.set_ylim(new_ymin, prev_ylim[1])
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+            ax._cif_extend_func = lambda xmax: None
+            ax._cif_draw_func = _session_cif_draw
+            ax._cif_draw_func()
+
+        titles = sess.get('axis_titles', {})
+        title_texts = sess.get('axis_title_texts', {})
+        bottom_text = title_texts.get('bottom_x') or title_texts.get('bottom')
+        left_text = title_texts.get('left_y') or title_texts.get('left')
+        top_text = title_texts.get('top_x') or title_texts.get('top')
+        right_text = title_texts.get('right_y') or title_texts.get('right')
+        try:
+            if bottom_text is not None:
+                ax._stored_xlabel = bottom_text
+            if left_text is not None:
+                ax._stored_ylabel = left_text
+            if top_text:
+                ax._top_xlabel_text_override = top_text
+            elif hasattr(ax, '_top_xlabel_text_override'):
+                delattr(ax, '_top_xlabel_text_override')
+            if right_text:
+                ax._right_ylabel_text_override = right_text
+            elif hasattr(ax, '_right_ylabel_text_override'):
+                delattr(ax, '_right_ylabel_text_override')
+            if titles.get('has_bottom_x') is False:
+                ax.xaxis.label.set_visible(False)
+            else:
+                ax.xaxis.label.set_visible(True)
+                if bottom_text is not None:
+                    ax.set_xlabel(bottom_text)
+                elif hasattr(ax, '_stored_xlabel'):
+                    ax.set_xlabel(ax._stored_xlabel)
+            try:
+                _ui_position_bottom_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            if titles.get('has_left_y') is False:
+                ax.yaxis.label.set_visible(False)
+            else:
+                ax.yaxis.label.set_visible(True)
+                if left_text is not None:
+                    ax.set_ylabel(left_text)
+                elif hasattr(ax, '_stored_ylabel'):
+                    ax.set_ylabel(ax._stored_ylabel)
+            try:
+                _ui_position_left_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            ax._top_xlabel_on = bool(titles.get('top_x', False))
+            try:
+                _ui_position_top_xlabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            if not ax._top_xlabel_on and hasattr(ax, '_top_xlabel_artist') and ax._top_xlabel_artist is not None:
+                try:
+                    ax._top_xlabel_artist.set_visible(False)
+                except Exception:
+                    pass
+            ax._right_ylabel_on = bool(titles.get('right_y', False))
+            try:
+                _ui_position_right_ylabel(ax, fig, tick_state)
+            except Exception:
+                pass
+            if not ax._right_ylabel_on and hasattr(ax, '_right_ylabel_artist') and ax._right_ylabel_artist is not None:
+                try:
+                    ax._right_ylabel_artist.set_visible(False)
+                except Exception:
+                    pass
+            if ax2_loaded is not None and right_text:
+                ax2_loaded.set_ylabel(right_text, fontsize=16)
+        except Exception:
+            pass
+
+        args_subset = sess.get('args_subset', {})
+        Args = type('Args', (), {
+            'stack': saved_stack,
+            'autoscale': bool(args_subset.get('autoscale', True)),
+            'norm': bool(args_subset.get('norm', False)),
+        })
+        args_minimal = Args()
+
+        cif_globals_dict: Optional[Dict[str, Any]] = None
+        if cif_tick_series:
+            cif_globals_dict = {
+                'cif_tick_series': list(cif_tick_series),
+                'cif_hkl_map': cif_hkl_map,
+                'cif_hkl_label_map': cif_hkl_label_map,
+                'show_cif_hkl': bool(show_cif_hkl),
+                'show_cif_titles': bool(show_cif_titles),
+                'cif_extend_suspended': False,
+                'keep_canvas_fixed': True,
+            }
+
+        menu_kwargs = {
+            'y_data_list': y_data_list,
+            'x_data_list': x_data_list,
+            'labels_list': labels_list,
+            'orig_y': orig_y,
+            'label_text_objects': label_text_objects,
+            'delta': delta,
+            'x_label': x_label,
+            'args': args_minimal,
+            'x_full_list': x_full_list,
+            'raw_y_full_list': raw_y_full_list,
+            'offsets_list': offsets_list,
+            'use_Q': use_Q,
+            'use_r': use_r,
+            'use_E': use_E,
+            'use_k': use_k,
+            'use_rft': use_rft,
+            'cif_globals': cif_globals_dict,
+        }
+        return fig, ax, menu_kwargs
+    except Exception as e:
+        print(f"Error loading XY session: {e}")
         traceback.print_exc()
         return None

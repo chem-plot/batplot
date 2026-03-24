@@ -292,6 +292,143 @@ def _handle_cv_mode(args) -> int:
         # Multiple files: create output directory
         out_dir = ensure_subdirectory('Figures', os.getcwd())
 
+    # CV multi-file combined mode: one figure with all files overlaid (like GC/dQ/dV)
+    if len(data_files) > 1:
+        plt.rcParams.update({
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica', 'STIXGeneral', 'Liberation Sans', 'Arial Unicode MS'],
+            'mathtext.fontset': 'dejavusans',
+            'font.size': 16
+        })
+        fig, ax = plt.subplots(figsize=(10, 6))
+        file_data = []
+        base_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        for file_idx, ec_file in enumerate(data_files):
+            if not os.path.isfile(ec_file) or not (ec_file.lower().endswith('.mpt') or ec_file.lower().endswith('.txt')):
+                continue
+            try:
+                if ec_file.lower().endswith('.txt'):
+                    voltage, current, cycles = read_biologic_txt_file(ec_file, mode='cv')
+                else:
+                    mpt_result = read_mpt_file(ec_file, mode='cv')
+                    voltage = mpt_result[0]
+                    current = mpt_result[1]
+                    cycles = mpt_result[2]
+                cyc_int_raw = np.array(np.rint(cycles), dtype=int)
+                if cyc_int_raw.size:
+                    unique_cycles_raw = np.unique(cyc_int_raw)
+                    valid_min_c = None
+                    for c in sorted(unique_cycles_raw):
+                        if np.sum(cyc_int_raw == c) >= 2:
+                            valid_min_c = int(c)
+                            break
+                    if valid_min_c is not None:
+                        shift = 1 - valid_min_c
+                    else:
+                        min_c = int(np.min(cyc_int_raw))
+                        shift = 1 - min_c if min_c <= 0 else 0
+                else:
+                    shift = 0
+                cyc_int = cyc_int_raw + shift
+                cycles_present = sorted(int(c) for c in np.unique(cyc_int)) if cyc_int.size else [1]
+                color = base_colors[file_idx % len(base_colors)]
+                cycle_lines = {}
+                file_lbl = os.path.basename(ec_file)
+                for cyc in cycles_present:
+                    mask = (cyc_int == cyc)
+                    idx = np.where(mask)[0]
+                    if idx.size >= 2:
+                        parts_x, parts_y = [], []
+                        start = 0
+                        for k in range(1, idx.size):
+                            if idx[k] != idx[k - 1] + 1:
+                                parts_x.append(voltage[idx[start:k]])
+                                parts_y.append(current[idx[start:k]])
+                                start = k
+                        parts_x.append(voltage[idx[start:]])
+                        parts_y.append(current[idx[start:]])
+                        X, Y = [], []
+                        for i, (px, py) in enumerate(zip(parts_x, parts_y)):
+                            if i > 0:
+                                X.append(np.array([np.nan]))
+                                Y.append(np.array([np.nan]))
+                            X.append(px)
+                            Y.append(py)
+                        x_b = np.concatenate(X) if X else np.array([])
+                        y_b = np.concatenate(Y) if Y else np.array([])
+                        label = f"{file_lbl}: {cyc}" if file_lbl else str(cyc)
+                        if getattr(args, 'ro', False):
+                            ln, = ax.plot(y_b, x_b, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                        else:
+                            ln, = ax.plot(x_b, y_b, '-', color=color, linewidth=2.0, label=label, alpha=0.8)
+                        cycle_lines[cyc] = ln
+                file_data.append({
+                    'filename': os.path.basename(ec_file),
+                    'display_name': os.path.basename(ec_file),
+                    'cycle_lines': cycle_lines,
+                    'visible': True,
+                    'filepath': ec_file,
+                })
+            except Exception as _e:
+                print(f"CV multi-file: skip {ec_file}: {_e}")
+        if not file_data:
+            print("CV multi-file: no files loaded.")
+            return 1
+        if getattr(args, 'ro', False):
+            ax.set_xlabel('Current (mA)', labelpad=8.0)
+            ax.set_ylabel('Potential (V)', labelpad=8.0)
+        else:
+            ax.set_xlabel('Potential (V)', labelpad=8.0)
+            ax.set_ylabel('Current (mA)', labelpad=8.0)
+        ax.legend(title='Cycle')
+        fig._ec_legend_title = "Cycle"
+        fig.subplots_adjust(left=0.12, right=0.95, top=0.88, bottom=0.15)
+        if style_cfg:
+            try:
+                _apply_ec_style(fig, ax, style_cfg)
+                if hasattr(fig, 'canvas'):
+                    fig.canvas.draw()
+            except Exception as e:
+                print(f"Warning: Error applying style file: {e}")
+        try:
+            plt.ion()
+        except Exception:
+            pass
+        plt.show(block=False)
+        try:
+            fig._ro_active = bool(getattr(args, "ro", False))
+        except Exception:
+            pass
+        try:
+            fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
+        except Exception:
+            pass
+        if args.interactive:
+            try:
+                electrochem_interactive_menu(fig, ax, file_data=file_data)
+            except Exception as _ie:
+                print(f"Interactive menu failed: {_ie}")
+            plt.show()
+        else:
+            if out_dir and (args.savefig or getattr(args, 'out', None)):
+                out_path = getattr(args, 'out', None)
+                if not out_path:
+                    ext = getattr(args, 'format', 'svg') or 'svg'
+                    out_path = os.path.join(out_dir, f'CV_combined.{ext}')
+                try:
+                    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+                    print(f"Saved {out_path}")
+                except Exception as e:
+                    print(f"Could not save: {e}")
+            try:
+                plt.ioff()
+            except Exception:
+                pass
+            print(f"Processed {len(file_data)} CV files.")
+            plt.show(block=True)
+        return 0
+
     for ec_file in data_files:
         if not os.path.isfile(ec_file):
             print(f"File not found: {ec_file}")
@@ -530,6 +667,15 @@ def batplot_main() -> int:  # type: ignore
         except Exception:
             print(f"batplot v{__version__}")
         return 0
+
+    # --showcol: print column names (if any) and first data rows, then exit
+    if getattr(args, "showcol", False):
+        if not args.files:
+            print("batplot --showcol: provide at least one data file.")
+            return 1
+        from .showcol import run_showcol
+
+        return run_showcol(args.files)
 
     # ====================================================================
     # STEP 2: VALIDATE INPUT
@@ -2457,6 +2603,33 @@ def batplot_main() -> int:  # type: ignore
 
     _maybe_expand_allfiles_argument(args, ec_mode_active)
 
+    # ---------------- Handle --convert (before batch/sole logic) ----------------
+    # When --convert is used with a directory, expand to all XY files in that directory
+    if args.convert:
+        if not args.files:
+            print("Error: --convert requires file(s) or a directory to convert")
+            exit(1)
+        from .utils import natural_sort_key
+        convert_ext = {'.xy', '.xye', '.qye', '.dat', '.csv', '.txt'}
+        expanded = []
+        for p in args.files:
+            if os.path.isfile(p):
+                expanded.append(p)
+            elif os.path.isdir(p):
+                for f in sorted(os.listdir(p), key=natural_sort_key):
+                    fp = os.path.join(p, f)
+                    if os.path.isfile(fp) and os.path.splitext(f)[1].lower() in convert_ext:
+                        expanded.append(fp)
+            else:
+                print(f"Warning: Not a file or directory: {p}")
+        if expanded:
+            from_param, to_param = args.convert
+            convert_xrd_data(expanded, from_param, to_param, args=args)
+        else:
+            print("Error: No convertible files found (.xy, .xye, .qye, .dat, .csv, .txt)")
+            exit(1)
+        exit()
+
     if len(args.files) == 1:
         sole = args.files[0]
         if sole.lower() == 'all':
@@ -2474,6 +2647,22 @@ def batplot_main() -> int:  # type: ignore
     if not ec_mode_active and getattr(args, 'all', None) is not None:
         batch_process(os.getcwd(), args)
         exit()
+
+    # ---------------- Canvas mode: combine multiple .pkl sessions ----------------
+    if getattr(args, 'canvas', False) and args.files:
+        if all(f.lower().endswith('.pkl') for f in args.files):
+            try:
+                from .canvas_interactive import run_canvas_mode
+                run_canvas_mode(args.files)
+            except Exception as e:
+                print(f"Canvas mode failed: {e}")
+                import traceback
+                traceback.print_exc()
+                exit(1)
+            exit()
+        else:
+            print("Canvas mode requires all files to be .pkl session files.")
+            exit(1)
     
     # ---------------- Normal (multi-file) path continues below ----------------
     # Apply conditional default for delta (normal mode only)
