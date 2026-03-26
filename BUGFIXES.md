@@ -59,6 +59,9 @@ So `xdata` was taken from the **last visible** curve in that cycle (often **char
 - `batplot/electrochem_interactive.py` (potential step filter under `key == 'sm'`, `sub == 'a'`)
 - `patches/dqdv_potential_step_filter_indent.patch` (unified diff for offline/OneDrive apply)
 
+### Follow-up (same root cause, 2026-03-25)
+The **sm → a** block still had **`ydata = …` through `set_ydata`** dedented to the **`for cyc`** level (only **`xdata`** stayed inside **`for role`**), so the crash could still occur (e.g. **64** vs **904** points). The full filter body is now indented under **`for role`**. The same **x/y length** truncation guard was added for interactive **sm → d** (DiffCap), **sm → o** (outliers), and for **`_apply_stored_smooth_settings`** (diffcap / voltage_step / outlier) when re-applying after visibility changes.
+
 ---
 
 ## 2026-03-20: CLI `--showcol` — preview columns and first 10 data points

@@ -281,12 +281,24 @@ def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]
                     continue
                 xdata = np.asarray(ln.get_xdata(), float)
                 ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size != ydata.size:
+                    n = int(min(xdata.size, ydata.size))
+                    if n < 3:
+                        continue
+                    xdata = xdata[:n]
+                    ydata = ydata[:n]
                 if xdata.size < 3:
                     continue
                 # Get original data if available, otherwise use current data
                 if hasattr(ln, '_original_xdata'):
                     xdata = np.asarray(ln._original_xdata, float)
                     ydata = np.asarray(ln._original_ydata, float)
+                    if xdata.size != ydata.size:
+                        n = int(min(xdata.size, ydata.size))
+                        if n < 3:
+                            continue
+                        xdata = xdata[:n]
+                        ydata = ydata[:n]
                 else:
                     ln._original_xdata = np.array(xdata, copy=True)
                     ln._original_ydata = np.array(ydata, copy=True)
@@ -309,12 +321,24 @@ def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]
                     continue
                 xdata = np.asarray(ln.get_xdata(), float)
                 ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size != ydata.size:
+                    n = int(min(xdata.size, ydata.size))
+                    if n < 3:
+                        continue
+                    xdata = xdata[:n]
+                    ydata = ydata[:n]
                 if xdata.size < 3:
                     continue
                 # Get original data if available, otherwise use current data
                 if hasattr(ln, '_original_xdata'):
                     xdata = np.asarray(ln._original_xdata, float)
                     ydata = np.asarray(ln._original_ydata, float)
+                    if xdata.size != ydata.size:
+                        n = int(min(xdata.size, ydata.size))
+                        if n < 3:
+                            continue
+                        xdata = xdata[:n]
+                        ydata = ydata[:n]
                 else:
                     ln._original_xdata = np.array(xdata, copy=True)
                     ln._original_ydata = np.array(ydata, copy=True)
@@ -341,12 +365,24 @@ def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]
                     continue
                 xdata = np.asarray(ln.get_xdata(), float)
                 ydata = np.asarray(ln.get_ydata(), float)
+                if xdata.size != ydata.size:
+                    n = int(min(xdata.size, ydata.size))
+                    if n < 5:
+                        continue
+                    xdata = xdata[:n]
+                    ydata = ydata[:n]
                 if xdata.size < 5:
                     continue
                 # Get original data if available, otherwise use current data
                 if hasattr(ln, '_original_xdata'):
                     xdata = np.asarray(ln._original_xdata, float)
                     ydata = np.asarray(ln._original_ydata, float)
+                    if xdata.size != ydata.size:
+                        n = int(min(xdata.size, ydata.size))
+                        if n < 5:
+                            continue
+                        xdata = xdata[:n]
+                        ydata = ydata[:n]
                 else:
                     ln._original_xdata = np.array(xdata, copy=True)
                     ln._original_ydata = np.array(ydata, copy=True)
@@ -5741,27 +5777,33 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                     if ln is None or not ln.get_visible():
                                         continue
                                     xdata = np.asarray(ln.get_xdata(), float)
-                                ydata = np.asarray(ln.get_ydata(), float)
-                                if xdata.size < 3:
-                                    continue
-                                if not hasattr(ln, '_original_xdata'):
-                                    ln._original_xdata = np.array(xdata, copy=True)
-                                    ln._original_ydata = np.array(ydata, copy=True)
-                                dv = np.abs(np.diff(xdata))
-                                mask = np.ones_like(xdata, dtype=bool)
-                                mask[1:] &= dv >= threshold_v
-                                mask[:-1] &= dv >= threshold_v
-                                filtered_x = xdata[mask]
-                                filtered_y = ydata[mask]
-                                before = len(xdata)
-                                after = len(filtered_x)
-                                if after < before:
-                                    ln.set_xdata(filtered_x)
-                                    ln.set_ydata(filtered_y)
-                                    ln._smooth_applied = True
-                                    filtered += 1
-                                    total_before += before
-                                    total_after += after
+                                    ydata = np.asarray(ln.get_ydata(), float)
+                                    if xdata.size != ydata.size:
+                                        n = int(min(xdata.size, ydata.size))
+                                        if n < 3:
+                                            continue
+                                        xdata = xdata[:n]
+                                        ydata = ydata[:n]
+                                    if xdata.size < 3:
+                                        continue
+                                    if not hasattr(ln, '_original_xdata'):
+                                        ln._original_xdata = np.array(xdata, copy=True)
+                                        ln._original_ydata = np.array(ydata, copy=True)
+                                    dv = np.abs(np.diff(xdata))
+                                    mask = np.ones_like(xdata, dtype=bool)
+                                    mask[1:] &= dv >= threshold_v
+                                    mask[:-1] &= dv >= threshold_v
+                                    filtered_x = xdata[mask]
+                                    filtered_y = ydata[mask]
+                                    before = len(xdata)
+                                    after = len(filtered_x)
+                                    if after < before:
+                                        ln.set_xdata(filtered_x)
+                                        ln.set_ydata(filtered_y)
+                                        ln._smooth_applied = True
+                                        filtered += 1
+                                        total_before += before
+                                        total_after += after
                         if filtered:
                             removed = total_before - total_after
                             pct = 100 * removed / total_before if total_before else 0
@@ -5867,6 +5909,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                     continue
                                 xdata = np.asarray(ln.get_xdata(), float)
                                 ydata = np.asarray(ln.get_ydata(), float)
+                                if xdata.size != ydata.size:
+                                    n = int(min(xdata.size, ydata.size))
+                                    if n < 3:
+                                        continue
+                                    xdata = xdata[:n]
+                                    ydata = ydata[:n]
                                 if xdata.size < 3:
                                     continue
                                 if not hasattr(ln, '_original_xdata'):
@@ -5976,6 +6024,12 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                         continue
                                     xdata = np.asarray(ln.get_xdata(), float)
                                     ydata = np.asarray(ln.get_ydata(), float)
+                                    if xdata.size != ydata.size:
+                                        n = int(min(xdata.size, ydata.size))
+                                        if n < 5:
+                                            continue
+                                        xdata = xdata[:n]
+                                        ydata = ydata[:n]
                                     if xdata.size < 5:
                                         continue
                                     if not hasattr(ln, '_original_xdata'):
