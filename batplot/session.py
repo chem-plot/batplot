@@ -48,7 +48,15 @@ from matplotlib.ticker import (
     NullFormatter, FuncFormatter, MaxNLocator,
 )
 
-from .utils import _confirm_overwrite, ensure_exact_case_filename
+from .utils import (
+    _confirm_overwrite,
+    ensure_exact_case_filename,
+    xy_cif_stack_y_offset,
+    xy_cif_tick_stack_layout,
+    xy_cif_add_phase_title,
+    xy_cif_row_spacing_yr,
+    xy_cif_stack_bottom_margin_yr,
+)
 from .color_utils import ensure_colormap
 from .ui import (
     set_spine_side_color as _set_spine_side_color,
@@ -656,7 +664,18 @@ def dump_session(
             'cif_hkl_label_map': {k: dict(v) for k, v in (cif_hkl_label_map or {}).items()},
             'show_cif_hkl': bool(show_cif_hkl),
             'show_cif_titles': bool(show_cif_titles) if show_cif_titles is not None else True,
+            'cif_stack_y_offsets': list(getattr(fig, '_bp_cif_stack_y_offsets', []) or []),
         }
+        # 1D XY: per-set CIF visibility (__main__.cif_set_visible), same as undo snapshots
+        try:
+            if cif_tick_series:
+                _m = sys.modules.get("__main__")
+                if _m is not None and hasattr(_m, "cif_set_visible"):
+                    _vis = list(getattr(_m, "cif_set_visible") or [])
+                    if len(_vis) == len(list(cif_tick_series or [])):
+                        sess["cif_set_visible"] = [bool(v) for v in _vis]
+        except Exception:
+            pass
         sess['axis_titles'] = {
             'top_x': bool(getattr(ax, '_top_xlabel_on', False)),
             'right_y': bool(getattr(ax, '_right_ylabel_on', False)),
@@ -3969,6 +3988,32 @@ def load_xy_session(filename: str):
                 setattr(_bp_module, 'cif_extend_suspended', False)
         except Exception:
             pass
+        try:
+            co = sess.get('cif_stack_y_offsets')
+            if co is not None and cif_tick_series:
+                olist = []
+                for x in list(co):
+                    try:
+                        olist.append(float(x))
+                    except (TypeError, ValueError):
+                        olist.append(0.0)
+                while len(olist) < len(cif_tick_series):
+                    olist.append(0.0)
+                fig._bp_cif_stack_y_offsets = olist[: len(cif_tick_series)]
+        except Exception:
+            pass
+        try:
+            vis = sess.get("cif_set_visible")
+            if vis is not None and cif_tick_series:
+                vlist = [bool(v) for v in list(vis)]
+                while len(vlist) < len(cif_tick_series):
+                    vlist.append(True)
+                vlist = vlist[: len(cif_tick_series)]
+                _m = sys.modules.get("__main__")
+                if _m is not None:
+                    setattr(_m, "cif_set_visible", vlist)
+        except Exception:
+            pass
 
         axis_mode_restored = sess.get('axis_mode', 'unknown')
         use_Q = axis_mode_restored == 'Q'
@@ -4050,19 +4095,29 @@ def load_xy_session(filename: str):
                         pass
                     if not show_hkl_local:
                         show_hkl_local = bool(show_cif_hkl)
-                    if saved_stack or len(y_data_list) > 1:
+                    _stacked_xy = bool(saved_stack or len(y_data_list) > 1)
+                    if _stacked_xy:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
                         base = global_min - 0.08 * fixed_yr
-                        spacing = 0.05 * fixed_yr
                     else:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
                         base = global_min - 0.06 * fixed_yr
-                        spacing = 0.04 * fixed_yr
-                    needed_min = base - (len(cif_tick_series) - 1) * spacing - 0.04 * fixed_yr
-                    if show_titles_local and needed_min < fixed_ylim[0]:
-                        ax.set_ylim(needed_min, fixed_ylim[1])
+                    spacing = xy_cif_row_spacing_yr(
+                        fixed_yr,
+                        show_titles=show_titles_local,
+                        show_hkl=show_hkl_local,
+                        stacked_or_multi_y=_stacked_xy,
+                    )
+                    _cif_bottom_m = xy_cif_stack_bottom_margin_yr(fixed_yr, show_titles=show_titles_local)
+                    needed_min = base - (len(cif_tick_series) - 1) * spacing - _cif_bottom_m
+                    if not show_titles_local:
+                        ylim_draw = tuple(prev_ylim)
+                    elif needed_min >= prev_ylim[0]:
+                        ylim_draw = tuple(prev_ylim)
                     else:
-                        ax.set_ylim(fixed_ylim)
+                        new_ymin = min(needed_min, prev_ylim[0])
+                        ylim_draw = (new_ymin, prev_ylim[1])
+                    ax.set_ylim(ylim_draw)
                     cur_ylim = ax.get_ylim()
                     yr = cur_ylim[1] - cur_ylim[0]
                     if yr <= 0:
@@ -4075,7 +4130,8 @@ def load_xy_session(filename: str):
                     new_art = []
                     wl_any = _session_ensure_wavelength()
                     for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
-                        y_line = base - i * spacing
+                        y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
+                        tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
                         if use_2th:
                             wl_use = wl if wl is not None else wl_any
                             domain_peaks = _session_q_to_2theta(peaksQ, wl_use)
@@ -4090,7 +4146,7 @@ def load_xy_session(filename: str):
                             show_hkl_local = False
                             label_map = {}
                         for p in domain_peaks:
-                            ln, = ax.plot([p, p], [y_line, y_line + 0.02 * yr], color=color, lw=1.0, alpha=0.9, zorder=3)
+                            ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                             new_art.append(ln)
                             if show_hkl_local:
                                 if use_2th and (wl or wl_any):
@@ -4101,24 +4157,17 @@ def load_xy_session(filename: str):
                                 Qp_rounded = round(Qp, 6)
                                 lbl = label_map.get(Qp_rounded)
                                 if lbl:
-                                    t_hkl = ax.text(p, y_line + 0.022 * yr, lbl, ha='center', va='bottom',
+                                    t_hkl = ax.text(p, hkl_y, lbl, ha='center', va='bottom',
                                                     fontsize=7, rotation=90, color=color)
                                     new_art.append(t_hkl)
                         if show_titles_local:
                             label_text = f" {lab}"
-                            txt = ax.text(prev_xlim[0], y_line, label_text,
-                                          ha='left', va='bottom',
-                                          fontsize=max(8, int(0.55 * plt.rcParams.get('font.size', 16))), color=color)
-                            new_art.append(txt)
+                            xy_cif_add_phase_title(
+                                ax, prev_xlim[0], y_line, tick_h, label_text,
+                                max(8, int(0.55 * plt.rcParams.get('font.size', 16))), color, new_art,
+                            )
                     ax._cif_tick_art = new_art
                     ax.set_xlim(prev_xlim)
-                    if not show_titles_local:
-                        ax.set_ylim(prev_ylim)
-                    elif needed_min >= prev_ylim[0]:
-                        ax.set_ylim(prev_ylim)
-                    else:
-                        new_ymin = min(needed_min, prev_ylim[0])
-                        ax.set_ylim(new_ymin, prev_ylim[1])
                     fig.canvas.draw_idle()
                 except Exception:
                     pass

@@ -41,6 +41,8 @@ import subprocess
 import time
 from typing import Callable, List, Optional, Tuple
 
+from matplotlib.transforms import offset_copy
+
 
 def natural_sort_key(name: str) -> list:
     """Generate a natural sorting key for filenames with numbers.
@@ -1139,3 +1141,122 @@ def choose_style_file(file_paths: List[str], purpose: str = "style import", exte
         if path:
             return path
         print("File not found. Enter another value or use 'c' for custom dialog.")
+
+
+def xy_cif_stack_y_offset(fig, index: int) -> float:
+    """Vertical offset in data Y for CIF stack row ``index`` (XY / 1D mode)."""
+    offs = getattr(fig, "_bp_cif_stack_y_offsets", None)
+    if not offs or index < 0 or index >= len(offs):
+        return 0.0
+    try:
+        return float(offs[index])
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# Typographic gap (screen points) from tick top to phase filename; same for every row / file.
+XY_CIF_TITLE_ABOVE_TICK_PT = 2.0
+
+
+def xy_cif_add_phase_title(
+    ax,
+    x_left: float,
+    y_line: float,
+    tick_h: float,
+    label_text: str,
+    fontsize,
+    color,
+    new_art: list,
+) -> None:
+    """Draw phase filename a fixed number of points above tick tops (uniform visual gap).
+
+    Anchor in data space at the tick tops ``(x_left, y_line + tick_h)``, then shift in
+    **display points** via ``offset_copy`` (matplotlib's stable pattern for data+pt mix).
+    """
+    fig = ax.figure
+    trans = offset_copy(
+        ax.transData,
+        fig=fig,
+        x=0.0,
+        y=XY_CIF_TITLE_ABOVE_TICK_PT,
+        units="points",
+    )
+    txt = ax.text(
+        float(x_left),
+        float(y_line + tick_h),
+        label_text,
+        transform=trans,
+        ha="left",
+        va="bottom",
+        fontsize=fontsize,
+        color=color,
+        clip_on=False,
+        zorder=4,
+    )
+    new_art.append(txt)
+
+
+def xy_cif_tick_stack_layout(y_line: float, yr: float):
+    """Return (tick_h, hkl_text_y) for CIF tick geometry in data coordinates.
+
+    Phase titles use :func:`xy_cif_add_phase_title` (points above ``y_line + tick_h``).
+    """
+    yr = max(float(yr), 1e-12)
+    tick_h = 0.02 * yr
+    hkl_y = y_line + tick_h + 0.005 * yr
+    return tick_h, hkl_y
+
+
+def xy_cif_row_spacing_yr(
+    yr_ref: float,
+    *,
+    show_titles: bool,
+    show_hkl: bool,
+    stacked_or_multi_y: bool,
+) -> float:
+    """Vertical gap between consecutive CIF row baselines (``y_line``), in data Y units.
+
+    Must be large enough that phase titles (above tick stems) and optional rotated
+    hkl labels do not collide with the next row.
+    """
+    yr = max(float(yr_ref), 1e-12)
+    if stacked_or_multi_y:
+        spacing = 0.05 * yr
+    else:
+        spacing = 0.04 * yr
+    if show_titles and show_hkl:
+        spacing = max(spacing, 0.088 * yr)
+    elif show_titles:
+        spacing = max(spacing, 0.076 * yr)
+    elif show_hkl:
+        spacing = max(spacing, 0.056 * yr)
+    return float(spacing)
+
+
+def xy_cif_stack_bottom_margin_yr(yr_ref: float, *, show_titles: bool) -> float:
+    """Extra room below the lowest CIF row (fraction of ``yr_ref``) for axis padding."""
+    yr = max(float(yr_ref), 1e-12)
+    if show_titles:
+        return float(0.055 * yr)
+    return float(0.04 * yr)
+
+
+def normalize_xy_cif_stack_y_offsets(fig, n_sets: int) -> list:
+    """Ensure ``fig._bp_cif_stack_y_offsets`` exists and has length ``n_sets``."""
+    if n_sets <= 0:
+        fig._bp_cif_stack_y_offsets = []
+        return []
+    cur = getattr(fig, "_bp_cif_stack_y_offsets", None)
+    if cur is None:
+        out = [0.0] * n_sets
+    else:
+        out = []
+        for x in list(cur)[:n_sets]:
+            try:
+                out.append(float(x))
+            except (TypeError, ValueError):
+                out.append(0.0)
+        if len(out) < n_sets:
+            out.extend([0.0] * (n_sets - len(out)))
+    fig._bp_cif_stack_y_offsets = out
+    return out

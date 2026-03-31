@@ -4,6 +4,54 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-31: `.txt` with `--wl` but no `--xaxis` — “Unknown file type”
+
+### Summary
+Plain **`.txt`** plots were treated as a generic extension that **always** required **`--xaxis`**, even when **`--wl`** (or `file:λ`) already defined an XRD/wavelength context. In that case the axis logic should default to **`Q`** like **`.xy`** / **`file:wl`**, matching user expectations (`batplot data.txt --readcol … --wl … --i`).
+
+### Solution
+- **`batplot/batplot.py`:** For **`any_txt`**, if **`--xaxis`** is omitted but **`args.wl`** is set or **`any_lambda`** holds, set **`axis_mode = "Q"`**; clarified error text when neither applies.
+- **`batplot/batch.py`:** Same rule for generic text files in **`--all`** batch when **`--wl`** is set.
+
+### Affected Files
+- `batplot/batplot.py`, `batplot/batch.py`
+
+---
+
+## 2026-03-24: 1D CIF tick mode — uniform phase-title gap above ticks
+
+### Summary
+Phase filenames used a **data-coordinate** offset above tick tops (`title_y` in `xy_cif_tick_stack_layout`), so the **on-screen** gap between title and ticks varied with y-axis span, DPI, and row stacking (some rows looked too far, others too tight to the tick forest). Titles are now drawn with **`annotate`**: anchor at **`(x_left, y_line + tick_h)`** and **`xytext=(0, N)`** with **`textcoords='offset points'`** (`xy_cif_add_phase_title` in `utils.py`), giving the same typographic gap for every file/row. **`xy_cif_tick_stack_layout`** returns only **`(tick_h, hkl_y)`**.
+
+### Affected Files
+- `batplot/utils.py` (`XY_CIF_TITLE_ABOVE_TICK_PT`, `xy_cif_add_phase_title`, `xy_cif_tick_stack_layout`)
+- `batplot/batplot.py` (`draw_cif_ticks`, `_session_cif_draw`)
+- `batplot/session.py` (session CIF redraw)
+
+### Follow-up (same area)
+- **Y limits:** CIF drawing temporarily used `fixed_ylim` or `(needed_min, fixed_ylim[1])`, computed `tick_h` / titles from that `yr`, then applied a **second** `set_ylim(prev_ylim or expanded-with-prev-ymax)` — different viewport than during draw, so rows could look mis-paired (e.g. bottom filename nearer the row above than its own ticks). Drawing now sets **`ylim_draw` once** (same rule as the former post-draw restore) before computing `yr` and artists; no redundant `set_ylim` after.
+- **Row index:** If a CIF had **no peaks in the current x window**, the loop `continue`d **without** advancing `visible_idx`, so the **next** phase reused the previous row’s `y_line`. `visible_idx` is incremented for that case in `draw_cif_ticks`.
+- **Title placement:** Phase names use **`matplotlib.transforms.offset_copy(ax.transData, …, units="points")` + `ax.text`** at `(x_left, y_line + tick_h)` instead of `annotate`, matching matplotlib’s usual data+point-offset recipe and avoiding annotation edge cases.
+- **Tighter titles:** **`XY_CIF_TITLE_ABOVE_TICK_PT`** reduced from **4.5** to **2.0** so all phase filenames sit closer to their tick stacks (same offset for every row).
+- **1D CIF `p` menu:** Short prompt: **`w`** / **`s`** nudge **all** CIF ticks (2 pt); type a **value** to set one shared offset; **`0`** clears; **`q`** exits.
+- **CIF state vs. s / i / b:** Session save (**`s`**) now also stores **`cif_set_visible`** (when length matches). Style export (**`p`**) always writes **`cif_stack_y_offsets`** (one float per CIF) even when offsets were never touched. Undo (**`b`**) already stored/restored **`cif_stack_y_offsets`** in snapshots.
+
+---
+
+## 2026-03-25: 1D interactive CIF — stack Y offsets (`cif` → **p**), title placement vs ticks, p/i/s/b persistence
+
+### Summary
+CIF phase labels (set titles) were drawn on the same baseline as the tick stems, so they overlapped. CIF tick stacks now draw titles **one text line above** the tick tops, with **larger inter-row spacing** (`xy_cif_row_spacing_yr` / `xy_cif_stack_bottom_margin_yr` in `utils.py`) when titles and/or hkl labels are on so rows do not collide. New submenu **`cif` → `p`** sets **per-phase vertical offsets** in data Y (`fig._bp_cif_stack_y_offsets`), stored in **undo** snapshots, **session** (`.pkl`), and **style** export/import (`.bps`/`.bpsg` via `cif_stack_y_offsets`). Reordering CIF rows (**`v`**) reorders the offset list to stay aligned with each phase.
+
+### Affected Files
+- `batplot/utils.py` (`xy_cif_stack_y_offset`, `xy_cif_tick_stack_layout`, `normalize_xy_cif_stack_y_offsets`)
+- `batplot/batplot.py` (`draw_cif_ticks`, session embed `_session_cif_draw`)
+- `batplot/session.py` (`dump_session` / `load_xy_session` CIF draw path)
+- `batplot/interactive.py` (CIF menu **p**, undo snap, reorder offsets)
+- `batplot/style.py` (`print_style_info`, `export_style_config`, `apply_style_config`)
+
+---
+
 ## 2026-03-24: EC interactive **c** (cycles/colors) — hyphen ranges with palette (e.g. `2-30 1`)
 
 ### Summary

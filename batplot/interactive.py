@@ -33,6 +33,7 @@ from .utils import (
     get_organized_path,
     natural_sort_key,
     print_label_latex_tips,
+    normalize_xy_cif_stack_y_offsets,
 )
 import time
 from .session import dump_session as _bp_dump_session
@@ -1636,6 +1637,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     snap["cif_set_visible"] = list(getattr(_bp_module_snap, 'cif_set_visible') or [])
             except Exception:
                 pass
+            try:
+                snap["cif_stack_y_offsets"] = list(getattr(fig, '_bp_cif_stack_y_offsets', []) or [])
+            except Exception:
+                pass
             # Line + data arrays
             for i, ln in _iter_lines():
                 snap["lines"].append({
@@ -2039,6 +2044,11 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         _bp_module.cif_set_visible = list(snap['cif_set_visible'])
                 except Exception:
                     pass
+            if 'cif_stack_y_offsets' in snap:
+                try:
+                    fig._bp_cif_stack_y_offsets = list(snap['cif_stack_y_offsets'])
+                except Exception:
+                    pass
             # Redraw CIF ticks after restoration if available
             if hasattr(ax, '_cif_draw_func'):
                 try:
@@ -2131,11 +2141,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 # Accept both 'j' (legacy) and 't' (to match operando) for title toggle
                 print("  " + colorize_menu(titles_desc))
                 print("  " + colorize_menu(order_desc))
+                print("  " + colorize_menu("p: shift all CIF ticks (w/s or type a value)"))
                 print("  " + colorize_menu("c: CIF color (per set)"))
                 print("  " + colorize_menu("x: show/hide CIF set"))
                 print("  " + colorize_menu("r: rename CIF set label"))
                 print("  " + colorize_menu("q: back to main menu"))
-                sub = _safe_input(colorize_prompt("CIF (c/x/r/q): ")).strip().lower()
+                sub = _safe_input(colorize_prompt("CIF (z/t/v/p/c/x/r/q): ")).strip().lower()
                 if not sub or sub == 'q':
                     break
                 if sub == 'z':
@@ -2238,11 +2249,94 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             new_cts = [cts[i - 1] for i in parts]
                             if _bp is not None:
                                 setattr(_bp, 'cif_tick_series', new_cts)
+                            prev_offs = getattr(fig, '_bp_cif_stack_y_offsets', None)
+                            if prev_offs is not None and len(prev_offs) == len(cts):
+                                fig._bp_cif_stack_y_offsets = [prev_offs[i - 1] for i in parts]
                             if hasattr(ax, '_cif_draw_func'):
                                 ax._cif_draw_func()
                             print("Updated CIF vertical order.")
                     except Exception as e:
                         print(f"Error reordering CIF sets: {e}")
+                elif sub == 'p':
+                    # Same offset list length as CIF sets: apply one shared data-Y shift to every row,
+                    # or w/s nudge all stacks by fixed typographic points on screen (2 pt).
+                    _CIF_NUDGE_PT = 2.0
+
+                    def _dy_data_for_display_pts(ax_, dy_pts):
+                        try:
+                            x_ref = float(np.mean(ax_.get_xlim()))
+                            y_ref = float(np.mean(ax_.get_ylim()))
+                            p0 = np.asarray(ax_.transData.transform((x_ref, y_ref)), dtype=float)
+                            fig_ = ax_.figure
+                            d_pix = float(dy_pts) * (float(fig_.dpi) / 72.0)
+                            p1 = p0 + np.array([0.0, d_pix], dtype=float)
+                            y1 = float(ax_.transData.inverted().transform(tuple(p1))[1])
+                            return y1 - y_ref
+                        except Exception:
+                            return 0.0
+
+                    try:
+                        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+                        if not cts:
+                            print("No CIF tick sets.")
+                        else:
+                            n = len(cts)
+                            _Hi = '\033[1m'
+                            _Cc = '\033[96m'
+                            _Rn = '\033[0m'
+                            while True:
+                                normalize_xy_cif_stack_y_offsets(fig, n)
+                                offs = list(fig._bp_cif_stack_y_offsets)
+                                print(
+                                    f"\n{_Hi}All CIF ticks:{_Rn} {_Hi}{_Cc}w{_Rn}/{_Hi}{_Cc}s{_Rn} nudge all "
+                                    f"(±{_CIF_NUDGE_PT:g} pt), or a {_Hi}{_Cc}number{_Rn} for all; "
+                                    f"{_Hi}{_Cc}0{_Rn} clear; {_Hi}{_Cc}q{_Rn} leave."
+                                )
+                                line = _safe_input(colorize_prompt("(w/s/value/0/q): ")).strip().lower()
+                                if not line or line == 'q':
+                                    break
+                                dd = _dy_data_for_display_pts(ax, _CIF_NUDGE_PT)
+                                if line == 'w':
+                                    try:
+                                        push_state("cif-stack-y-offset")
+                                    except Exception:
+                                        pass
+                                    fig._bp_cif_stack_y_offsets = [float(o) + dd for o in offs]
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                                    continue
+                                if line == 's':
+                                    try:
+                                        push_state("cif-stack-y-offset")
+                                    except Exception:
+                                        pass
+                                    fig._bp_cif_stack_y_offsets = [float(o) - dd for o in offs]
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                                    continue
+                                if line in ('reset', '0', 'zero'):
+                                    try:
+                                        push_state("cif-stack-y-offset")
+                                    except Exception:
+                                        pass
+                                    fig._bp_cif_stack_y_offsets = [0.0] * n
+                                    if hasattr(ax, '_cif_draw_func'):
+                                        ax._cif_draw_func()
+                                    continue
+                                try:
+                                    val = float(line)
+                                except ValueError:
+                                    print("w, s, a number, or q.")
+                                    continue
+                                try:
+                                    push_state("cif-stack-y-offset")
+                                except Exception:
+                                    pass
+                                fig._bp_cif_stack_y_offsets = [float(val)] * n
+                                if hasattr(ax, '_cif_draw_func'):
+                                    ax._cif_draw_func()
+                    except Exception as e:
+                        print(f"Error setting CIF offsets: {e}")
                 elif sub == 'c':
                     # CIF colors: support per-set mappings and palette-like tokens, mirroring main color menu behavior.
                     try:

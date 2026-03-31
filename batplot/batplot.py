@@ -23,7 +23,17 @@ from .session import (
 )
 from .operando import plot_operando_folder
 from .plotting import update_labels
-from .utils import _confirm_overwrite, normalize_label_text, natural_sort_key, ensure_subdirectory
+from .utils import (
+    _confirm_overwrite,
+    normalize_label_text,
+    natural_sort_key,
+    ensure_subdirectory,
+    xy_cif_stack_y_offset,
+    xy_cif_tick_stack_layout,
+    xy_cif_add_phase_title,
+    xy_cif_row_spacing_yr,
+    xy_cif_stack_bottom_margin_yr,
+)
 from .readers import (
     read_csv_file,
     read_fullprof_rowwise,
@@ -3411,25 +3421,30 @@ def batplot_main() -> int:  # type: ignore
                         except Exception:
                             pass
                     
-                    # Calculate base and spacing based on FIXED y-axis limits (not current)
-                    # This prevents incremental movement when toggling
-                    if saved_stack or len(y_data_list) > 1:
+                    _stacked_s = bool(saved_stack or len(y_data_list) > 1)
+                    if _stacked_s:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
-                        base = global_min - 0.08*fixed_yr; spacing = 0.05*fixed_yr
+                        base = global_min - 0.08 * fixed_yr
                     else:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-                        base = global_min - 0.06*fixed_yr; spacing = 0.04*fixed_yr
-                    
-                    # Only adjust y-axis limits if titles are visible
-                    needed_min = base - (len(cif_tick_series)-1)*spacing - 0.04*fixed_yr
-                    if show_titles_local and needed_min < fixed_ylim[0]:
-                        # Expand y-axis only if needed, using fixed limits as reference
-                        ax.set_ylim(needed_min, fixed_ylim[1])
+                        base = global_min - 0.06 * fixed_yr
+                    spacing = xy_cif_row_spacing_yr(
+                        fixed_yr,
+                        show_titles=show_titles_local,
+                        show_hkl=show_hkl_local,
+                        stacked_or_multi_y=_stacked_s,
+                    )
+                    _cif_bottom_m = xy_cif_stack_bottom_margin_yr(fixed_yr, show_titles=show_titles_local)
+                    needed_min = base - (len(cif_tick_series) - 1) * spacing - _cif_bottom_m
+                    if not show_titles_local:
+                        ylim_draw = tuple(prev_ylim)
+                    elif needed_min >= prev_ylim[0]:
+                        ylim_draw = tuple(prev_ylim)
                     else:
-                        # Restore to fixed limits if no expansion needed
-                        ax.set_ylim(fixed_ylim)
-                    
-                    # Get current limits for drawing (after potential expansion)
+                        new_ymin = min(needed_min, prev_ylim[0])
+                        ylim_draw = (new_ymin, prev_ylim[1])
+                    ax.set_ylim(ylim_draw)
+
                     cur_ylim = ax.get_ylim()
                     yr = cur_ylim[1] - cur_ylim[0]
                     if yr <= 0: yr = 1.0
@@ -3443,7 +3458,8 @@ def batplot_main() -> int:  # type: ignore
                     
                     # Draw each series
                     for i,(lab,fname,peaksQ,wl,qmax_sim,color) in enumerate(cif_tick_series):
-                        y_line = base - i*spacing
+                        y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
+                        tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
                         # Convert peaks to axis domain
                         if use_2th:
                             wl_use = wl if wl is not None else wl_any
@@ -3463,7 +3479,7 @@ def batplot_main() -> int:  # type: ignore
                             label_map = {}  # Clear label map if too many peaks
                         for p in domain_peaks:
                             # Use color from tuple (preserved from session)
-                            ln, = ax.plot([p,p],[y_line, y_line+0.02*yr], color=color, lw=1.0, alpha=0.9, zorder=3)
+                            ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                             new_art.append(ln)
                             # Only show hkl labels if explicitly enabled
                             if show_hkl_local:
@@ -3476,32 +3492,17 @@ def batplot_main() -> int:  # type: ignore
                                 Qp_rounded = round(Qp, 6)
                                 lbl = label_map.get(Qp_rounded)
                                 if lbl:
-                                    # Use same color as tick line
-                                    t_hkl = ax.text(p, y_line+0.022*yr, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
+                                    t_hkl = ax.text(p, hkl_y, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
                                     new_art.append(t_hkl)
                         # Only add title label if show_cif_titles is True
                         if show_titles_local:
                             label_text = f" {lab}"
-                            # Align CIF title baseline with tick baseline for this row
-                            txt = ax.text(prev_xlim[0], y_line, label_text,
-                                          ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',16))), color=color)
-                            new_art.append(txt)
+                            xy_cif_add_phase_title(
+                                ax, prev_xlim[0], y_line, tick_h, label_text,
+                                max(8, int(0.55 * plt.rcParams.get('font.size', 16))), color, new_art,
+                            )
                     ax._cif_tick_art = new_art
-                    # Restore x-axis limits
                     ax.set_xlim(prev_xlim)
-                    # Restore y-axis: if titles are hidden, always restore; if titles are shown, only restore if we didn't need to expand
-                    # Use prev_ylim (current limits before drawing) to prevent any movement
-                    if not show_titles_local:
-                        # Titles hidden: always restore original limits
-                        ax.set_ylim(prev_ylim)
-                    elif needed_min >= prev_ylim[0]:
-                        # Titles shown but no expansion needed: restore original limits
-                        ax.set_ylim(prev_ylim)
-                    else:
-                        # Expansion needed: use the minimum of needed_min and prev_ylim[0] to prevent incremental growth
-                        # This ensures that repeated toggles don't cause drift
-                        new_ymin = min(needed_min, prev_ylim[0])
-                        ax.set_ylim(new_ymin, prev_ylim[1])
                     fig.canvas.draw_idle()
                 except Exception:
                     pass
@@ -3732,12 +3733,17 @@ def batplot_main() -> int:  # type: ignore
         elif any_chir:
             axis_mode = "rft"
         elif any_txt:
-            # .txt is generic, require --xaxis
+            # .txt is generic: need --xaxis unless XRD context is clear from --wl or file:wl (same as .xy without ext hint).
             if args.xaxis:
                 # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
                 axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
+            elif getattr(args, 'wl', None) is not None or any_lambda:
+                axis_mode = "Q"
             else:
-                raise ValueError("Unknown file type. Use: batplot file.txt --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
+                raise ValueError(
+                    "Unknown file type for .txt. Add --xaxis [Q|2theta|r|k|energy|rft], or use --wl for XRD Q conversion, "
+                    "or batplot --help."
+                )
         elif any_lambda or any_cif or any_xrd_vendor:
             # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies Q domain
             if args.xaxis and args.xaxis.lower() in ("2theta","two_theta","tth"):
@@ -4496,25 +4502,50 @@ def batplot_main() -> int:  # type: ignore
         else:
             n_rows = max(1, sum(1 for v in set_visible if v))
         
+        show_hkl_for_spacing = False
+        try:
+            _bp_module_sp = sys.modules.get('__main__')
+            if _bp_module_sp is not None and hasattr(_bp_module_sp, 'show_cif_hkl'):
+                show_hkl_for_spacing = bool(getattr(_bp_module_sp, 'show_cif_hkl', False))
+        except Exception:
+            pass
+        if not show_hkl_for_spacing:
+            try:
+                show_hkl_for_spacing = bool(globals().get('show_cif_hkl', False))
+            except Exception:
+                pass
+        
+        stacked_data = bool(args.stack or len(y_data_list) > 1)
         # Calculate base and spacing based on FIXED y-axis limits (not current)
         # This prevents incremental movement when toggling
-        if args.stack or len(y_data_list) > 1:
+        if stacked_data:
             global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
-            base = global_min - 0.08*fixed_yr; spacing = 0.05*fixed_yr
+            base = global_min - 0.08 * fixed_yr
         else:
             global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-            base = global_min - 0.06*fixed_yr; spacing = 0.04*fixed_yr
+            base = global_min - 0.06 * fixed_yr
+        spacing = xy_cif_row_spacing_yr(
+            fixed_yr,
+            show_titles=show_titles,
+            show_hkl=show_hkl_for_spacing,
+            stacked_or_multi_y=stacked_data,
+        )
+        bottom_margin = xy_cif_stack_bottom_margin_yr(fixed_yr, show_titles=show_titles)
         
         # Only adjust y-axis limits if titles are visible
-        needed_min = base - (n_rows-1)*spacing - 0.04*fixed_yr
-        if show_titles and needed_min < fixed_ylim[0]:
-            # Expand y-axis only if needed, using fixed limits as reference
-            ax.set_ylim(needed_min, fixed_ylim[1])
+        needed_min = base - (n_rows - 1) * spacing - bottom_margin
+        # One y-limit state for the whole draw: must match what we keep after drawing.
+        # Previously we set ylim to fixed_ylim / (needed_min, fixed_ylim[1]), drew with that yr,
+        # then replaced ylim with prev_ylim — different ymax/yr broke title–tick alignment per row.
+        if not show_titles:
+            ylim_draw = tuple(prev_ylim)
+        elif needed_min >= prev_ylim[0]:
+            ylim_draw = tuple(prev_ylim)
         else:
-            # Restore to fixed limits if no expansion needed
-            ax.set_ylim(fixed_ylim)
-        
-        # Get current limits for drawing (after potential expansion)
+            new_ymin = min(needed_min, prev_ylim[0])
+            ylim_draw = (new_ymin, prev_ylim[1])
+        ax.set_ylim(ylim_draw)
+
         cur_ylim = ax.get_ylim()
         yr = cur_ylim[1] - cur_ylim[0]
         if yr <= 0: yr = 1.0
@@ -4543,7 +4574,8 @@ def batplot_main() -> int:  # type: ignore
         for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
             if set_visible is not None and i < len(set_visible) and not set_visible[i]:
                 continue
-            y_line = base - visible_idx*spacing
+            y_line = base - visible_idx * spacing + xy_cif_stack_y_offset(fig, i)
+            tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
             if use_2th:
                 if wl is None: wl = _ensure_wavelength_for_2theta()
                 domain_peaks = _Q_to_2theta(peaksQ, wl)
@@ -4559,10 +4591,11 @@ def batplot_main() -> int:  # type: ignore
                 if show_titles:
                     # Removed numbering; keep space padding
                     label_text = f" {lab}"
-                    # Align CIF title baseline with tick baseline for this row
-                    txt = ax.text(prev_xlim[0], y_line, label_text,
-                                  ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
-                    new_art.append(txt)
+                    xy_cif_add_phase_title(
+                        ax, prev_xlim[0], y_line, tick_h, label_text,
+                        max(8, int(0.55 * plt.rcParams.get('font.size', 12))), color, new_art,
+                    )
+                visible_idx += 1
                 continue
             # Build map for quick hkl lookup by Q (only if hkl labels are enabled)
             label_map = {}
@@ -4585,7 +4618,7 @@ def batplot_main() -> int:  # type: ignore
             if effective_show_hkl:
                 # For 2θ axis we convert back to Q then round; otherwise Q directly
                 for p in domain_peaks:
-                    ln, = ax.plot([p,p],[y_line, y_line+0.02*yr], color=color, lw=1.0, alpha=0.9, zorder=3)
+                    ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                     new_art.append(ln)
                     if use_2th and wl:
                         theta = np.radians(p/2.0)
@@ -4595,37 +4628,25 @@ def batplot_main() -> int:  # type: ignore
                     Qp_rounded = round(Qp, 6)
                     lbl = label_map.get(Qp_rounded)
                     if lbl:
-                        t_hkl = ax.text(p, y_line+0.022*yr, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
+                        t_hkl = ax.text(p, hkl_y, lbl, ha='center', va='bottom', fontsize=7, rotation=90, color=color)
                         new_art.append(t_hkl)
             else:
                 # Just draw ticks (no hkl labels)
                 for p in domain_peaks:
-                    ln, = ax.plot([p,p],[y_line, y_line+0.02*yr], color=color, lw=1.0, alpha=0.9, zorder=3)
+                    ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                     new_art.append(ln)
             # Removed numbering; keep space padding (placed per CIF row)
             # Only add title label if show_cif_titles is True
             if show_titles:
                 label_text = f" {lab}"
-                # Align CIF title baseline with tick baseline for this row
-                txt = ax.text(prev_xlim[0], y_line, label_text,
-                              ha='left', va='bottom', fontsize=max(8,int(0.55*plt.rcParams.get('font.size',12))), color=color)
-                new_art.append(txt)
+                xy_cif_add_phase_title(
+                    ax, prev_xlim[0], y_line, tick_h, label_text,
+                    max(8, int(0.55 * plt.rcParams.get('font.size', 12))), color, new_art,
+                )
             visible_idx += 1
         ax._cif_tick_art = new_art
-        # Restore both x and y-axis limits to prevent movement
         ax.set_xlim(prev_xlim)
-        # Restore y-axis: if titles are hidden, always restore; if titles are shown, only restore if we didn't need to expand
-        if not show_titles:
-            # Titles hidden: always restore original limits
-            ax.set_ylim(prev_ylim)
-        elif needed_min >= prev_ylim[0]:
-            # Titles shown but no expansion needed: restore original limits
-            ax.set_ylim(prev_ylim)
-        else:
-            # Expansion needed: use the minimum of needed_min and prev_ylim[0] to prevent incremental growth
-            # This ensures that repeated toggles don't cause drift
-            new_ymin = min(needed_min, prev_ylim[0])
-            ax.set_ylim(new_ymin, prev_ylim[1])
+        # y-axis already set to ylim_draw before draw; avoid second set_ylim (changed yr vs. tick/title geometry)
         # Store simplified metadata for hover: list of dicts with 'x','y','label'
         hover_meta = []
         show_hkl = globals().get('show_cif_hkl', False)
@@ -4643,14 +4664,25 @@ def batplot_main() -> int:  # type: ignore
             domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
             if not domain_peaks:
                 continue
-            # y baseline for this series (same logic as above)
-            if args.stack or len(y_data_list) > 1:
+            # y baseline for this series (same spacing as main CIF draw)
+            show_hkl_h = bool(globals().get('show_cif_hkl', False))
+            try:
+                _bm = sys.modules.get('__main__')
+                if _bm is not None and hasattr(_bm, 'show_cif_hkl'):
+                    show_hkl_h = bool(getattr(_bm, 'show_cif_hkl', False))
+            except Exception:
+                pass
+            _stacked = bool(args.stack or len(y_data_list) > 1)
+            if _stacked:
                 global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else ax.get_ylim()[0]
-                base = global_min - 0.08*yr; spacing = 0.05*yr
+                base = global_min - 0.08 * yr
             else:
                 global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else 0.0
-                base = global_min - 0.06*yr; spacing = 0.04*yr
-            y_line = base - i*spacing
+                base = global_min - 0.06 * yr
+            spacing = xy_cif_row_spacing_yr(
+                yr, show_titles=show_titles, show_hkl=show_hkl_h, stacked_or_multi_y=_stacked
+            )
+            y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
             label_map = cif_hkl_label_map.get(fname, {}) if show_hkl else {}
             for p in domain_peaks:
                 if use_2th and wl:

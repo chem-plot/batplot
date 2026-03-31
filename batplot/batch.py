@@ -703,8 +703,11 @@ def batch_process(directory: str, args):
                     if ext and ext not in args._batch_warned_extensions and ext not in known_axis_ext:
                         args._batch_warned_extensions.add(ext)
                         print(f"  Note: Reading '{ext}' files as 2-column (x, y) data with x-axis = {args.xaxis}")
+                elif getattr(args, 'wl', None) is not None:
+                    # .txt / generic text: --wl implies XRD Q conversion (matches main batplot.py)
+                    axis_mode = 'Q'
                 else:
-                    raise ValueError(f"Unknown file type: {fname}. Use --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
+                    raise ValueError(f"Unknown file type: {fname}. Use --xaxis [Q|2theta|r|k|energy|rft], or --wl for XRD Q, or batplot --help for help.")
 
             # Convert to Q if needed
             if axis_mode == 'Q' and ext not in ('.qye', '.gr', '.nor'):

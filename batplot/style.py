@@ -530,19 +530,37 @@ def print_style_info(
     print(f"Label anchor: {legend_pos} (stack={getattr(args, 'stack', False)})")
     print(f"Labels (r): x='{ax.get_xlabel() or ''}', y='{ax.get_ylabel() or ''}'")
 
-    # ---- CIF (z, j) ---
-    if show_cif_hkl is not None:
-        print(f"\n--- CIF (z, j) ---")
-        print(f"CIF hkl labels (z): {'shown' if show_cif_hkl else 'hidden'}")
-    elif cif_tick_series:
+    # ---- CIF (cif submenu: z, t, v, p, …) ---
+    if cif_tick_series:
+        print(f"\n--- CIF (cif key) ---")
         try:
+            hkl_state = None
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
                 hkl_state = bool(getattr(_bp_module, 'show_cif_hkl', False))
-                print(f"\n--- CIF (z, j) ---")
+            elif show_cif_hkl is not None:
+                hkl_state = bool(show_cif_hkl)
+            if hkl_state is not None:
                 print(f"CIF hkl labels (z): {'shown' if hkl_state else 'hidden'}")
+            off_list = getattr(fig, '_bp_cif_stack_y_offsets', None) or []
+            if off_list:
+                bits = []
+                for i, ent in enumerate(cif_tick_series):
+                    lab = ent[0] if ent else f"set{i+1}"
+                    ov = float(off_list[i]) if i < len(off_list) else 0.0
+                    if abs(ov) > 1e-12:
+                        bits.append(f"{lab}={ov:.4g}")
+                if bits:
+                    print("CIF stack Y offsets (p): " + "; ".join(bits))
+                else:
+                    print("CIF stack Y offsets (p): all 0")
+            else:
+                print("CIF stack Y offsets (p): default (0 per set)")
         except Exception:
             pass
+    elif show_cif_hkl is not None:
+        print(f"\n--- CIF ---")
+        print(f"CIF hkl labels (z): {'shown' if show_cif_hkl else 'hidden'}")
 
     # ---- Curves (c, o) ----
     print("\n--- Curves (c, o) ---")
@@ -772,6 +790,17 @@ def export_style_config(
                 {"index": i, "color": color}
                 for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series)
             ]
+            # Always save one offset per CIF set so import (i) matches session/undo (s/b).
+            raw_off = getattr(fig, "_bp_cif_stack_y_offsets", None) or []
+            o2: List[float] = []
+            for x in list(raw_off)[: len(cif_tick_series)]:
+                try:
+                    o2.append(float(x))
+                except (TypeError, ValueError):
+                    o2.append(0.0)
+            while len(o2) < len(cif_tick_series):
+                o2.append(0.0)
+            cfg["cif_stack_y_offsets"] = o2
         palette_history = getattr(fig, '_curve_palette_history', None)
         if palette_history:
             serialized_palettes = []
@@ -1402,6 +1431,20 @@ def apply_style_config(
                     lab_new = entry.get("label", lab)
                     color_new = entry.get("color", color_old)
                     cif_tick_series[idx] = (lab_new, fname, peaksQ, wl, qmax_sim, color_new)
+        if "cif_stack_y_offsets" in cfg and cif_tick_series is not None:
+            try:
+                raw_o = cfg.get("cif_stack_y_offsets") or []
+                o2 = []
+                for x in list(raw_o)[: len(cif_tick_series)]:
+                    try:
+                        o2.append(float(x))
+                    except (TypeError, ValueError):
+                        o2.append(0.0)
+                while len(o2) < len(cif_tick_series):
+                    o2.append(0.0)
+                fig._bp_cif_stack_y_offsets = o2
+            except Exception:
+                pass
         # Restore CIF title visibility
         if "show_cif_titles" in cfg:
             try:
@@ -1463,7 +1506,8 @@ def apply_style_config(
         # as style files are for styling only, and the data would be specific
         # to the dataset. Session files (pickle) store this data instead.
         # Redraw CIF ticks after applying changes
-        if (cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg or "show_cif_hkl" in cfg:
+        if ((cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg or "show_cif_hkl" in cfg
+                or "cif_stack_y_offsets" in cfg):
             if hasattr(ax, "_cif_draw_func"):
                 try:
                     ax._cif_draw_func()
