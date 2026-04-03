@@ -91,10 +91,12 @@ class _FilterIMKWarning:
         self.original_stderr.flush()
 
 
-def _safe_input(prompt: str = "") -> str:
+def _safe_input(prompt: str = "", *, cancel_on_interrupt: bool = True) -> str:
     """Wrapper around input() that suppresses macOS IMKCFRunLoopWakeUpReliable warnings.
-    
-    This is a harmless macOS system message that appears when using input() in terminals.
+
+    On **Ctrl+C** (or EOF on stdin), returns ``""`` by default so prompts behave like cancel
+    and the interactive menu keeps running instead of exiting with a traceback.
+    Set ``cancel_on_interrupt=False`` to re-raise (e.g. tests).
     """
     # Filter stderr to hide macOS IMK warnings while preserving other errors
     original_stderr = sys.stderr
@@ -102,7 +104,21 @@ def _safe_input(prompt: str = "") -> str:
     try:
         result = input(prompt)
         return result
-    except (KeyboardInterrupt, EOFError):
+    except KeyboardInterrupt:
+        if cancel_on_interrupt:
+            try:
+                print()
+            except Exception:
+                pass
+            return ""
+        raise
+    except EOFError:
+        if cancel_on_interrupt:
+            try:
+                print()
+            except Exception:
+                pass
+            return ""
         raise
     finally:
         sys.stderr = original_stderr

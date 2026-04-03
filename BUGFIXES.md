@@ -4,6 +4,16 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-31: Interactive `_safe_input` — Ctrl+C no longer kills the whole session
+
+### Summary
+**Ctrl+C** during a prompt raised **`KeyboardInterrupt`**, unwinding the stack and exiting **batplot** with a traceback. **`_safe_input`** now treats **KeyboardInterrupt** and **EOFError** as **cancel** (returns empty string) by default so menus (e.g. **r → t** CIF rename) return cleanly; use **`cancel_on_interrupt=False`** if a caller must propagate the interrupt.
+
+### Affected Files
+- `batplot/interactive.py` (`_safe_input`)
+
+---
+
 ## 2026-03-31: `.txt` with `--wl` but no `--xaxis` — “Unknown file type”
 
 ### Summary
