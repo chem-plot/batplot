@@ -4,6 +4,82 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-03-31: **r → t** CIF tick label rename — plot title did not update after apply
+
+### Summary
+Renaming a CIF phase label (**1D interactive → r → t**) updated the menu’s **`cif_tick_series`** copy in some runs (notably **saved session / `.bpsg`**), while **`draw_cif_ticks`** / **`_session_cif_draw`** still iterated the **original** list from the plotting closure, so paste + Enter **did not change** the on-figure phase title (curve rename **c** worked because it updates **labels** and **Text** artists directly).
+
+### Solution
+- **`batplot/batplot.py`:** CIF redraw reads **`getattr(fig, '_batplot_cif_tick_series', None)`** first, then falls back to the closure list. **`fig._batplot_cif_tick_series`** is set when CIF data exists (normal plot and session restore). Session **`cif_globals`** now passes the **same** **`cif_tick_series`** list into the menu (no **`list(...)`** copy). **`_session_cif_draw`** uses the same fig-backed series.
+- **`batplot/interactive.py`:** **`_sync_fig_cif_tick_series()`** runs after menu init and whenever **`_bp.cif_tick_series`** is assigned so **`fig._batplot_cif_tick_series`** always matches the menu.
+
+### Affected Files
+- `batplot/batplot.py`, `batplot/interactive.py`
+
+---
+
+## 2026-04-30: CPC legend text/symbol vertical misalignment after moving window across screens
+
+### Summary
+In CPC interactive mode, legend labels could appear vertically lower than their symbols after dragging the plot window to a different monitor.
+
+### Root Cause
+`_legend_no_frame` in `batplot/cpc_interactive.py` applied a fixed manual text offset (`Text.set_position(..., shift_pts)`) based on font size. On mixed-DPI / mixed-scaling multi-monitor setups, backend rendering metrics differ between screens, so this hardcoded offset caused text/symbol drift.
+
+### Solution
+- Removed the fixed manual legend text nudge from `_legend_no_frame`.
+- Kept `verticalalignment='center'` and default matplotlib legend text positioning, which is renderer-aware and stable when moving windows between displays.
+- Cross-platform behavior preserved (Windows, macOS, Linux).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-04-30: CPC compact legend symbol/text horizontal alignment and draw order
+
+### Summary
+In CPC compact legend mode, symbol columns could look horizontally misaligned with legend text rows, and some plot artists could visually overlap the legend.
+
+### Root Cause
+The compact legend mixed handle types (`Patch` squares and `Line2D` triangle), which can produce inconsistent text/symbol baseline behavior. Also, legend z-order was not explicitly raised.
+
+### Solution
+- Rebuilt compact legend symbols to use marker-only `Line2D` handles consistently for charge/discharge/efficiency/file rows.
+- Kept marker sizing/styling uniform so symbol rows align reliably with text.
+- Forced legend draw order above plot artists via high legend z-order in `_legend_no_frame`.
+- Behavior remains cross-platform (Windows, macOS, Linux).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+### Follow-up
+- Some environments still showed text below symbol centers because font baseline metrics differ by renderer/backend. CPC legend now applies renderer-aware per-row vertical alignment on draw by comparing handle/text pixel-space bboxes and correcting text offset dynamically. This keeps alignment stable for interactive `--cpc --i` across mixed-DPI displays.
+- Additional hardening: the legend is re-attached at figure level (`fig.add_artist`) with a very high z-order so it draws above both left and right axes artists in CPC twin-axis mode. A small upward visual bias is applied after geometric centering to avoid text appearing slightly lower than symbols on some font/render backends.
+- Final correction: figure-level legend attachment was the wrong layering strategy for CPC twin axes (figure artists can draw before axes). The legend now stays as an axis legend but is hosted on the top-drawn CPC axis (`ax2`) with high z-order. Compact CPC legend symbols were rewritten to scatter proxy handles and use `scatterpoints=1` + `scatteryoffsets=[0.5]` for stable horizontal row alignment between symbols and text.
+
+---
+
+## 2026-03-31: CIF phase state in **p / i / s / b** (labels + fig-backed series)
+
+### Summary
+**Style export (`p`)** only wrote **`index`** and **`color`** per CIF row, not the **phase label**, so renamed titles ( **r→t** / **cif→r** ) were **not** restored by **`i`**. Export now includes **`label`** per entry (import already supported **`entry.get("label", lab)`**). **Session save (`s`)** and **undo snapshots (`b`)** now serialize the same list as redraw: **`_cif_series_for_session()`** prefers **`fig._batplot_cif_tick_series`**, then **`_bp.cif_tick_series`**. After **undo** and after **`i`**, **`_sync_fig_cif_tick_series()`** keeps the figure reference aligned. **`p`** style summary lists each CIF phase label, file basename, and color so it matches what is persisted.
+
+### Affected Files
+- `batplot/interactive.py`, `batplot/style.py`
+
+---
+
+## 2026-03-31: CIF phase rename — **r→t** and **cif→r** unified (wording + shortcuts + undo)
+
+### Summary
+Main menu **r→t** and submenu **cif→r** now share one code path (**`_apply_cif_phase_label_rename`**) so both apply **`convert_label_shortcuts`**, the same redraw/clear-art behavior, and **`push_state("cif-rename")`** for undo. Prompts and menu lines use the same term **CIF phase label** and cross-reference each other (`t=CIF phase label (same as cif→r)` / `r: … (same as main menu r→t)`). The phase list always shows **`label (basename.cif)`** in both places.
+
+### Affected Files
+- `batplot/interactive.py`
+
+---
+
 ## 2026-03-31: Interactive `_safe_input` — Ctrl+C no longer kills the whole session
 
 ### Summary
@@ -4368,3 +4444,30 @@ MPT-based EPC remains integration-based (no change), and CPC behavior is unchang
 - ✅ macOS: Pure Python/Numpy changes; no backend-specific behavior
 - ✅ Windows: Same behavior; messages printed to stdout only
 - ✅ Linux: Identical logic and messaging
+
+---
+
+## 2026-05-01: Skip invalid operando EC files instead of aborting side-panel
+
+### Summary
+Operando runs with mixed-quality EC side files could lose the entire electrochem side panel when one detected file was malformed or empty (for example, a `*--DataLogger.csv` containing only metadata/header rows). This caused messages like `Failed to attach electrochem plot ... has insufficient rows` even when earlier cycle files were valid.
+
+### Root Cause
+In `plot_operando_folder`, EC files were processed in a single `try` block. If any one file reader raised (e.g. DataLogger file with fewer than 5 rows or no numeric rows), the exception bubbled to the outer handler and aborted all EC concatenation, rather than skipping the bad file and continuing with valid files.
+
+### Fix
+Updated EC-file iteration in `batplot/operando.py` to handle errors per-file:
+- Wrap each EC file parse in its own `try/except`
+- Print a targeted skip message for invalid files (`[operando] Skip EC file ...`)
+- Continue processing remaining EC files
+- Keep raising a clear error only when **no** valid EC file remains
+
+This preserves the EC side panel whenever at least one valid DataLogger/MPT file exists.
+
+### Affected Files
+- `batplot/operando.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Pure Python logic change; no OS-specific APIs
+- ✅ Windows: Same file parsing and skip behavior
+- ✅ Linux: Same file parsing and skip behavior

@@ -149,21 +149,17 @@ def _legend_no_frame(ax, *args, **kwargs):
     kwargs.setdefault('columnspacing', 0.6)
     # Don't use labelcolor='linecolor' by default as it causes issues 
     # with scatter plots that have facecolor='none' (hollow markers)
-    leg = ax.legend(*args, **kwargs)
+    legend_host_ax = kwargs.pop('legend_host_ax', None)
+    target_ax = legend_host_ax if legend_host_ax is not None else ax
+    leg = target_ax.legend(*args, **kwargs)
     if leg is not None:
         try:
             leg.set_frame_on(False)
+            # Keep legend above plot artists on the hosting axis.
+            leg.set_zorder(1_000_000)
+            leg.set_clip_on(False)
             for t in leg.get_texts():
                 t.set_verticalalignment('center')
-            # Nudge text up so it aligns with the symbol handle (patches sit higher than text baseline)
-            try:
-                sizes = [t.get_fontsize() for t in leg.get_texts() if t.get_text().strip()]
-                fs = float(np.mean(sizes)) if sizes else 10.0
-                shift_pts = fs * 0.5  # Points to move text up (was 0.15, increased for proper alignment)
-                for t in leg.get_texts():
-                    t.set_position((0, shift_pts))
-            except Exception:
-                pass
         except Exception:
             pass
     return leg
@@ -540,13 +536,16 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
                         _legend_no_frame(ax, h_all, l_all, loc='center',
                                          bbox_to_anchor=(fx, fy),
                                          bbox_transform=fig.transFigure,
-                                         borderaxespad=1.0, title=leg_title)
+                                         borderaxespad=1.0, title=leg_title,
+                                         legend_host_ax=ax2)
                     except Exception:
                         _legend_no_frame(ax, h_all, l_all, loc='best',
-                                         borderaxespad=1.0, title=leg_title)
+                                         borderaxespad=1.0, title=leg_title,
+                                         legend_host_ax=ax2)
                 else:
                     _legend_no_frame(ax, h_all, l_all, loc='best',
-                                     borderaxespad=1.0, title=leg_title)
+                                     borderaxespad=1.0, title=leg_title,
+                                     legend_host_ax=ax2)
         else:
             # Single-file: standard handles from axes
             try:
@@ -570,13 +569,16 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
                         _legend_no_frame(ax, h_all, l_all, loc='center',
                                          bbox_to_anchor=(fx, fy),
                                          bbox_transform=fig.transFigure,
-                                         borderaxespad=1.0, title=leg_title)
+                                         borderaxespad=1.0, title=leg_title,
+                                         legend_host_ax=ax2)
                     except Exception:
                         _legend_no_frame(ax, h_all, l_all, loc='best',
-                                         borderaxespad=1.0, title=leg_title)
+                                         borderaxespad=1.0, title=leg_title,
+                                         legend_host_ax=ax2)
                 else:
                     _legend_no_frame(ax, h_all, l_all, loc='best',
-                                     borderaxespad=1.0, title=leg_title)
+                                     borderaxespad=1.0, title=leg_title,
+                                     legend_host_ax=ax2)
             else:
                 leg = ax.get_legend()
                 if leg:
@@ -654,13 +656,16 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
             pass
 
     # --- Build proxy handles and labels ---
-    _marker_kw = dict(linewidth=0)
-    # Header: filled square = Charge
-    chg_patch = mpatches.Patch(facecolor='#444444', edgecolor='#444444', label='Charge')
-    # Header: hollow square = Discharge
-    dch_patch = mpatches.Patch(facecolor='none', edgecolor='#444444',
-                                linewidth=1.2, label='Discharge')
-    handles = [chg_patch, dch_patch]
+    # Use scatter proxy handles so legend uses scatter-specific vertical alignment
+    # controls (scatterpoints/scatteryoffsets), which is more stable here.
+    ms2 = 28.0  # marker area in points^2
+    chg_handle = ax.scatter([], [], marker='s', s=ms2,
+                            facecolors='#444444', edgecolors='#444444',
+                            linewidths=1.0, label='Charge')
+    dch_handle = ax.scatter([], [], marker='s', s=ms2,
+                            facecolors='none', edgecolors='#444444',
+                            linewidths=1.2, label='Discharge')
+    handles = [chg_handle, dch_handle]
     labels = ['Charge', 'Discharge']
 
     # Header: efficiency triangle if visible
@@ -680,33 +685,34 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
                         pass
         except Exception:
             eff_color = '#888888'
-        from matplotlib.lines import Line2D  # type: ignore
-        eff_handle = Line2D([0], [0], marker='^', color='none',
-                            markerfacecolor=eff_color, markeredgecolor=eff_color,
-                            markersize=4, label='Efficiency')
+        eff_handle = ax.scatter([], [], marker='^', s=ms2,
+                                facecolors=eff_color, edgecolors=eff_color,
+                                linewidths=1.0, label='Efficiency')
         handles.append(eff_handle)
         labels.append('Efficiency')
 
-    # Separator: invisible patch with empty label to create visual gap
-    sep = mpatches.Patch(visible=False, label='')
+    # Separator: invisible marker handle with empty label to create visual gap
+    sep = ax.scatter([], [], s=0.0, alpha=0.0, label='')
     handles.append(sep)
     labels.append('')
 
     # Per-file rows
     for color, fname in file_rows:
-        patch = mpatches.Patch(facecolor=color, edgecolor=color, label=fname)
-        handles.append(patch)
+        file_handle = ax.scatter([], [], marker='s', s=ms2,
+                                 facecolors=color, edgecolors=color,
+                                 linewidths=1.0, label=fname)
+        handles.append(file_handle)
         labels.append(fname)
 
     if not file_rows:
         return  # Nothing to show
 
     fig = ax.figure
-    # Multi-file: smaller symbols; handler_map forces squares (never cuboids)
+    # Multi-file compact legend with scatter-specific alignment controls.
     _hl = 0.35
     _legend_kw = dict(
         handlelength=_hl, handleheight=_hl, borderaxespad=1.0, title=leg_title,
-        handler_map={mpatches.Patch: _HandlerSquarePatch()},
+        scatterpoints=1, scatteryoffsets=[0.5],
     )
     if xy_in is not None:
         try:
@@ -717,11 +723,14 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
                              loc='center',
                              bbox_to_anchor=(fx, fy),
                              bbox_transform=fig.transFigure,
+                             legend_host_ax=ax2,
                              **_legend_kw)
         except Exception:
-            _legend_no_frame(ax, handles, labels, loc='best', **_legend_kw)
+            _legend_no_frame(ax, handles, labels, loc='best',
+                             legend_host_ax=ax2, **_legend_kw)
     else:
-        _legend_no_frame(ax, handles, labels, loc='best', **_legend_kw)
+        _legend_no_frame(ax, handles, labels, loc='best',
+                         legend_host_ax=ax2, **_legend_kw)
 
 
 def _get_geometry_snapshot(ax, ax2) -> Dict:

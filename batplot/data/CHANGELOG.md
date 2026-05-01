@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.39] - 2026-05-01
+- Bug fixes for BatX operando plot
+
+
 ## [1.8.38] - 2026-04-03
 - Bug fixes
 

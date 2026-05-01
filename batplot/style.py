@@ -534,6 +534,17 @@ def print_style_info(
     if cif_tick_series:
         print(f"\n--- CIF (cif key) ---")
         try:
+            print("CIF phase labels (r→t / cif→r) & per-set colors (c); stored in p / i / s / b:")
+            for i, ent in enumerate(cif_tick_series):
+                if len(ent) < 6:
+                    continue
+                lab, fname, _pq, _wl, _qm, col = ent[0], ent[1], ent[2], ent[3], ent[4], ent[5]
+                try:
+                    ch = mcolors.to_hex(mcolors.to_rgba(col))
+                except Exception:
+                    ch = str(col)
+                hb = color_block(ch) if ch else ""
+                print(f"  {i + 1}: {lab}  ({os.path.basename(fname)})  {hb} {ch}")
             hkl_state = None
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
@@ -786,8 +797,9 @@ def export_style_config(
         except Exception:
             pass
         if cif_tick_series:
+            # label + color so export (p) / import (i) match session (s) / undo (b) for renamed phases
             cfg["cif_ticks"] = [
-                {"index": i, "color": color}
+                {"index": i, "label": str(lab), "color": color}
                 for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series)
             ]
             # Always save one offset per CIF set so import (i) matches session/undo (s/b).

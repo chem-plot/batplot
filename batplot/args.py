@@ -234,6 +234,8 @@ def _print_xy_help() -> None:
         "                                batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q\n"
         "                              Directory: pass a folder to convert all .xy/.xye/.qye/.dat/.csv/.txt files:\n"
         "                                batplot /path/to/folder --convert 0.25448 1.54\n"
+        "                              Batch in current folder: use allfiles token (non-convertible files are skipped):\n"
+        "                                batplot allfiles --convert q 1.54\n"
         "                              Examples:\n"
         "                                batplot file.xye --convert 1.54 0.25\n"
         "                                batplot file.xye --convert 1.54 q\n"

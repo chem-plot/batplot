@@ -607,66 +607,73 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
 
             for ec_path in ec_files:
                 is_datalogger = ec_path.suffix.lower() == ".csv" and is_biologic_datalogger_csv(str(ec_path))
-
-                if is_datalogger:
-                    time_h, voltage_v = read_biologic_datalogger_time_voltage(str(ec_path))
-                    time_h = np.asarray(time_h, float)
-                    voltage_v = np.asarray(voltage_v, float)
-                    if time_offset != 0:
-                        time_h = time_h + time_offset
-                    if len(time_h) > 0:
+                try:
+                    if is_datalogger:
+                        time_h, voltage_v = read_biologic_datalogger_time_voltage(str(ec_path))
+                        time_h = np.asarray(time_h, float)
+                        voltage_v = np.asarray(voltage_v, float)
+                        if len(time_h) == 0 or len(voltage_v) == 0:
+                            raise ValueError(f"DataLogger file {ec_path.name} has no valid data rows")
+                        if time_offset != 0:
+                            time_h = time_h + time_offset
                         time_offset = float(np.nanmax(time_h))
-                    x_parts.append(voltage_v)
-                    y_parts.append(time_h)
-                else:
-                    # .mpt file
-                    readcol_mpt = None
-                    if hasattr(args, 'readcols') and args.readcols is not None:
-                        readcol_mpt = tuple(args.readcols)
-                    if readcol_mpt is None and hasattr(args, 'readcol_by_ext') and '.mpt' in getattr(args, 'readcol_by_ext', {}):
-                        readcol_mpt = args.readcol_by_ext['.mpt']
-
-                    if readcol_mpt:
-                        data = robust_loadtxt_skipheader(str(ec_path))
-                        if data.ndim == 1:
-                            data = data.reshape(1, -1)
-                        if data.shape[1] < 2:
-                            raise ValueError(f"MPT file {ec_path.name} has insufficient columns")
-                        x_col, y_col = readcol_mpt
-                        x_col_idx, y_col_idx = x_col - 1, y_col - 1
-                        # EC panel: voltage on X, time on Y; assume x_col=time, y_col=voltage (EC-Lab order)
-                        v_raw = np.asarray(data[:, y_col_idx], float)
-                        t_raw = np.asarray(data[:, x_col_idx], float)
+                        x_parts.append(voltage_v)
+                        y_parts.append(time_h)
                     else:
-                        result = read_mpt_file(str(ec_path), mode='time')
-                        if len(result) == 5:
-                            x_data, y_data, current_mA, x_lbl, y_lbl = result
-                            x_lower = x_lbl.lower().replace(' ', '').replace('_', '')
-                            y_lower = y_lbl.lower().replace(' ', '').replace('_', '')
-                            has_time_in_x = 'time' in x_lower
-                            has_voltage_in_y = 'voltage' in y_lower or 'potential' in y_lower or 'ewe' in y_lower
-                            if x_lbl == 'Time (h)' and y_lbl == 'Potential (V)':
-                                t_raw = np.asarray(x_data, float)
-                                v_raw = np.asarray(y_data, float)
-                            elif has_time_in_x and has_voltage_in_y:
-                                t_raw = np.asarray(x_data, float)
-                                v_raw = np.asarray(y_data, float)
-                            elif 'voltage' in x_lower or 'potential' in x_lower:
-                                v_raw = np.asarray(x_data, float)
-                                t_raw = np.asarray(y_data, float)
-                            else:
-                                v_raw = np.asarray(x_data, float)
-                                t_raw = np.asarray(y_data, float)
+                        # .mpt file
+                        readcol_mpt = None
+                        if hasattr(args, 'readcols') and args.readcols is not None:
+                            readcol_mpt = tuple(args.readcols)
+                        if readcol_mpt is None and hasattr(args, 'readcol_by_ext') and '.mpt' in getattr(args, 'readcol_by_ext', {}):
+                            readcol_mpt = args.readcol_by_ext['.mpt']
+
+                        if readcol_mpt:
+                            data = robust_loadtxt_skipheader(str(ec_path))
+                            if data.ndim == 1:
+                                data = data.reshape(1, -1)
+                            if data.shape[1] < 2:
+                                raise ValueError(f"MPT file {ec_path.name} has insufficient columns")
+                            x_col, y_col = readcol_mpt
+                            x_col_idx, y_col_idx = x_col - 1, y_col - 1
+                            # EC panel: voltage on X, time on Y; assume x_col=time, y_col=voltage (EC-Lab order)
+                            v_raw = np.asarray(data[:, y_col_idx], float)
+                            t_raw = np.asarray(data[:, x_col_idx], float)
                         else:
-                            x_data, y_data, current_mA, *_ = result
-                            v_raw = np.asarray(x_data, float)
-                            t_raw = np.asarray(y_data, float) / 3600.0
-                    if time_offset != 0:
-                        t_raw = t_raw + time_offset
-                    if len(t_raw) > 0:
+                            result = read_mpt_file(str(ec_path), mode='time')
+                            if len(result) == 5:
+                                x_data, y_data, current_mA, x_lbl, y_lbl = result
+                                x_lower = x_lbl.lower().replace(' ', '').replace('_', '')
+                                y_lower = y_lbl.lower().replace(' ', '').replace('_', '')
+                                has_time_in_x = 'time' in x_lower
+                                has_voltage_in_y = 'voltage' in y_lower or 'potential' in y_lower or 'ewe' in y_lower
+                                if x_lbl == 'Time (h)' and y_lbl == 'Potential (V)':
+                                    t_raw = np.asarray(x_data, float)
+                                    v_raw = np.asarray(y_data, float)
+                                elif has_time_in_x and has_voltage_in_y:
+                                    t_raw = np.asarray(x_data, float)
+                                    v_raw = np.asarray(y_data, float)
+                                elif 'voltage' in x_lower or 'potential' in x_lower:
+                                    v_raw = np.asarray(x_data, float)
+                                    t_raw = np.asarray(y_data, float)
+                                else:
+                                    v_raw = np.asarray(x_data, float)
+                                    t_raw = np.asarray(y_data, float)
+                            else:
+                                x_data, y_data, current_mA, *_ = result
+                                v_raw = np.asarray(x_data, float)
+                                t_raw = np.asarray(y_data, float) / 3600.0
+                        if len(t_raw) == 0 or len(v_raw) == 0:
+                            raise ValueError(f"MPT file {ec_path.name} has no valid data rows")
+                        if time_offset != 0:
+                            t_raw = t_raw + time_offset
                         time_offset = float(np.nanmax(t_raw))
-                    x_parts.append(v_raw)
-                    y_parts.append(t_raw)
+                        x_parts.append(v_raw)
+                        y_parts.append(t_raw)
+                except Exception as ec_file_err:
+                    print(f"[operando] Skip EC file {ec_path.name}: {ec_file_err}")
+
+            if not x_parts or not y_parts:
+                raise ValueError("No valid electrochem data points in detected EC files")
 
             x_data = np.concatenate(x_parts) if len(x_parts) > 1 else x_parts[0]
             y_data = np.concatenate(y_parts) if len(y_parts) > 1 else y_parts[0]

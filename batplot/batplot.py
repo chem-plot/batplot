@@ -2624,7 +2624,11 @@ def batplot_main() -> int:  # type: ignore
         expanded = []
         for p in args.files:
             if os.path.isfile(p):
-                expanded.append(p)
+                ext = os.path.splitext(p)[1].lower()
+                if ext in convert_ext:
+                    expanded.append(p)
+                else:
+                    print(f"Warning: Skipping non-convertible file: {p}")
             elif os.path.isdir(p):
                 for f in sorted(os.listdir(p), key=natural_sort_key):
                     fp = os.path.join(p, f)
@@ -3351,6 +3355,10 @@ def batplot_main() -> int:  # type: ignore
         stack_label_bottom = bool(sess.get('stack_label_at_bottom', False))
         update_labels(ax, y_data_list, label_text_objects, saved_stack, stack_label_bottom)
         if cif_tick_series:
+            try:
+                fig._batplot_cif_tick_series = cif_tick_series
+            except Exception:
+                pass
             # Provide draw/extend helpers compatible with interactive menu using original placement logic
             def _session_q_to_2theta(peaksQ, wl):
                 if wl is None:
@@ -3364,7 +3372,8 @@ def batplot_main() -> int:  # type: ignore
 
             def _session_ensure_wavelength(default_wl=1.5406):
                 # Prefer any stored wl, else args.wl, else provided default
-                for _lab,_fname,_peaks,_wl,_qmax,_color in cif_tick_series:
+                _ser = getattr(fig, '_batplot_cif_tick_series', None) or cif_tick_series
+                for _lab,_fname,_peaks,_wl,_qmax,_color in _ser:
                     if _wl is not None:
                         return _wl
                 return getattr(args, 'wl', None) or default_wl
@@ -3374,7 +3383,10 @@ def batplot_main() -> int:  # type: ignore
                 return
 
             def _session_cif_draw():
-                if not cif_tick_series:
+                cif_series_draw = getattr(fig, '_batplot_cif_tick_series', None)
+                if cif_series_draw is None:
+                    cif_series_draw = cif_tick_series
+                if not cif_series_draw:
                     return
                 try:
                     # Preserve current limits before drawing - use actual current limits
@@ -3435,7 +3447,7 @@ def batplot_main() -> int:  # type: ignore
                         stacked_or_multi_y=_stacked_s,
                     )
                     _cif_bottom_m = xy_cif_stack_bottom_margin_yr(fixed_yr, show_titles=show_titles_local)
-                    needed_min = base - (len(cif_tick_series) - 1) * spacing - _cif_bottom_m
+                    needed_min = base - (len(cif_series_draw) - 1) * spacing - _cif_bottom_m
                     if not show_titles_local:
                         ylim_draw = tuple(prev_ylim)
                     elif needed_min >= prev_ylim[0]:
@@ -3457,7 +3469,7 @@ def batplot_main() -> int:  # type: ignore
                     wl_any = _session_ensure_wavelength()
                     
                     # Draw each series
-                    for i,(lab,fname,peaksQ,wl,qmax_sim,color) in enumerate(cif_tick_series):
+                    for i,(lab,fname,peaksQ,wl,qmax_sim,color) in enumerate(cif_series_draw):
                         y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
                         tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
                         # Convert peaks to axis domain
@@ -3621,7 +3633,7 @@ def batplot_main() -> int:  # type: ignore
         cif_globals_dict = None
         if cif_tick_series:
             cif_globals_dict = {
-                'cif_tick_series': list(cif_tick_series),
+                'cif_tick_series': cif_tick_series,
                 'cif_hkl_map': cif_hkl_map,
                 'cif_hkl_label_map': cif_hkl_label_map,
                 'show_cif_hkl': bool(show_cif_hkl),
@@ -4457,7 +4469,13 @@ def batplot_main() -> int:  # type: ignore
             draw_cif_ticks()
 
     def draw_cif_ticks():
-        if not cif_tick_series:
+        # Interactive menu mutates _bp.cif_tick_series; session/menu paths may use a
+        # different list than this closure. fig._batplot_cif_tick_series stays synced
+        # from interactive_menu so redraw sees renames (r→t), reorder, colors, etc.
+        cif_series_draw = getattr(fig, '_batplot_cif_tick_series', None)
+        if cif_series_draw is None:
+            cif_series_draw = cif_tick_series
+        if not cif_series_draw:
             return
         # Preserve current limits before drawing - use actual current limits
         # to prevent any movement when toggling
@@ -4492,13 +4510,13 @@ def batplot_main() -> int:  # type: ignore
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
                 vis = list(getattr(_bp_module, 'cif_set_visible') or [])
-                if len(vis) == len(cif_tick_series):
+                if len(vis) == len(cif_series_draw):
                     set_visible = [bool(v) for v in vis]
         except Exception:
             pass
         # Effective number of visible CIF rows (for spacing and y-limit expansion)
         if set_visible is None:
-            n_rows = len(cif_tick_series)
+            n_rows = len(cif_series_draw)
         else:
             n_rows = max(1, sum(1 for v in set_visible if v))
         
@@ -4571,7 +4589,7 @@ def batplot_main() -> int:  # type: ignore
             except Exception:
                 pass
         visible_idx = 0
-        for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
+        for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_series_draw):
             if set_visible is not None and i < len(set_visible) and not set_visible[i]:
                 continue
             y_line = base - visible_idx * spacing + xy_cif_stack_y_offset(fig, i)
@@ -4651,7 +4669,7 @@ def batplot_main() -> int:  # type: ignore
         hover_meta = []
         show_hkl = globals().get('show_cif_hkl', False)
         # Build mapping from Q to label text if available
-        for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
+        for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_series_draw):
             if use_2th and wl is None:
                 wl = getattr(ax, '_cif_hover_wl', None)
             # Recreate domain peaks consistent with those drawn (limit to view)
@@ -4738,6 +4756,10 @@ def batplot_main() -> int:  # type: ignore
             ax._cif_hover_cid = cid
 
     if cif_tick_series:
+        try:
+            fig._batplot_cif_tick_series = cif_tick_series
+        except Exception:
+            pass
         # Auto-assign distinct colors for CIF tick series.
         # For multiple CIF series:
         #   - If <= 10 files, use 'tab10' but in a re-ordered sequence to

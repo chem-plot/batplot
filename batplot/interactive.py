@@ -177,6 +177,70 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # Provide a consistent interface for accessing CIF state
     _bp = type('CIFState', (), cif_globals)() if cif_globals else None
 
+    def _sync_fig_cif_tick_series():
+        """Keep fig._batplot_cif_tick_series aligned with menu state for CIF redraw."""
+        if _bp is None:
+            return
+        try:
+            _cts = getattr(_bp, 'cif_tick_series', None)
+            if _cts is not None:
+                fig._batplot_cif_tick_series = _cts
+        except Exception:
+            pass
+
+    _sync_fig_cif_tick_series()
+
+    def _cif_series_for_session():
+        """CIF list for save (s), export (p), and undo snapshot: same as redraw (fig-backed)."""
+        try:
+            c = getattr(fig, '_batplot_cif_tick_series', None)
+            if c is not None:
+                return c
+        except Exception:
+            pass
+        if _bp is not None:
+            return getattr(_bp, 'cif_tick_series', None)
+        return None
+
+    def _print_cif_phase_list(cts):
+        for i, (lab, fname, *_rest) in enumerate(cts):
+            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
+
+    def _apply_cif_phase_label_rename(idx: int, new_label: str) -> None:
+        """Update one CIF phase row label and redraw (shared by main r→t and cif→r)."""
+        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        if not cts or not (0 <= idx < len(cts)):
+            return
+        try:
+            push_state("cif-rename")
+        except Exception:
+            pass
+        _, fname, peaksQ, wl_e, qmax, col = cts[idx]
+        if _bp is not None:
+            setattr(_bp, 'cif_extend_suspended', True)
+        if hasattr(ax, '_cif_tick_art'):
+            try:
+                for art in list(getattr(ax, '_cif_tick_art', [])):
+                    try:
+                        art.remove()
+                    except Exception:
+                        pass
+                ax._cif_tick_art = []
+            except Exception:
+                pass
+        cts[idx] = (new_label, fname, peaksQ, wl_e, qmax, col)
+        if _bp is not None:
+            setattr(_bp, 'cif_tick_series', cts)
+        _sync_fig_cif_tick_series()
+        if hasattr(ax, '_cif_draw_func'):
+            ax._cif_draw_func()
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+        if _bp is not None:
+            setattr(_bp, 'cif_extend_suspended', False)
+
     try:
         raw_source_paths = list(getattr(args, 'files', []) or [])
     except Exception:
@@ -1001,7 +1065,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
     # NEW: export current style to .bpcfg
     def export_style_config(filename, base_path=None, overwrite_path=None, force_kind=None):
-        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        cts = _cif_series_for_session()
         show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
         return _export_style_config(
             filename,
@@ -1023,7 +1087,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
     # NEW: apply imported style config (restricted application)
     def apply_style_config(filename):
-        cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
+        cts = _cif_series_for_session()
         hkl_map = getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None
         res = _bp_apply_style_config(
             filename,
@@ -1042,6 +1106,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             hkl_map,
             adjust_margins,
         )
+        _sync_fig_cif_tick_series()
         # Sync top/right tick label2 fonts with current rcParams after style import
         try:
             fam_chain = plt.rcParams.get('font.sans-serif')
@@ -1602,6 +1667,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 except Exception:
                     return None
                 return None
+            _cts_for_snap = _cif_series_for_session()
             snap = {
                 "note": note,
                 "xlim": ax.get_xlim(),
@@ -1638,7 +1704,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 "tick_direction": getattr(fig, '_tick_direction', 'out'),
                 "tick_spacing": _capture_tick_spacing(ax),
                 "tick_minor_count": _capture_tick_minor_count(ax),
-                "cif_tick_series": (list(getattr(_bp, 'cif_tick_series')) if (_bp is not None and hasattr(_bp, 'cif_tick_series')) else None),
+                "cif_tick_series": (list(_cts_for_snap) if _cts_for_snap is not None else None),
                 "show_cif_hkl": (bool(getattr(_bp, 'show_cif_hkl')) if _bp is not None and hasattr(_bp, 'show_cif_hkl') else False),
                 "show_cif_titles": (bool(getattr(_bp, 'show_cif_titles')) if _bp is not None and hasattr(_bp, 'show_cif_titles') else True),
                 "rotation_angle": getattr(ax, '_rotation_angle', 0),
@@ -2025,6 +2091,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     _bp.cif_tick_series[:] = [tuple(t) for t in snap["cif_tick_series"]]
                 except Exception:
                     pass
+                _sync_fig_cif_tick_series()
             if _bp is not None and 'show_cif_hkl' in snap:
                 try:
                     new_state = bool(snap['show_cif_hkl'])
@@ -2160,7 +2227,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 print("  " + colorize_menu("p: shift all CIF ticks (w/s or type a value)"))
                 print("  " + colorize_menu("c: CIF color (per set)"))
                 print("  " + colorize_menu("x: show/hide CIF set"))
-                print("  " + colorize_menu("r: rename CIF set label"))
+                print("  " + colorize_menu("r: rename CIF phase label (same as main menu r→t)"))
                 print("  " + colorize_menu("q: back to main menu"))
                 sub = _safe_input(colorize_prompt("CIF (z/t/v/p/c/x/r/q): ")).strip().lower()
                 if not sub or sub == 'q':
@@ -2265,6 +2332,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             new_cts = [cts[i - 1] for i in parts]
                             if _bp is not None:
                                 setattr(_bp, 'cif_tick_series', new_cts)
+                            _sync_fig_cif_tick_series()
                             prev_offs = getattr(fig, '_bp_cif_stack_y_offsets', None)
                             if prev_offs is not None and len(prev_offs) == len(cts):
                                 fig._bp_cif_stack_y_offsets = [prev_offs[i - 1] for i in parts]
@@ -2406,6 +2474,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         cts[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
                                     if _bp is not None:
                                         setattr(_bp, 'cif_tick_series', cts)
+                                    _sync_fig_cif_tick_series()
                                     if hasattr(ax, '_cif_draw_func'):
                                         ax._cif_draw_func()
                                 else:
@@ -2511,6 +2580,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         cts[idx] = (lab, fname, peaksQ, wl_e, qmax, col_val)
                                     if _bp is not None:
                                         setattr(_bp, 'cif_tick_series', cts)
+                                    _sync_fig_cif_tick_series()
                                     if hasattr(ax, '_cif_draw_func'):
                                         ax._cif_draw_func()
                     except Exception as e:
@@ -2558,39 +2628,40 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     except Exception as e:
                         print(f"Error toggling CIF visibility: {e}")
                 elif sub == 'r':
-                    # Rename CIF set labels — updates label field in cif_tick_series and redraws.
+                    # Rename CIF phase labels — same behavior as main menu r→t.
                     try:
                         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
                         if not cts:
-                            print("No CIF tick sets to rename.")
+                            print("No CIF phases to rename.")
                         else:
                             while True:
-                                print("CIF sets (q=back)")
-                                for i, (lab, fname, *_rest) in enumerate(cts):
-                                    print(f"  {i+1}: {lab}")
-                                idx_s = _safe_input("Set index to rename (q=back): ").strip().lower()
+                                print("CIF phases (q=back to CIF menu)")
+                                _print_cif_phase_list(cts)
+                                idx_s = _safe_input(
+                                    "Phase number to rename (q=back): "
+                                ).strip().lower()
                                 if not idx_s or idx_s == 'q':
                                     break
                                 try:
                                     idx = int(idx_s) - 1
-                                    if 0 <= idx < len(cts):
-                                        lab, fname, peaksQ, wl_e, qmax, col = cts[idx]
-                                        new_lab = _safe_input(f"New label for set {idx+1} (current: {lab}, blank=cancel): ").strip()
-                                        if not new_lab:
-                                            continue
-                                        push_state("cif-rename")
-                                        cts[idx] = (new_lab, fname, peaksQ, wl_e, qmax, col)
-                                        if _bp is not None:
-                                            setattr(_bp, 'cif_tick_series', cts)
-                                        if hasattr(ax, '_cif_draw_func'):
-                                            ax._cif_draw_func()
-                                        print(f"Set {idx+1} renamed to: {new_lab}")
-                                    else:
+                                    if not (0 <= idx < len(cts)):
                                         print("Invalid index.")
+                                        continue
                                 except ValueError:
                                     print("Invalid index.")
+                                    continue
+                                print_label_latex_tips()
+                                new_lab = _safe_input(
+                                    "New CIF phase label (q=cancel): "
+                                ).strip()
+                                if not new_lab or new_lab.lower() == 'q':
+                                    print("Canceled.")
+                                    continue
+                                new_lab = convert_label_shortcuts(new_lab)
+                                _apply_cif_phase_label_rename(idx, new_lab)
+                                print(f"Phase {idx + 1} label updated.")
                     except Exception as e:
-                        print(f"Error renaming CIF sets: {e}")
+                        print(f"Error renaming CIF phase labels: {e}")
                 else:
                     print("Unknown option.")
             continue
@@ -2724,7 +2795,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     delta=delta,
                     args=args,
                     tick_state=tick_state,
-                    cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                    cif_tick_series=_cif_series_for_session(),
                     cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
                     cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
                     show_cif_hkl=(bool(getattr(_bp, 'show_cif_hkl', False)) if _bp is not None else False),
@@ -2886,7 +2957,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         delta=delta,
                         args=args,
                         tick_state=tick_state,
-                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_tick_series=_cif_series_for_session(),
                         cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
                         cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
                         show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
@@ -2919,7 +2990,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             delta=delta,
                             args=args,
                             tick_state=tick_state,
-                            cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                            cif_tick_series=_cif_series_for_session(),
                             cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
                             cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
                             show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
@@ -2959,7 +3030,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         delta=delta,
                         args=args,
                         tick_state=tick_state,
-                        cif_tick_series=(getattr(_bp, 'cif_tick_series', None) if _bp is not None else None),
+                        cif_tick_series=_cif_series_for_session(),
                         cif_hkl_map=(getattr(_bp, 'cif_hkl_map', None) if _bp is not None else None),
                         cif_hkl_label_map=(getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None),
                         show_cif_hkl=(bool(getattr(_bp,'show_cif_hkl', False)) if _bp is not None else False),
@@ -3173,6 +3244,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         cts[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
                                     if _bp is not None:
                                         setattr(_bp, 'cif_tick_series', cts)
+                                    _sync_fig_cif_tick_series()
                                     if hasattr(ax, '_cif_draw_func'):
                                         ax._cif_draw_func()
                                 else:
@@ -3241,6 +3313,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                         cts[idx] = (lab, fname, peaksQ, wl_e, qmax, col_val)
                                     if _bp is not None:
                                         setattr(_bp, 'cif_tick_series', cts)
+                                    _sync_fig_cif_tick_series()
                                     if hasattr(ax, '_cif_draw_func'):
                                         ax._cif_draw_func()
                         else:
@@ -3333,7 +3406,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 while True:
                     rename_opts = "c=curve"
                     if has_cif:
-                        rename_opts += ", t=cif tick label"
+                        rename_opts += ", t=CIF phase label (same as cif→r)"
                     rename_opts += ", x=x-axis, y=y-axis, q=return"
                     mode = _safe_input(f"Rename ({rename_opts}): ").strip().lower()
                     if mode == 'q':
@@ -3366,44 +3439,34 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     elif mode == 't':
                         cts = getattr(_bp, 'cif_tick_series', None) if _bp is not None else None
                         if not cts:
-                            print("No CIF tick sets to rename.")
+                            print("No CIF phases to rename.")
                             continue
-                        for i,(lab, fname, *_rest) in enumerate(cts):
-                            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
-                        s = _safe_input("CIF tick number to rename (q=cancel): ").strip()
-                        if not s or s.lower()=='q':
-                            print("Canceled."); continue
+                        print("CIF phases (then pick one; same list as cif→r)")
+                        _print_cif_phase_list(cts)
+                        s = _safe_input(
+                            "Phase number to rename (q=cancel): "
+                        ).strip()
+                        if not s or s.lower() == 'q':
+                            print("Canceled.")
+                            continue
                         try:
-                            idx = int(s)-1
+                            idx = int(s) - 1
                             if not (0 <= idx < len(cts)):
-                                print("Index out of range."); continue
+                                print("Index out of range.")
+                                continue
                         except ValueError:
-                            print("Bad index."); continue
+                            print("Bad index.")
+                            continue
                         print_label_latex_tips()
-                        new_name = _safe_input("New CIF tick label (q=cancel): ")
-                        if not new_name or new_name.lower()=='q':
-                            print("Canceled."); continue
+                        new_name = _safe_input(
+                            "New CIF phase label (q=cancel): "
+                        ).strip()
+                        if not new_name or new_name.lower() == 'q':
+                            print("Canceled.")
+                            continue
                         new_name = convert_label_shortcuts(new_name)
-                        lab,fname,peaksQ,wl,qmax_sim,color = cts[idx]
-                        # Suspend extension while updating label
-                        if _bp is not None:
-                            setattr(_bp, 'cif_extend_suspended', True)
-                        if hasattr(ax, '_cif_tick_art'):
-                            try:
-                                for art in list(getattr(ax, '_cif_tick_art', [])):
-                                    try:
-                                        art.remove()
-                                    except Exception:
-                                        pass
-                                ax._cif_tick_art = []
-                            except Exception:
-                                pass
-                        cts[idx] = (new_name, fname, peaksQ, wl, qmax_sim, color)
-                        setattr(_bp, 'cif_tick_series', cts)
-                        if hasattr(ax,'_cif_draw_func'): ax._cif_draw_func()
-                        fig.canvas.draw()
-                        if _bp is not None:
-                            setattr(_bp, 'cif_extend_suspended', False)
+                        _apply_cif_phase_label_rename(idx, new_name)
+                        print(f"Phase {idx + 1} label updated.")
                     elif mode in ('x','y'):
                         print("Enter new axis label (q=cancel).")
                         print_label_latex_tips()
