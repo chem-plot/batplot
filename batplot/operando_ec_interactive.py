@@ -30,6 +30,13 @@ from .ui import position_top_xlabel as _ui_position_top_xlabel
 from .ui import position_right_ylabel as _ui_position_right_ylabel
 from .ui import position_bottom_xlabel as _ui_position_bottom_xlabel
 from .ui import position_left_ylabel as _ui_position_left_ylabel
+from .ui import (
+    capture_axes_tick_locators,
+    restore_axes_tick_locators,
+    capture_axis_tick_locators,
+    restore_axis_tick_locators,
+    apply_wasd_minor_ticks,
+)
 
 # Import color utilities for palette preview and user colors
 from .color_utils import (
@@ -59,6 +66,7 @@ from .operando import _draw_operando_cif_ticks
 from .session import dump_operando_session
 from .utils import (
     choose_style_file, convert_label_shortcuts, natural_sort_key, print_label_latex_tips,
+    print_recent_axis_names, remember_axis_name,
     choose_save_path, list_files_in_subdirectory, get_organized_path,
     ensure_exact_case_filename, _confirm_overwrite, normalize_label_text,
 )
@@ -805,9 +813,9 @@ def _build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str
             },
             "right": {
                 "spine": bool(ec_ax.spines.get("right").get_visible() if ec_ax.spines.get("right") else False),
-                "ticks": bool(ec_ts.get("r_ticks", ec_ts.get("ry", False))),
+                "ticks": bool(ec_ts.get("r_ticks", ec_ts.get("ry", True))),
                 "minor": bool(ec_ts.get("mry", False)),
-                "labels": bool(ec_ts.get("r_labels", ec_ts.get("ry", False))),
+                "labels": bool(ec_ts.get("r_labels", ec_ts.get("ry", True))),
                 "title": bool(ec_ax.get_ylabel()),
             },
         }
@@ -1000,7 +1008,160 @@ def _build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str
         default_ext = ".bpsg"
     if cif_cfg is not None:
         cfg["cif"] = cif_cfg
+    if getattr(fig, "_is_dqdv_2d_contour", False):
+        try:
+            cfg["dqdv_2d"] = {
+                "v_lo": float(fig._dqdv_2d_v_lo),
+                "v_hi": float(fig._dqdv_2d_v_hi),
+                "row_labels": [str(s) for s in (fig._dqdv_2d_row_labels or [])],
+                "zlabel": str(getattr(fig, "_dqdv_2d_zlabel", "dQ/dV")),
+                "axis_mapping_version": int(getattr(fig, "_dqdv_2d_axis_mapping_version", 2)),
+            }
+        except Exception:
+            pass
     return cfg, default_ext
+
+
+def _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar=None) -> None:
+    """Re-apply butterfly voltage formatter only (does not reset labels, limits, or WASD)."""
+    if not getattr(fig, "_is_dqdv_2d_contour", False):
+        return
+    try:
+        from .electrochem_interactive import reapply_dqdv_2d_contour_axes
+        reapply_dqdv_2d_contour_axes(fig, ax, im, cbar, style_mode="minimal")
+    except Exception:
+        pass
+
+
+def _restore_dqdv_2d_operando_labels(ax, op_labels: dict) -> None:
+    """Restore operando axis titles after undo / style import in 2D dQ/dV mode."""
+    if not isinstance(op_labels, dict):
+        return
+    try:
+        if op_labels.get("x") is not None:
+            ax.set_xlabel(str(op_labels.get("x") or ""))
+            if not hasattr(ax, "_custom_labels"):
+                ax._custom_labels = {"x": None, "y": None}
+            ax._custom_labels["x"] = op_labels.get("x")
+        if op_labels.get("y") is not None:
+            ax.set_ylabel(str(op_labels.get("y") or ""))
+            if not hasattr(ax, "_custom_labels"):
+                ax._custom_labels = {"x": None, "y": None}
+            ax._custom_labels["y"] = op_labels.get("y")
+    except Exception:
+        pass
+
+
+def _dqdv_2d_print_potential_window(fig) -> None:
+    """Print current butterfly potential limits for the 2D dQ/dV contour."""
+    try:
+        v_lo = float(fig._dqdv_2d_v_lo)
+        v_hi = float(fig._dqdv_2d_v_hi)
+    except Exception:
+        print("Potential window (V): unknown")
+        return
+    print(
+        f"Current potential window (V): {v_lo:.4g} {v_hi:.4g}  "
+        f"(left discharge: {v_hi:.4g}→{v_lo:.4g}, right charge: {v_lo:.4g}→{v_hi:.4g})"
+    )
+
+
+def _dqdv_2d_potential_window_menu(fig, ax, im, cbar, snapshot_fn) -> None:
+    """ox submenu for 2D dQ/dV contour: set V_lo/V_hi and rebuild butterfly map."""
+    from .electrochem_interactive import update_dqdv_2d_potential_window
+
+    def _apply(v_lo: float, v_hi: float, note: str) -> None:
+        snapshot_fn(note)
+        if update_dqdv_2d_potential_window(fig, ax, im, v_lo, v_hi):
+            if cbar is not None:
+                try:
+                    _update_custom_colorbar(
+                        cbar.ax, im,
+                        label=getattr(cbar.ax, "_colorbar_label", None),
+                        label_mode=getattr(fig, "_colorbar_label_mode", "highlow"),
+                    )
+                except Exception:
+                    pass
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
+            _dqdv_2d_print_potential_window(fig)
+
+    while True:
+        _dqdv_2d_print_potential_window(fig)
+        print("  " + _colorize_menu("min max: set both limits (V_lo V_hi, e.g. 2 3)"))
+        print("  " + _colorize_menu("w: upper voltage only (V_hi)"))
+        print("  " + _colorize_menu("s: lower voltage only (V_lo)"))
+        print("  " + _colorize_menu("a: auto (restore initial window)"))
+        print("  " + _colorize_menu("q: back"))
+        line = _safe_input(_colorize_prompt("Potential window V (w/s/a/q): ")).strip()
+        if not line or line.lower() == "q":
+            break
+        if line.lower() == "a":
+            try:
+                v_lo = float(fig._dqdv_2d_v_lo_orig)
+                v_hi = float(fig._dqdv_2d_v_hi_orig)
+            except Exception:
+                print("No initial potential window stored.")
+                continue
+            _apply(v_lo, v_hi, "dqdv2d-potential-auto")
+            continue
+        if line.lower() == "w":
+            try:
+                v_lo = float(fig._dqdv_2d_v_lo)
+                v_hi = float(fig._dqdv_2d_v_hi)
+            except Exception:
+                continue
+            val = _safe_input(_colorize_inline_commands(
+                f"New upper voltage V_hi (current V_lo={v_lo:.4g}, q=back): "
+            )).strip()
+            if not val or val.lower() == "q":
+                continue
+            try:
+                new_hi = float(val)
+            except ValueError:
+                print("Invalid value.")
+                continue
+            if new_hi <= v_lo:
+                print(f"V_hi must be greater than V_lo ({v_lo:.4g}).")
+                continue
+            _apply(v_lo, new_hi, "dqdv2d-potential-w")
+            continue
+        if line.lower() == "s":
+            try:
+                v_lo = float(fig._dqdv_2d_v_lo)
+                v_hi = float(fig._dqdv_2d_v_hi)
+            except Exception:
+                continue
+            val = _safe_input(_colorize_inline_commands(
+                f"New lower voltage V_lo (current V_hi={v_hi:.4g}, q=back): "
+            )).strip()
+            if not val or val.lower() == "q":
+                continue
+            try:
+                new_lo = float(val)
+            except ValueError:
+                print("Invalid value.")
+                continue
+            if new_lo >= v_hi:
+                print(f"V_lo must be less than V_hi ({v_hi:.4g}).")
+                continue
+            _apply(new_lo, v_hi, "dqdv2d-potential-s")
+            continue
+        try:
+            parts = line.replace(",", " ").split()
+            if len(parts) < 2:
+                print("Enter two voltages: V_lo V_hi (e.g. 2 3).")
+                continue
+            v_a, v_b = float(parts[0]), float(parts[1])
+            v_lo, v_hi = min(v_a, v_b), max(v_a, v_b)
+            if v_hi <= v_lo:
+                print("Upper voltage must be greater than lower.")
+                continue
+            _apply(v_lo, v_hi, "dqdv2d-potential-range")
+        except ValueError:
+            print("Invalid numbers.")
 
 
 def _format_file_timestamp(filepath: str) -> str:
@@ -1525,23 +1686,28 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
             fam = plt.rcParams.get('font.sans-serif', [])
             fsize = plt.rcParams.get('font.size', None)
             mathtext_fs = plt.rcParams.get('mathtext.fontset', 'dejavusans')
-            # WASD state for both panes
+            # WASD state for both panes (minor flags from _saved_tick_state, not tick_params alone)
+            op_ts_snap = getattr(ax, '_saved_tick_state', {}) or {}
             op_wasd = {
-                'top':    {'spine': _get_spine_visible(ax, 'top'), 'ticks': ax.xaxis._major_tick_kw.get('tick1On', True), 
-                           'minor': bool(ax.xaxis._minor_tick_kw.get('tick1On', False)), 
-                           'labels': ax.xaxis._major_tick_kw.get('label1On', True), 
+                'top':    {'spine': _get_spine_visible(ax, 'top'),
+                           'ticks': bool(op_ts_snap.get('t_ticks', op_ts_snap.get('tx', False))),
+                           'minor': bool(op_ts_snap.get('mtx', False)),
+                           'labels': bool(op_ts_snap.get('t_labels', op_ts_snap.get('tx', False))),
                            'title': bool(getattr(ax, '_top_xlabel_on', False))},
-                'bottom': {'spine': _get_spine_visible(ax, 'bottom'), 'ticks': ax.xaxis._major_tick_kw.get('tick2On', True), 
-                           'minor': bool(ax.xaxis._minor_tick_kw.get('tick2On', False)), 
-                           'labels': ax.xaxis._major_tick_kw.get('label2On', True), 
+                'bottom': {'spine': _get_spine_visible(ax, 'bottom'),
+                           'ticks': bool(op_ts_snap.get('b_ticks', op_ts_snap.get('bx', True))),
+                           'minor': bool(op_ts_snap.get('mbx', False)),
+                           'labels': bool(op_ts_snap.get('b_labels', op_ts_snap.get('bx', True))),
                            'title': bool(ax.get_xlabel())},
-                'left':   {'spine': _get_spine_visible(ax, 'left'), 'ticks': ax.yaxis._major_tick_kw.get('tick1On', True), 
-                           'minor': bool(ax.yaxis._minor_tick_kw.get('tick1On', False)), 
-                           'labels': ax.yaxis._major_tick_kw.get('label1On', True), 
+                'left':   {'spine': _get_spine_visible(ax, 'left'),
+                           'ticks': bool(op_ts_snap.get('l_ticks', op_ts_snap.get('ly', True))),
+                           'minor': bool(op_ts_snap.get('mly', False)),
+                           'labels': bool(op_ts_snap.get('l_labels', op_ts_snap.get('ly', True))),
                            'title': bool(ax.get_ylabel())},
-                'right':  {'spine': _get_spine_visible(ax, 'right'), 'ticks': ax.yaxis._major_tick_kw.get('tick2On', False), 
-                           'minor': bool(ax.yaxis._minor_tick_kw.get('tick2On', False)), 
-                           'labels': ax.yaxis._major_tick_kw.get('label2On', False), 
+                'right':  {'spine': _get_spine_visible(ax, 'right'),
+                           'ticks': bool(op_ts_snap.get('r_ticks', op_ts_snap.get('ry', False))),
+                           'minor': bool(op_ts_snap.get('mry', False)),
+                           'labels': bool(op_ts_snap.get('r_labels', op_ts_snap.get('ry', False))),
                            'title': bool(getattr(ax, '_right_ylabel_on', False))},
             }
             # EC WASD state (only if ec_ax exists)
@@ -1549,23 +1715,28 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 # For EC, check if ylabel is currently visible (not hidden by user via d5)
                 # EC uses the actual ylabel positioned on right, not a duplicate artist
                 ec_ylabel_visible = bool(ec_ax.get_ylabel())  # Empty string = hidden
+                ec_ts_snap = getattr(ec_ax, '_saved_tick_state', {}) or {}
                 ec_wasd = {
-                    'top':    {'spine': _get_spine_visible(ec_ax, 'top'), 'ticks': ec_ax.xaxis._major_tick_kw.get('tick1On', True), 
-                               'minor': bool(ec_ax.xaxis._minor_tick_kw.get('tick1On', False)), 
-                               'labels': ec_ax.xaxis._major_tick_kw.get('label1On', True), 
+                    'top':    {'spine': _get_spine_visible(ec_ax, 'top'),
+                               'ticks': bool(ec_ts_snap.get('t_ticks', ec_ts_snap.get('tx', False))),
+                               'minor': bool(ec_ts_snap.get('mtx', False)),
+                               'labels': bool(ec_ts_snap.get('t_labels', ec_ts_snap.get('tx', False))),
                                'title': bool(getattr(ec_ax, '_top_xlabel_on', False))},
-                    'bottom': {'spine': _get_spine_visible(ec_ax, 'bottom'), 'ticks': ec_ax.xaxis._major_tick_kw.get('tick2On', True), 
-                               'minor': bool(ec_ax.xaxis._minor_tick_kw.get('tick2On', False)), 
-                               'labels': ec_ax.xaxis._major_tick_kw.get('label2On', True), 
+                    'bottom': {'spine': _get_spine_visible(ec_ax, 'bottom'),
+                               'ticks': bool(ec_ts_snap.get('b_ticks', ec_ts_snap.get('bx', True))),
+                               'minor': bool(ec_ts_snap.get('mbx', False)),
+                               'labels': bool(ec_ts_snap.get('b_labels', ec_ts_snap.get('bx', True))),
                                'title': bool(ec_ax.get_xlabel())},
-                    'left':   {'spine': _get_spine_visible(ec_ax, 'left'), 'ticks': ec_ax.yaxis._major_tick_kw.get('tick1On', False), 
-                               'minor': bool(ec_ax.yaxis._minor_tick_kw.get('tick1On', False)), 
-                               'labels': ec_ax.yaxis._major_tick_kw.get('label1On', False), 
-                               'title': False},  # EC ylabel is on right, not left
-                    'right':  {'spine': _get_spine_visible(ec_ax, 'right'), 'ticks': ec_ax.yaxis._major_tick_kw.get('tick2On', True), 
-                               'minor': bool(ec_ax.yaxis._minor_tick_kw.get('tick2On', False)), 
-                               'labels': ec_ax.yaxis._major_tick_kw.get('label2On', True), 
-                               'title': ec_ylabel_visible},  # True if ylabel is not empty
+                    'left':   {'spine': _get_spine_visible(ec_ax, 'left'),
+                               'ticks': bool(ec_ts_snap.get('l_ticks', False)),
+                               'minor': bool(ec_ts_snap.get('mly', False)),
+                               'labels': bool(ec_ts_snap.get('l_labels', False)),
+                               'title': False},
+                    'right':  {'spine': _get_spine_visible(ec_ax, 'right'),
+                               'ticks': bool(ec_ts_snap.get('r_ticks', ec_ts_snap.get('ry', True))),
+                               'minor': bool(ec_ts_snap.get('mry', False)),
+                               'labels': bool(ec_ts_snap.get('r_labels', ec_ts_snap.get('ry', True))),
+                               'title': ec_ylabel_visible},
                 }
             else:
                 ec_wasd = None
@@ -1655,22 +1826,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 'ec_wasd': dict(ec_wasd) if ec_wasd is not None else None,
                 'tick_lengths': getattr(fig, '_tick_lengths', None),
                 'tick_direction': getattr(fig, '_tick_direction', 'out'),
-                'tick_spacing_op': {
-                    'x_major_step': _op_locator_step(ax.xaxis.get_major_locator()),
-                    'x_minor_step': _op_locator_step(ax.xaxis.get_minor_locator()),
-                    'y_major_step': _op_locator_step(ax.yaxis.get_major_locator()),
-                    'y_minor_step': _op_locator_step(ax.yaxis.get_minor_locator()),
-                    'x_minor_ndivs': _op_locator_ndivs(ax.xaxis.get_minor_locator()),
-                    'y_minor_ndivs': _op_locator_ndivs(ax.yaxis.get_minor_locator()),
-                },
-                'tick_spacing_ec': {
-                    'x_major_step': _op_locator_step(ec_ax.xaxis.get_major_locator()),
-                    'x_minor_step': _op_locator_step(ec_ax.xaxis.get_minor_locator()),
-                    'y_major_step': _op_locator_step(ec_ax.yaxis.get_major_locator()),
-                    'y_minor_step': _op_locator_step(ec_ax.yaxis.get_minor_locator()),
-                    'x_minor_ndivs': _op_locator_ndivs(ec_ax.xaxis.get_minor_locator()),
-                    'y_minor_ndivs': _op_locator_ndivs(ec_ax.yaxis.get_minor_locator()),
-                } if ec_ax is not None else None,
+                'tick_spacing_op': capture_axes_tick_locators(ax, ('x', 'y')),
+                'tick_spacing_ec': capture_axes_tick_locators(ec_ax, ('x', 'y')) if ec_ax is not None else None,
                 'cb_visible': cb_visible,
                 'ec_visible': ec_visible,
                 'cb_h_offset': float(cb_h_offset),
@@ -1713,6 +1870,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
                     'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
                 } if getattr(ax, '_operando_cif_tick_series', None) else None,
+                'dqdv_2d': {
+                    'v_lo': float(getattr(fig, '_dqdv_2d_v_lo', 0.0)),
+                    'v_hi': float(getattr(fig, '_dqdv_2d_v_hi', 0.0)),
+                    'row_labels': [str(s) for s in (getattr(fig, '_dqdv_2d_row_labels', None) or [])],
+                    'zlabel': str(getattr(fig, '_dqdv_2d_zlabel', 'dQ/dV')),
+                } if getattr(fig, '_is_dqdv_2d_contour', False) else None,
             })
             if len(state_history) > 40:
                 state_history.pop(0)
@@ -1757,11 +1920,14 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 cbar.ax.yaxis.set_label_position('left' if cb_label_left else 'right')
             except Exception:
                 pass
-            # Labels
+            # Labels (2D dQ/dV: restored again after potential-window rebuild below)
             try:
                 op_l = snap.get('op_labels', {})
-                ax.set_xlabel(op_l.get('x') or ax.get_xlabel() or '')
-                ax.set_ylabel(op_l.get('y') or ax.get_ylabel() or '')
+                if getattr(fig, '_is_dqdv_2d_contour', False):
+                    _restore_dqdv_2d_operando_labels(ax, op_l)
+                else:
+                    ax.set_xlabel(op_l.get('x') or ax.get_xlabel() or '')
+                    ax.set_ylabel(op_l.get('y') or ax.get_ylabel() or '')
             except Exception:
                 pass
             try:
@@ -1791,7 +1957,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 pass
             # Operando axes and image
             try:
-                ax.set_xlim(*snap['op_xlim']); ax.set_ylim(*snap['op_ylim'])
+                if getattr(fig, '_is_dqdv_2d_contour', False):
+                    ax.set_ylim(*snap['op_ylim'])
+                else:
+                    ax.set_xlim(*snap['op_xlim'])
+                    ax.set_ylim(*snap['op_ylim'])
             except Exception:
                 pass
             try:
@@ -1963,24 +2133,18 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                 ec_ax.tick_params(axis='y', which='minor', left=False, right=bool(st['minor']))
                             if 'labels' in st:
                                 ec_ax.tick_params(axis='y', which='major', labelleft=False, labelright=bool(st['labels']))
-                            print(f"[DEBUG UNDO] EC right restored: ticks={st.get('ticks')}, labels={st.get('labels')}")
                         # Title restoration
                         if side == 'top' and 'title' in st:
                             setattr(ec_ax, '_top_xlabel_on', bool(st['title']))
                         elif side == 'right' and 'title' in st:
                             # EC right title is actual ylabel, not duplicate
-                            print(f"[DEBUG UNDO] EC right title state: {st['title']}, current ylabel: '{ec_ax.get_ylabel()}'")
                             if bool(st['title']):
-                                # Ylabel should be visible - restore from _stored_ylabel if it's currently empty
                                 if not ec_ax.get_ylabel() and hasattr(ec_ax, '_stored_ylabel'):
                                     ec_ax.set_ylabel(ec_ax._stored_ylabel)
-                                    print(f"[DEBUG UNDO] Restored EC ylabel from _stored_ylabel: '{ec_ax._stored_ylabel}'")
                             else:
-                                # Hide ylabel
                                 if not hasattr(ec_ax, '_stored_ylabel'):
                                     ec_ax._stored_ylabel = ec_ax.get_ylabel()
                                 ec_ax.set_ylabel('')
-                                print(f"[DEBUG UNDO] Hid EC ylabel, stored: '{ec_ax._stored_ylabel}'")
                 # Re-position titles using UI module functions
                 try:
                     # Build current tick state dict for UI functions
@@ -1993,31 +2157,44 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             if side == 'top':
                                 op_tick_state['t_ticks'] = st.get('ticks', False)
                                 op_tick_state['t_labels'] = st.get('labels', False)
+                                op_tick_state['mtx'] = st.get('minor', False)
                             elif side == 'bottom':
                                 op_tick_state['b_ticks'] = st.get('ticks', True)
                                 op_tick_state['b_labels'] = st.get('labels', True)
+                                op_tick_state['mbx'] = st.get('minor', False)
                             elif side == 'left':
                                 op_tick_state['l_ticks'] = st.get('ticks', True)
                                 op_tick_state['l_labels'] = st.get('labels', True)
+                                op_tick_state['mly'] = st.get('minor', False)
                             elif side == 'right':
                                 op_tick_state['r_ticks'] = st.get('ticks', False)
                                 op_tick_state['r_labels'] = st.get('labels', False)
+                                op_tick_state['mry'] = st.get('minor', False)
                     if ec_wasd:
                         for side in ['top', 'bottom', 'left', 'right']:
                             st = ec_wasd.get(side, {})
                             if side == 'top':
                                 ec_tick_state['t_ticks'] = st.get('ticks', False)
                                 ec_tick_state['t_labels'] = st.get('labels', False)
+                                ec_tick_state['mtx'] = st.get('minor', False)
                             elif side == 'bottom':
                                 ec_tick_state['b_ticks'] = st.get('ticks', True)
                                 ec_tick_state['b_labels'] = st.get('labels', True)
+                                ec_tick_state['mbx'] = st.get('minor', False)
                             elif side == 'left':
-                                ec_tick_state['l_ticks'] = st.get('ticks', False)  # EC: left is off by default
-                                ec_tick_state['l_labels'] = st.get('labels', False)  # EC: left labels off
+                                ec_tick_state['l_ticks'] = st.get('ticks', False)
+                                ec_tick_state['l_labels'] = st.get('labels', False)
+                                ec_tick_state['mly'] = st.get('minor', False)
                             elif side == 'right':
-                                ec_tick_state['r_ticks'] = st.get('ticks', True)  # EC: right ticks ON by default
-                                ec_tick_state['r_labels'] = st.get('labels', True)  # EC: right labels ON by default
-                        print(f"[DEBUG UNDO] EC tick_state: r_ticks={ec_tick_state.get('r_ticks')}, r_labels={ec_tick_state.get('r_labels')}")
+                                ec_tick_state['r_ticks'] = st.get('ticks', True)
+                                ec_tick_state['r_labels'] = st.get('labels', True)
+                                ec_tick_state['mry'] = st.get('minor', False)
+                    try:
+                        ax._saved_tick_state = dict(op_tick_state)
+                        if ec_ax is not None:
+                            ec_ax._saved_tick_state = dict(ec_tick_state)
+                    except Exception:
+                        pass
                     # Position titles
                     _ui_position_top_xlabel(ax, fig, op_tick_state)
                     _ui_position_bottom_xlabel(ax, fig, op_tick_state)
@@ -2098,37 +2275,25 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 fig._tick_direction = tick_dir
             except Exception:
                 pass
-            # Restore tick spacing and minor count
-            def _restore_ax_spacing(axis_obj, spacing_dict):
-                if not spacing_dict:
-                    return
-                for axis_ax, maj_key, min_key, ndivs_key in [
-                    (axis_obj.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
-                    (axis_obj.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
-                ]:
-                    try:
-                        maj_step = spacing_dict.get(maj_key)
-                        if maj_step is not None:
-                            axis_ax.set_major_locator(MultipleLocator(float(maj_step)))
-                        else:
-                            axis_ax.set_major_locator(AutoLocator())
-                    except Exception:
-                        pass
-                    try:
-                        min_step = spacing_dict.get(min_key)
-                        ndivs = spacing_dict.get(ndivs_key)
-                        if min_step is not None:
-                            axis_ax.set_minor_locator(MultipleLocator(float(min_step)))
-                        elif ndivs is not None:
-                            axis_ax.set_minor_locator(AutoMinorLocator(int(ndivs)))
-                        else:
-                            axis_ax.set_minor_locator(AutoMinorLocator())
-                    except Exception:
-                        pass
+            # Restore tick spacing / minor locators (after WASD tick_params above)
             try:
-                _restore_ax_spacing(ax, snap.get('tick_spacing_op'))
+                restore_axes_tick_locators(ax, snap.get('tick_spacing_op'), ('x', 'y'))
                 if ec_ax is not None:
-                    _restore_ax_spacing(ec_ax, snap.get('tick_spacing_ec'))
+                    restore_axes_tick_locators(ec_ax, snap.get('tick_spacing_ec'), ('x', 'y'))
+            except Exception:
+                pass
+            _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar)
+            # Re-apply WASD minor locators after spacing restore (undo order)
+            try:
+                op_wasd = snap.get('op_wasd')
+                ec_wasd = snap.get('ec_wasd')
+                if op_wasd:
+                    apply_wasd_minor_ticks(
+                        ax, op_wasd,
+                        y_minor_mode='left' if ec_ax is not None else 'both',
+                    )
+                if ec_wasd and ec_ax is not None:
+                    apply_wasd_minor_ticks(ec_ax, ec_wasd, y_minor_mode='right')
             except Exception:
                 pass
             # Restore spine linewidths and tick widths (l command)
@@ -2274,6 +2439,30 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
             except Exception:
                 pass
             try:
+                d2 = snap.get('dqdv_2d')
+                if d2 and isinstance(d2, dict) and getattr(fig, '_is_dqdv_2d_contour', False):
+                    try:
+                        fig._dqdv_2d_v_lo = float(d2['v_lo'])
+                        fig._dqdv_2d_v_hi = float(d2['v_hi'])
+                        fig._dqdv_2d_row_labels = [str(s) for s in (d2.get('row_labels') or [])]
+                        if d2.get('zlabel') is not None:
+                            fig._dqdv_2d_zlabel = str(d2['zlabel'])
+                    except Exception:
+                        pass
+                    try:
+                        from .electrochem_interactive import update_dqdv_2d_potential_window
+                        update_dqdv_2d_potential_window(
+                            fig, ax, im,
+                            float(fig._dqdv_2d_v_lo), float(fig._dqdv_2d_v_hi),
+                        )
+                    except Exception:
+                        pass
+                _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar)
+                if getattr(fig, '_is_dqdv_2d_contour', False):
+                    _restore_dqdv_2d_operando_labels(ax, snap.get('op_labels', {}))
+            except Exception:
+                pass
+            try:
                 fig.canvas.draw()
             except Exception:
                 fig.canvas.draw_idle()
@@ -2281,8 +2470,86 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
         except Exception as e:
             print(f"Undo failed: {e}")
 
+    def _run_save_dqdv_2d_contour_session():
+        """Save dQ/dV 2D contour state (.pkl) with butterfly axis metadata."""
+        import pickle
+        from .electrochem_interactive import build_dqdv_2d_snapshot
+        folder = choose_save_path(file_paths, purpose="dQ/dV 2D session save")
+        if not folder:
+            return
+        print(f"\nChosen path: {folder}")
+        if not os.path.isdir(folder):
+            print(f"Error: path is not a directory or does not exist: {folder}")
+            return
+        try:
+            v_lo = float(fig._dqdv_2d_v_lo)
+            v_hi = float(fig._dqdv_2d_v_hi)
+            row_labels = [str(s) for s in (fig._dqdv_2d_row_labels or [])]
+            zlab = str(getattr(fig, "_dqdv_2d_zlabel", "dQ/dV"))
+        except Exception:
+            print("Error: missing dQ/dV 2D axis metadata on this figure.")
+            return
+        snap = build_dqdv_2d_snapshot(fig, ax, im, v_lo, v_hi, row_labels, zlab)
+        if snap is None:
+            print("Error: could not build dQ/dV 2D session snapshot.")
+            return
+        try:
+            all_names = os.listdir(folder)
+            files = sorted([f for f in all_names if f.lower().endswith('.pkl')], key=natural_sort_key)
+        except OSError as e:
+            print(f"Cannot list directory: {e}")
+            return
+        if files:
+            print("Existing .pkl files:")
+            for i, f in enumerate(files, 1):
+                filepath = os.path.join(folder, f)
+                timestamp = _format_file_timestamp(filepath)
+                if timestamp:
+                    print(f"  {i}: {f}  ({timestamp})")
+                else:
+                    print(f"  {i}: {f}")
+        choice = _safe_input(_colorize_prompt(
+            "Enter new filename (no ext needed) or number to overwrite (q=cancel): "
+        )).strip()
+        if not choice or choice.lower() == 'q':
+            return
+        target = None
+        if choice.isdigit() and files:
+            idx = int(choice)
+            if 1 <= idx <= len(files):
+                name = files[idx - 1]
+                yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
+                if yn == 'y':
+                    target = os.path.join(folder, name)
+            else:
+                print("Invalid number.")
+                return
+        else:
+            name = choice
+            root, ext = os.path.splitext(name)
+            if ext == '':
+                name = name + '.pkl'
+            target = name if os.path.isabs(name) else os.path.join(folder, name)
+            if os.path.exists(target):
+                yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                if yn != 'y':
+                    return
+        if not target:
+            return
+        target = ensure_exact_case_filename(target)
+        try:
+            with open(target, 'wb') as f:
+                pickle.dump(snap, f)
+            fig._last_session_save_path = target
+            print(f"dQ/dV 2D session saved to {target}")
+        except Exception as e:
+            print(f"Error saving dQ/dV 2D session: {e}")
+
     def _run_save_operando_session():
         """Run the operando session save flow. Returns without printing menus."""
+        if getattr(fig, '_is_dqdv_2d_contour', False):
+            _run_save_dqdv_2d_contour_session()
+            return
         folder = choose_save_path(file_paths, purpose="operando session save")
         if not folder:
             return
@@ -2678,7 +2945,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     print("  " + _colorize_menu("5: colorbar label text"))
                     print("  " + _colorize_menu("m: move horizontal position"))
                     print("  " + _colorize_menu("q: back"))
-                    choice = _safe_input(_colorize_prompt("v (1/2/3/4/5/m/q): ")).strip().lower()
+                    choice = _safe_input(_colorize_prompt(
+                        "Visibility & colorbar (1-5, m=move offsets, q=back to main menu): "
+                    )).strip().lower()
                     if choice == '1':
                         # Toggle colorbar
                         cb_vis = cbar.ax.get_visible()
@@ -2786,7 +3055,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     # Operando-only mode: toggle colorbar or change label mode
                     cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
                     print(_colorize_inline_commands(f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=cancel"))
-                    choice = _safe_input(_colorize_prompt("v> ")).strip().lower()
+                    choice = _safe_input(_colorize_prompt(
+                        "Visibility & colorbar (1-3/m per list above, q=cancel): "
+                    )).strip().lower()
                     if choice == '1':
                         cb_vis = cbar.ax.get_visible()
                         cbar.ax.set_visible(not cb_vis)
@@ -3335,10 +3606,19 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     pass
             while True:
                 if ec_ax is not None:
-                    print(_colorize_inline_commands("Choose pane: o=operando, e=ec, q=back"))
+                    print(_colorize_inline_commands(
+                        "Choose which plot to edit: o=operando (contour), e=EC side panel, q=return to contour menu"
+                    ))
+                    pane = _safe_input(_colorize_prompt(
+                        "Pane (o=operando, e=ec side panel, q=back to contour menu): "
+                    )).strip().lower()
                 else:
-                    print(_colorize_inline_commands("Choose pane: o=operando, q=back"))
-                pane = _safe_input(_colorize_prompt("ot (o/e/q): ")).strip().lower()
+                    print(_colorize_inline_commands(
+                        "Spines/ticks apply to the contour plot only. q=return to contour menu"
+                    ))
+                    pane = _safe_input(_colorize_prompt(
+                        "Pane (o=operando contour, q=back to contour menu): "
+                    )).strip().lower()
                 if not pane:
                     continue
                 if pane == 'q':
@@ -3468,14 +3748,22 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     
                     # Build tick_state dict from current wasd_state for UI functions
                     current_tick_state = {
+                        't_ticks': bool(wasd_state['top']['ticks']),
                         't_labels': bool(wasd_state['top']['labels']),
-                        'tx': bool(wasd_state['top']['labels']),
+                        'tx': bool(wasd_state['top']['ticks'] and wasd_state['top']['labels']),
+                        'b_ticks': bool(wasd_state['bottom']['ticks']),
                         'b_labels': bool(wasd_state['bottom']['labels']),
-                        'bx': bool(wasd_state['bottom']['labels']),
+                        'bx': bool(wasd_state['bottom']['ticks'] and wasd_state['bottom']['labels']),
+                        'l_ticks': bool(wasd_state['left']['ticks']),
                         'l_labels': bool(wasd_state['left']['labels']),
-                        'ly': bool(wasd_state['left']['labels']),
+                        'ly': bool(wasd_state['left']['ticks'] and wasd_state['left']['labels']),
+                        'r_ticks': bool(wasd_state['right']['ticks']),
                         'r_labels': bool(wasd_state['right']['labels']),
-                        'ry': bool(wasd_state['right']['labels']),
+                        'ry': bool(wasd_state['right']['ticks'] and wasd_state['right']['labels']),
+                        'mtx': bool(wasd_state['top']['minor']),
+                        'mbx': bool(wasd_state['bottom']['minor']),
+                        'mly': bool(wasd_state['left']['minor']),
+                        'mry': bool(wasd_state['right']['minor']),
                     }
                     
                     # Store tick state for future reference
@@ -3561,15 +3849,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print(f"\033[1mToggle spines>\033[0m")
                 print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
                 print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
-                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine {_C}w/a/s/d{_R}+{_C}1-5{_R} only; not the letter {_C}y{_R} for y-axis)")
                 print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
                 print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
-                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}  (at the spacing prompt you can chain pairs on one line: {_C}x 0.5 y 100{_R})")
                 print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
                 print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
-                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back to pane chooser")
+                print(_colorize_inline_commands(
+                    "Tip: q backs out (spacing/minor submenus → here → pane chooser). Blank line repeats this prompt."
+                ))
                 while True:
-                    cmd2 = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
+                    cmd2 = _safe_input(_colorize_prompt(
+                        "Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back to pane chooser): "
+                    )).strip().lower()
                     if not cmd2:
                         continue
                     if cmd2 == 'q':
@@ -3581,7 +3874,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         new_dir = 'in' if current_dir == 'out' else 'out'
                         setattr(fig, '_tick_direction', new_dir)
                         ax.tick_params(axis='both', which='both', direction=new_dir)
-                        ec_ax.tick_params(axis='both', which='both', direction=new_dir)
+                        if ec_ax is not None:
+                            ec_ax.tick_params(axis='both', which='both', direction=new_dir)
                         print(f"Tick direction: {new_dir}")
                         try:
                             fig.canvas.draw()
@@ -3606,8 +3900,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             # Apply to all four axes on both ax and ec_ax
                             ax.tick_params(axis='both', which='major', length=new_major)
                             ax.tick_params(axis='both', which='minor', length=new_minor)
-                            ec_ax.tick_params(axis='both', which='major', length=new_major)
-                            ec_ax.tick_params(axis='both', which='minor', length=new_minor)
+                            if ec_ax is not None:
+                                ec_ax.tick_params(axis='both', which='major', length=new_major)
+                                ec_ax.tick_params(axis='both', which='minor', length=new_minor)
                             # Store for persistence
                             if not hasattr(fig, '_tick_lengths'):
                                 fig._tick_lengths = {}
@@ -3635,43 +3930,66 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             print(f"Set tick spacing for {('EC' if target is ec_ax else 'operando')} pane. Current:")
                             print(f"  {_C2}x{_R2} (X axis) : {_loc_str_op(target.xaxis.get_major_locator())}")
                             print(f"  {_C2}y{_R2} (Y axis) : {_loc_str_op(target.yaxis.get_major_locator())}")
-                            print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}all 1{_R2}  {_C2}x auto{_R2}  (q=back)")
+                            print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}x 0.5 y 100{_R2}  {_C2}all 1{_R2}  {_C2}x auto{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Spacing> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Major tick spacing (pairs on one line, e.g. x 0.5 y 100 all 1 x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_n = inp.split()
                                 if len(parts_n) < 2:
-                                    print("Need axis and value, e.g. 'x 0.5' or 'all 1'.")
+                                    print("Need axis and value, e.g. 'x 0.5', 'y 100', or 'x 0.5 y 100'.")
                                     continue
-                                axis_key, val_str = parts_n[0], parts_n[1]
-                                target_axes_n = []
-                                if axis_key == 'all':
-                                    target_axes_n = [target.xaxis, target.yaxis]
-                                elif axis_key == 'x':
-                                    target_axes_n = [target.xaxis]
-                                elif axis_key == 'y':
-                                    target_axes_n = [target.yaxis]
-                                else:
-                                    print(f"Unknown axis '{axis_key}'. Use x, y, or all.")
+                                if len(parts_n) % 2 != 0:
+                                    print("Unpaired token at end; use pairs like 'x 0.5 y 100' (even number of words).")
                                     continue
-                                _snapshot("tick-spacing")
-                                for _axis in target_axes_n:
-                                    if val_str == 'auto':
-                                        _axis.set_major_locator(AutoLocator())
-                                        _axis.set_minor_locator(AutoMinorLocator())
-                                        print(f"Set {_axis.axis_name} to auto spacing.")
+
+                                def _apply_spacing_pair(axis_key: str, val_str: str) -> bool:
+                                    """Apply one axis/value pair. Returns False if skipped due to error."""
+                                    target_axes_n = []
+                                    if axis_key == 'all':
+                                        target_axes_n = [target.xaxis, target.yaxis]
+                                    elif axis_key == 'x':
+                                        target_axes_n = [target.xaxis]
+                                    elif axis_key == 'y':
+                                        target_axes_n = [target.yaxis]
                                     else:
-                                        try:
-                                            sp_val = float(val_str)
-                                            if sp_val <= 0:
-                                                print("Spacing must be positive.")
-                                                continue
-                                            _axis.set_major_locator(MultipleLocator(sp_val))
-                                            _axis.set_minor_locator(MultipleLocator(sp_val / 5))
-                                            print(f"Set {_axis.axis_name} spacing: {sp_val}")
-                                        except ValueError:
-                                            print(f"Invalid value '{val_str}'.")
+                                        print(f"Unknown axis '{axis_key}'. Use x, y, or all.")
+                                        return False
+                                    for _axis in target_axes_n:
+                                        if val_str == 'auto':
+                                            _axis.set_major_locator(AutoLocator())
+                                            _axis.set_minor_locator(AutoMinorLocator())
+                                            print(f"Set {_axis.axis_name} to auto spacing.")
+                                        else:
+                                            try:
+                                                sp_val = float(val_str)
+                                                if sp_val <= 0:
+                                                    print("Spacing must be positive.")
+                                                    return False
+                                                _axis.set_major_locator(MultipleLocator(sp_val))
+                                                _axis.set_minor_locator(MultipleLocator(sp_val / 5))
+                                                print(f"Set {_axis.axis_name} spacing: {sp_val}")
+                                            except ValueError:
+                                                print(f"Invalid value '{val_str}'.")
+                                                return False
+                                        # After changing tick positions, replace formatters on linear axes.
+                                        # Otherwise a prior FuncFormatter/FixedFormatter (e.g. from imshow set_yticklabels)
+                                        # leaves blank or wrong labels when the locator changes.
+                                        scale = target.get_xscale() if _axis.axis_name == 'x' else target.get_yscale()
+                                        if scale == 'linear':
+                                            try:
+                                                _axis.set_major_formatter(ScalarFormatter())
+                                            except Exception:
+                                                pass
+                                    return True
+
+                                _snapshot("tick-spacing")
+                                for pi in range(0, len(parts_n), 2):
+                                    ak, vs = parts_n[pi], parts_n[pi + 1]
+                                    if not _apply_spacing_pair(ak, vs):
+                                        break
                                 try:
                                     fig.canvas.draw()
                                 except Exception:
@@ -3695,44 +4013,57 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             print(f"Minor ticks for {('EC' if target is ec_ax else 'operando')} pane:")
                             print(f"  x : {_minor_str_op(target.xaxis)}")
                             print(f"  y : {_minor_str_op(target.yaxis)}")
-                            print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
+                            print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}x 4 y 1{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Minor> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Minor ticks per interval (pairs on one line, e.g. x 4 y 1 all 0 x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_m = inp.split()
                                 if len(parts_m) < 2:
-                                    print("Need axis and count, e.g. 'x 4' or 'all 1'.")
+                                    print("Need axis and count, e.g. 'x 4', 'y 1', or 'x 4 y 1'.")
                                     continue
-                                axis_key_m, val_m = parts_m[0], parts_m[1]
-                                target_axes_m = []
-                                if axis_key_m == 'all':
-                                    target_axes_m = [target.xaxis, target.yaxis]
-                                elif axis_key_m == 'x':
-                                    target_axes_m = [target.xaxis]
-                                elif axis_key_m == 'y':
-                                    target_axes_m = [target.yaxis]
-                                else:
-                                    print(f"Unknown axis '{axis_key_m}'. Use x, y, or all.")
+                                if len(parts_m) % 2 != 0:
+                                    print("Unpaired token at end; use pairs like 'x 4 y 1' (even number of words).")
                                     continue
-                                _snapshot("tick-minor-count")
-                                for _axis_m in target_axes_m:
-                                    if val_m == 'auto':
-                                        _axis_m.set_minor_locator(AutoMinorLocator())
-                                        print(f"Set {_axis_m.axis_name} minor ticks to auto.")
-                                    elif val_m == '0':
-                                        _axis_m.set_minor_locator(NullLocator())
-                                        print(f"Disabled {_axis_m.axis_name} minor ticks.")
+
+                                def _apply_minor_pair(axis_key_m: str, val_m: str) -> bool:
+                                    target_axes_m = []
+                                    if axis_key_m == 'all':
+                                        target_axes_m = [target.xaxis, target.yaxis]
+                                    elif axis_key_m == 'x':
+                                        target_axes_m = [target.xaxis]
+                                    elif axis_key_m == 'y':
+                                        target_axes_m = [target.yaxis]
                                     else:
-                                        try:
-                                            count = int(val_m)
-                                            if count < 0:
-                                                print("Count must be 0 or positive.")
-                                                continue
-                                            _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
-                                            print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per interval.")
-                                        except ValueError:
-                                            print(f"Invalid value '{val_m}'.")
+                                        print(f"Unknown axis '{axis_key_m}'. Use x, y, or all.")
+                                        return False
+                                    for _axis_m in target_axes_m:
+                                        if val_m == 'auto':
+                                            _axis_m.set_minor_locator(AutoMinorLocator())
+                                            print(f"Set {_axis_m.axis_name} minor ticks to auto.")
+                                        elif val_m == '0':
+                                            _axis_m.set_minor_locator(NullLocator())
+                                            print(f"Disabled {_axis_m.axis_name} minor ticks.")
+                                        else:
+                                            try:
+                                                count = int(val_m)
+                                                if count < 0:
+                                                    print("Count must be 0 or positive.")
+                                                    return False
+                                                _axis_m.set_minor_locator(AutoMinorLocator(count + 1))
+                                                print(f"Set {_axis_m.axis_name} to {count} minor tick(s) per interval.")
+                                            except ValueError:
+                                                print(f"Invalid value '{val_m}'.")
+                                                return False
+                                    return True
+
+                                _snapshot("tick-minor-count")
+                                for mi in range(0, len(parts_m), 2):
+                                    ak_m, vm = parts_m[mi], parts_m[mi + 1]
+                                    if not _apply_minor_pair(ak_m, vm):
+                                        break
                                 try:
                                     fig.canvas.draw()
                                 except Exception:
@@ -3752,10 +4083,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                 print(f"  {_Col}{side_code}={side_key:<6}{_Rol} {b_op(s['spine'])}  {b_op(s['ticks'])}   {b_op(s['minor'])}   {b_op(s['labels'])}  {b_op(s['title'])}")
                             print(f"  (left 'a' not available for EC panel)")
                         else:
-                            for side_key, side_code in [('top','w'),('bottom','s'),('left','a')]:
+                            sides_list = [('top', 'w'), ('bottom', 's'), ('left', 'a')]
+                            if ec_ax is None:
+                                sides_list.append(('right', 'd'))
+                            for side_key, side_code in sides_list:
                                 s = wasd[side_key]
                                 print(f"  {_Col}{side_code}={side_key:<6}{_Rol} {b_op(s['spine'])}  {b_op(s['ticks'])}   {b_op(s['minor'])}   {b_op(s['labels'])}  {b_op(s['title'])}")
-                            print(f"  (right 'd' not available for operando panel)")
+                            if ec_ax is not None:
+                                print(f"  (right 'd' not available on operando when EC panel is present — use pane e)")
+                            else:
+                                print(f"  (operando-only: {_Col}d{_Rol} controls the right side)")
                         # Tick direction, length, spacing, minor count
                         tick_dir = getattr(fig, '_tick_direction', 'out')
                         print(f"  Tick direction  : {_Col}{tick_dir}{_Rol}")
@@ -4005,7 +4342,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
                             print("  " + _colorize_menu('r : reset all offsets'))
                             print("  " + _colorize_menu('q : return'))
-                            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
+                            choice = _safe_input(_colorize_prompt(
+                                "Title offset (w/s/a/d/r/q per list above): "
+                            )).strip().lower()
                             if not choice:
                                 continue
                             if choice == 'q':
@@ -4160,7 +4499,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print("  " + _colorize_menu("x: show/hide CIF set (per set)"))
                 print("  " + _colorize_menu("b: undo"))
                 print("  " + _colorize_menu("q: back"))
-                sub = _safe_input(_colorize_prompt("c> ")).strip().lower()
+                sub = _safe_input(_colorize_prompt(
+                    "CIF tick labels (key letter from list above, q=back): "
+                )).strip().lower()
                 if not sub or sub == 'q':
                     break
                 if sub == 'z':
@@ -4475,6 +4816,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     print("Unknown choice.")
             print_menu()
         elif cmd == 'ox':
+            if getattr(fig, '_is_dqdv_2d_contour', False):
+                try:
+                    _dqdv_2d_potential_window_menu(fig, ax, im, cbar, _snapshot)
+                except Exception as e:
+                    print(f"Potential window change failed: {e}")
+                print_menu()
+                continue
             while True:
                 cur = ax.get_xlim(); print(f"Current operando X: {cur[0]:.4g} {cur[1]:.4g}")
                 print("  " + _colorize_menu("min max: set both limits"))
@@ -5410,6 +5758,18 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 if kind not in ('operando_ec_style', 'operando_ec_style_geom'):
                     print("Not a recognized operando style file (expected kind operando_ec_style or operando_ec_style_geom).")
                     print_menu(); continue
+
+                d2_cfg = cfg.get('dqdv_2d')
+                if d2_cfg and isinstance(d2_cfg, dict) and getattr(fig, '_is_dqdv_2d_contour', False):
+                    try:
+                        fig._dqdv_2d_v_lo = float(d2_cfg['v_lo'])
+                        fig._dqdv_2d_v_hi = float(d2_cfg['v_hi'])
+                        fig._dqdv_2d_row_labels = [str(s) for s in (d2_cfg.get('row_labels') or [])]
+                        if d2_cfg.get('zlabel') is not None:
+                            fig._dqdv_2d_zlabel = str(d2_cfg['zlabel'])
+                        fig._dqdv_2d_axis_mapping_version = int(d2_cfg.get('axis_mapping_version', 2))
+                    except Exception:
+                        pass
                 
                 has_geometry = (kind == 'operando_ec_style_geom' and 'axes_geometry' in cfg)
                 
@@ -5632,10 +5992,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                              labeltop=bool(ec_wasd.get('top', {}).get('labels', False)),
                                              labelbottom=bool(ec_wasd.get('bottom', {}).get('labels', True)))
                             ec_ax.tick_params(axis='y',
-                                             left=bool(ec_wasd.get('left', {}).get('ticks', True)),
-                                             right=bool(ec_wasd.get('right', {}).get('ticks', False)),
-                                             labelleft=bool(ec_wasd.get('left', {}).get('labels', True)),
-                                             labelright=bool(ec_wasd.get('right', {}).get('labels', False)))
+                                             left=False,
+                                             right=bool(ec_wasd.get('right', {}).get('ticks', True)),
+                                             labelleft=False,
+                                             labelright=bool(ec_wasd.get('right', {}).get('labels', True)))
                             # Apply minor ticks
                             if ec_wasd.get('top', {}).get('minor') or ec_wasd.get('bottom', {}).get('minor'):
                                 ec_ax.xaxis.set_minor_locator(AutoMinorLocator())
@@ -6083,13 +6443,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         geom = cfg.get('axes_geometry', {})
                         op_geom = geom.get('operando', {})
                         ec_geom = geom.get('ec', {})
+                        _is_d2 = bool(getattr(fig, '_is_dqdv_2d_contour', False))
                         
-                        if op_geom.get('xlabel'):
-                            ax.set_xlabel(op_geom['xlabel'])
-                        if op_geom.get('ylabel'):
-                            ax.set_ylabel(op_geom['ylabel'])
+                        if not _is_d2:
+                            if op_geom.get('xlabel'):
+                                ax.set_xlabel(op_geom['xlabel'])
+                            if op_geom.get('ylabel'):
+                                ax.set_ylabel(op_geom['ylabel'])
                         if 'xlim' in op_geom and isinstance(op_geom['xlim'], list) and len(op_geom['xlim']) == 2:
-                            ax.set_xlim(op_geom['xlim'][0], op_geom['xlim'][1])
+                            if not _is_d2:
+                                ax.set_xlim(op_geom['xlim'][0], op_geom['xlim'][1])
                         if 'ylim' in op_geom and isinstance(op_geom['ylim'], list) and len(op_geom['ylim']) == 2:
                             ax.set_ylim(op_geom['ylim'][0], op_geom['ylim'][1])
                         
@@ -6107,6 +6470,16 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         fig.canvas.draw_idle()
                     except Exception as e:
                         print(f"Warning: Could not apply geometry: {e}")
+
+                _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar)
+                if getattr(fig, '_is_dqdv_2d_contour', False):
+                    geom = cfg.get('axes_geometry', {}) if has_geometry else {}
+                    op_geom = geom.get('operando', {}) if isinstance(geom, dict) else {}
+                    op_l = {
+                        'x': op_geom.get('xlabel') if op_geom.get('xlabel') else ax.get_xlabel(),
+                        'y': op_geom.get('ylabel') if op_geom.get('ylabel') else ax.get_ylabel(),
+                    }
+                    _restore_dqdv_2d_operando_labels(ax, op_l)
                 
                 print(f"Applied style from {path}")
             except Exception as e:
@@ -6120,19 +6493,26 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print("Rename Operando Axes:")
                 print("  " + _colorize_menu("x: x-axis"))
                 print("  " + _colorize_menu("y: y-axis"))
+                print("  " + _colorize_menu("s: show recent axis names"))
                 print("  " + _colorize_menu("q: back"))
                 print_label_latex_tips()
                 while True:
-                    sub = _safe_input("or> ").strip().lower()
+                    sub = _safe_input(_colorize_prompt(
+                        "Rename operando axes (x/y/s/q): "
+                    )).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
+                    if sub == 's':
+                        print_recent_axis_names()
+                        continue
                     if sub == 'x':
                         cur = ax.get_xlabel() or ''
                         lab = _safe_input(f"New operando X label (blank=cancel, current='{cur}'): ")
                         if lab:
                             lab = normalize_label_text(convert_label_shortcuts(lab))
+                            remember_axis_name(lab)
                             _snapshot("rename-op-x")
                             try:
                                 ax.set_xlabel(lab)
@@ -6147,6 +6527,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         lab = _safe_input(f"New operando Y label (blank=cancel, current='{cur}'): ")
                         if lab:
                             lab = normalize_label_text(convert_label_shortcuts(lab))
+                            remember_axis_name(lab)
                             _snapshot("rename-op-y")
                             try:
                                 ax.set_ylabel(lab)
@@ -6175,19 +6556,26 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print("Rename EC Axes:")
                 print("  " + _colorize_menu("x: x-axis"))
                 print("  " + _colorize_menu("y: y-axis (mode-aware)"))
+                print("  " + _colorize_menu("s: show recent axis names"))
                 print("  " + _colorize_menu("q: back"))
                 print_label_latex_tips()
                 while True:
-                    sub = _safe_input("er> ").strip().lower()
+                    sub = _safe_input(_colorize_prompt(
+                        "Rename EC axes (x/y/s/q): "
+                    )).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
+                    if sub == 's':
+                        print_recent_axis_names()
+                        continue
                     if sub == 'x':
                         cur = ec_ax.get_xlabel() or ''
                         lab = _safe_input(f"New EC X label (blank=cancel, current='{cur}'): ")
                         if lab:
                             lab = normalize_label_text(convert_label_shortcuts(lab))
+                            remember_axis_name(lab)
                             _snapshot("rename-ec-x")
                             try:
                                 ec_ax.set_xlabel(lab)
@@ -6201,6 +6589,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         lab = _safe_input(f"New EC Y label (blank=cancel, current='{cur}'): ")
                         if lab:
                             lab = normalize_label_text(convert_label_shortcuts(lab))
+                            remember_axis_name(lab)
                             _snapshot("rename-ec-y")
                             try:
                                 ec_ax.set_ylabel(lab)
@@ -6251,7 +6640,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print(_colorize_inline_commands("EC grid: t=toggle, a=alpha, s=linestyle, c=color, w=which (major/both), q=back"))
                 while True:
                     print(f"  Grid: {'on' if gstate['visible'] else 'off'}, alpha={gstate['alpha']}, ls={gstate['linestyle']}, which={gstate['which']}")
-                    sub = _safe_input(_colorize_prompt("eg> ")).strip().lower()
+                    sub = _safe_input(_colorize_prompt(
+                        "EC grid options (t/a/s/c/w/q per line above): "
+                    )).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
@@ -6337,7 +6728,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 print("  " + _colorize_menu("l: linewidth"))
                 print("  " + _colorize_menu("q: back"))
                 while True:
-                    sub = _safe_input(_colorize_prompt("el> ")).strip().lower()
+                    sub = _safe_input(_colorize_prompt(
+                        "EC line style (c=color, l=linewidth, q=back): "
+                    )).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':

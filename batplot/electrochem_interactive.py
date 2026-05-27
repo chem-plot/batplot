@@ -23,8 +23,18 @@ from .ui import (
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
     set_spine_side_color as _ui_set_spine_side_color,
+    capture_axes_tick_locators,
+    restore_axes_tick_locators,
 )
-from matplotlib.ticker import MaxNLocator, AutoMinorLocator, NullFormatter, NullLocator, MultipleLocator, AutoLocator  # type: ignore[import-untyped]
+from matplotlib.ticker import (  # type: ignore[import-untyped]
+    MaxNLocator,
+    AutoMinorLocator,
+    NullFormatter,
+    NullLocator,
+    MultipleLocator,
+    AutoLocator,
+    FuncFormatter,
+)
 from .plotting import update_labels as _update_labels
 from .utils import (
     _confirm_overwrite,
@@ -35,6 +45,8 @@ from .utils import (
     convert_label_shortcuts,
     natural_sort_key,
     print_label_latex_tips,
+    print_recent_axis_names,
+    remember_axis_name,
     _colorize_option_keys,
 )
 import re
@@ -49,6 +61,7 @@ from .color_utils import (
     manage_user_colors,
     get_user_color_list,
     resolve_color_token,
+    ensure_colormap,
 )
 
 
@@ -108,6 +121,68 @@ def _format_file_timestamp(filepath: str) -> str:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
     except Exception:
         return ""
+
+
+def _ec_savefig_plot_window(fig, ax, target: str, *, transparent: bool = False) -> None:
+    """Export EC/dQ/dV figure so decorations outside the axes patch are not clipped.
+
+    ``bbox_inches='tight'`` alone can crop long axis labels when the axes sits close to
+    the figure edge. We refresh the renderer, pass explicit label/legend artists, and
+    add padding so the saved image matches the visible plot window.
+    """
+    try:
+        fig.canvas.draw()
+    except Exception:
+        try:
+            fig.canvas.draw_idle()
+        except Exception:
+            pass
+    extras: List[Any] = []
+    try:
+        for _lab in (ax.xaxis.label, ax.yaxis.label):
+            if _lab is not None:
+                extras.append(_lab)
+    except Exception:
+        pass
+    for _attr in ('_top_xlabel_artist', '_right_ylabel_artist'):
+        try:
+            _a = getattr(ax, _attr, None)
+            if _a is not None and bool(getattr(_a, 'get_visible', lambda: True)()):
+                extras.append(_a)
+        except Exception:
+            pass
+    try:
+        _sec = getattr(fig, '_xaxis_secondary', None)
+        if _sec is not None:
+            for _lab in (_sec.xaxis.label, _sec.yaxis.label):
+                if _lab is not None:
+                    extras.append(_lab)
+    except Exception:
+        pass
+    try:
+        _leg = ax.get_legend()
+        if _leg is not None and _leg.get_visible():
+            extras.append(_leg)
+    except Exception:
+        pass
+    try:
+        _sup = getattr(fig, '_suptitle', None)
+        if _sup is not None and bool(getattr(_sup, 'get_visible', lambda: True)()):
+            extras.append(_sup)
+    except Exception:
+        pass
+    kw: Dict[str, Any] = {
+        'dpi': 300,
+        'bbox_inches': 'tight',
+        'pad_inches': 0.28,
+    }
+    if extras:
+        kw['bbox_extra_artists'] = extras
+    if transparent:
+        kw['transparent'] = True
+        kw['facecolor'] = 'none'
+        kw['edgecolor'] = 'none'
+    fig.savefig(target, **kw)
 
 
 def _colorize_prompt(text):
@@ -408,6 +483,536 @@ def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]
                     ln._smooth_applied = True
 
 
+def _dqdv_interp_unique_sorted_x(x: np.ndarray, z: np.ndarray, gx: np.ndarray) -> np.ndarray:
+    """Interpolate z(x) onto grid gx; duplicate x are averaged. Out-of-range -> NaN."""
+    x = np.asarray(x, dtype=float)
+    z = np.asarray(z, dtype=float)
+    m = np.isfinite(x) & np.isfinite(z)
+    if not np.any(m):
+        return np.full_like(gx, np.nan, dtype=float)
+    x = x[m]
+    z = z[m]
+    order = np.argsort(x, kind="mergesort")
+    x = x[order]
+    z = z[order]
+    xu: List[float] = []
+    zu: List[float] = []
+    i = 0
+    n = len(x)
+    while i < n:
+        j = i + 1
+        while j < n and x[j] == x[i]:
+            j += 1
+        xu.append(float(x[i]))
+        zu.append(float(np.nanmean(z[i:j])))
+        i = j
+    xu_arr = np.asarray(xu, dtype=float)
+    zu_arr = np.asarray(zu, dtype=float)
+    if xu_arr.size == 0:
+        return np.full_like(gx, np.nan, dtype=float)
+    if xu_arr.size == 1:
+        out = np.full_like(gx, np.nan, dtype=float)
+        out[np.abs(gx - xu_arr[0]) < 1e-12] = zu_arr[0]
+        return out
+    return np.interp(gx, xu_arr, zu_arr, left=np.nan, right=np.nan)
+
+
+def _dqdv_butterfly_xz_from_line(
+    ln,
+    role: str,
+    v_lo: float,
+    v_hi: float,
+    dv: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Map dQ/dV samples to display x in [0, 2*dv] (matches imshow extent).
+
+    Left panel [0, dv]: discharge V_hi → V_lo (high potential at left edge).
+    Right panel [dv, 2*dv]: charge V_lo → V_hi (low at center divider, high at right).
+    """
+    xv = np.asarray(ln.get_xdata(), dtype=float)
+    yv = np.asarray(ln.get_ydata(), dtype=float)
+    n = int(min(xv.size, yv.size))
+    if n < 2:
+        return np.array([]), np.array([])
+    xv = xv[:n]
+    yv = yv[:n]
+    m = (xv >= v_lo) & (xv <= v_hi) & np.isfinite(yv)
+    if not np.any(m):
+        return np.array([]), np.array([])
+    v_sub = xv[m]
+    z_sub = yv[m]
+    if dv <= 0 or not np.isfinite(dv):
+        return np.array([]), np.array([])
+    if role == "charge":
+        xb = float(dv) + (v_sub - v_lo)
+    else:
+        xb = (v_hi - v_sub)
+    return xb.astype(float), z_sub.astype(float)
+
+
+def _dqdv_build_butterfly_contour_stack(
+    file_data: List[Dict[str, Any]],
+    v_lo: float,
+    v_hi: float,
+    nx: int = 320,
+) -> Optional[Tuple[np.ndarray, np.ndarray, List[str]]]:
+    """Stack (smoothed) dQ/dV into 2D array for butterfly potential axis. Returns (Z, gx, row_labels) or None."""
+    v_lo, v_hi = float(min(v_lo, v_hi)), float(max(v_lo, v_hi))
+    dv = v_hi - v_lo
+    if dv <= 0 or not np.isfinite(dv):
+        return None
+    gx = np.linspace(0.0, 2.0 * dv, int(max(32, nx)))
+    row_keys: List[Tuple[int, Any]] = []
+    for fi, f in enumerate(file_data):
+        if not f.get("visible", True):
+            continue
+        cl = f.get("cycle_lines") or {}
+        for cyc, parts in cl.items():
+            if not isinstance(parts, dict):
+                continue
+            chg = parts.get("charge")
+            dch = parts.get("discharge")
+            vis = (
+                (chg is not None and chg.get_visible())
+                or (dch is not None and dch.get_visible())
+            )
+            if vis:
+                row_keys.append((fi, cyc))
+    if not row_keys:
+        return None
+
+    def _sort_key(t: Tuple[int, Any]):
+        fi, cyc = t
+        if isinstance(cyc, (int, float)):
+            return (fi, float(cyc))
+        return (fi, natural_sort_key(str(cyc)))
+
+    row_keys = sorted(set(row_keys), key=_sort_key)
+    z_rows: List[np.ndarray] = []
+    row_labels: List[str] = []
+    for (fi, cyc) in row_keys:
+        f = file_data[fi]
+        parts = (f.get("cycle_lines") or {}).get(cyc)
+        if not isinstance(parts, dict):
+            continue
+        xs: List[float] = []
+        zs: List[float] = []
+        for role in ("discharge", "charge"):
+            ln = parts.get(role)
+            if ln is None or not ln.get_visible():
+                continue
+            xb, zb = _dqdv_butterfly_xz_from_line(ln, role, v_lo, v_hi, dv)
+            if xb.size:
+                xs.extend(xb.tolist())
+                zs.extend(zb.tolist())
+        if not xs:
+            continue
+        x_arr = np.asarray(xs, dtype=float)
+        z_arr = np.asarray(zs, dtype=float)
+        row_z = _dqdv_interp_unique_sorted_x(x_arr, z_arr, gx)
+        if not np.any(np.isfinite(row_z)):
+            continue
+        z_rows.append(row_z)
+        disp = f.get("display_name") or f.get("filename") or str(fi + 1)
+        if len(file_data) > 1:
+            row_labels.append(f"{disp} c{cyc}")
+        else:
+            row_labels.append(str(cyc))
+    if not z_rows:
+        return None
+    Z = np.vstack(z_rows)
+    return Z, gx, row_labels
+
+
+def _dqdv_2d_row_tick_indices(n_rows: int, max_ticks: int = 24) -> np.ndarray:
+    """Row indices for y-axis ticks; avoids thousands of overlapping labels (readable on all OS)."""
+    n_rows = int(max(0, n_rows))
+    if n_rows <= 0:
+        return np.array([], dtype=int)
+    cap = int(max(4, max_ticks))
+    if n_rows <= cap:
+        return np.arange(n_rows, dtype=int)
+    idx = np.unique(np.round(np.linspace(0, n_rows - 1, cap)).astype(int))
+    return idx
+
+
+def _dqdv_2d_voltage_tick_formatter(v_lo: float, v_hi: float, dv: float):
+    """Map internal x in [0, 2*dv] to printed voltage (discharge 3→1 left, charge 1→3 right)."""
+    v_lo = float(v_lo)
+    v_hi = float(v_hi)
+    dv = float(dv)
+
+    def _fmt(x, pos=None):
+        try:
+            xv = float(x)
+        except Exception:
+            return ""
+        if not np.isfinite(xv) or dv <= 0:
+            return ""
+        eps = 1e-9 * max(dv, 1e-12)
+        if xv < -eps or xv > 2 * dv + eps:
+            return ""
+        if xv <= dv + eps:
+            V = v_hi + (xv / dv) * (v_lo - v_hi)
+        else:
+            V = v_lo + ((xv - dv) / dv) * (v_hi - v_lo)
+        if not np.isfinite(V):
+            return ""
+        return f"{V:g}"
+
+    return _fmt
+
+
+def _dqdv_2d_ensure_voltage_formatter(cax, v_lo: float, v_hi: float, dv: float) -> None:
+    """Keep butterfly x tick labels in voltage (V) on the internal [0, 2*dv] axis."""
+    cax.xaxis.set_major_formatter(FuncFormatter(_dqdv_2d_voltage_tick_formatter(v_lo, v_hi, dv)))
+    try:
+        cax.xaxis.set_minor_formatter(NullFormatter())
+    except Exception:
+        pass
+
+
+def _dqdv_2d_set_row_y_ticks(cax, row_labels: List[str], Zm: Any) -> None:
+    n_rows = int(Zm.shape[0])
+    y_idx = _dqdv_2d_row_tick_indices(n_rows, max_ticks=24)
+    cax.set_yticks(y_idx)
+    cax.set_yticklabels([row_labels[i] for i in y_idx])
+
+
+def _dqdv_2d_ensure_center_lines(cax, dv: float) -> None:
+    try:
+        prev = getattr(cax, "_dqdv_center_lines", None)
+        if prev:
+            for _ln in prev:
+                try:
+                    _ln.remove()
+                except Exception:
+                    pass
+        _white = cax.axvline(
+            float(dv),
+            color="1.0",
+            ls="--",
+            lw=3.0,
+            alpha=1.0,
+            zorder=25,
+            clip_on=False,
+        )
+        _dark = cax.axvline(
+            float(dv),
+            color="0.1",
+            ls=":",
+            lw=1.2,
+            alpha=0.9,
+            zorder=24,
+            clip_on=False,
+        )
+        cax._dqdv_center_lines = (_white, _dark)
+    except Exception:
+        pass
+
+
+def _dqdv_2d_restore_custom_labels(cax) -> None:
+    """Re-apply user-renamed axis labels after a data-only butterfly refresh."""
+    cl = getattr(cax, "_custom_labels", None)
+    if not isinstance(cl, dict):
+        return
+    try:
+        if cl.get("x"):
+            cax.set_xlabel(str(cl["x"]))
+        if cl.get("y"):
+            cax.set_ylabel(str(cl["y"]))
+    except Exception:
+        pass
+
+
+def _dqdv_2d_style_axes(
+    cax,
+    v_lo: float,
+    v_hi: float,
+    dv: float,
+    row_labels: List[str],
+    Zm: Any,
+    *,
+    style_mode: str = "full",
+) -> None:
+    """Style dQ/dV 2D butterfly axes.
+
+    style_mode:
+      full    — initial open (default labels, fonts, y ticks, formatter, center line)
+      data    — potential-window rebuild (y ticks + formatter + center; keep custom labels)
+      minimal — formatter + center + xlim only (WASD undo / style import; preserve everything else)
+    """
+    mode = str(style_mode or "full").lower()
+    if mode == "full":
+        cax.set_xlabel("Potential (V) (left: discharge right: charge)")
+        cax.set_ylabel("Cycle (visible traces)")
+        base_fs = float(plt.rcParams.get("font.size", 10))
+        cax.tick_params(axis="both", which="major", labelsize=base_fs)
+        try:
+            cax.xaxis.label.set_fontsize(base_fs)
+            cax.yaxis.label.set_fontsize(base_fs)
+        except Exception:
+            pass
+    if mode in ("full", "data"):
+        _dqdv_2d_set_row_y_ticks(cax, row_labels, Zm)
+    _dqdv_2d_ensure_voltage_formatter(cax, v_lo, v_hi, dv)
+    if mode in ("full", "data", "minimal"):
+        _dqdv_2d_ensure_center_lines(cax, dv)
+        try:
+            cax.set_xlim(0.0, float(2 * dv))
+        except Exception:
+            pass
+    if mode == "data":
+        _dqdv_2d_restore_custom_labels(cax)
+
+
+def bind_dqdv_2d_contour_figure(
+    cfig,
+    cax,
+    im,
+    v_lo: float,
+    v_hi: float,
+    row_labels: List[str],
+    zlab: Optional[str] = None,
+    file_data: Optional[List[Dict[str, Any]]] = None,
+    nx: int = 320,
+    style_mode: str = "full",
+) -> None:
+    """Tag a contour figure as dQ/dV 2D and apply butterfly axis styling."""
+    v_lo, v_hi = float(min(v_lo, v_hi)), float(max(v_lo, v_hi))
+    dv = float(v_hi - v_lo)
+    cfig._is_dqdv_2d_contour = True
+    cfig._dqdv_2d_v_lo = v_lo
+    cfig._dqdv_2d_v_hi = v_hi
+    if not hasattr(cfig, "_dqdv_2d_v_lo_orig"):
+        cfig._dqdv_2d_v_lo_orig = v_lo
+        cfig._dqdv_2d_v_hi_orig = v_hi
+    cfig._dqdv_2d_row_labels = [str(s) for s in row_labels]
+    cfig._dqdv_2d_zlabel = str(zlab or "dQ/dV")
+    cfig._dqdv_2d_axis_mapping_version = 2
+    if file_data is not None:
+        cfig._dqdv_2d_file_data = file_data
+    cfig._dqdv_2d_nx = int(max(32, nx))
+    try:
+        Zm = np.ma.masked_invalid(np.asarray(im.get_array(), dtype=float))
+    except Exception:
+        Zm = im.get_array()
+    _dqdv_2d_style_axes(
+        cax, v_lo, v_hi, dv, list(cfig._dqdv_2d_row_labels), Zm, style_mode=style_mode
+    )
+
+
+def update_dqdv_2d_potential_window(
+    fig,
+    ax,
+    im,
+    v_lo: float,
+    v_hi: float,
+    *,
+    nx: Optional[int] = None,
+) -> bool:
+    """Rebuild 2D dQ/dV butterfly map for a new potential window (V_lo, V_hi).
+
+    Display x runs 0..2*dv with discharge V_hi→V_lo on the left and charge V_lo→V_hi on the right.
+    """
+    if not getattr(fig, "_is_dqdv_2d_contour", False):
+        return False
+    file_data = getattr(fig, "_dqdv_2d_file_data", None)
+    if not file_data:
+        print("Cannot change potential window: source dQ/dV data is not available (re-open 2D from dQ/dV menu).")
+        return False
+    v_lo, v_hi = float(min(v_lo, v_hi)), float(max(v_lo, v_hi))
+    dv = float(v_hi - v_lo)
+    if dv <= 0 or not np.isfinite(dv):
+        print("Invalid potential window: upper voltage must be greater than lower.")
+        return False
+    nx_use = int(nx if nx is not None else getattr(fig, "_dqdv_2d_nx", 320))
+    nx_use = max(32, nx_use)
+    try:
+        built = _dqdv_build_butterfly_contour_stack(file_data, v_lo, v_hi, nx=nx_use)
+    except Exception as e:
+        print(f"Could not rebuild 2D map: {e}")
+        return False
+    if built is None:
+        print("No dQ/dV points in that potential window (check range and cycle visibility).")
+        return False
+    Z, _gx, row_labels = built
+    Zm = np.ma.masked_invalid(Z)
+    n_rows = int(Zm.shape[0])
+    extent = (0.0, float(2 * dv), -0.5, float(n_rows - 0.5))
+    try:
+        clim = im.get_clim()
+    except Exception:
+        clim = None
+    im.set_data(Zm)
+    im.set_extent(extent)
+    ax.set_xlim(0.0, float(2 * dv))
+    ax.set_ylim(-0.5, float(n_rows - 0.5))
+    if clim is not None:
+        try:
+            im.set_clim(clim)
+        except Exception:
+            pass
+    fig._dqdv_2d_v_lo = v_lo
+    fig._dqdv_2d_v_hi = v_hi
+    fig._dqdv_2d_row_labels = [str(s) for s in row_labels]
+    bind_dqdv_2d_contour_figure(
+        fig, ax, im, v_lo, v_hi, row_labels,
+        zlab=str(getattr(fig, "_dqdv_2d_zlabel", "dQ/dV")),
+        style_mode="data",
+    )
+    return True
+
+
+def reapply_dqdv_2d_contour_axes(fig, ax, im, cbar=None, *, style_mode: str = "minimal") -> None:
+    """Restore butterfly voltage formatter/center line without resetting user styling."""
+    if not getattr(fig, "_is_dqdv_2d_contour", False):
+        return
+    try:
+        v_lo = float(getattr(fig, "_dqdv_2d_v_lo"))
+        v_hi = float(getattr(fig, "_dqdv_2d_v_hi"))
+    except Exception:
+        return
+    dv = float(v_hi - v_lo)
+    if dv <= 0 or not np.isfinite(dv):
+        return
+    row_labels = [str(s) for s in (getattr(fig, "_dqdv_2d_row_labels", None) or [])]
+    zlab = str(getattr(fig, "_dqdv_2d_zlabel", None) or "dQ/dV")
+    try:
+        Zm = np.ma.masked_invalid(np.asarray(im.get_array(), dtype=float))
+    except Exception:
+        Zm = im.get_array()
+    if len(row_labels) != int(getattr(Zm, "shape", (0,))[0]):
+        row_labels = [str(i) for i in range(int(Zm.shape[0]))]
+    _dqdv_2d_style_axes(ax, v_lo, v_hi, dv, row_labels, Zm, style_mode=style_mode)
+    if cbar is not None:
+        try:
+            cbar.ax._colorbar_label = zlab
+        except Exception:
+            pass
+
+
+def build_dqdv_2d_snapshot(
+    cfig,
+    cax,
+    im,
+    v_lo: float,
+    v_hi: float,
+    row_labels: List[str],
+    zlab: str,
+) -> Optional[Dict[str, Any]]:
+    """Serializable state for embedding in EC .pkl (dQ/dV 2D companion)."""
+    try:
+        arr = np.asarray(im.get_array(), dtype=float)
+        if hasattr(arr, "mask"):
+            arr = np.ma.filled(arr, np.nan)
+    except Exception:
+        return None
+    if arr.ndim != 2 or arr.size == 0:
+        return None
+    cmap_name = getattr(im, "_operando_cmap_name", None)
+    if not cmap_name:
+        try:
+            cmap_name = im.get_cmap().name  # type: ignore[union-attr]
+        except Exception:
+            cmap_name = "viridis"
+    snap: Dict[str, Any] = {
+        "version": 1,
+        "kind": "dqdv_2d_contour",
+        "axis_mapping_version": 2,
+        "v_lo": float(v_lo),
+        "v_hi": float(v_hi),
+        "Z": np.array(arr, dtype=float, copy=True),
+        "row_labels": [str(s) for s in row_labels],
+        "zlabel": str(zlab or "dQ/dV"),
+        "cmap": str(cmap_name),
+        "clim": tuple(float(x) for x in im.get_clim()),
+        "figsize": [float(x) for x in cfig.get_size_inches()],
+        "xlim": tuple(float(x) for x in cax.get_xlim()),
+        "ylim": tuple(float(x) for x in cax.get_ylim()),
+        "nx": int(getattr(cfig, "_dqdv_2d_nx", 320)),
+        "v_lo_orig": float(getattr(cfig, "_dqdv_2d_v_lo_orig", v_lo)),
+        "v_hi_orig": float(getattr(cfig, "_dqdv_2d_v_hi_orig", v_hi)),
+    }
+    return snap
+
+
+def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any, Any, Any, Any]]:
+    """Rebuild 2D dQ/dV figure from session blob. Returns (cfig, cax, im, cbar) or None."""
+    if not isinstance(blob, dict) or blob.get("Z") is None:
+        return None
+    try:
+        v_lo = float(blob["v_lo"])
+        v_hi = float(blob["v_hi"])
+    except Exception:
+        return None
+    dv = v_hi - v_lo
+    if dv <= 0:
+        return None
+    Z = np.asarray(blob["Z"], dtype=float)
+    row_labels = [str(x) for x in (blob.get("row_labels") or [])]
+    zlab = str(blob.get("zlabel") or "dQ/dV")
+    cmap = str(blob.get("cmap") or "viridis")
+    figsize = blob.get("figsize") or [8.0, 6.0]
+    try:
+        cfig, cax = plt.subplots(figsize=(float(figsize[0]), float(figsize[1])))
+    except Exception:
+        cfig, cax = plt.subplots(figsize=(8, 6))
+    Zm = np.ma.masked_invalid(Z)
+    extent = (0.0, float(2 * dv), -0.5, float(Zm.shape[0] - 0.5))
+    im = cax.imshow(
+        Zm,
+        aspect="auto",
+        origin="lower",
+        extent=extent,
+        cmap=cmap,
+        interpolation="nearest",
+    )
+    setattr(im, "_operando_cmap_name", cmap)
+    try:
+        clim = blob.get("clim")
+        if clim and len(clim) == 2:
+            im.set_clim(float(clim[0]), float(clim[1]))
+    except Exception:
+        pass
+    if len(row_labels) != Zm.shape[0]:
+        row_labels = [str(i) for i in range(Zm.shape[0])]
+    bind_dqdv_2d_contour_figure(
+        cfig, cax, im, v_lo, v_hi, row_labels,
+        zlab=str(blob.get("zlabel") or "dQ/dV"),
+        nx=int(blob.get("nx", 320)),
+    )
+    cbar_ax = cfig.add_axes([0.0, 0.0, 0.01, 0.01])
+
+    class _MockColorbar:
+        def __init__(self, cax, im_ref):
+            self.ax = cax
+            self._im = im_ref
+
+        def set_label(self, label):
+            cax._colorbar_label = label
+
+        def update_normal(self, im_ref):
+            pass
+
+    cbar = _MockColorbar(cbar_ax, im)
+    cbar_ax._colorbar_label = zlab
+    try:
+        xlim = blob.get("xlim")
+        ylim = blob.get("ylim")
+        if xlim and len(xlim) == 2:
+            cax.set_xlim(float(xlim[0]), float(xlim[1]))
+        if ylim and len(ylim) == 2:
+            cax.set_ylim(float(ylim[0]), float(ylim[1]))
+    except Exception:
+        pass
+    try:
+        cfig.canvas.draw_idle()
+    except Exception:
+        pass
+    return (cfig, cax, im, cbar)
+
+
 def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: bool = False, menu_title: str = "Interactive menu", canvas_mode: bool = False):
     """Print EC interactive menu (GC/CV/dQ/dV) with Styles, Geometries, Options columns.
     Conditionally shows sm (smooth), v (files), a (capacity/ion), ra (rearrange) based on mode."""
@@ -448,6 +1053,8 @@ def _print_menu(n_cycles: int, is_dqdv: bool = False, fig=None, is_multi_file: b
         "b: undo",
         "q: quit",
     ]
+    if is_dqdv:
+        col3.insert(-1, "2d: dQ/dV contour")
 
     # Conditional overwrite shortcuts under (Options)
     if fig is not None:
@@ -750,6 +1357,8 @@ def _parse_file_palette_tokens(tokens: List[str], n_files: int, fig=None) -> Opt
     last = tokens[-1]
     alias = _resolve_palette_alias(last, palette_map) if last else last
     try:
+        if not ensure_colormap(alias):
+            raise ValueError(alias)
         cm.get_cmap(alias)
         palette = alias
     except Exception:
@@ -839,6 +1448,8 @@ def _parse_per_file_cycle_tokens(
         last = remaining[-1]
         alias = _resolve_palette_alias(last, palette_map) if last else last
         try:
+            if not ensure_colormap(alias):
+                raise ValueError(alias)
             cm.get_cmap(alias)
             palette = alias
             remaining = remaining[:-1]
@@ -865,6 +1476,8 @@ def _parse_fall_cycles_tokens(
         last = cycle_tokens[-1]
         alias = _resolve_palette_alias(last, palette_map) if last else last
         try:
+            if not ensure_colormap(alias):
+                raise ValueError(alias)
             cm.get_cmap(alias)
             palette = alias
             cycle_tokens = cycle_tokens[:-1]
@@ -967,6 +1580,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
     if len(tokens) == 2 and tokens[0].lower() == 'all':
         alias = _resolve_palette_alias(tokens[1], palette_map)
         try:
+            if not ensure_colormap(alias):
+                raise ValueError(alias)
             cm.get_cmap(alias)
             return ("palette", [], {}, alias, True)
         except Exception:
@@ -1002,6 +1617,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
     alias = _resolve_palette_alias(last, palette_map)
     if alias != last:
         try:
+            if not ensure_colormap(alias):
+                raise ValueError(alias)
             cm.get_cmap(alias)
             palette = alias
             num_tokens = tokens[:-1]
@@ -1012,6 +1629,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
 
     # Check if last token is a valid colormap name
     try:
+        if not ensure_colormap(last):
+            raise ValueError(last)
         cm.get_cmap(last)
         palette = last
         num_tokens = tokens[:-1]
@@ -1634,7 +2253,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
             print("  " + _colorize_menu('r : reset all offsets'))
             print("  " + _colorize_menu('q : return'))
-            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
+            choice = _safe_input(_colorize_prompt(
+                "Title offset (w/s/a/d/r/q per list above): "
+            )).strip().lower()
             if not choice:
                 continue
             if choice == 'q':
@@ -1776,14 +2397,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 },
                 'tick_lengths': dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
                 'tick_direction': getattr(fig, '_tick_direction', 'out'),
-                'tick_spacing': {
-                    'x_major_step': _locator_step(ax.xaxis.get_major_locator()),
-                    'x_minor_step': _locator_step(ax.xaxis.get_minor_locator()),
-                    'y_major_step': _locator_step(ax.yaxis.get_major_locator()),
-                    'y_minor_step': _locator_step(ax.yaxis.get_minor_locator()),
-                    'x_minor_ndivs': _locator_ndivs(ax.xaxis.get_minor_locator()),
-                    'y_minor_ndivs': _locator_ndivs(ax.yaxis.get_minor_locator()),
-                },
+                'tick_spacing': capture_axes_tick_locators(ax, ('x', 'y')),
                 'font_size': plt.rcParams.get('font.size'),
                 'font_family': plt.rcParams.get('font.family'),
                 'font_sans_serif': list(plt.rcParams.get('font.sans-serif', [])),
@@ -1977,32 +2591,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     ax.tick_params(axis='both', which='both', direction=tick_dir)
             except Exception:
                 pass
-            # Tick spacing and minor count
-            spacing = snap.get('tick_spacing', {})
-            if spacing:
-                for axis_obj, maj_key, min_key, ndivs_key in [
-                    (ax.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
-                    (ax.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
-                ]:
-                    try:
-                        maj_step = spacing.get(maj_key)
-                        if maj_step is not None:
-                            axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
-                        else:
-                            axis_obj.set_major_locator(AutoLocator())
-                    except Exception:
-                        pass
-                    try:
-                        min_step = spacing.get(min_key)
-                        ndivs = spacing.get(ndivs_key)
-                        if min_step is not None:
-                            axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
-                        elif ndivs is not None:
-                            axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
-                        else:
-                            axis_obj.set_minor_locator(AutoMinorLocator())
-                    except Exception:
-                        pass
+            # Tick spacing / minor locators (after WASD restore above)
+            try:
+                restore_axes_tick_locators(ax, snap.get('tick_spacing'), ('x', 'y'))
+            except Exception:
+                pass
             # Font size and family
             try:
                 font_size = snap.get('font_size')
@@ -2550,7 +3143,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             except Exception:
                                 pass
                             try:
-                                fig.savefig(target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none')
+                                _ec_savefig_plot_window(fig, ax, target, transparent=True)
                             finally:
                                 # Restore original patches if available
                                 try:
@@ -2566,7 +3159,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                 except Exception:
                                     pass
                         else:
-                            fig.savefig(target, bbox_inches='tight')
+                            _ec_savefig_plot_window(fig, ax, target, transparent=False)
                         print(f"Exported figure to {target}")
                         fig._last_figure_export_path = target
                         
@@ -3120,6 +3713,16 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         tick_state['mbx'] = bool(bot_s.get('minor', False))
                         tick_state['mly'] = bool(left_s.get('minor', False))
                         tick_state['mry'] = bool(right_s.get('minor', False))
+                        try:
+                            setattr(fig, '_ec_wasd_state', {
+                                'top': dict(top_s),
+                                'bottom': dict(bot_s),
+                                'left': dict(left_s),
+                                'right': dict(right_s),
+                            })
+                            ax._saved_tick_state = dict(tick_state)
+                        except Exception:
+                            pass
                         
                         # Don't reposition labels here - do it at the end after all style changes
                         # This prevents font changes and other operations from triggering unnecessary recalculations
@@ -3857,13 +4460,17 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("  " + _colorize_menu("y: y-axis"))
                     if file_data:
                         print("  " + _colorize_menu("f: file names (legend)"))
+                    print("  " + _colorize_menu("s: show recent axis names"))
                     print("  " + _colorize_menu("q: back"))
-                    opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/q"
+                    opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/s/q"
                     sub = _safe_input(_colorize_prompt(f"Rename ({opts}): ")).strip().lower()
                     if not sub:
                         continue
                     if sub == 'q':
                         break
+                    if sub == 's':
+                        print_recent_axis_names()
+                        continue
                     if sub == 'f' and file_data:
                         while True:
                             _print_file_list(file_data)
@@ -3908,6 +4515,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         if txt:
                             txt = convert_label_shortcuts(txt)
                             txt = normalize_label_text(txt)
+                            remember_axis_name(txt)
                             push_state("rename-x")
                             try:
                                 # Freeze layout and preserve existing pad for one-shot restore
@@ -3937,6 +4545,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         if txt:
                             txt = convert_label_shortcuts(txt)
                             txt = normalize_label_text(txt)
+                            remember_axis_name(txt)
                             push_state("rename-tx")
                             try:
                                 secax.set_xlabel(txt)
@@ -3950,6 +4559,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         if txt:
                             txt = convert_label_shortcuts(txt)
                             txt = normalize_label_text(txt)
+                            remember_axis_name(txt)
                             push_state("rename-y")
                             base_ylabel = txt
                             try:
@@ -4024,8 +4634,8 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 if not isinstance(wasd, dict):
                     wasd = {
                         'top':    {'spine': _get_spine_visible('top'),    'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))), 'minor': bool(tick_state['mtx']), 'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))), 'title': bool(getattr(ax, '_top_xlabel_on', False))},
-                        'bottom': {'spine': _get_spine_visible('bottom'), 'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', False))), 'minor': bool(tick_state['mbx']), 'labels': bool(tick_state.get('b_labels', tick_state.get('bx', False))), 'title': bool(ax.xaxis.label.get_visible())},
-                        'left':   {'spine': _get_spine_visible('left'),   'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', False))), 'minor': bool(tick_state['mly']), 'labels': bool(tick_state.get('l_labels', tick_state.get('ly', False))), 'title': bool(ax.yaxis.label.get_visible())},
+                        'bottom': {'spine': _get_spine_visible('bottom'), 'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))), 'minor': bool(tick_state['mbx']), 'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))), 'title': bool(ax.xaxis.label.get_visible())},
+                        'left':   {'spine': _get_spine_visible('left'),   'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))), 'minor': bool(tick_state['mly']), 'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))), 'title': bool(ax.yaxis.label.get_visible())},
                         'right':  {'spine': _get_spine_visible('right'),  'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', False))), 'minor': bool(tick_state['mry']), 'labels': bool(tick_state.get('r_labels', tick_state.get('ry', False))), 'title': bool(getattr(ax, '_right_ylabel_on', False))},
                     }
                     setattr(fig, '_ec_wasd_state', wasd)
@@ -4184,15 +4794,20 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print(f"\033[1mToggle spines>\033[0m")
                 print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
                 print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
-                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine {_C}w/a/s/d{_R}+{_C}1-5{_R} only; not the letter {_C}y{_R} for y-axis)")
                 print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
                 print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
-                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}  (one axis+value per line at the spacing prompt)")
                 print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
                 print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
-                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back to electrochemistry menu")
+                print(_colorize_inline_commands(
+                    "Tip: q backs out (spacing/minor submenus → here). Blank line repeats this prompt."
+                ))
                 while True:
-                    cmd = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt(
+                        "Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back): "
+                    )).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -4260,7 +4875,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             print(f"  {_C2}y{_R2} (Y axis) : {_loc_str_ec(ax.yaxis.get_major_locator())}")
                             print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}all 1{_R2}  {_C2}x auto{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Spacing> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Major tick spacing (one pair per line: x 0.5, y 10, all 1, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_n = inp.split()
@@ -4320,7 +4937,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             print(f"  y : {_minor_str_ec(ax.yaxis)}")
                             print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Minor> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Minor ticks (one pair per line: x 4, y 1, all 0, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_m = inp.split()
@@ -4608,7 +5227,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         push_state("cycles/colors")
                         default_tab10_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
                                                 '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                        for fidx_1based, sel_cycles in file_to_cycles.items():
+                        # Collect valid file selections first so palette colors can be assigned
+                        # consistently across files (f1..fN), not per-cycle within each file.
+                        selected_file_items = []
+                        for fidx_1based, sel_cycles in sorted(file_to_cycles.items()):
                             if 1 <= fidx_1based <= len(file_data):
                                 f_entry = file_data[fidx_1based - 1]
                                 if not f_entry.get('visible', True):
@@ -4621,24 +5243,42 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                 _set_visible_cycles(cl, show)
                                 if not show:
                                     continue
-                                if pf_palette and pf_palette.lower() in ('tab10', '1'):
-                                    cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
-                                            for i in range(len(show))]
+                                selected_file_items.append((fidx_1based, cl, show))
+
+                        n_selected_files = len(selected_file_items)
+                        file_palette_cols = []
+                        if n_selected_files > 0:
+                            if pf_palette and pf_palette.lower() in ('tab10', '1'):
+                                file_palette_cols = [
+                                    mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
+                                    for i in range(n_selected_files)
+                                ]
+                            elif pf_palette:
+                                try:
+                                    cmap = cm.get_cmap(pf_palette)
+                                except Exception:
+                                    cmap = None
+                                if cmap is not None:
+                                    file_palette_cols = (
+                                        [cmap(0.55)] if n_selected_files == 1 else
+                                        [cmap(t) for t in np.linspace(0.08, 0.88, n_selected_files)]
+                                    )
                                 else:
-                                    try:
-                                        cmap = cm.get_cmap(pf_palette) if pf_palette else None
-                                    except Exception:
-                                        cmap = None
-                                    if cmap is not None:
-                                        n = len(show)
-                                        cols = [cmap(0.55)] if n == 1 else (
-                                            [cmap(0.15), cmap(0.85)] if n == 2 else
-                                            [cmap(t) for t in np.linspace(0.08, 0.88, n)])
-                                    else:
-                                        cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
-                                                for i in range(len(show))]
-                                if cols:
-                                    _apply_colors(cl, {c: col for c, col in zip(show, cols)})
+                                    file_palette_cols = [
+                                        mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
+                                        for i in range(n_selected_files)
+                                    ]
+
+                        for idx, (fidx_1based, cl, show) in enumerate(selected_file_items):
+                            if file_palette_cols:
+                                # Palette in per-file syntax means one color per file.
+                                col = file_palette_cols[idx]
+                                _apply_colors(cl, {c: col for c in show})
+                            else:
+                                # No palette: keep per-cycle tab10 fallback inside each file.
+                                cols = [mcolors.to_rgba(default_tab10_colors[i % len(default_tab10_colors)])
+                                        for i in range(len(show))]
+                                _apply_colors(cl, {c: col for c, col in zip(show, cols)})
                                 _apply_curve_linewidth(fig, cl)
                                 if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
                                     _apply_stored_smooth_settings(cl, fig)
@@ -4851,7 +5491,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     print("  " + _colorize_menu("u : update theoretical capacity"))
                 print("  " + _colorize_menu("q : back to main menu"))
                 
-                sub = _safe_input("X> ").strip().lower()
+                sub = _safe_input(_colorize_prompt(
+                    "X-axis mode (c/n/d/s/u/q per menu above): "
+                )).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -5703,7 +6345,9 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("  " + _colorize_menu("o: remove outliers (removes abrupt dQ/dV spikes)"))
                 print("  " + _colorize_menu("r: reset to original data"))
                 print("  " + _colorize_menu("q: back to main menu"))
-                sub = _safe_input(_colorize_prompt("dQ/dV (a/d/o/r/q): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt(
+                    "dQ/dV filter command (a/d/o/r per list above, q=back to main menu): "
+                )).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
@@ -6076,6 +6720,132 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 print("Unknown command. Use a/o/r/q.")
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
             continue
+        elif key == '2d':
+            # dQ/dV → butterfly potential vs cycle heatmap in a new figure; operando-only contour menu
+            if not is_dqdv:
+                print("2d contour is only available in dQ/dV mode.")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            try:
+                from .operando_ec_interactive import operando_ec_interactive_menu as _op_ec_menu
+            except ImportError:
+                _op_ec_menu = None
+            if _op_ec_menu is None:
+                print("Contour interactive module is not available.")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            try:
+                raw = _safe_input(_colorize_prompt(
+                    "Potential window for 2D map: enter two voltages V_lo V_hi (e.g. 1 3), or q=cancel: "
+                )).strip()
+            except (KeyboardInterrupt, EOFError):
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            if not raw or raw.lower() == 'q':
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            parts = raw.replace(',', ' ').split()
+            if len(parts) < 2:
+                print("Enter exactly two numbers: lower and upper potential (V).")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            try:
+                v_a, v_b = float(parts[0]), float(parts[1])
+            except ValueError:
+                print("Invalid numbers.")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            v_lo, v_hi = min(v_a, v_b), max(v_a, v_b)
+            nx = 320
+            try:
+                built = _dqdv_build_butterfly_contour_stack(file_data, v_lo, v_hi, nx=nx)
+            except Exception as e:
+                print(f"Could not build 2D map: {e}")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            if built is None:
+                print("No dQ/dV points in that potential window for visible cycles (check range and cycle visibility).")
+                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                continue
+            Z, gx, row_labels = built
+            cfig = None
+            cax = None
+            im = None
+            dv = float(v_hi - v_lo)
+            try:
+                cfig, cax = plt.subplots(figsize=(8, 6))
+                Zm = np.ma.masked_invalid(Z)
+                extent = (0.0, float(2 * dv), -0.5, float(Zm.shape[0] - 0.5))
+                im = cax.imshow(
+                    Zm, aspect="auto", origin="lower", extent=extent,
+                    cmap="viridis", interpolation="nearest",
+                )
+                setattr(im, "_operando_cmap_name", "viridis")
+                zlab = (ax.get_ylabel() or "").strip() or "dQ/dV"
+                bind_dqdv_2d_contour_figure(
+                    cfig, cax, im, v_lo, v_hi, row_labels, zlab=zlab,
+                    file_data=file_data, nx=nx,
+                )
+                cbar_ax = cfig.add_axes([0.0, 0.0, 0.01, 0.01])
+
+                class _MockColorbar:
+                    def __init__(self, cax, im_ref):
+                        self.ax = cax
+                        self._im = im_ref
+
+                    def set_label(self, label):
+                        cax._colorbar_label = label
+
+                    def update_normal(self, im_ref):
+                        pass
+
+                cbar = _MockColorbar(cbar_ax, im)
+                cbar_ax._colorbar_label = zlab
+                _paths = []
+                for fd in file_data:
+                    fp = fd.get("filepath")
+                    if isinstance(fp, str) and fp:
+                        _paths.append(fp)
+                print(
+                    "\n2D map uses the current line data (including smoothing). "
+                    "Contour menu: same as operando without EC panel. Press q to return to dQ/dV menu.\n"
+                )
+                try:
+                    cfig.canvas.draw()
+                except Exception:
+                    cfig.canvas.draw_idle()
+                _op_ec_menu(cfig, cax, im, cbar, None, file_paths=_paths, canvas_mode=canvas_mode)
+            except Exception as e:
+                print(f"2D contour view failed: {e}")
+            finally:
+                try:
+                    if (
+                        cfig is not None
+                        and cax is not None
+                        and im is not None
+                        and plt.fignum_exists(cfig.number)
+                    ):
+                        snap = build_dqdv_2d_snapshot(
+                            cfig, cax, im, v_lo, v_hi, row_labels,
+                            (ax.get_ylabel() or "").strip() or "dQ/dV",
+                        )
+                        if snap is not None:
+                            fig._dqdv_2d_snapshot = snap
+                except Exception:
+                    pass
+                try:
+                    if cfig is not None and plt.fignum_exists(cfig.number):
+                        plt.close(cfig)
+                except Exception:
+                    pass
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+            _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+            if is_multi_file:
+                _print_file_list(file_data, current_file_idx)
+            continue
         elif key == 'oe':
             # Overwrite last exported figure
             try:
@@ -6113,7 +6883,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     except Exception:
                         pass
                     try:
-                        fig.savefig(target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none')
+                        _ec_savefig_plot_window(fig, ax, target, transparent=True)
                     finally:
                         try:
                             if fig_fc is not None and getattr(fig, 'patch', None) is not None:
@@ -6128,7 +6898,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         except Exception:
                             pass
                 else:
-                    fig.savefig(target, bbox_inches='tight')
+                    _ec_savefig_plot_window(fig, ax, target, transparent=False)
                 print(f"Overwritten figure to {target}")
             except Exception as e:
                 print(f"Overwrite failed: {e}")

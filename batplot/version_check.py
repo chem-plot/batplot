@@ -101,10 +101,10 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Bug fixes for BatX operando plot',
+    'custom_message': '- Bug fixes',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Bug fixes for BatX operando plot'
+        '- Bug fixes'
     ],
     'show_update_notes': True,
 }

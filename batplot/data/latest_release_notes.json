@@ -1,7 +1,7 @@
 {
-  "version": "1.8.39",
-  "custom_message": "- Bug fixes for BatX operando plot",
+  "version": "1.8.40",
+  "custom_message": "- Bug fixes",
   "update_notes": [
-    "- Bug fixes for BatX operando plot"
+    "- Bug fixes"
   ]
 }

@@ -18,6 +18,10 @@ Example config.json structure:
         "#0000FF",
         "red",
         "blue"
+      ],
+      "recent_axis_names": [
+        "Potential (V)",
+        "dQ/dV (mAh V$^{-1}$)"
       ]
     }
 
@@ -192,7 +196,47 @@ def save_user_colors(colors: List[str]) -> None:
     save_config(config)  # Save entire config back to file
 
 
+_RECENT_AXIS_NAMES_KEY = 'recent_axis_names'
+RECENT_AXIS_NAMES_MAX = 20
+
+
+def get_recent_axis_names() -> List[str]:
+    """Return up to :data:`RECENT_AXIS_NAMES_MAX` recently typed axis labels (newest first)."""
+    raw = load_config().get(_RECENT_AXIS_NAMES_KEY, [])
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        s = str(item).strip()
+        if s and s not in out:
+            out.append(s)
+        if len(out) >= RECENT_AXIS_NAMES_MAX:
+            break
+    return out
+
+
+def record_recent_axis_name(name: str) -> None:
+    """Add an axis label to the shared recent list (dedupe, newest first, max 20)."""
+    s = str(name or '').strip()
+    if not s:
+        return
+    config = load_config()
+    raw = config.get(_RECENT_AXIS_NAMES_KEY, [])
+    names: List[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            t = str(item).strip()
+            if t and t != s:
+                names.append(t)
+    names.insert(0, s)
+    config[_RECENT_AXIS_NAMES_KEY] = names[:RECENT_AXIS_NAMES_MAX]
+    save_config(config)
+
+
 __all__ = [
     'get_user_colors',
     'save_user_colors',
+    'get_recent_axis_names',
+    'record_recent_axis_name',
+    'RECENT_AXIS_NAMES_MAX',
 ]

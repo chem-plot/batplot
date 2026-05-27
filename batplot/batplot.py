@@ -106,6 +106,39 @@ try:
 except ImportError:
     operando_ec_interactive_menu = None
 
+
+def _run_saved_dqdv_2d_companion(fig, sess_path: str) -> None:
+    """If load_ec_session attached a saved dQ/dV 2D bundle, run its operando menu after the EC menu."""
+    b = getattr(fig, "_dqdv_2d_companion_bundle", None)
+    if not b or len(b) < 4:
+        return
+    cfig, cax, im, cbar = b[0], b[1], b[2], b[3]
+    if operando_ec_interactive_menu is None:
+        print("Operando interactive not available; skipping saved dQ/dV 2D map.")
+        return
+    paths = list(getattr(fig, "_bp_source_paths", []) or [])
+    if not paths:
+        paths = [sess_path]
+    print("\nSession includes a saved dQ/dV 2D map — opening contour interactive menu (q exits to finish).")
+    try:
+        plt.show(block=False)
+    except Exception:
+        pass
+    try:
+        operando_ec_interactive_menu(cfig, cax, im, cbar, None, file_paths=paths, canvas_mode=False)
+    except Exception as e:
+        print(f"Saved dQ/dV 2D map menu failed: {e}")
+    finally:
+        try:
+            plt.close(cfig)
+        except Exception:
+            pass
+        try:
+            delattr(fig, "_dqdv_2d_companion_bundle")
+        except Exception:
+            pass
+
+
 try:
     from .cpc_interactive import cpc_interactive_menu, _generate_similar_color, _build_compact_cpc_legend
 except ImportError:
@@ -2790,6 +2823,10 @@ def batplot_main() -> int:  # type: ignore
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=sess_path)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
+                try:
+                    _run_saved_dqdv_2d_companion(fig, sess_path)
+                except Exception as _c2d:
+                    print(f"Saved dQ/dV 2D companion: {_c2d}")
                 plt.show()
                 exit()
             except Exception as e:

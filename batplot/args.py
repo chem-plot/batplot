@@ -37,6 +37,8 @@ import re
 #
 # If rich is not installed, we fall back to plain text (still works fine).
 # ====================================================================
+from .utils import parse_mass_mg_from_cli
+
 try:
     from rich.console import Console  # type: ignore[import]
     from rich.markup import escape  # type: ignore[import]
@@ -278,8 +280,9 @@ def _print_ec_help() -> None:
         "  • Neware: Customized report — check all boxes\n"
         "  • Biologic: Export all info to .mpt file\n\n"
         "Use --i for styling, colors, line widths, axis scales, etc.\n"
-        "GC from .mpt: requires active mass in mg to compute mAh g⁻¹.\n"
-        "  batplot --gc file.mpt --mass 6.5 --i\n\n"
+        "GC from .mpt or .npt: requires active mass to compute mAh g⁻¹ (default unit: mg; use a ``g`` suffix for grams, e.g. --mass 0.0065g).\n"
+        "  batplot --gc file.mpt --mass 6.5 --i\n"
+        "  batplot --gc file.npt --mass 10g --i\n\n"
         "GC from supported .csv: specific capacity read directly when available; use --mass for\n"
         "  Neware absolute-capacity files (Cycle Index / Step Index / DataPoint format).\n"
         "  batplot --gc file.csv\n"
@@ -289,9 +292,11 @@ def _print_ec_help() -> None:
         "  batplot f1.csv --mass 3.52 f2.mpt --mass 5.0 --cpc\n"
         "  # Files without --mass between them use the global --mass value (or none)\n"
         "  # Single --mass applies to all files: batplot f1.mpt f2.mpt --gc --mass 7.0\n\n"
-        "dQ/dV from supported .csv (pre-calculated column or computed from GC data):\n"
+        "dQ/dV from supported .csv (pre-calculated column or computed from GC data), or from Biologic .mpt/.npt (numerical dQ/dV from GC; requires --mass):\n"
         "  batplot --dqdv file.csv\n"
-        "  batplot --dqdv file.csv --mass 3.52     # Neware absolute-capacity CSV\n\n"
+        "  batplot --dqdv file.csv --mass 3.52     # Neware absolute-capacity CSV\n"
+        "  batplot --dqdv file.mpt --mass 6.5\n"
+        "  batplot --dqdv file.npt --mass 0.01g\n\n"
         "Cyclic voltammetry (CV) from .mpt or .txt: plots potential vs current for each cycle.\n"
         "  batplot --cv file.mpt\n"
         "  batplot --cv file.txt\n\n"
@@ -300,7 +305,7 @@ def _print_ec_help() -> None:
         "  batplot --cpc file.csv                 # Neware CSV (specific capacity)\n"
         "  batplot --cpc file.csv --mass 3.52     # Neware absolute-capacity CSV\n"
         "  batplot --cpc file.xlsx                # Landt/Lanhe Excel (Chinese tester)\n"
-        "  batplot --cpc file.mpt --mass 1.2              # Biologic MPT\n"
+        "  batplot --cpc file.mpt --mass 1.2              # Biologic .mpt / .npt\n"
         "  batplot file1.csv --mass 3.52 file2.mpt --mass 1.2 --cpc   # Per-file mass\n"
         "  batplot --cpc file1.csv file2.xlsx file3.mpt --mass 1.2 --i\n\n"
         "Excel support: Landt/Lanhe (蓝电/蓝河) .xlsx files with Chinese headers:\n"
@@ -342,6 +347,8 @@ def _print_op_help() -> None:
         "  batplot --operando --xaxis 2theta              # Using 2theta axis\n"
         "  batplot --operando --1d --i           # Plot derivatives as contour with interactive menu\n"
         "  batplot --operando --2d --i          # Plot derivatives (alias for --1d)\n\n"
+        "  batplot --operando --average 2 --i   # Average every 2 scans before contouring\n\n"
+        "  batplot --operando --sum 2 --i       # Sum every 2 scans to boost intensity\n\n"
         "Bruker operando (.brml):\n"
         "  • Place .brml files (e.g. XX_cyc1.brml, XX_cyc2.brml) in the folder.\n"
         "  • Each .brml is expanded into per-scan rows; files sorted by cyc1/cyc2/cyc3.\n"
@@ -355,6 +362,8 @@ def _print_op_help() -> None:
         "  • If a .mpt file is present, a side panel is added for dual-panel mode (time/potential/temp/etc.).\n"
         "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n"
         "  • --1d / --2d: plot the first derivative (dy/dx) of each scan as a contour plot.\n\n"
+        "  • --average N: average every N consecutive scans to improve S/N (e.g., N=2 averages scans 1+2, 3+4, ...).\n\n"
+        "  • --sum N: sum every N consecutive scans (same binning as --average, but without division by N).\n\n"
         "Column selection (operando-specific):\n"
         "  --readcolc <x> <y>  : columns for contour plot (x,y in .xy/.xye/.qye/.dat files)\n"
         "  --readcols <x> <y>  : columns for side panel (x,y in .mpt file)\n"
@@ -384,7 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
     --------------
     - Positional arguments: 'files' - list of file paths (can be 0 or more)
     - Flags (boolean): '--i' - True if present, False if absent
-    - Options with values: '--mass 7.0' - requires a value (float in this case)
+    - Options with values: '--mass 7.0' or '--mass 0.01g' - mass in mg, or grams with a ``g`` suffix
     - Optional arguments: '--help xy' - can have optional value
     
     WHY add_help=False?
@@ -461,9 +470,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ry", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--txaxis", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
+    parser.add_argument("--average", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--sum", dest="scan_sum", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--mass", type=float, action='append', help=argparse.SUPPRESS)
+    parser.add_argument("--mass", type=parse_mass_mg_from_cli, action='append', help=argparse.SUPPRESS)
     parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)

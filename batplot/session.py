@@ -45,7 +45,7 @@ from matplotlib.colorbar import Colorbar as _Colorbar
 from matplotlib.colors import to_hex, to_rgba
 from matplotlib.ticker import (
     MultipleLocator, AutoLocator, AutoMinorLocator,
-    NullFormatter, FuncFormatter, MaxNLocator,
+    NullFormatter, NullLocator, FuncFormatter, MaxNLocator,
 )
 
 from .utils import (
@@ -64,6 +64,9 @@ from .ui import (
     position_right_ylabel as _ui_position_right_ylabel,
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
+    capture_axes_tick_locators,
+    restore_axes_tick_locators,
+    apply_wasd_minor_ticks,
 )
 from .operando import _draw_operando_cif_ticks
 from .plotting import update_labels
@@ -340,58 +343,12 @@ def _get_duplicate_axis_label(ax, which: str, fallback: str = '') -> str:
 
 def _capture_session_tick_locator(ax):
     """Capture tick spacing/minor-count locator state for session serialization."""
-    def _step(loc):
-        try:
-            if isinstance(loc, MultipleLocator):
-                return float(loc._edge.step)
-        except Exception:
-            pass
-        return None
-    def _ndivs(loc):
-        try:
-            if isinstance(loc, AutoMinorLocator):
-                return int(loc._ndivs)
-        except Exception:
-            pass
-        return None
-    return {
-        'x_major_step': _step(ax.xaxis.get_major_locator()),
-        'x_minor_step': _step(ax.xaxis.get_minor_locator()),
-        'y_major_step': _step(ax.yaxis.get_major_locator()),
-        'y_minor_step': _step(ax.yaxis.get_minor_locator()),
-        'x_minor_ndivs': _ndivs(ax.xaxis.get_minor_locator()),
-        'y_minor_ndivs': _ndivs(ax.yaxis.get_minor_locator()),
-    }
+    return capture_axes_tick_locators(ax, ('x', 'y'))
 
 
 def _restore_session_tick_locator(ax, state):
     """Restore tick spacing/minor-count locator state saved by _capture_session_tick_locator."""
-    if not state:
-        return
-    for axis_obj, step_key in ((ax.xaxis, 'x_major_step'), (ax.yaxis, 'y_major_step')):
-        val = state.get(step_key)
-        try:
-            if val is not None:
-                axis_obj.set_major_locator(MultipleLocator(float(val)))
-            else:
-                axis_obj.set_major_locator(AutoLocator())
-        except Exception:
-            pass
-    for axis_obj, step_key, ndivs_key in (
-        (ax.xaxis, 'x_minor_step', 'x_minor_ndivs'),
-        (ax.yaxis, 'y_minor_step', 'y_minor_ndivs'),
-    ):
-        step = state.get(step_key)
-        ndivs = state.get(ndivs_key)
-        try:
-            if step is not None:
-                axis_obj.set_minor_locator(MultipleLocator(float(step)))
-            elif ndivs is not None:
-                axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
-            else:
-                axis_obj.set_minor_locator(AutoMinorLocator())
-        except Exception:
-            pass
+    restore_axes_tick_locators(ax, state, ('x', 'y'))
 
 
 # ------------------------- Generic XY session (existing) -------------------------
@@ -405,6 +362,8 @@ def dump_session(
     x_data_list: Sequence[np.ndarray],
     y_data_list: Sequence[np.ndarray],
     orig_y: Sequence[np.ndarray],
+    x_full_list: Sequence[np.ndarray] | None = None,
+    raw_y_full_list: Sequence[np.ndarray] | None = None,
     offsets_list: Sequence[float],
     labels: Sequence[str],
     delta: float,
@@ -579,6 +538,12 @@ def dump_session(
             'x_data': [np.array(a) for a in x_data_list],
             'y_data': [np.array(a) for a in y_data_list],
             'orig_y': [np.array(a) for a in orig_y],
+            # Persist full untrimmed XY data so x-range edits remain reversible
+            # after saving/reloading a .pkl, including Bruker .raw/.brml sessions.
+            'x_full_data': ([np.array(a) for a in x_full_list]
+                            if x_full_list is not None else [np.array(a) for a in x_data_list]),
+            'raw_y_full_data': ([np.array(a) for a in raw_y_full_list]
+                                if raw_y_full_list is not None else [np.array(a) for a in orig_y]),
             'offsets': list(offsets_list),
             'labels': list(labels),
             # Processed data (for smooth/reduce operations)
@@ -1159,19 +1124,9 @@ def load_operando_session(filename: str):
                               right=bool(op_wasd.get('right', {}).get('ticks', False)),
                               labelleft=bool(op_wasd.get('left', {}).get('labels', True)),
                               labelright=bool(op_wasd.get('right', {}).get('labels', False)))
-                # Apply minor ticks
-                if op_wasd.get('top', {}).get('minor') or op_wasd.get('bottom', {}).get('minor'):
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
-                ax.tick_params(axis='x', which='minor',
-                              top=bool(op_wasd.get('top', {}).get('minor', False)),
-                              bottom=bool(op_wasd.get('bottom', {}).get('minor', False)))
-                if op_wasd.get('left', {}).get('minor') or op_wasd.get('right', {}).get('minor'):
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
-                ax.tick_params(axis='y', which='minor',
-                              left=bool(op_wasd.get('left', {}).get('minor', False)),
-                              right=bool(op_wasd.get('right', {}).get('minor', False)))
+                # Apply minor ticks (left y only when EC panel shares the figure)
+                _op_y_minor = 'left' if ec_wf > 0 else 'both'
+                apply_wasd_minor_ticks(ax, op_wasd, y_minor_mode=_op_y_minor)
                 # Store WASD state
                 op_ts = {}
                 for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
@@ -1242,48 +1197,50 @@ def load_operando_session(filename: str):
     except Exception:
         pass
 
-    # Restore tick locator state for operando ax
+    # Restore tick locator state for operando ax, then re-apply WASD minor visibility
     try:
         _restore_session_tick_locator(ax, op.get('tick_locator_state'))
+        if op_wasd and isinstance(op_wasd, dict):
+            apply_wasd_minor_ticks(ax, op_wasd, y_minor_mode='left' if ec_wf > 0 else 'both')
     except Exception:
         pass
-        
-        # Apply operando spines
-        op_spines = op.get('spines', {})
-        if op_spines:
-            try:
-                for name, props in op_spines.items():
-                    sp = ax.spines.get(name)
-                    if not sp:
-                        continue
-                    if 'linewidth' in props and props['linewidth'] is not None:
-                        try:
-                            sp.set_linewidth(float(props['linewidth']))
-                        except Exception:
-                            pass
-                    if 'visible' in props and props['visible'] is not None:
-                        try:
-                            sp.set_visible(bool(props['visible']))
-                        except Exception:
-                            pass
-                    if 'color' in props and props['color'] is not None:
-                        try:
-                            _set_spine_side_color(ax, name, props['color'], fig=fig)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        
-        # Apply operando tick widths
-        op_tick_widths = op.get('ticks', {}).get('widths', {})
-        if op_tick_widths:
-            try:
-                if op_tick_widths.get('x_major'): ax.tick_params(axis='x', which='major', width=op_tick_widths['x_major'])
-                if op_tick_widths.get('x_minor'): ax.tick_params(axis='x', which='minor', width=op_tick_widths['x_minor'])
-                if op_tick_widths.get('y_major'): ax.tick_params(axis='y', which='major', width=op_tick_widths['y_major'])
-                if op_tick_widths.get('y_minor'): ax.tick_params(axis='y', which='minor', width=op_tick_widths['y_minor'])
-            except Exception:
-                pass
+
+    # Apply operando spines
+    op_spines = op.get('spines', {})
+    if op_spines:
+        try:
+            for name, props in op_spines.items():
+                sp = ax.spines.get(name)
+                if not sp:
+                    continue
+                if 'linewidth' in props and props['linewidth'] is not None:
+                    try:
+                        sp.set_linewidth(float(props['linewidth']))
+                    except Exception:
+                        pass
+                if 'visible' in props and props['visible'] is not None:
+                    try:
+                        sp.set_visible(bool(props['visible']))
+                    except Exception:
+                        pass
+                if 'color' in props and props['color'] is not None:
+                    try:
+                        _set_spine_side_color(ax, name, props['color'], fig=fig)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Apply operando tick widths
+    op_tick_widths = op.get('ticks', {}).get('widths', {})
+    if op_tick_widths:
+        try:
+            if op_tick_widths.get('x_major'): ax.tick_params(axis='x', which='major', width=op_tick_widths['x_major'])
+            if op_tick_widths.get('x_minor'): ax.tick_params(axis='x', which='minor', width=op_tick_widths['x_minor'])
+            if op_tick_widths.get('y_major'): ax.tick_params(axis='y', which='major', width=op_tick_widths['y_major'])
+            if op_tick_widths.get('y_minor'): ax.tick_params(axis='y', which='minor', width=op_tick_widths['y_minor'])
+        except Exception:
+            pass
 
     # Colorbar
     cbar = _Colorbar(cbar_ax, im)
@@ -1395,19 +1352,7 @@ def load_operando_session(filename: str):
                                      right=right_ticks,
                                      labelleft=left_labels,
                                      labelright=right_labels)
-                    # Apply minor ticks
-                    if ec_wasd.get('top', {}).get('minor') or ec_wasd.get('bottom', {}).get('minor'):
-                        ec_ax.xaxis.set_minor_locator(AutoMinorLocator())
-                        ec_ax.xaxis.set_minor_formatter(NullFormatter())
-                    ec_ax.tick_params(axis='x', which='minor',
-                                     top=bool(ec_wasd.get('top', {}).get('minor', False)),
-                                     bottom=bool(ec_wasd.get('bottom', {}).get('minor', False)))
-                    if ec_wasd.get('left', {}).get('minor') or ec_wasd.get('right', {}).get('minor'):
-                        ec_ax.yaxis.set_minor_locator(AutoMinorLocator())
-                        ec_ax.yaxis.set_minor_formatter(NullFormatter())
-                    ec_ax.tick_params(axis='y', which='minor',
-                                     left=bool(ec_wasd.get('left', {}).get('minor', False)),
-                                     right=bool(ec_wasd.get('right', {}).get('minor', False)))
+                    apply_wasd_minor_ticks(ec_ax, ec_wasd, y_minor_mode='right')
                     # Store WASD state
                     ec_ts = {}
                     for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
@@ -1560,9 +1505,11 @@ def load_operando_session(filename: str):
                     if ec_tick_widths.get('y_minor'): ec_ax.tick_params(axis='y', which='minor', width=ec_tick_widths['y_minor'])
                 except Exception:
                     pass
-            # Restore tick locator state for ec_ax
+            # Restore tick locator state for ec_ax, then re-apply WASD minor visibility
             try:
                 _restore_session_tick_locator(ec_ax, ec.get('tick_locator_state'))
+                if ec_wasd and isinstance(ec_wasd, dict):
+                    apply_wasd_minor_ticks(ec_ax, ec_wasd, y_minor_mode='right')
             except Exception:
                 pass
 
@@ -1907,6 +1854,11 @@ def dump_ec_session(
             'bottom': float(sp.bottom),
             'top': float(sp.top),
         }
+        # Plot frame size + exact axes bbox (same strategy as XY/CPC sessions)
+        bbox = ax.get_position()
+        fig_w, fig_h = fig.get_size_inches()
+        frame_w_in = float(bbox.width) * float(fig_w)
+        frame_h_in = float(bbox.height) * float(fig_h)
         # Capture cycles: single-file (lines_state) or multi-file (file_data with lines per file)
         file_data_saved: Optional[List[Dict[str, Any]]]
         if file_data is not None and len(file_data) > 1:
@@ -1939,7 +1891,19 @@ def dump_ec_session(
         sess = {
             'kind': 'ec_gc',
             'version': 2,
-            'figure': {'size': (fig_w, fig_h), 'dpi': dpi},
+            'figure': {
+                'size': (fig_w, fig_h),
+                'dpi': dpi,
+                'frame_size': (frame_w_in, frame_h_in),
+                'axes_bbox': {
+                    'left': float(bbox.x0),
+                    'bottom': float(bbox.y0),
+                    'right': float(bbox.x0 + bbox.width),
+                    'top': float(bbox.y0 + bbox.height),
+                },
+            },
+            # Keep top-level aliases for backward compatibility with existing loader keys.
+            'frame_size': (frame_w_in, frame_h_in),
             'axis': axis,
             'subplot_margins': subplot_margins,
             'lines': lines_state,
@@ -1983,6 +1947,12 @@ def dump_ec_session(
             if not target:
                 print("EC session save canceled.")
                 return
+        try:
+            snap = getattr(fig, '_dqdv_2d_snapshot', None)
+            if isinstance(snap, dict) and snap.get('Z') is not None:
+                sess['dqdv_2d'] = snap
+        except Exception:
+            pass
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"EC session saved to {target}")
@@ -2112,8 +2082,13 @@ def load_ec_session(
             if all(k in spm for k in ('left','right','bottom','top')):
                 fig.subplots_adjust(left=float(spm['left']), right=float(spm['right']), bottom=float(spm['bottom']), top=float(spm['top']))
 
-            frame_size = sess.get('frame_size')
-            if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+            fig_meta = sess.get('figure', {}) if isinstance(sess.get('figure', {}), dict) else {}
+            axes_bbox = fig_meta.get('axes_bbox')
+            if axes_bbox:
+                _apply_axes_bbox(ax, axes_bbox)
+
+            frame_size = sess.get('frame_size') or fig_meta.get('frame_size')
+            if (not axes_bbox) and frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
                 target_w_in, target_h_in = map(float, frame_size)
                 canvas_w_in, canvas_h_in = fig.get_size_inches()
                 if canvas_w_in > 0 and canvas_h_in > 0:
@@ -2314,19 +2289,7 @@ def load_ec_session(
                               right=bool(wasd.get('right', {}).get('ticks', False)),
                               labelleft=bool(wasd.get('left', {}).get('labels', True)),
                               labelright=bool(wasd.get('right', {}).get('labels', False)))
-                # Apply minor ticks
-                if wasd.get('top', {}).get('minor') or wasd.get('bottom', {}).get('minor'):
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
-                ax.tick_params(axis='x', which='minor',
-                              top=bool(wasd.get('top', {}).get('minor', False)),
-                              bottom=bool(wasd.get('bottom', {}).get('minor', False)))
-                if wasd.get('left', {}).get('minor') or wasd.get('right', {}).get('minor'):
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
-                ax.tick_params(axis='y', which='minor',
-                              left=bool(wasd.get('left', {}).get('minor', False)),
-                              right=bool(wasd.get('right', {}).get('minor', False)))
+                apply_wasd_minor_ticks(ax, wasd)
                 # Store WASD state
                 tick_state = {}
                 for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
@@ -2364,6 +2327,8 @@ def load_ec_session(
         # Restore tick spacing and minor count (t > n and t > m commands)
         try:
             _restore_session_tick_locator(ax, sess.get('tick_locator_state'))
+            if wasd and isinstance(wasd, dict):
+                apply_wasd_minor_ticks(ax, wasd)
         except Exception:
             pass
 
@@ -2667,6 +2632,16 @@ def load_ec_session(
             fig.canvas.draw_idle()
         except Exception:
             pass
+    if not embed:
+        try:
+            blob = sess.get('dqdv_2d')
+            if isinstance(blob, dict) and blob.get('Z') is not None:
+                from .electrochem_interactive import restore_dqdv_2d_companion_figure
+                cbundle = restore_dqdv_2d_companion_figure(blob)
+                if cbundle:
+                    fig._dqdv_2d_companion_bundle = cbundle
+        except Exception as _e2d:
+            print(f"Warning: could not restore dQ/dV 2D companion: {_e2d}")
     if file_data_out is not None:
         return (fig, ax, None, file_data_out)
     return (fig, ax, cycle_lines)
@@ -2799,40 +2774,68 @@ def dump_cpc_session(
             'top': float(sp.top),
         }
         
-        # Capture WASD state from figure attribute
+        # Capture WASD state: start from figure attr when present, then reconcile with
+        # current axes + saved tick keys so every save path stays accurate.
         wasd_state = getattr(fig, '_cpc_wasd_state', None)
         if not isinstance(wasd_state, dict):
-            # Fallback: capture current state
-            wasd_state = {
-                'top': {
-                    'spine': bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False),
-                    'ticks': bool(ax.xaxis._major_tick_kw.get('tick2On', False)),
-                    'minor': bool(ax.xaxis._minor_tick_kw.get('tick2On', False)),
-                    'labels': bool(ax.xaxis._major_tick_kw.get('label2On', False)),
-                    'title': bool(getattr(ax, '_top_xlabel_text', None) and getattr(ax, '_top_xlabel_text').get_visible()),
-                },
-                'bottom': {
-                    'spine': bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else True),
-                    'ticks': bool(ax.xaxis._major_tick_kw.get('tick1On', True)),
-                    'minor': bool(ax.xaxis._minor_tick_kw.get('tick1On', False)),
-                    'labels': bool(ax.xaxis._major_tick_kw.get('label1On', True)),
-                    'title': bool(ax.get_xlabel()),
-                },
-                'left': {
-                    'spine': bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else True),
-                    'ticks': bool(ax.yaxis._major_tick_kw.get('tick1On', True)),
-                    'minor': bool(ax.yaxis._minor_tick_kw.get('tick1On', False)),
-                    'labels': bool(ax.yaxis._major_tick_kw.get('label1On', True)),
-                    'title': bool(ax.get_ylabel()),
-                },
-                'right': {
-                    'spine': bool(ax2.spines.get('right').get_visible() if ax2.spines.get('right') else True),
-                    'ticks': bool(ax2.yaxis._major_tick_kw.get('tick2On', True)),
-                    'minor': bool(ax2.yaxis._minor_tick_kw.get('tick2On', False)),
-                    'labels': bool(ax2.yaxis._major_tick_kw.get('label2On', True)),
-                    'title': bool(ax2.yaxis.get_label().get_text()) and bool(sc_eff.get_visible()),
-                },
+            wasd_state = {}
+        ts = dict(getattr(ax, '_saved_tick_state', {}) or {})
+        def _merged_side(side_name, default_ticks, default_labels, default_spine, default_minor):
+            s = wasd_state.get(side_name, {}) if isinstance(wasd_state.get(side_name, {}), dict) else {}
+            alias_map = {'top': 'tx', 'bottom': 'bx', 'left': 'ly', 'right': 'ry'}
+            prefix_map = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}
+            pref = prefix_map[side_name]
+            tick_default = bool(s.get('ticks', default_ticks))
+            label_default = bool(s.get('labels', default_labels))
+            return {
+                'spine': bool(s.get('spine', default_spine)),
+                'ticks': bool(ts.get(f'{pref}_ticks', ts.get(alias_map[side_name], tick_default))),
+                'minor': bool(ts.get(f'm{pref}x' if pref in ('t', 'b') else f'm{pref}y',
+                                     s.get('minor', default_minor))),
+                'labels': bool(ts.get(f'{pref}_labels', ts.get(alias_map[side_name], label_default))),
+                'title': bool(s.get('title', True)),
             }
+        wasd_state = {
+            'top': _merged_side(
+                'top',
+                default_ticks=False,
+                default_labels=False,
+                default_spine=bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False),
+                default_minor=False,
+            ),
+            'bottom': _merged_side(
+                'bottom',
+                default_ticks=True,
+                default_labels=True,
+                default_spine=bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else True),
+                default_minor=False,
+            ),
+            'left': _merged_side(
+                'left',
+                default_ticks=True,
+                default_labels=True,
+                default_spine=bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else True),
+                default_minor=False,
+            ),
+            'right': _merged_side(
+                'right',
+                default_ticks=True,
+                default_labels=True,
+                default_spine=bool(ax2.spines.get('right').get_visible() if ax2.spines.get('right') else True),
+                default_minor=False,
+            ),
+        }
+        # Titles and spines should reflect current figure at save time.
+        wasd_state['top']['title'] = bool(
+            getattr(ax, '_top_xlabel_text', None) and getattr(ax, '_top_xlabel_text').get_visible()
+        )
+        wasd_state['bottom']['title'] = bool(ax.get_xlabel())
+        wasd_state['left']['title'] = bool(ax.get_ylabel())
+        wasd_state['right']['title'] = bool(ax2.yaxis.get_label().get_text()) and bool(sc_eff.get_visible())
+        wasd_state['top']['spine'] = bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False)
+        wasd_state['bottom']['spine'] = bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else True)
+        wasd_state['left']['spine'] = bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else True)
+        wasd_state['right']['spine'] = bool(ax2.spines.get('right').get_visible() if ax2.spines.get('right') else True)
         
         # Capture stored title texts
         stored_titles = {
@@ -2912,7 +2915,12 @@ def dump_cpc_session(
             })(),
             'legend': {
                 'xy_in': getattr(fig, '_cpc_legend_xy_in', None),
-                'visible': (bool(ax.get_legend().get_visible()) if ax.get_legend() is not None else False)
+                'visible': (
+                    bool((ax.get_legend() or ax2.get_legend()).get_visible())
+                    if (ax.get_legend() is not None or ax2.get_legend() is not None)
+                    else False
+                ),
+                'title': getattr(fig, '_cpc_legend_title', None),
             },
             'wasd_state': wasd_state,
             'tick_widths': tick_widths,
@@ -2967,6 +2975,7 @@ def dump_cpc_session(
                 ef_col, ef_hollow = _color_and_hollow(sc_ef)
                 file_info = {
                     'filename': f.get('filename', 'unknown'),
+                    'display_name': f.get('display_name', f.get('filename', 'unknown')),
                     'visible': f.get('visible', True),
                     'charge': {
                         'x': _np.array(_scatter_xy(sc_ch)[0]),
@@ -3180,6 +3189,7 @@ def load_cpc_session(filename: str):
                 ef_col = ef_info.get('color')
                 file_data.append({
                     'filename': finfo.get('filename', f'File {idx+1}'),
+                    'display_name': finfo.get('display_name', finfo.get('filename', f'File {idx+1}')),
                     'visible': vis_file,
                     'sc_charge': sc_ch,
                     'sc_discharge': sc_dh,
@@ -3202,10 +3212,11 @@ def load_cpc_session(filename: str):
                     for f in file_data:
                         sc_c = f.get('sc_charge')
                         sc_d = f.get('sc_discharge')
+                        file_vis = bool(f.get('visible', True))
                         if sc_c is not None:
-                            sc_c.set_visible(dm in ('charge', 'both'))
+                            sc_c.set_visible(file_vis and (dm in ('charge', 'both')))
                         if sc_d is not None:
-                            sc_d.set_visible(dm in ('discharge', 'both'))
+                            sc_d.set_visible(file_vis and (dm in ('discharge', 'both')))
                 except Exception:
                     pass
         else:
@@ -3302,13 +3313,6 @@ def load_cpc_session(filename: str):
         except Exception:
             pass
 
-        # Restore tick locator state (spacing + minor count) for ax and ax2
-        try:
-            _restore_session_tick_locator(ax, sess.get('tick_locator_state_ax'))
-            _restore_session_tick_locator(ax2, sess.get('tick_locator_state_ax2'))
-        except Exception:
-            pass
-        
         # Restore grid state
         try:
             grid_enabled = sess.get('grid', False)
@@ -3403,21 +3407,32 @@ def load_cpc_session(filename: str):
                 except Exception:
                     pass
                 
-                # Minor ticks
-                if wasd_state.get('top', {}).get('minor') or wasd_state.get('bottom', {}).get('minor'):
+                # Minor ticks (x/left on ax; right on ax2)
+                top_m = bool(wasd_state.get('top', {}).get('minor', False))
+                bot_m = bool(wasd_state.get('bottom', {}).get('minor', False))
+                if top_m or bot_m:
                     ax.xaxis.set_minor_locator(AutoMinorLocator())
                     ax.xaxis.set_minor_formatter(NullFormatter())
-                    ax.tick_params(axis='x', which='minor',
-                                   top=wasd_state.get('top', {}).get('minor', False),
-                                   bottom=wasd_state.get('bottom', {}).get('minor', False))
-                if wasd_state.get('left', {}).get('minor'):
+                else:
+                    ax.xaxis.set_minor_locator(NullLocator())
+                    ax.xaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='x', which='minor', top=top_m, bottom=bot_m)
+                left_m = bool(wasd_state.get('left', {}).get('minor', False))
+                if left_m:
                     ax.yaxis.set_minor_locator(AutoMinorLocator())
                     ax.yaxis.set_minor_formatter(NullFormatter())
-                    ax.tick_params(axis='y', which='minor', left=True)
-                if wasd_state.get('right', {}).get('minor'):
+                else:
+                    ax.yaxis.set_minor_locator(NullLocator())
+                    ax.yaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='y', which='minor', left=left_m, right=False)
+                right_m = bool(wasd_state.get('right', {}).get('minor', False))
+                if right_m:
                     ax2.yaxis.set_minor_locator(AutoMinorLocator())
                     ax2.yaxis.set_minor_formatter(NullFormatter())
-                    ax2.tick_params(axis='y', which='minor', right=True)
+                else:
+                    ax2.yaxis.set_minor_locator(NullLocator())
+                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                ax2.tick_params(axis='y', which='minor', right=right_m, left=False)
                 # Store tick_state on axes for interactive menu
                 tick_state = {}
                 for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
@@ -3435,6 +3450,40 @@ def load_cpc_session(filename: str):
                 tick_state['mly'] = tick_state.get('mly', False)
                 tick_state['mry'] = tick_state.get('mry', False)
                 ax._saved_tick_state = tick_state
+        except Exception:
+            pass
+
+        # Restore tick locator spacing after WASD, then re-sync minor visibility
+        try:
+            _restore_session_tick_locator(ax, sess.get('tick_locator_state_ax'))
+            _restore_session_tick_locator(ax2, sess.get('tick_locator_state_ax2'))
+            wasd_state = sess.get('wasd_state') or {}
+            if wasd_state and isinstance(wasd_state, dict):
+                top_m = bool(wasd_state.get('top', {}).get('minor', False))
+                bot_m = bool(wasd_state.get('bottom', {}).get('minor', False))
+                if top_m or bot_m:
+                    ax.xaxis.set_minor_locator(AutoMinorLocator())
+                    ax.xaxis.set_minor_formatter(NullFormatter())
+                else:
+                    ax.xaxis.set_minor_locator(NullLocator())
+                    ax.xaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='x', which='minor', top=top_m, bottom=bot_m)
+                left_m = bool(wasd_state.get('left', {}).get('minor', False))
+                if left_m:
+                    ax.yaxis.set_minor_locator(AutoMinorLocator())
+                    ax.yaxis.set_minor_formatter(NullFormatter())
+                else:
+                    ax.yaxis.set_minor_locator(NullLocator())
+                    ax.yaxis.set_minor_formatter(NullFormatter())
+                ax.tick_params(axis='y', which='minor', left=left_m, right=False)
+                right_m = bool(wasd_state.get('right', {}).get('minor', False))
+                if right_m:
+                    ax2.yaxis.set_minor_locator(AutoMinorLocator())
+                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                else:
+                    ax2.yaxis.set_minor_locator(NullLocator())
+                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                ax2.tick_params(axis='y', which='minor', right=right_m, left=False)
         except Exception:
             pass
         
@@ -3496,6 +3545,11 @@ def load_cpc_session(filename: str):
             leg_meta = sess.get('legend', {})
             xy_in = leg_meta.get('xy_in')
             vis = bool(leg_meta.get('visible', True))
+            if 'title' in leg_meta and leg_meta.get('title'):
+                try:
+                    fig._cpc_legend_title = str(leg_meta.get('title'))
+                except Exception:
+                    pass
             try:
                 fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
             except Exception:
@@ -3503,7 +3557,7 @@ def load_cpc_session(filename: str):
             from .cpc_interactive import _rebuild_legend
             _rebuild_legend(ax, ax2, file_data, preserve_position=True)
             if not vis:
-                leg = ax.get_legend()
+                leg = ax.get_legend() or ax2.get_legend()
                 if leg is not None:
                     leg.set_visible(False)
         except Exception:
@@ -3623,11 +3677,17 @@ def load_xy_session(filename: str):
 
         original_x_data_list = sess.get('original_x_data_list')
         original_y_data_list = sess.get('original_y_data_list')
+        saved_x_full_data = sess.get('x_full_data')
+        saved_raw_y_full_data = sess.get('raw_y_full_data')
         smooth_settings = sess.get('smooth_settings')
         if original_x_data_list is not None:
             fig._original_x_data_list = [np.array(a) for a in original_x_data_list]
+        elif saved_x_full_data is not None:
+            fig._original_x_data_list = [np.array(a) for a in saved_x_full_data]
         if original_y_data_list is not None:
             fig._original_y_data_list = [np.array(a) for a in original_y_data_list]
+        elif saved_raw_y_full_data is not None:
+            fig._original_y_data_list = [np.array(a) for a in saved_raw_y_full_data]
         full_processed_x_data_list = sess.get('full_processed_x_data_list')
         full_processed_y_data_list = sess.get('full_processed_y_data_list')
         if full_processed_x_data_list is not None:
@@ -3684,8 +3744,20 @@ def load_xy_session(filename: str):
                 ax2_loaded.plot(x_arr, y_plot, lw=1)
             else:
                 ax.plot(x_arr, y_plot, lw=1)
-            x_full_list.append(x_arr.copy())
-            raw_y_full_list.append(base.copy())
+            if saved_x_full_data is not None and i < len(saved_x_full_data):
+                x_full_arr = np.asarray(saved_x_full_data[i], dtype=float).flatten()
+            else:
+                x_full_arr = x_arr.copy()
+            if saved_raw_y_full_data is not None and i < len(saved_raw_y_full_data):
+                y_full_arr = np.asarray(saved_raw_y_full_data[i], dtype=float).flatten()
+            else:
+                y_full_arr = base.copy()
+            if x_full_arr.size != y_full_arr.size:
+                min_len_full = min(x_full_arr.size, y_full_arr.size)
+                x_full_arr = x_full_arr[:min_len_full]
+                y_full_arr = y_full_arr[:min_len_full]
+            x_full_list.append(x_full_arr)
+            raw_y_full_list.append(y_full_arr)
         offsets_list[:] = offsets_saved if offsets_saved else [0.0] * n_curves
 
         try:

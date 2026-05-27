@@ -4,6 +4,400 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-05-19: dQ/dV 2D contour — charge/discharge potential axis reversed vs tick labels
+
+### Summary
+The butterfly 2D map (`2d` in `--dqdv` interactive mode) could show discharge and charge dQ/dV peaks at the wrong potentials relative to the x-axis tick labels (e.g. discharge features appearing where charge voltage was labeled).
+
+### Root Cause
+Contour samples were interpolated on an internal grid `gx ∈ [-dv, dv]` but `imshow` used extent `[0, 2·dv]`, shifting the heatmap by one panel width. Tick formatters assumed the unshifted layout (discharge V_hi→V_lo on `[0, dv]`, charge V_lo→V_hi on `[dv, 2·dv]`).
+
+### Solution
+- Build grid as `gx = linspace(0, 2·dv, …)` to match `imshow` extent.
+- Map discharge to `x = V_hi − V` on `[0, dv]` and charge to `x = dv + (V − V_lo)` on `[dv, 2·dv]`.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-19: dQ/dV 2D contour — WASD spine/tick toggles no longer reset styling
+
+### Summary
+In 2D dQ/dV contour mode, spine/tick commands (e.g. `t` → `o` → `a2`) called a full butterfly axis restyle that reset axis names, potential window display, y tick layout, and fonts to factory defaults.
+
+### Solution
+- Split butterfly styling into `full` / `data` / `minimal` modes; routine edits use `minimal` (voltage formatter + center divider only).
+- Removed full reapply from the WASD `_apply_wasd_axis` path.
+- Undo and style import restore custom operando labels after any data refresh; `ox` rebuild uses `data` mode to preserve renamed axes.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-05-19: dQ/dV 2D contour — `ox` sets potential window (not display x-limits)
+
+### Summary
+In the 2D dQ/dV contour menu, `ox` treated limits as plain matplotlib x-limits (e.g. 1–3 on a 0–2 display axis), so tick labels and data no longer matched the butterfly mapping (discharge V_hi→V_lo left, charge V_lo→V_hi right).
+
+### Solution
+- Store source `file_data` on the 2D figure; `ox` interprets input as **V_lo V_hi** (e.g. `2 3`), rebuilds the heatmap, and resets display x to `[0, 2·ΔV]`.
+- `w` / `s` adjust V_hi / V_lo; `a` restores the initial window from when `2d` was opened.
+- Undo rebuilds from saved `dqdv_2d` voltage limits when source data is still in memory.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-05-19: dQ/dV 2D contour — `p` / `i` / `s` / `b` preserve butterfly potential axis
+
+### Summary
+After styling, undo, or session save in the 2D dQ/dV contour menu, axis labels/ticks could revert to operando defaults (Q / scan index) or wrong voltage formatters, breaking charge/discharge alignment.
+
+### Solution
+- Tag 2D figures with `_is_dqdv_2d_contour` and `v_lo` / `v_hi` metadata; `bind_dqdv_2d_contour_figure` / `reapply_dqdv_2d_contour_axes` restore butterfly ticks and labels.
+- **b**: undo snapshots store `dqdv_2d` metadata; restore re-applies butterfly axes (also after tick-spacing restore).
+- **i** / **p**: style JSON includes `dqdv_2d` block; import skips operando xlabel/ylim overrides on 2D figures, then re-applies butterfly axes.
+- **s**: dedicated dQ/dV 2D `.pkl` via `build_dqdv_2d_snapshot` (with `axis_mapping_version`).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-05-19: Operando/CPC/EC session load — minor ticks did not match saved WASD state
+
+### Summary
+Loading an operando session (e.g. `operando_bm30.pkl`) could show minor ticks on the EC Time (h) axis even when they were off when saved. The same locator-restore bug affected 1D EC, CPC, and style import after session restore.
+
+### Root Cause
+`load_operando_session` (and other loaders) called `_restore_session_tick_locator` after applying WASD state. That helper used `AutoMinorLocator()` when both minor step and ndivs were missing — the same condition as “minors disabled”. Operando spine/tick-width restore was incorrectly nested inside the tick-locator `except` block, so it often never ran.
+
+### Solution
+- Session and style tick capture/restore delegate to `capture_axes_tick_locators` / `restore_axes_tick_locators` in `batplot/ui.py` (honours `*_minor_off` / `NullLocator`).
+- New `apply_wasd_minor_ticks` re-applies WASD minor locators after spacing restore on load, undo, and import paths.
+- Fixed operando spine restore indentation; EC style-import tick_params use right y-axis; operando `_saved_tick_state` stores minor flags from WASD toggles.
+
+### Affected Files
+- `batplot/ui.py`
+- `batplot/session.py`
+- `batplot/style.py`
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-05-13: Undo (`b`) — minor ticks reappeared when they had been off (all interactive menus)
+
+### Summary
+Pressing undo in operando / EC / CPC / stack-plot menus could turn minor ticks back on (dense tick marks on all spines) even when they were off before the undone action.
+
+### Root Cause
+Undo snapshots stored tick locator state correctly (`NullLocator` when minors were disabled), but restore used `AutoMinorLocator()` whenever both minor step and ndivs were missing in the snapshot — the same condition as “minors off”. Operando also read minor visibility from `tick_params` instead of `_saved_tick_state` in WASD snapshots.
+
+### Solution
+- Shared helpers in `batplot/ui.py`: `capture_axis_tick_locators`, `restore_axis_tick_locators`, `capture_axes_tick_locators`, `restore_axes_tick_locators` — restore `NullLocator` when minors were off (explicit `*_minor_off` flag or legacy “both None”).
+- Wired into undo restore in `operando_ec_interactive.py`, `electrochem_interactive.py`, `cpc_interactive.py`, and `interactive.py`.
+- Operando: WASD snapshot uses `_saved_tick_state` for minor flags; re-apply tick visibility after locator restore; removed debug prints.
+
+### Affected Files
+- `batplot/ui.py`
+- `batplot/operando_ec_interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/interactive.py`
+
+---
+
+## 2026-05-13: EC / dQ/dV figure export (`e`, `oe`) — include full plot window (axis labels, legend)
+
+### Summary
+Exports used `savefig(..., bbox_inches='tight')` with default padding. Long or offset y-axis labels (and duplicate top/right label artists) could sit just outside the axes patch; the tight bounding box sometimes did not leave enough margin, so the saved file clipped content that users still considered part of the on-screen plot.
+
+### Solution
+- Centralized export in `_ec_savefig_plot_window`: refresh the canvas, pass `bbox_extra_artists` for primary axis labels, optional `_top_xlabel_artist` / `_right_ylabel_artist`, dual-axis secondary labels, legend, and figure suptitle when present, with `pad_inches=0.28`.
+- Applied to both normal export (`e`) and overwrite-last (`oe`), for SVG (transparent) and raster/vector (opaque) paths.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-13: Interactive menus — clearer prompts (pane chooser, toggle spines, spacing/minor, submenus)
+
+### Summary
+Several operando / EC / CPC interactive steps used very short prompts (for example `Enter code(s): `, `Spacing> `, `Minor> `, `ot (o/e/q): `, or single-letter prompts) so it was unclear that `q` stepped back one level or what input format was expected.
+
+### Solution
+- Replaced terse prompts with short sentences that name the action, typical input shapes, and where `q` returns.
+- Added a one-line tip under the toggle-spines help (operando, electrochem, CPC) explaining the back-stack (`q`) and that a blank line repeats the prompt.
+- Operando: pane chooser already documents `o` / `e` / `q`; extended other sub-prompts (`v`, title offsets, CIF menu, EC grid/line/rename).
+- Main `interactive.py` “Press a key” prompt was briefly expanded then restored to the simple `Press a key: ` form.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+- `batplot/interactive.py` (main stack-plot menu: `Press a key` and toggle-spines `t` submenu)
+
+---
+
+## 2026-05-13: dQ/dV interactive — `2d` opens butterfly potential vs cycle heatmap with operando contour menu
+
+### Summary
+In `--dqdv` interactive mode, users can open a second figure that stacks the **current** dQ/dV line data (including any smoothing from `sm`) into a 2D intensity map, then use the same contour interactive commands as operando **without** the EC side panel. Quitting that menu (`q`) returns to the dQ/dV menu; the contour figure is closed afterward.
+
+### Behavior
+- Prompts for a potential window `V_lo V_hi` (order-independent); maps **discharge** to the **left** half of the composite horizontal axis (high → low voltage in the window) and **charge** to the **right** half (low → high).
+- **Y**: one row per visible cycle (multi-file labels include file display name + cycle).
+- **Z**: dQ/dV from the plotted lines (smoothed values if smoothing was applied).
+- Cross-platform (pure Matplotlib + existing `operando_ec_interactive_menu` with `ec_ax=None`).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-13: dQ/dV `2d` contour — y-axis “black bar” with many cycles
+
+### Summary
+With very many visible cycles (e.g. ~2000), the 2D map set one y-tick label per row, so labels overlapped into an illegible vertical black smudge beside the colorbar.
+
+### Root Cause
+`set_yticks(np.arange(n_rows))` and `set_yticklabels(row_labels)` for every row.
+
+### Solution
+- Subsample y-tick positions to at most ~24 evenly spaced row indices (helper `_dqdv_2d_row_tick_indices`), still labeling the correct cycle for each tick.
+- (Later) y tick **font size** matches the main axis (`rcParams`); the temporary `labelsize=8` for many rows was removed in the voltage-axis update.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-13: Operando contour — tick spacing `n` looked applied but y labels went blank (e.g. after dQ/dV `2d`)
+
+### Summary
+Under **Toggle spines → `n`**, setting e.g. `y 100` printed "Set y spacing" but the y-axis often showed **no readable labels** on heatmaps where y tick labels had been set explicitly (dQ/dV 2D map, etc.).
+
+### Root Cause
+Changing `MajorLocator` without resetting `MajorFormatter` left a **FuncFormatter** (or similar) tied to the **old** tick positions, so new tick positions had empty or mismatched labels.
+
+### Solution
+- After each spacing change on a **linear** axis, set `ScalarFormatter()` on that axis major formatter.
+- **`i`** (tick direction) and **`l`** (tick length): guard **`ec_ax is not None`** so operando-only mode does not crash.
+- **`n` / `m` prompts**: accept **multiple pairs** on one line (e.g. `x 0.5 y 100`); one undo snapshot per submitted line.
+- Help text: clarify that **`y` alone** at "Enter code(s):" is invalid (use **`n`** then `y <step>`); **`list`** in operando-only now includes **`d`** (right side).
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+
+---
+
+## 2026-05-13: dQ/dV `2d` map — voltage-labeled x-axis, companion saved in EC `.pkl`
+
+### Summary
+The 2D dQ/dV heatmap used symmetric internal coordinates (−ΔV…+ΔV) on the x-axis; the EC session `.pkl` only restored the 1D plot.
+
+### Solution
+- X-axis is now **0…2ΔV** with a **FuncFormatter** so tick labels read as **high→low V** on the left (discharge) and **low→high V** on the right (charge), with a **high-contrast** vertical divider at the join.
+- Simpler x-axis title; **y tick label size** matches rcParams (no undersized y-only labels).
+- **`dump_ec_session`** embeds optional **`dqdv_2d`** payload when `fig._dqdv_2d_snapshot` exists (after closing the 2D window); **`load_ec_session`** rebuilds a companion figure; **`batplot session.pkl`** runs the contour menu after the dQ/dV EC menu when that payload is present.
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/session.py`
+- `batplot/batplot.py`
+
+---
+
+## 2026-05-06: CPC `os` (overwrite session) path called session dumper with wrong arguments
+
+### Summary
+In CPC interactive mode, `os` (overwrite last session) could fail to save current state in one menu path.
+
+### Root Cause
+One `dump_cpc_session(...)` call used an outdated argument set (missing required `ax2`/scatter artist args and passing unsupported kwargs), causing overwrite failure in that branch.
+
+### Solution
+- Updated that `os` call to use the same valid argument set as other CPC save paths:
+  - `fig`, `ax`, `ax2`, `sc_charge`, `sc_discharge`, `sc_eff`, `file_data`, `skip_confirm=True`
+- Cross-platform safe (pure Python argument fix; Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-05-06: CPC `.pkl` session missed parts of multi-file visual state (ticks, legend names/title, file visibility)
+
+### Summary
+In CPC multi-file sessions, users could see post-load mismatches: tick visibility not matching interactive state, legend file names/titles not fully restored, and hidden files becoming visible again in charge/discharge display mode.
+
+### Root Cause
+- CPC session fallback WASD capture relied on private matplotlib tick internals (`_major_tick_kw` / `_minor_tick_kw`) which are less stable than saved tick-state keys.
+- `display_name` was not serialized in `multi_files`, so legend rows could revert to filename.
+- Legend title was not saved in session metadata.
+- On load, applying display mode (`charge`/`discharge`/`both`) ignored per-file visibility and re-enabled hidden files.
+
+### Solution
+- `session.py` (`dump_cpc_session`): WASD fallback now derives from `ax._saved_tick_state` keys.
+- `session.py` (`dump_cpc_session`): serialize `multi_files[].display_name` and `legend.title`.
+- `session.py` (`load_cpc_session`): restore `display_name`, restore legend title, and apply display mode with per-file visibility gating.
+- Maintains cross-platform behavior (Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/session.py`
+
+---
+
+## 2026-05-06: CPC legend could disappear after save/load or style import due host-axis mismatch
+
+### Summary
+In CPC mode, legends could intermittently disappear after session/style round-trips.
+
+### Root Cause
+CPC legend is hosted on the twin axis (`ax2`), but some save/load/style paths read legend visibility from `ax.get_legend()` only. That could serialize `visible=False`/missing legend even when legend was shown.
+
+### Solution
+- `batplot/cpc_interactive.py`: legend creation now synchronizes legend references on both axes so `ax.get_legend()` and `ax2.get_legend()` consistently point to the active legend.
+- `batplot/cpc_interactive.py`: style snapshot legend capture now checks both axes.
+- `batplot/session.py`: CPC session save/load legend visibility handling now checks both axes.
+- Cross-platform behavior preserved (Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/session.py`
+
+---
+
+## 2026-05-06: EC/GC `.pkl` did not persist resized plot frame geometry
+
+### Summary
+In EC mode (`--gc`/`--cv`/`--dqdv` interactive), changing plot frame size via `g` could be lost after saving and reloading a `.pkl` session.
+
+### Root Cause
+`load_ec_session` attempted to restore `frame_size`, but `dump_ec_session` did not save `frame_size` (or exact `axes_bbox`) in the session payload.
+
+### Solution
+- Updated `dump_ec_session` to persist:
+  - exact frame size (`frame_size`)
+  - exact axes rectangle (`axes_bbox`)
+- Updated `load_ec_session` to:
+  - prefer exact `axes_bbox` restore when available
+  - fall back to `frame_size` (top-level or `figure.frame_size`) for backward compatibility.
+- Verified other session modes already persisted frame geometry:
+  - XY/1D (`dump_session` / `load_xy_session`)
+  - CPC (`dump_cpc_session` / `load_cpc_session`)
+  - Operando uses its own saved panel layout inches.
+
+### Affected Files
+- `batplot/session.py`
+
+---
+
+## 2026-05-06: `batlow` palette rejected in EC/CV/dQdV color menu (and inconsistent across modes)
+
+### Summary
+In GC/CV/dQdV interactive `c` menu, entering `batlow` (e.g. `31 32 33 batlow`) was rejected while operando accepted it.
+
+### Root Cause
+EC/CV/dQdV palette parsing validated names directly with `cm.get_cmap(...)` without first registering optional/custom palettes. `batlow` support existed in shared color utilities but was bypassed in these parse paths.
+
+### Solution
+- Updated EC/CV/dQdV palette parsing to call `ensure_colormap(...)` before `cm.get_cmap(...)` in all relevant token parsers (`all`, per-file, `fall:`, and standard cycle+palette parsing).
+- Updated CPC color submenu to include available `batlow` variants (`batlow`, `batlowk`, `batloww`) and validate palettes via `ensure_colormap(...)` in file-range parsing.
+- Hardened shared colormap registration in `batplot/color_utils.py` to support both newer and older matplotlib registration APIs, preventing silent `batlow` fallback behavior on environments where `plt.register_cmap` is unavailable.
+- Keeps behavior consistent with operando and cross-platform (Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+- `batplot/cpc_interactive.py`
+
+---
+
+## 2026-05-06: EC style import/export could shift left tick-label visibility due WASD fallback inconsistency
+
+### Summary
+In EC interactive mode, applying an exported style could change left tick-label visibility unexpectedly.
+
+### Root Cause
+- EC `t` (WASD) initialization used inconsistent legacy fallbacks for bottom/left (`bx`/`ly`) that could default to `False`.
+- Style import applied `wasd_state` to ticks but did not always sync the runtime `_ec_wasd_state`/saved tick state used by subsequent `t` interactions.
+
+### Solution
+- Standardized EC `t` fallback defaults for bottom/left to match expected defaults (`True`), consistent with other modes.
+- After EC style import applies WASD tick settings, now also syncs `fig._ec_wasd_state` and `ax._saved_tick_state` to keep runtime state consistent with imported style.
+- Behavior is cross-platform (Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-05: XY `.pkl` reload could lose recoverable X-range data (`.raw`/`.brml` included)
+
+### Summary
+After changing X range in interactive XY mode, saving to `.pkl`, reopening, and changing X range again, points outside the saved viewport could be unrecoverable.
+
+### Root Cause
+`dump_session` persisted only current displayed arrays (`x_data`/`y_data`/`orig_y`) and did not always persist full untrimmed XY arrays. On reload, `load_xy_session` rebuilt full-data buffers from already-trimmed arrays, so later X-range expansion had no source data to restore.
+
+### Solution
+- `batplot/session.py` now saves full XY buffers in session files (`x_full_data`, `raw_y_full_data`).
+- `load_xy_session` now restores `x_full_list`/`raw_y_full_list` from those fields and uses them as fallback source arrays for range edits.
+- `batplot/interactive.py` now passes `x_full_list` and `raw_y_full_list` when saving sessions.
+- Cross-platform behavior preserved (Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/session.py`
+- `batplot/interactive.py`
+
+---
+
+## 2026-05-04: Multi-file GC/CV/dQdV per-file cycle palette mapped colors per cycle instead of per file
+
+### Summary
+In multi-file electrochem interactive mode, commands like `f1:1 f2:1 ... fN:1 viridis` did not assign different palette colors across files as expected.
+
+### Root Cause
+The per-file cycle parser path (`fN:...`) applied palette sampling by the number of selected cycles inside each file, so when one cycle was selected per file, each file received the same midpoint palette color.
+
+### Solution
+- Updated per-file cycle application logic in `batplot/electrochem_interactive.py` to:
+  - gather selected files first in a stable order, then
+  - sample palette by number of selected files, and
+  - apply one palette color per file to all selected cycles for that file.
+- Kept existing fallback behavior when no palette is provided.
+- Cross-platform safe (matplotlib logic; Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/electrochem_interactive.py`
+
+---
+
+## 2026-05-04: CPC `ry` toggle could show duplicate legends
+
+### Summary
+In CPC interactive mode (`--cpc --interactive`), pressing `ry` could leave two legends visible instead of one.
+
+### Root Cause
+Legend rebuilds are hosted on the CPC twin axis in `batplot/cpc_interactive.py`, but stale legend artists from previous rebuilds were not always removed before creating the next legend.
+
+### Solution
+- Updated `_legend_no_frame` to proactively clear old legend artists and stale legend references on both participating axes before creating a new legend.
+- This keeps a single legend instance during repeated rebuild paths (including `ry` show/hide efficiency).
+- Cross-platform safe (matplotlib API; works on Windows/macOS/Linux).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+
+---
+
 ## 2026-03-31: **r → t** CIF tick label rename — plot title did not update after apply
 
 ### Summary
@@ -4471,3 +4865,32 @@ This preserves the EC side panel whenever at least one valid DataLogger/MPT file
 - ✅ macOS: Pure Python logic change; no OS-specific APIs
 - ✅ Windows: Same file parsing and skip behavior
 - ✅ Linux: Same file parsing and skip behavior
+
+---
+
+## 2026-05-06: CPC `.pkl` could drift left-axis tick state on reload/save cycles
+
+### Summary
+In CPC mode, left-axis tick state could be saved incorrectly after loading a session and saving again, especially when tick visibility and label visibility were not both enabled. This made left-side tick behavior appear inconsistent across `.pkl` round-trips.
+
+### Root Cause
+Two CPC persistence paths were not fully synchronized:
+- `cpc_interactive.py` initialized legacy `tick_state` keys from label visibility only, so full per-side keys (`l_ticks`/`l_labels`) were not always restored after session load.
+- `session.py` `dump_cpc_session` trusted figure WASD state unless a full fallback was needed, so stale figure-side state could override newer `_saved_tick_state` values.
+
+As a result, saving after reload could silently rewrite left tick settings.
+
+### Fix
+- In `batplot/cpc_interactive.py`, CPC startup now reconstructs explicit per-side keys (`*_ticks`, `*_labels`) from saved WASD state and synchronizes `ax._saved_tick_state` immediately.
+- In `batplot/session.py`, `dump_cpc_session` now always reconciles WASD output from both figure state and `_saved_tick_state`, then refreshes title/spine state from current axes before writing session metadata.
+
+This makes CPC tick persistence robust for left axis and equivalent side states across all save paths (`s`, overwrite-session, and any direct session dump call).
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `batplot/session.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Pure Python/matplotlib state sync; no OS-specific behavior
+- ✅ Windows: Same session serialization/deserialization behavior
+- ✅ Linux: Same session serialization/deserialization behavior

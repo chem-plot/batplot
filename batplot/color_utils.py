@@ -104,6 +104,37 @@ def ensure_colormap(name: Optional[str]) -> bool:
     """
     if not name:
         return False
+
+    def _register_cmap_safe(cmap_name: str, cmap_obj) -> bool:
+        """Register cmap across matplotlib API variants."""
+        # matplotlib >= 3.5 style registry API
+        try:
+            reg = getattr(plt, "colormaps", None)
+            if reg is not None and hasattr(reg, "register"):
+                try:
+                    reg.register(cmap_obj, name=cmap_name, force=True)
+                except TypeError:
+                    # Older signature may not support force kwarg
+                    reg.register(cmap_obj, name=cmap_name)
+                return True
+        except Exception:
+            pass
+        # Older pyplot API fallback
+        try:
+            if hasattr(plt, "register_cmap"):
+                plt.register_cmap(name=cmap_name, cmap=cmap_obj)
+                return True
+        except ValueError:
+            # Already registered
+            return True
+        except Exception:
+            pass
+        # As a last resort, accept cmap object usability even if registration fails.
+        try:
+            _ = cmap_obj(0.5)
+            return True
+        except Exception:
+            return False
     
     # Handle reversed colormaps (remove '_r' suffix to get base name)
     # Example: 'viridis_r' → base = 'viridis', we'll reverse it later if needed
@@ -120,13 +151,7 @@ def ensure_colormap(name: Optional[str]) -> bool:
         import cmcrameri.cm as cmc
         if hasattr(cmc, base_lower):
             cmap_obj = getattr(cmc, base_lower)
-            try:
-                # Register it with matplotlib so it can be used like built-in colormaps
-                plt.register_cmap(name=base_lower, cmap=cmap_obj)
-            except ValueError:
-                # Already registered, that's fine
-                pass
-            return True
+            return _register_cmap_safe(base_lower, cmap_obj)
     except Exception:
         # cmcrameri not installed or colormap not found, continue to next step
         pass
@@ -139,13 +164,7 @@ def ensure_colormap(name: Optional[str]) -> bool:
             # N=256 means create 256 intermediate colors by interpolating between the given colors
             # This creates a smooth gradient
             cmap_obj = LinearSegmentedColormap.from_list(base_lower, custom, N=256)
-            try:
-                # Register with matplotlib
-                plt.register_cmap(name=base_lower, cmap=cmap_obj)
-            except ValueError:
-                # Already registered, that's fine
-                pass
-            return True
+            return _register_cmap_safe(base_lower, cmap_obj)
         except Exception:
             return False
     

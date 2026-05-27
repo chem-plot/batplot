@@ -103,3 +103,6 @@
 
 ## 1.8.39
 - Bug fixes for BatX operando plot
+
+## 1.8.40
+- Bug fixes

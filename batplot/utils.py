@@ -33,6 +33,8 @@ All dialogs gracefully degrade: if GUI dialogs aren't available, functions
 return None and calling code can fall back to manual input.
 """
 
+import argparse
+import math
 import os
 import re
 import sys
@@ -61,6 +63,33 @@ def natural_sort_key(name: str) -> list:
         else:
             parts.append((0, text.lower()))
     return parts
+
+
+def parse_mass_mg_from_cli(arg: str) -> float:
+    """Parse ``--mass`` for EC modes.
+
+    - Plain number (e.g. ``7`` or ``7.0``): active mass in **milligrams**.
+    - Suffix ``g`` (e.g. ``10g`` or ``10 g``): mass in **grams**, converted to mg.
+    - Suffix ``mg`` (e.g. ``5mg``): explicit milligrams (same as a plain number).
+
+    Raises:
+        argparse.ArgumentTypeError: invalid or non-positive values.
+    """
+    s = str(arg).strip().lower().replace(" ", "")
+    if not s:
+        raise argparse.ArgumentTypeError("empty --mass value")
+    try:
+        if s.endswith("mg"):
+            val = float(s[:-2])
+        elif s.endswith("g"):
+            val = float(s[:-1]) * 1000.0
+        else:
+            val = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid --mass value: {arg!r}") from None
+    if not math.isfinite(val) or val <= 0:
+        raise argparse.ArgumentTypeError("--mass must be a positive finite number")
+    return val
 
 
 def _ask_directory_dialog(initialdir: Optional[str] = None) -> Optional[str]:
@@ -567,6 +596,29 @@ def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: Opt
     
     # Sort by filename using natural order (file2 before file10)
     return sorted(files, key=lambda x: natural_sort_key(x[0]))
+
+
+def print_recent_axis_names(colorize: Optional[Callable[[str], str]] = None) -> None:
+    """Print numbered list of recently typed axis names (shared across all batplot modes)."""
+    from .config import get_recent_axis_names
+
+    names = get_recent_axis_names()
+    if not names:
+        msg = "No recent axis names stored yet."
+        print(colorize(msg) if colorize else msg)
+        return
+    header = "Recent axis names (newest first; shared across all modes):"
+    print(colorize(header) if colorize else header)
+    for i, name in enumerate(names, 1):
+        line = f"  {i}: {name}"
+        print(colorize(line) if colorize else line)
+
+
+def remember_axis_name(name: str) -> None:
+    """Store a user-entered axis label in the shared recent-names list."""
+    from .config import record_recent_axis_name
+
+    record_recent_axis_name(name)
 
 
 def print_label_latex_tips(colorize: Optional[Callable[[str], str]] = None) -> None:

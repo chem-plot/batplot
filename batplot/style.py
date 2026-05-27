@@ -27,65 +27,19 @@ from .ui import (
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
     set_spine_side_color as _ui_set_spine_side_color,
+    capture_axes_tick_locators,
+    restore_axes_tick_locators,
 )
 
 
 def _capture_tick_locator_state(ax):
     """Capture tick spacing and minor count from an axes object for serialization."""
-    def _step(loc):
-        try:
-            if isinstance(loc, MultipleLocator):
-                return float(loc._edge.step)
-        except Exception:
-            pass
-        return None
-    def _ndivs(loc):
-        try:
-            if isinstance(loc, AutoMinorLocator):
-                return int(loc._ndivs)
-        except Exception:
-            pass
-        return None
-    return {
-        'x_major_step': _step(ax.xaxis.get_major_locator()),
-        'x_minor_step': _step(ax.xaxis.get_minor_locator()),
-        'y_major_step': _step(ax.yaxis.get_major_locator()),
-        'y_minor_step': _step(ax.yaxis.get_minor_locator()),
-        'x_minor_ndivs': _ndivs(ax.xaxis.get_minor_locator()),
-        'y_minor_ndivs': _ndivs(ax.yaxis.get_minor_locator()),
-    }
+    return capture_axes_tick_locators(ax, ('x', 'y'))
 
 
 def _restore_tick_locator_state(ax, spacing):
     """Restore tick spacing and minor count from a dict saved by _capture_tick_locator_state."""
-    if not spacing:
-        return
-    # Major locators
-    for axis_obj, step_key in ((ax.xaxis, 'x_major_step'), (ax.yaxis, 'y_major_step')):
-        val = spacing.get(step_key)
-        try:
-            if val is not None:
-                axis_obj.set_major_locator(MultipleLocator(float(val)))
-            else:
-                axis_obj.set_major_locator(AutoLocator())
-        except Exception:
-            pass
-    # Minor locators: prefer explicit step, then ndivs, then auto
-    for axis_obj, step_key, ndivs_key in (
-        (ax.xaxis, 'x_minor_step', 'x_minor_ndivs'),
-        (ax.yaxis, 'y_minor_step', 'y_minor_ndivs'),
-    ):
-        step = spacing.get(step_key)
-        ndivs = spacing.get(ndivs_key)
-        try:
-            if step is not None:
-                axis_obj.set_minor_locator(MultipleLocator(float(step)))
-            elif ndivs is not None:
-                axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
-            else:
-                axis_obj.set_minor_locator(AutoMinorLocator())
-        except Exception:
-            pass
+    restore_axes_tick_locators(ax, spacing, ('x', 'y'))
 
 
 def _color_to_hex(value):

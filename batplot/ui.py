@@ -25,7 +25,13 @@ import os
 from typing import List, Dict, Any, Optional
 import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
-from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import]
+from matplotlib.ticker import (  # type: ignore[import]
+    AutoLocator,
+    AutoMinorLocator,
+    MultipleLocator,
+    NullFormatter,
+    NullLocator,
+)
 import matplotlib.transforms as mtransforms  # type: ignore[import]
 
 _DEBUG_SPINE_COLOR = os.environ.get("BATPLOT_DEBUG_SPINE_COLOR", "").strip().lower() in ("1", "true", "yes")
@@ -934,6 +940,144 @@ def resize_canvas(fig, ax):
             print(f"Error resizing canvas: {e}")
 
 
+def _locator_step_value(locator) -> Optional[float]:
+    try:
+        if isinstance(locator, MultipleLocator):
+            return float(locator._edge.step)
+    except Exception:
+        pass
+    return None
+
+
+def _locator_minor_ndivs(locator) -> Optional[int]:
+    try:
+        if isinstance(locator, AutoMinorLocator):
+            return int(locator._ndivs)
+    except Exception:
+        pass
+    return None
+
+
+def capture_axis_tick_locators(mpl_axis, prefix: str) -> Dict[str, Any]:
+    """Capture major/minor tick locators for one axis (undo snapshots).
+
+    Keys use *prefix* (e.g. ``x``, ``y``, ``ry``): ``{prefix}_major_step``,
+    ``{prefix}_minor_step``, ``{prefix}_minor_ndivs``, ``{prefix}_minor_off``.
+    """
+    loc_min = mpl_axis.get_minor_locator()
+    return {
+        f'{prefix}_major_step': _locator_step_value(mpl_axis.get_major_locator()),
+        f'{prefix}_minor_step': _locator_step_value(loc_min),
+        f'{prefix}_minor_ndivs': _locator_minor_ndivs(loc_min),
+        f'{prefix}_minor_off': isinstance(loc_min, NullLocator),
+    }
+
+
+def restore_axis_tick_locators(mpl_axis, spacing: Optional[dict], prefix: str) -> None:
+    """Restore tick locators saved by :func:`capture_axis_tick_locators`.
+
+    When minors were disabled (``NullLocator``), both minor step and ndivs are
+    absent in older snapshots; restore uses ``NullLocator`` instead of turning
+    minors back on with ``AutoMinorLocator()``.
+    """
+    if not spacing:
+        return
+    p = prefix
+    maj_step = spacing.get(f'{p}_major_step')
+    min_step = spacing.get(f'{p}_minor_step')
+    ndivs = spacing.get(f'{p}_minor_ndivs')
+    minor_off = spacing.get(f'{p}_minor_off')
+    if minor_off is None and min_step is None and ndivs is None:
+        minor_off = True
+    try:
+        if maj_step is not None:
+            mpl_axis.set_major_locator(MultipleLocator(float(maj_step)))
+        else:
+            mpl_axis.set_major_locator(AutoLocator())
+    except Exception:
+        pass
+    try:
+        if minor_off:
+            mpl_axis.set_minor_locator(NullLocator())
+            mpl_axis.set_minor_formatter(NullFormatter())
+        elif min_step is not None:
+            mpl_axis.set_minor_locator(MultipleLocator(float(min_step)))
+            mpl_axis.set_minor_formatter(NullFormatter())
+        elif ndivs is not None:
+            mpl_axis.set_minor_locator(AutoMinorLocator(int(ndivs)))
+            mpl_axis.set_minor_formatter(NullFormatter())
+        else:
+            mpl_axis.set_minor_locator(NullLocator())
+            mpl_axis.set_minor_formatter(NullFormatter())
+    except Exception:
+        pass
+
+
+def capture_axes_tick_locators(ax, prefixes: tuple = ('x', 'y')) -> Dict[str, Any]:
+    """Merge :func:`capture_axis_tick_locators` for each prefix on one Axes."""
+    out: Dict[str, Any] = {}
+    axis_map = {'x': ax.xaxis, 'y': ax.yaxis}
+    for prefix in prefixes:
+        mpl_axis = axis_map.get(prefix)
+        if mpl_axis is not None:
+            out.update(capture_axis_tick_locators(mpl_axis, prefix))
+    return out
+
+
+def restore_axes_tick_locators(ax, spacing: Optional[dict], prefixes: tuple = ('x', 'y')) -> None:
+    """Restore locators for each prefix on one Axes."""
+    if not spacing:
+        return
+    axis_map = {'x': ax.xaxis, 'y': ax.yaxis}
+    for prefix in prefixes:
+        mpl_axis = axis_map.get(prefix)
+        if mpl_axis is not None:
+            restore_axis_tick_locators(mpl_axis, spacing, prefix)
+
+
+def apply_wasd_minor_ticks(ax, wasd: Optional[dict], *, y_minor_mode: str = 'both') -> None:
+    """Apply WASD minor tick locators and visibility from a wasd_state dict.
+
+    *y_minor_mode* controls which y sides receive minor tick_params:
+    ``both`` (default), ``left`` (operando heatmap in dual-pane), or ``right`` (EC panel).
+    """
+    if not wasd or not isinstance(wasd, dict):
+        return
+    top_m = bool(wasd.get('top', {}).get('minor', False))
+    bot_m = bool(wasd.get('bottom', {}).get('minor', False))
+    if top_m or bot_m:
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.xaxis.set_minor_formatter(NullFormatter())
+    else:
+        ax.xaxis.set_minor_locator(NullLocator())
+        ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.tick_params(
+        axis='x', which='minor',
+        top=top_m, bottom=bot_m,
+        labeltop=False, labelbottom=False,
+    )
+
+    left_m = bool(wasd.get('left', {}).get('minor', False))
+    right_m = bool(wasd.get('right', {}).get('minor', False))
+    if left_m or right_m:
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    else:
+        ax.yaxis.set_minor_locator(NullLocator())
+        ax.yaxis.set_minor_formatter(NullFormatter())
+
+    if y_minor_mode == 'right':
+        ax.tick_params(axis='y', which='minor', left=False, right=right_m, labelleft=False, labelright=False)
+    elif y_minor_mode == 'left':
+        ax.tick_params(axis='y', which='minor', left=left_m, right=False, labelleft=False, labelright=False)
+    else:
+        ax.tick_params(
+            axis='y', which='minor',
+            left=left_m, right=right_m,
+            labelleft=False, labelright=False,
+        )
+
+
 __all__ = [
     'apply_font_changes',
     'sync_fonts',
@@ -945,4 +1089,9 @@ __all__ = [
     'ensure_text_visibility',
     'resize_plot_frame',
     'resize_canvas',
+    'capture_axis_tick_locators',
+    'capture_axes_tick_locators',
+    'restore_axis_tick_locators',
+    'restore_axes_tick_locators',
+    'apply_wasd_minor_ticks',
 ]

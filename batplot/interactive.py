@@ -33,6 +33,8 @@ from .utils import (
     get_organized_path,
     natural_sort_key,
     print_label_latex_tips,
+    print_recent_axis_names,
+    remember_axis_name,
     normalize_xy_cif_stack_y_offsets,
 )
 import time
@@ -49,6 +51,8 @@ from .ui import (
     resize_plot_frame as _ui_resize_plot_frame,
     resize_canvas as _ui_resize_canvas,
     set_spine_side_color as _ui_set_spine_side_color,
+    capture_axes_tick_locators,
+    restore_axes_tick_locators,
 )
 from .style import (
     print_style_info as _bp_print_style_info,
@@ -653,7 +657,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             print("  " + colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
             print("  " + colorize_menu('r : reset all offsets'))
             print("  " + colorize_menu('q : back to toggle menu'))
-            choice = _safe_input(colorize_prompt("p> ")).strip().lower()
+            choice = _safe_input(colorize_prompt(
+                "Title offset (w/s/a/d/r/q per list above): "
+            )).strip().lower()
             if not choice:
                 continue
             if choice == 'q':
@@ -1586,44 +1592,6 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             delattr(fig, '_derivative_order')
         return (reset_count > 0, reset_count, total_points)
 
-    def _capture_tick_spacing(ax_obj):
-        """Return {x_major, x_minor, y_major, y_minor} step sizes, or None if auto."""
-        def _step(locator):
-            try:
-                if isinstance(locator, MultipleLocator):
-                    return float(locator._edge.step)
-            except Exception:
-                pass
-            return None
-        return {
-            'x_major': _step(ax_obj.xaxis.get_major_locator()),
-            'x_minor': _step(ax_obj.xaxis.get_minor_locator()),
-            'y_major': _step(ax_obj.yaxis.get_major_locator()),
-            'y_minor': _step(ax_obj.yaxis.get_minor_locator()),
-        }
-
-    def _restore_tick_spacing(ax_obj, spacing):
-        """Restore tick spacing from a dict captured by _capture_tick_spacing."""
-        if not spacing:
-            return
-        for axis_name, locator_setter, is_minor in (
-            ('x_major', ax_obj.xaxis.set_major_locator, False),
-            ('x_minor', ax_obj.xaxis.set_minor_locator, True),
-            ('y_major', ax_obj.yaxis.set_major_locator, False),
-            ('y_minor', ax_obj.yaxis.set_minor_locator, True),
-        ):
-            val = spacing.get(axis_name)
-            if val is not None:
-                try:
-                    locator_setter(MultipleLocator(float(val)))
-                except Exception:
-                    pass
-            else:
-                try:
-                    locator_setter(AutoMinorLocator() if is_minor else AutoLocator())
-                except Exception:
-                    pass
-
     def _capture_tick_minor_count(ax_obj):
         """Return {x, y} AutoMinorLocator ndivs, or None if not AutoMinorLocator."""
         def _ndivs(locator):
@@ -1702,7 +1670,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 },
                 "tick_lengths": dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
                 "tick_direction": getattr(fig, '_tick_direction', 'out'),
-                "tick_spacing": _capture_tick_spacing(ax),
+                "tick_spacing": capture_axes_tick_locators(ax, ('x', 'y')),
                 "tick_minor_count": _capture_tick_minor_count(ax),
                 "cif_tick_series": (list(_cts_for_snap) if _cts_for_snap is not None else None),
                 "show_cif_hkl": (bool(getattr(_bp, 'show_cif_hkl')) if _bp is not None and hasattr(_bp, 'show_cif_hkl') else False),
@@ -1957,7 +1925,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
             # Tick spacing (n command)
             try:
-                _restore_tick_spacing(ax, snap.get("tick_spacing"))
+                restore_axes_tick_locators(ax, snap.get("tick_spacing"), ('x', 'y'))
             except Exception:
                 pass
 
@@ -2790,6 +2758,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     x_data_list=x_data_list,
                     y_data_list=y_data_list,
                     orig_y=orig_y,
+                    x_full_list=x_full_list,
+                    raw_y_full_list=raw_y_full_list,
                     offsets_list=offsets_list,
                     labels=labels,
                     delta=delta,
@@ -2952,6 +2922,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         x_data_list=x_data_list,
                         y_data_list=y_data_list,
                         orig_y=orig_y,
+                        x_full_list=x_full_list,
+                        raw_y_full_list=raw_y_full_list,
                         offsets_list=offsets_list,
                         labels=labels,
                         delta=delta,
@@ -2985,6 +2957,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             x_data_list=x_data_list,
                             y_data_list=y_data_list,
                             orig_y=orig_y,
+                            x_full_list=x_full_list,
+                            raw_y_full_list=raw_y_full_list,
                             offsets_list=offsets_list,
                             labels=labels,
                             delta=delta,
@@ -3025,6 +2999,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                         x_data_list=x_data_list,
                         y_data_list=y_data_list,
                         orig_y=orig_y,
+                        x_full_list=x_full_list,
+                        raw_y_full_list=raw_y_full_list,
                         offsets_list=offsets_list,
                         labels=labels,
                         delta=delta,
@@ -3407,11 +3383,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     rename_opts = "c=curve"
                     if has_cif:
                         rename_opts += ", t=CIF phase label (same as cif→r)"
-                    rename_opts += ", x=x-axis, y=y-axis, q=return"
+                    rename_opts += ", x=x-axis, y=y-axis, s=show recent, q=return"
                     mode = _safe_input(f"Rename ({rename_opts}): ").strip().lower()
                     if mode == 'q':
                         break
                     if mode == '':
+                        continue
+                    if mode == 's':
+                        print_recent_axis_names()
                         continue
                     if mode == 'c':
                         print_label_latex_tips()
@@ -3476,6 +3455,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             continue
                         new_axis = convert_label_shortcuts(new_axis)
                         new_axis = normalize_label_text(new_axis)
+                        remember_axis_name(new_axis)
                         push_state("rename-axis")
                         # Freeze layout and preserve current pad via one-shot pending to avoid drift
                         try:
@@ -4884,14 +4864,19 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if getattr(fig, '_xy_ax2', None) is not None:
                         print(f"  Dual y-axis     : {_C}a{_R}=left y (ly)  {_C}d{_R}=right y (ry)")
                     print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
-                    print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                    print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine {_C}w/a/s/d{_R}+{_C}1-5{_R} only; not the letter {_C}y{_R} for y-axis)")
                     print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
                     print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
-                    print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
+                    print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}  (one axis+value per line at the spacing prompt)")
                     print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
                     print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
-                    print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
-                    cmd = _safe_input(colorize_prompt("Enter code(s): ")).strip().lower()
+                    print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back to stack plot menu")
+                    print(colorize_inline_commands(
+                        "Tip: q backs out (spacing/minor submenus → here). Blank line repeats this prompt."
+                    ))
+                    cmd = _safe_input(colorize_prompt(
+                        "Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back): "
+                    )).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -4973,7 +4958,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 pass
                             print(f"Enter axis and spacing, e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}x auto{_R}  {_C}all 1{_R}  (q=back)")
                             while True:
-                                inp = _safe_input("Spacing> ").strip().lower()
+                                inp = _safe_input(colorize_prompt(
+                                    "Major tick spacing (one pair per line: x 0.5, y 10, all 1, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_n = inp.split()
@@ -5043,7 +5030,9 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             print(f"  y : {_minor_count_str(ax.yaxis)}")
                             print(f"Enter axis and count: {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 4{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}  (q=back)")
                             while True:
-                                inp = _safe_input("Minor> ").strip().lower()
+                                inp = _safe_input(colorize_prompt(
+                                    "Minor ticks (one pair per line: x 4, y 1, all 0, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_m = inp.split()

@@ -3,7 +3,7 @@
 This module provides parsers for different battery testing equipment file formats:
 
 Supported Formats:
-    - BioLogic .mpt: Native binary format from BioLogic potentiostats
+    - BioLogic .mpt / .npt: EC-Lab ASCII exports (same layout; ``.npt`` is treated as an alias of ``.mpt``)
     - BioLogic .txt: Exported text format from EC-Lab software
     - Neware .csv: CSV export from Neware battery testers
     - Landt/Lanhe .xlsx: Excel files with Chinese column headers
@@ -951,7 +951,7 @@ def read_mpt_file(fname: str, mode: str = 'gc', mass_mg: Optional[float] = None)
           Simple x-y format without cycle processing
     
     Args:
-        fname: Path to .mpt file
+        fname: Path to .mpt file (or ``.npt`` with the same EC-Lab ASCII content)
         mode: Operating mode - 'gc', 'cv', 'cpc', or 'time'
         mass_mg: Active material mass in milligrams
                 Required for 'gc' and 'cpc' modes to calculate specific capacity

@@ -510,6 +510,50 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
     # Example: 50 scans × 1000 points = (50, 1000) array
     Z = np.vstack(stack)  # shape (n_scans, n_x)
 
+    # STEP 5.25: Optional scan binning by average or sum
+    # --average N: average every N consecutive scans (noise reduction)
+    # --sum N: sum every N consecutive scans (intensity boost)
+    average_n = getattr(args, 'average', None)
+    sum_n = getattr(args, 'scan_sum', None)
+    if average_n is not None and sum_n is not None:
+        raise ValueError("Use either --average N or --sum N (not both)")
+
+    if average_n is not None or sum_n is not None:
+        mode = 'average' if average_n is not None else 'sum'
+        bin_n = average_n if average_n is not None else sum_n
+        if bin_n is None:
+            raise ValueError("Internal error: missing bin size")
+        if bin_n <= 0:
+            raise ValueError(f"--{mode} must be a positive integer")
+        if bin_n > 1:
+            n_scans = Z.shape[0]
+            grouped_rows = []
+            grouped_names = []
+            for start in range(0, n_scans, bin_n):
+                end = min(start + bin_n, n_scans)
+                block = Z[start:end, :]
+                valid_count = np.sum(np.isfinite(block), axis=0)
+                if mode == 'sum':
+                    binned = np.nansum(block, axis=0)
+                    binned = np.asarray(binned, dtype=float)
+                    binned[valid_count == 0] = np.nan
+                else:
+                    sum_vals = np.nansum(block, axis=0)
+                    binned = np.divide(
+                        sum_vals,
+                        valid_count,
+                        out=np.full(block.shape[1], np.nan, dtype=float),
+                        where=valid_count > 0,
+                    )
+                grouped_rows.append(binned)
+                if end - start == 1:
+                    grouped_names.append(loaded_filenames[start])
+                else:
+                    grouped_names.append(f"{loaded_filenames[start]} .. {loaded_filenames[end - 1]} ({mode} {end - start})")
+            Z = np.vstack(grouped_rows)
+            loaded_filenames = grouped_names
+            print(f"[operando] {mode.title()} scans: N={bin_n} ({n_scans} -> {Z.shape[0]} rows)")
+
     # Debug: show scan index -> filename mapping (--debug or BATPLOT_OPERANDO_DEBUG=1)
     if getattr(args, 'debug', False) or os.environ.get('BATPLOT_OPERANDO_DEBUG', '0') == '1':
         print("[operando] Scan index -> filename:")

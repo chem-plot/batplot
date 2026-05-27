@@ -28,6 +28,13 @@ from .readers import (
     read_biologic_txt_file,
 )
 
+# BioLogic EC-Lab ASCII exports use ``.mpt``; ``.npt`` is accepted as the same format.
+_MPT_LIKE_EXTS = frozenset({'.mpt', '.npt'})
+
+
+def _is_mpt_like_ext(ext: str) -> bool:
+    return (ext or '').lower() in _MPT_LIKE_EXTS
+
 
 def _resolve_mass(mass_arg, file_idx: int = 0):
     """Return mass (mg) for file at file_idx from a --mass list or single value."""
@@ -488,7 +495,7 @@ def batch_process(directory: str, args):
     known_ext = {'.xye', '.xy', '.qye', '.dat', '.csv', '.gr', '.nor', '.chik', '.chir', '.txt', '.brml', '.raw', '.xrdml', '.rasx'}
     
     # Extensions to exclude (not data files, or require special handling)
-    excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat', '.mpt'}
+    excluded_ext = {'.cif', '.pkl', '.py', '.md', '.json', '.yml', '.yaml', '.sh', '.bat', '.mpt', '.npt'}
     
     # Create output directory for saved plots
     out_dir = ensure_subdirectory('Figures', directory)
@@ -842,7 +849,7 @@ def batch_process(directory: str, args):
 def batch_process_ec(directory: str, args):
     """Batch process electrochemistry files in a directory.
     
-    Supports GC (.mpt/.csv), CV (.mpt), dQdV (.csv), and CPC (.mpt/.csv) modes.
+    Supports GC (.mpt/.npt/.csv), CV (.mpt/.npt/.txt), dQ/dV (.mpt/.npt/.csv), and CPC (.mpt/.npt/.csv) modes.
     Exports SVG plots to batplot_svg subdirectory.
     
     Can apply style/geometry from .bps/.bpsg files using --all flag:
@@ -852,7 +859,7 @@ def batch_process_ec(directory: str, args):
         batplot --all --cpc config.bpsg    # Apply to all CPC files
     
     Note: For GC and CPC modes with .csv files, --mass is not required as the
-    capacity data is already in the file. For .mpt files, --mass is required.
+    capacity data is already in the file. For .mpt/.npt files, --mass is required (mg by default; use a ``g`` suffix for grams, e.g. ``--mass 0.01g``).
     
     Args:
         directory: Directory containing EC files
@@ -906,19 +913,19 @@ def batch_process_ec(directory: str, args):
     mode = None
     if getattr(args, 'gc', False):
         mode = 'gc'
-        supported_ext = {'.mpt', '.csv'}
+        supported_ext = {'.mpt', '.npt', '.csv'}
     elif getattr(args, 'cv', False):
         mode = 'cv'
-        supported_ext = {'.mpt', '.txt'}
+        supported_ext = {'.mpt', '.npt', '.txt'}
     elif getattr(args, 'dqdv', False):
         mode = 'dqdv'
-        supported_ext = {'.csv'}
+        supported_ext = {'.mpt', '.npt', '.csv'}
     elif getattr(args, 'cpc', False):
         mode = 'cpc'
-        supported_ext = {'.mpt', '.csv'}
+        supported_ext = {'.mpt', '.npt', '.csv'}
     elif getattr(args, 'epc', False):
         mode = 'epc'
-        supported_ext = {'.mpt', '.csv'}
+        supported_ext = {'.mpt', '.npt', '.csv'}
     else:
         print("EC batch mode requires one of: --gc, --cv, --dqdv, or --cpc")
         return
@@ -1007,9 +1014,9 @@ def batch_process_ec(directory: str, args):
             
             # ---- GC Mode ----
             if mode == 'gc':
-                if ext == '.mpt':
+                if _is_mpt_like_ext(ext):
                     if mass_mg is None:
-                        print(f"  Skipped {fname}: GC mode (.mpt) requires --mass parameter")
+                        print(f"  Skipped {fname}: GC mode (.mpt/.npt) requires --mass parameter")
                         plt.close(fig_b)
                         continue
                     specific_capacity, voltage, cycle_numbers, charge_mask, discharge_mask = cast(
@@ -1089,13 +1096,13 @@ def batch_process_ec(directory: str, args):
             elif mode == 'cv':
                 if ext == '.txt':
                     voltage, current, cycles = read_biologic_txt_file(fpath, mode='cv')
-                elif ext == '.mpt':
+                elif _is_mpt_like_ext(ext):
                     voltage, current, cycles = cast(
                         Tuple[np.ndarray, np.ndarray, np.ndarray],
                         read_mpt_file(fpath, mode='cv'),
                     )
                 else:
-                    raise ValueError("CV mode requires .mpt or .txt file")
+                    raise ValueError("CV mode requires .mpt, .npt, or .txt file")
                 
                 cyc_int_raw = np.array(np.rint(cycles), dtype=int)
                 if cyc_int_raw.size:
@@ -1125,13 +1132,27 @@ def batch_process_ec(directory: str, args):
             
             # ---- dQdV Mode ----
             elif mode == 'dqdv':
-                if ext != '.csv':
-                    raise ValueError("dQdV mode requires .csv file")
-
                 # Try to load pre-calculated dQ/dV columns; fall back to numerical computation
                 _b_dqdv_header = None
                 _b_loaded = False
-                if is_biologic_datalogger_csv(fpath):
+                if _is_mpt_like_ext(ext):
+                    if mass_mg is None or mass_mg <= 0:
+                        print(f"  Skipped {fname}: dQ/dV (.mpt/.npt) requires --mass parameter")
+                        plt.close(fig_b)
+                        continue
+                    _b_gc_cap, _b_gc_volt, _b_gc_cyc, _b_gc_chgm, _b_gc_dchm = cast(
+                        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                        read_mpt_file(fpath, mode='gc', mass_mg=mass_mg),
+                    )
+                    voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = \
+                        compute_dqdv_numerical(
+                            _b_gc_cap, _b_gc_volt, _b_gc_cyc, _b_gc_chgm, _b_gc_dchm,
+                        )
+                    _b_loaded = True
+                    print(f"dQ/dV batch: computing numerically from GC data for {fname!r}.")
+                elif ext != '.csv':
+                    raise ValueError(f"dQ/dV mode requires .csv or Biologic .mpt/.npt file, got {ext}")
+                elif is_biologic_datalogger_csv(fpath):
                     if mass_mg is None or mass_mg <= 0:
                         print(f"  Skipped {fname}: dQ/dV (Biologic DataLogger CSV) requires --mass parameter")
                         plt.close(fig_b)
@@ -1164,7 +1185,7 @@ def batch_process_ec(directory: str, args):
                             if _b_mass and _b_mass > 0:
                                 _b_gc_cap = _b_gc_cap * (1000.0 / float(_b_mass))
                             else:
-                                print(f"dQ/dV batch: {fname!r} — pass --mass <mg> for specific dQ/dV.")
+                                print(f"dQ/dV batch: {fname!r} — pass --mass (mg, or e.g. 0.01g) for specific dQ/dV.")
                     voltage, dqdv, cycles, charge_mask, discharge_mask, y_label = \
                         compute_dqdv_numerical(_b_gc_cap, _b_gc_volt, _b_gc_cyc, _b_gc_chgm, _b_gc_dchm)
                     print(f"dQ/dV batch: computing numerically from GC data for {fname!r}.")
@@ -1219,9 +1240,9 @@ def batch_process_ec(directory: str, args):
             
             # ---- CPC / EPC Mode ----
             elif mode in ('cpc', 'epc'):
-                if ext == '.mpt':
+                if _is_mpt_like_ext(ext):
                     if mass_mg is None:
-                        print(f"  Skipped {fname}: {mode.upper()} mode (.mpt) requires --mass parameter")
+                        print(f"  Skipped {fname}: {mode.upper()} mode (.mpt/.npt) requires --mass parameter")
                         plt.close(fig_b)
                         continue
                     if mode == 'cpc':

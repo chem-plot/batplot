@@ -69,6 +69,8 @@ from .ui import (
     position_right_ylabel as _ui_position_right_ylabel,
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
+    capture_axis_tick_locators,
+    restore_axis_tick_locators,
 )
 from .utils import (
     _confirm_overwrite,
@@ -81,6 +83,8 @@ from .utils import (
     natural_sort_key,
     ensure_exact_case_filename,
     print_label_latex_tips,
+    print_recent_axis_names,
+    remember_axis_name,
 )
 from .color_utils import (
     resolve_color_token,
@@ -151,9 +155,43 @@ def _legend_no_frame(ax, *args, **kwargs):
     # with scatter plots that have facecolor='none' (hollow markers)
     legend_host_ax = kwargs.pop('legend_host_ax', None)
     target_ax = legend_host_ax if legend_host_ax is not None else ax
+    # Defensive cleanup: remove any stale legends on both twin axes before
+    # creating a rebuilt legend. Without this, repeated rebuilds (e.g. `ry`
+    # toggle) can leave two visible legend artists.
+    try:
+        axes_to_clear = [ax]
+        if target_ax is not ax:
+            axes_to_clear.append(target_ax)
+        for host in axes_to_clear:
+            old_leg = host.get_legend()
+            if old_leg is not None:
+                try:
+                    old_leg.remove()
+                except Exception:
+                    try:
+                        old_leg.set_visible(False)
+                    except Exception:
+                        pass
+                # Ensure matplotlib does not keep a stale legend reference.
+                try:
+                    host.legend_ = None
+                except Exception:
+                    pass
+    except Exception:
+        pass
     leg = target_ax.legend(*args, **kwargs)
     if leg is not None:
         try:
+            # Keep a shared reference on both axes so callers that query either
+            # `ax.get_legend()` or `ax2.get_legend()` see the active CPC legend.
+            try:
+                ax.legend_ = leg
+            except Exception:
+                pass
+            try:
+                target_ax.legend_ = leg
+            except Exception:
+                pass
             leg.set_frame_on(False)
             # Keep legend above plot artists on the hosting axis.
             leg.set_zorder(1_000_000)
@@ -925,7 +963,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     legend_visible = False
     legend_xy_in = None
     try:
-        leg = ax.get_legend()
+        leg = ax.get_legend() or ax2.get_legend()
         if leg is not None:
             legend_visible = leg.get_visible()
             # Get legend position stored in figure attribute
@@ -976,15 +1014,9 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             'lengths': dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
             'direction': getattr(fig, '_tick_direction', 'out'),
             'spacing': {
-                'x_major_step': _locator_step(ax.xaxis.get_major_locator()),
-                'x_minor_step': _locator_step(ax.xaxis.get_minor_locator()),
-                'y_major_step': _locator_step(ax.yaxis.get_major_locator()),
-                'y_minor_step': _locator_step(ax.yaxis.get_minor_locator()),
-                'ry_major_step': _locator_step(ax2.yaxis.get_major_locator()),
-                'ry_minor_step': _locator_step(ax2.yaxis.get_minor_locator()),
-                'x_minor_ndivs': _locator_ndivs(ax.xaxis.get_minor_locator()),
-                'y_minor_ndivs': _locator_ndivs(ax.yaxis.get_minor_locator()),
-                'ry_minor_ndivs': _locator_ndivs(ax2.yaxis.get_minor_locator()),
+                **capture_axis_tick_locators(ax.xaxis, 'x'),
+                **capture_axis_tick_locators(ax.yaxis, 'y'),
+                **capture_axis_tick_locators(ax2.yaxis, 'ry'),
             },
         },
         'grid': grid_enabled,
@@ -1515,34 +1547,12 @@ def _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_
             setattr(fig, '_tick_direction', tick_direction)
             ax.tick_params(axis='both', which='both', direction=tick_direction)
             ax2.tick_params(axis='both', which='both', direction=tick_direction)
-        # Tick spacing and minor count
+        # Tick spacing and minor locators
         spacing = tk.get('spacing', {})
         if spacing:
-            axes_keys = [
-                (ax.xaxis,  'x_major_step',  'x_minor_step',  'x_minor_ndivs'),
-                (ax.yaxis,  'y_major_step',  'y_minor_step',  'y_minor_ndivs'),
-                (ax2.yaxis, 'ry_major_step', 'ry_minor_step', 'ry_minor_ndivs'),
-            ]
-            for axis_obj, maj_key, min_key, ndivs_key in axes_keys:
-                try:
-                    maj_step = spacing.get(maj_key)
-                    if maj_step is not None:
-                        axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
-                    else:
-                        axis_obj.set_major_locator(AutoLocator())
-                except Exception:
-                    pass
-                try:
-                    min_step = spacing.get(min_key)
-                    ndivs = spacing.get(ndivs_key)
-                    if min_step is not None:
-                        axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
-                    elif ndivs is not None:
-                        axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
-                    else:
-                        axis_obj.set_minor_locator(AutoMinorLocator())
-                except Exception:
-                    pass
+            restore_axis_tick_locators(ax.xaxis, spacing, 'x')
+            restore_axis_tick_locators(ax.yaxis, spacing, 'y')
+            restore_axis_tick_locators(ax2.yaxis, spacing, 'ry')
     except Exception:
         pass
     try:
@@ -1971,14 +1981,39 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
     try:
         saved_wasd = getattr(fig, '_cpc_wasd_state', None)
         if isinstance(saved_wasd, dict) and saved_wasd:
-            tick_state['bx'] = bool(saved_wasd.get('bottom', {}).get('labels', tick_state['bx']))
-            tick_state['tx'] = bool(saved_wasd.get('top', {}).get('labels', tick_state['tx']))
-            tick_state['ly'] = bool(saved_wasd.get('left', {}).get('labels', tick_state['ly']))
-            tick_state['ry'] = bool(saved_wasd.get('right', {}).get('labels', tick_state['ry']))
+            b_ticks = bool(saved_wasd.get('bottom', {}).get('ticks', tick_state['bx']))
+            b_labels = bool(saved_wasd.get('bottom', {}).get('labels', tick_state['bx']))
+            t_ticks = bool(saved_wasd.get('top', {}).get('ticks', tick_state['tx']))
+            t_labels = bool(saved_wasd.get('top', {}).get('labels', tick_state['tx']))
+            l_ticks = bool(saved_wasd.get('left', {}).get('ticks', tick_state['ly']))
+            l_labels = bool(saved_wasd.get('left', {}).get('labels', tick_state['ly']))
+            r_ticks = bool(saved_wasd.get('right', {}).get('ticks', tick_state['ry']))
+            r_labels = bool(saved_wasd.get('right', {}).get('labels', tick_state['ry']))
+
+            # Explicit per-side keys used by session dump/load paths.
+            tick_state['b_ticks'] = b_ticks
+            tick_state['b_labels'] = b_labels
+            tick_state['t_ticks'] = t_ticks
+            tick_state['t_labels'] = t_labels
+            tick_state['l_ticks'] = l_ticks
+            tick_state['l_labels'] = l_labels
+            tick_state['r_ticks'] = r_ticks
+            tick_state['r_labels'] = r_labels
+
+            # Legacy combined keys: visible labels require both ticks + labels.
+            tick_state['bx'] = bool(b_ticks and b_labels)
+            tick_state['tx'] = bool(t_ticks and t_labels)
+            tick_state['ly'] = bool(l_ticks and l_labels)
+            tick_state['ry'] = bool(r_ticks and r_labels)
             tick_state['mbx'] = bool(saved_wasd.get('bottom', {}).get('minor', tick_state['mbx']))
             tick_state['mtx'] = bool(saved_wasd.get('top', {}).get('minor', tick_state['mtx']))
             tick_state['mly'] = bool(saved_wasd.get('left', {}).get('minor', tick_state['mly']))
             tick_state['mry'] = bool(saved_wasd.get('right', {}).get('minor', tick_state['mry']))
+            # Keep axis-level cache in sync so any save path persists the current state.
+            try:
+                ax._saved_tick_state = dict(tick_state)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -2315,6 +2350,12 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 # Note: Individual series may use different colors, so we can't show a single "current" palette
                 # Use same palettes as EC interactive
                 palette_opts = ['tab10', 'Set2', 'Dark2', 'viridis', 'plasma']
+                for _extra_pal in ('batlow', 'batlowk', 'batloww'):
+                    try:
+                        if ensure_colormap(_extra_pal) and _extra_pal not in palette_opts:
+                            palette_opts.append(_extra_pal)
+                    except Exception:
+                        pass
                 def _palette_color(name, idx=0, total=1, default_val=0.4):
                     # Ensure colormap is registered before use
                     if not ensure_colormap(name):
@@ -2359,6 +2400,8 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     if ':' in last:
                         return None
                     try:
+                        if not ensure_colormap(last):
+                            raise ValueError(last)
                         cm.get_cmap(last)
                         palette = last
                     except Exception:
@@ -4391,15 +4434,20 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 print(f"\033[1mToggle spines>\033[0m")
                 print(f"  Side keys       : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
                 print(f"  What to toggle  : {_C}1{_R}=spine line  {_C}2{_R}=major ticks  {_C}3{_R}=minor ticks  {_C}4{_R}=labels  {_C}5{_R}=axis title")
-                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine side+number, case-insensitive)")
+                print(f"  Toggle examples : {_C}s2{_R}  {_C}w5{_R}  {_C}a4{_R}  {_C}s2 w5 a4{_R}  (combine {_C}w/a/s/d{_R}+{_C}1-5{_R} only; not the letter {_C}y{_R} for y-axis)")
                 print(f"  Tick direction  : {_C}i{_R}=invert (in/out)")
                 print(f"  Tick length     : {_C}l{_R}=set major length (minor auto-set to 70%)")
-                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}all 1{_R}  {_C}x auto{_R}")
-                print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
+                print(f"  Tick spacing    : {_C}n{_R}=set increment  e.g. {_C}x 0.5{_R}  {_C}y 10{_R}  {_C}r 5{_R}  {_C}all 1{_R}  {_C}x auto{_R}  (one axis+value per line at the spacing prompt)")
+                print(f"  Minor count     : {_C}m{_R}=minor ticks per interval  e.g. {_C}x 4{_R}  {_C}y 1{_R}  {_C}r 4{_R}  {_C}all 0{_R}=off  {_C}x auto{_R}")
                 print(f"  Title offsets   : {_C}p{_R}=adjust  ({_C}w{_R}=top  {_C}s{_R}=bottom  {_C}a{_R}=left  {_C}d{_R}=right)")
-                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back")
+                print(f"  Other           : {_C}list{_R}=show state   {_C}q{_R}=back to CPC menu")
+                print(_colorize_inline_commands(
+                    "Tip: q backs out (spacing/minor submenus → here). Blank line repeats this prompt."
+                ))
                 while True:
-                    cmd = _safe_input(_colorize_prompt("Enter code(s): ")).strip().lower()
+                    cmd = _safe_input(_colorize_prompt(
+                        "Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back): "
+                    )).strip().lower()
                     if not cmd:
                         continue
                     if cmd == 'q':
@@ -4473,7 +4521,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"  {_C2}r{_R2} (right Y): {_loc_str(ax2.yaxis.get_major_locator())}")
                             print(f"Enter axis and spacing: {_C2}x 0.5{_R2}  {_C2}y 10{_R2}  {_C2}r 5{_R2}  {_C2}x auto{_R2}  {_C2}all 1{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Spacing> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Major tick spacing (one pair per line: x 0.5, y 10, r 5, all 1, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_n = inp.split()
@@ -4537,7 +4587,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print(f"  r : {_minor_str(ax2.yaxis)}")
                             print(f"Enter axis and count: {_C2}x 4{_R2}  {_C2}y 1{_R2}  {_C2}r 4{_R2}  {_C2}all 4{_R2}  {_C2}all 0{_R2}=off  {_C2}x auto{_R2}  (q=back)")
                             while True:
-                                inp = _safe_input("Minor> ").strip().lower()
+                                inp = _safe_input(_colorize_prompt(
+                                    "Minor ticks (one pair per line: x 4, y 1, r 4, all 0, x auto; q=back): "
+                                )).strip().lower()
                                 if not inp or inp == 'q':
                                     break
                                 parts_m = inp.split()
@@ -4765,7 +4817,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                             print("  " + _colorize_menu('d : adjust right title (d=right, a=left, w=up, s=down)'))
                             print("  " + _colorize_menu('r : reset all offsets'))
                             print("  " + _colorize_menu('q : return'))
-                            choice = _safe_input(_colorize_prompt("p> ")).strip().lower()
+                            choice = _safe_input(_colorize_prompt(
+                                "Title offset (w/s/a/d/r/q per list above): "
+                            )).strip().lower()
                             if not choice:
                                 continue
                             if choice == 'q':
@@ -4901,12 +4955,16 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 print("  " + _colorize_menu("ly: left y-axis"))
                 print("  " + _colorize_menu("ry: right y-axis"))
                 print("  " + _colorize_menu("f: file names (legend)"))
+                print("  " + _colorize_menu("s: show recent axis names"))
                 print("  " + _colorize_menu("q: back"))
-                sub = _safe_input(_colorize_prompt("Rename (x/ly/ry/f/q): ")).strip().lower()
+                sub = _safe_input(_colorize_prompt("Rename (x/ly/ry/f/s/q): ")).strip().lower()
                 if not sub:
                     continue
                 if sub == 'q':
                     break
+                if sub == 's':
+                    print_recent_axis_names()
+                    continue
                 if sub in ('l', 'f'):
                     # Rename legend labels (file name in legend)
                     if not is_multi_file:
@@ -5129,6 +5187,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     new_title = _safe_input("Enter new x-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
                         new_title = normalize_label_text(convert_label_shortcuts(new_title))
+                        remember_axis_name(new_title)
                         try:
                             push_state("rename-x")
                             ax.set_xlabel(new_title)
@@ -5149,6 +5208,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     new_title = _safe_input("Enter new left y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
                         new_title = normalize_label_text(convert_label_shortcuts(new_title))
+                        remember_axis_name(new_title)
                         try:
                             push_state("rename-ly")
                             ax.set_ylabel(new_title)
@@ -5164,6 +5224,7 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                     new_title = _safe_input("Enter new right y-axis title (q=cancel): ")
                     if new_title and new_title.lower() != 'q':
                         new_title = normalize_label_text(convert_label_shortcuts(new_title))
+                        remember_axis_name(new_title)
                         try:
                             push_state("rename-ry")
                             ax2.set_ylabel(new_title)
@@ -5287,7 +5348,9 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 print("  " + _colorize_menu("ly: left Y-axis (capacity)"))
                 print("  " + _colorize_menu("ry: right Y-axis (efficiency)"))
                 print("  " + _colorize_menu("q: back"))
-                ycmd = _safe_input(_colorize_prompt("Y> ")).strip().lower()
+                ycmd = _safe_input(_colorize_prompt(
+                    "Y-axis target (ly=left capacity, ry=right efficiency, q=back): "
+                )).strip().lower()
                 if not ycmd:
                     continue
                 if ycmd == 'q':
@@ -5629,7 +5692,17 @@ def cpc_interactive_menu(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_dat
                 if yn != 'y':
                     print("Canceled.")
                     _print_menu(fig); continue
-                dump_cpc_session(last_session_path, fig=fig, ax=ax, file_data=file_data, is_multi_file=is_multi_file, current_file_idx=current_file_idx, tick_state=tick_state, skip_confirm=True)
+                dump_cpc_session(
+                    last_session_path,
+                    fig=fig,
+                    ax=ax,
+                    ax2=ax2,
+                    sc_charge=sc_charge,
+                    sc_discharge=sc_discharge,
+                    sc_eff=sc_eff,
+                    file_data=file_data,
+                    skip_confirm=True,
+                )
                 print(f"Overwritten session to {last_session_path}")
             except Exception as e:
                 print(f"Overwrite failed: {e}")
