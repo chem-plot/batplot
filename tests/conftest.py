@@ -13,7 +13,7 @@ unchanged on Windows, macOS and Linux and inside CI with no display.
 import os
 
 # Force a non-interactive backend BEFORE pyplot is imported anywhere.
-os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ["MPLBACKEND"] = "Agg"
 
 import matplotlib
 
