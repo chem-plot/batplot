@@ -568,7 +568,7 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
         zlab=str(blob.get("zlabel") or "dQ/dV"),
         nx=int(blob.get("nx", 320)),
     )
-    cbar_ax = cfig.add_axes([0.0, 0.0, 0.01, 0.01])
+    cbar_ax = cfig.add_axes((0.0, 0.0, 0.01, 0.01))
 
     class _MockColorbar:
         def __init__(self, cax, im_ref):

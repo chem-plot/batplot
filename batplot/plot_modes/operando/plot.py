@@ -612,7 +612,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
     setattr(im, '_operando_cmap_name', 'viridis')
     # Create custom colorbar axes on the left (will be positioned by layout function)
     # Create a dummy axes that will be replaced by the custom colorbar in interactive menu
-    cbar_ax = fig.add_axes([0.0, 0.0, 0.01, 0.01])  # Temporary position, will be repositioned
+    cbar_ax = fig.add_axes((0.0, 0.0, 0.01, 0.01))  # Temporary position, will be repositioned
     # Create a mock colorbar object for compatibility with existing code
     # The actual colorbar will be drawn by _draw_custom_colorbar in the interactive menu
     class MockColorbar:

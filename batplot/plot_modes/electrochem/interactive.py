@@ -2033,7 +2033,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     cfig, cax, im, v_lo, v_hi, row_labels, zlab=zlab,
                     file_data=file_data, nx=nx,
                 )
-                cbar_ax = cfig.add_axes([0.0, 0.0, 0.01, 0.01])
+                cbar_ax = cfig.add_axes((0.0, 0.0, 0.01, 0.01))
 
                 class _MockColorbar:
                     def __init__(self, cax, im_ref):

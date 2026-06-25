@@ -3184,9 +3184,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             fig_slider.canvas.manager.set_window_title("Intensity range")
                         except Exception:
                             pass
-                        ax_slider = fig_slider.add_axes([0.15, 0.35, 0.7, 0.25])
+                        ax_slider = fig_slider.add_axes((0.15, 0.35, 0.7, 0.25))
                         slider = RangeSlider(ax_slider, "Intensity", vmin_slider, vmax_slider, valinit=(vmin_cur, vmax_cur))
-                        ax_btn = fig_slider.add_axes([0.8, 0.05, 0.15, 0.2])
+                        ax_btn = fig_slider.add_axes((0.8, 0.05, 0.15, 0.2))
                         btn_done = Button(ax_btn, "Done", color="0.85", hovercolor="0.95")
                         def _on_slider_change(val):
                             lo, hi = val

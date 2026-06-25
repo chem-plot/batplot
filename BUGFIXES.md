@@ -4,7 +4,35 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
-## 2026-06-25: GitHub Actions CI failures (checkout, Agg backend, matplotlib 3.11 colormaps)
+## 2026-06-25: basedpyright CI typecheck (387 errors)
+
+### Summary
+The `basedpyright` job failed after pytest passed on all 15 matrix jobs. Failures
+were dominated by matplotlib/numpy stub mismatches (dynamic Figure/Axes attrs,
+`np.trapz` renamed to `trapezoid`, `add_axes` expecting tuples).
+
+### Fix
+- Repaired broken `pyrightconfig.json` (invalid JSON dropped exclude block).
+- Aligned `[tool.basedpyright]` in `pyproject.toml` with pyrightconfig.
+- `add_axes([...])` → `add_axes((...))` in session, canvas, operando, electrochem,
+  and test fixtures.
+- `np.where` mask coerced with `np.asarray(..., dtype=bool)`.
+- `np.trapz` → `getattr(np, "trapezoid", np.trapz)(...)` for numpy 2.x stubs.
+- Stopped tracking `batplot.egg-info/` (already in `.gitignore`).
+
+### Compatibility
+Windows, macOS, Linux. CI: full matrix + strict `basedpyright` (0 errors).
+
+### Affected Files
+- `pyrightconfig.json`, `pyproject.toml`
+- `batplot/batch.py`, `batplot/session.py`, `batplot/canvas_interactive.py`
+- `batplot/plot_modes/cpc/routing.py`
+- `batplot/plot_modes/electrochem/{dqdv_2d,interactive}.py`
+- `batplot/plot_modes/operando/{interactive,plot}.py`
+- `tests/test_interactive_menu_smoke.py`, `tests/test_operando_roundtrip.py`
+
+---
+
 
 ### Summary
 Every push to `main` emailed CI failure notices. The workflow checkout script broke

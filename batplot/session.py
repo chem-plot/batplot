@@ -1159,8 +1159,8 @@ def _load_operando_session_impl(filename: str):
     ec_x0 = ax_x0 + ax_wf + ec_gap_f if ec_wf > 0 else None
 
     # Create axes
-    ax = fig.add_axes([ax_x0, y0, ax_wf, ax_hf])
-    cbar_ax = fig.add_axes([cb_x0, y0, cb_wf, ax_hf])
+    ax = fig.add_axes((ax_x0, y0, ax_wf, ax_hf))
+    cbar_ax = fig.add_axes((cb_x0, y0, cb_wf, ax_hf))
 
     # Recreate operando image
     op = sess['operando']
@@ -1366,7 +1366,7 @@ def _load_operando_session_impl(filename: str):
     # Optional EC panel
     ec_ax = None
     if ec_wf > 0 and ec_x0 is not None:
-        ec_ax = fig.add_axes([ec_x0, y0, ec_wf, ax_hf])
+        ec_ax = fig.add_axes((ec_x0, y0, ec_wf, ax_hf))
         # Basic line
         ec = sess.get('ec') or {}
         th = ec.get('time_h')

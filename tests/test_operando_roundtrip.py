@@ -33,7 +33,7 @@ def _build_operando_figure():
     im = ax.imshow(Z, aspect="auto", origin="lower", extent=[10.0, 40.0, 0.0, 20.0],
                    cmap="viridis")
     cbar = fig.colorbar(im, ax=ax)
-    ec_ax = fig.add_axes([0.78, 0.1, 0.18, 0.8])
+    ec_ax = fig.add_axes((0.78, 0.1, 0.18, 0.8))
     ec_ax.plot(np.linspace(3.0, 4.2, 30), np.linspace(0.0, 20.0, 30))
     ec_ax.set_xlabel("Voltage (V)")
     ec_ax.set_ylabel("Time (h)")
@@ -643,7 +643,7 @@ def test_operando_visibility_helper_updates_label_text():
 
 def test_operando_menu_printer_dual_panel_includes_side_panel_and_overwrites(capsys):
     fig, ax = plt.subplots()
-    ec_ax = fig.add_axes([0.8, 0.1, 0.15, 0.8])
+    ec_ax = fig.add_axes((0.8, 0.1, 0.15, 0.8))
     fig._last_session_save_path = "last.pkl"
     fig._last_style_export_path = "last.bpsg"
     fig._last_figure_export_path = "last.png"

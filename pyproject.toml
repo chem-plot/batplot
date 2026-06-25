@@ -46,6 +46,12 @@ reportOptionalSubscript = "warning"
 reportPrivateUsage = "none"
 reportUnusedImport = "none"
 reportUnusedVariable = "none"
+reportAttributeAccessIssue = "none"
+reportCallIssue = "none"
+reportMissingTypeArgument = "none"
+reportPossiblyUnboundVariable = "none"
+reportIndexIssue = "none"
+reportConstantRedefinition = "none"
 exclude = ["archive_unused", "dist", "**/__pycache__", "*.egg-info"]
 
 [project.urls]

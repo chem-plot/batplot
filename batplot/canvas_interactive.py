@@ -465,7 +465,7 @@ def run_canvas_mode(pkl_paths: List[str]) -> None:
                     ann_runtime.append((None, None))
                     continue
                 try:
-                    ax_img = fig_canvas.add_axes([l, b, w, h], facecolor='none')
+                    ax_img = fig_canvas.add_axes((l, b, w, h), facecolor='none')
                     ax_img.set_zorder(15)
                     if arr.ndim == 2:
                         ax_img.imshow(arr, cmap='gray', aspect='auto', origin='upper')
@@ -724,7 +724,7 @@ def run_canvas_mode(pkl_paths: List[str]) -> None:
                             continue
                         try:
                             arr_e = mpl_imread(ip)
-                            ax_e = fig_exp.add_axes([l, b, w, h], facecolor='none')
+                            ax_e = fig_exp.add_axes((l, b, w, h), facecolor='none')
                             ax_e.set_zorder(15)
                             if arr_e.ndim == 2:
                                 ax_e.imshow(arr_e, cmap='gray', aspect='auto', origin='upper')
