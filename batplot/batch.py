@@ -1270,11 +1270,11 @@ def batch_process_ec(directory: str, args):
                                 mask_c = (cyc_int_raw == cyc) & charge_mask
                                 mask_d = (cyc_int_raw == cyc) & discharge_mask
                                 if np.count_nonzero(mask_c) >= 2:
-                                    en_c = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_c], cap_x[mask_c]))
+                                    en_c = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_c], cap_x[mask_c]))
                                 else:
                                     en_c = 0.0
                                 if np.count_nonzero(mask_d) >= 2:
-                                    en_d = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_d], cap_x[mask_d]))
+                                    en_d = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_d], cap_x[mask_d]))
                                 else:
                                     en_d = 0.0
                                 en_charge.append(en_c)
@@ -1305,11 +1305,11 @@ def batch_process_ec(directory: str, args):
                                     val_d = np.max(cap_x[mask_d]) if np.any(mask_d) else 0.0
                                 else:
                                     if np.count_nonzero(mask_c) >= 2:
-                                        val_c = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_c], cap_x[mask_c]))
+                                        val_c = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_c], cap_x[mask_c]))
                                     else:
                                         val_c = 0.0
                                     if np.count_nonzero(mask_d) >= 2:
-                                        val_d = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_d], cap_x[mask_d]))
+                                        val_d = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_d], cap_x[mask_d]))
                                     else:
                                         val_d = 0.0
                                 cap_charge_list.append(val_c)

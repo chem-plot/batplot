@@ -251,11 +251,11 @@ def handle_cpc_mode(args) -> int:
                             mask_c = m_c & chg_mask
                             mask_d = m_c & dchg_mask
                             if np.count_nonzero(mask_c) >= 2:
-                                e_c = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_c], cap_x[mask_c]))
+                                e_c = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_c], cap_x[mask_c]))
                             else:
                                 e_c = np.nan
                             if np.count_nonzero(mask_d) >= 2:
-                                e_d = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_d], cap_x[mask_d]))
+                                e_d = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_d], cap_x[mask_d]))
                             else:
                                 e_d = np.nan
                             qchg = np.nanmax(cap_x[mask_c]) if np.any(mask_c) else np.nan
@@ -293,11 +293,11 @@ def handle_cpc_mode(args) -> int:
                         mask_c = m_c & chg_mask
                         mask_d = m_c & dchg_mask
                         if np.count_nonzero(mask_c) >= 2:
-                            e_c = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_c], cap_x[mask_c]))
+                            e_c = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_c], cap_x[mask_c]))
                         else:
                             e_c = np.nan
                         if np.count_nonzero(mask_d) >= 2:
-                            e_d = float(getattr(np, "trapezoid", np.trapz)(voltage[mask_d], cap_x[mask_d]))
+                            e_d = float((getattr(np, "trapezoid", None) or np.trapz)(voltage[mask_d], cap_x[mask_d]))
                         else:
                             e_d = np.nan
                         qchg = np.nanmax(cap_x[mask_c]) if np.any(mask_c) else np.nan

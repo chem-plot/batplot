@@ -4,7 +4,26 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
-## 2026-06-25: basedpyright CI typecheck (387 errors)
+---
+
+## 2026-06-25: numpy 2.x CPC/EPC energy integration crash (`np.trapz` removed)
+
+### Summary
+Batch CPC/EPC and live CPC routing used `getattr(np, "trapezoid", np.trapz)(...)`.
+Python evaluates the `getattr` default eagerly, so on numpy 2.x (where `trapz`
+was removed) energy integration raised `AttributeError` even though `trapezoid`
+exists.
+
+### Fix
+Use short-circuit form: `(getattr(np, "trapezoid", None) or np.trapz)(...)`.
+
+### Affected Files
+- `batplot/batch.py`
+- `batplot/plot_modes/cpc/routing.py`
+- `tests/test_cpc_roundtrip.py`
+
+---
+
 
 ### Summary
 The `basedpyright` job failed after pytest passed on all 15 matrix jobs. Failures
@@ -17,7 +36,9 @@ were dominated by matplotlib/numpy stub mismatches (dynamic Figure/Axes attrs,
 - `add_axes([...])` → `add_axes((...))` in session, canvas, operando, electrochem,
   and test fixtures.
 - `np.where` mask coerced with `np.asarray(..., dtype=bool)`.
-- `np.trapz` → `getattr(np, "trapezoid", np.trapz)(...)` for numpy 2.x stubs.
+- `np.trapz` → `(getattr(np, "trapezoid", None) or np.trapz)(...)` for numpy 2.x
+  (`getattr(..., np.trapz)` evaluates the default eagerly and crashes when
+  `trapz` was removed).
 - Targeted typing fixes for CI-only basedpyright errors: `rcParams.get` keys,
   `set_position`/`imshow` extent tuples, `cycles is None` guards, colormap cast.
 - Stopped tracking `batplot.egg-info/` (already in `.gitignore`).

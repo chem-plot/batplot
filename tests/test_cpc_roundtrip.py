@@ -17,6 +17,14 @@ from batplot.plot_modes.cpc.actions import (
 from conftest import assert_allclose, loaded
 
 
+def test_numpy_trapezoid_compat_for_energy_integration():
+    """CPC/EPC energy uses trapezoid on numpy 2.x; must not touch removed np.trapz."""
+    x = np.linspace(0.0, 1.0, 10)
+    y = np.ones(10)
+    trapz_fn = getattr(np, "trapezoid", None) or np.trapz
+    assert abs(float(trapz_fn(y, x)) - 1.0) < 1e-9
+
+
 def _build_cpc_figure():
     fig, ax = plt.subplots()
     ax2 = ax.twinx()
