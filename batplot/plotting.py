@@ -6,8 +6,39 @@ Labels are the text annotations that identify each curve (e.g., file names).
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 import numpy as np  # type: ignore[import]
+
+
+def apply_curve_color(line: Any, color: Any) -> None:
+    """Set line color and keep visible marker face/edge colors in sync.
+
+    When a curve uses dots-only (``linestyle='None'``) or line+dots, the colors
+    menu only calls ``set_color`` unless marker colors are updated explicitly.
+    Legend labels read ``get_color()``, so they can disagree with the dots.
+    """
+    line.set_color(color)
+    try:
+        marker = line.get_marker()
+    except Exception:
+        return
+    if marker is None or str(marker).lower() in ("none", ""):
+        return
+
+    def _sync(prop_get, prop_set) -> None:
+        try:
+            current = prop_get()
+            if current is not None and str(current).lower() == "none":
+                return
+        except Exception:
+            pass
+        try:
+            prop_set(color)
+        except Exception:
+            pass
+
+    _sync(line.get_markerfacecolor, line.set_markerfacecolor)
+    _sync(line.get_markeredgecolor, line.set_markeredgecolor)
 
 
 def update_labels(ax, y_data_list: List, label_text_objects: List, stack_mode: bool, stack_label_at_bottom: bool = False):

@@ -25,17 +25,17 @@ from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 
 from .session import load_ec_session, load_operando_session, load_cpc_session, load_xy_session
-from .electrochem_interactive import electrochem_interactive_menu
-from .interactive import interactive_menu
+from .plot_modes.electrochem.interactive import electrochem_interactive_menu
+from .plot_modes.xy.interactive import interactive_menu, normalize_xy_menu_kwargs
 from .utils import _confirm_overwrite
 
 try:
-    from .operando_ec_interactive import operando_ec_interactive_menu
+    from .plot_modes.operando.interactive import operando_ec_interactive_menu
 except ImportError:
     operando_ec_interactive_menu = None
 
 try:
-    from .cpc_interactive import cpc_interactive_menu
+    from .plot_modes.cpc.interactive import cpc_interactive_menu
 except ImportError:
     cpc_interactive_menu = None
 
@@ -80,9 +80,9 @@ def _load_panel_session(path: str) -> Optional[Tuple[str, Any, Dict[str, Any]]]:
             if not res:
                 return None
             if len(res) == 4 and res[2] is None:
-                fig, ax, _, file_data = res
+                fig, ax, _, file_data = res[0], res[1], res[2], res[3]
                 return ('ec_gc', (fig, ax, None, file_data), {'file_data': file_data})
-            fig, ax, cycle_lines = res
+            fig, ax, cycle_lines = res[0], res[1], res[2]
             return ('ec_gc', (fig, ax, cycle_lines, None), {'cycle_lines': cycle_lines, 'file_path': path})
         if kind == 'operando_ec':
             res = load_operando_session(path)
@@ -659,7 +659,7 @@ def run_canvas_mode(pkl_paths: List[str]) -> None:
                     print("CPC menu not available.")
             elif kind == 'xy':
                 fig, ax, menu_kwargs = data
-                interactive_menu(fig, ax, **{**menu_kwargs, 'canvas_mode': True})
+                interactive_menu(fig, ax, **normalize_xy_menu_kwargs({**menu_kwargs, 'canvas_mode': True}))
         except Exception as e:
             print(f"Panel menu failed: {e}")
         finally:

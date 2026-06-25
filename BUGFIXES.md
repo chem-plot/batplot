@@ -4,6 +4,1792 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-06-10: Unified default canvas and plot size for GC, CV, dQ/dV, and CPC
+
+### Summary
+CPC used a wider default canvas (~10.5 × 6 in) than GC/CV/dQ/dV (10 × 6 in) because
+its layout used a narrower right margin (`right=0.88`) to keep the plot frame matched.
+New CPC plots therefore opened at a different window size than other electrochem modes.
+
+### Fix
+- CPC now shares `_EC_DEFAULT_LAYOUT` and `_default_ec_figsize()` with GC, CV, and dQ/dV
+  (canvas 10 × 6 in, same plot frame).
+- dQ/dV 2D companion contour defaults use the same `_default_ec_figsize()` instead of
+  hardcoded `(8, 6)`.
+
+### Compatibility
+Windows, macOS, Linux. Saved sessions still restore their stored figure size.
+
+### Affected Files
+- `batplot/ec_common.py`
+- `batplot/plot_modes/cpc/routing.py`
+- `batplot/plot_modes/electrochem/dqdv_2d.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `tests/test_contracts.py`
+
+---
+
+## 2026-06-10: Basic styling parity for p/i/s/b across all modes
+
+### Summary
+Several styling fields were saved in export (p) or session (s) but missing from
+undo (b) or import (i), so font, tick/label colors, labelpad, or mathtext settings
+could revert incorrectly after undo, save/load, or style import.
+
+### Fix
+- **XY**: Added ``capture_xy_axis_style`` / ``apply_xy_axis_style`` for tick
+  colors, axis label colors, and labelpads in style export/import, session
+  save/load, and undo snapshots.
+- **EC**: Undo now restores ``mathtext.fontset`` and primary axis label colors;
+  style export/import includes axis label colors (mathtext was already in p/i/s).
+- **Operando**: Style export/import now includes ``mathtext_fontset`` (session
+  and undo already had it).
+
+### Compatibility
+Windows, macOS, Linux. Backward compatible with older .pkl/.bpsg files missing
+new keys.
+
+### Affected Files
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/plot_modes/electrochem/actions.py`
+- `batplot/plot_modes/operando/style.py`
+- `batplot/plot_modes/operando/actions.py`
+- `batplot/session.py`
+- `tests/test_xy_modules.py`
+
+---
+
+## 2026-06-10: XY colors menu ``all viridis`` fails on Windows (matplotlib 3.11+)
+
+### Summary
+In the 1D interactive colors menu, ``all viridis`` (and other palette commands)
+reported ``Unknown palette 'viridis'`` on some Windows installs even though
+viridis is a built-in matplotlib colormap.
+
+### Root Cause
+``plot_modes/xy/colors.py`` loaded palettes via ``matplotlib.cm.get_cmap``, which
+was removed in matplotlib 3.11. ``ensure_colormap()`` could succeed via the
+modern registry while the subsequent ``get_cmap`` call still failed. A related
+bug used ``ensure_colormap(...) or plt.get_cmap(...)``, which assigned boolean
+``True`` instead of a colormap when registration succeeded.
+
+### Fix
+Added ``get_colormap()`` in ``color_utils.py`` using ``matplotlib.colormaps`` /
+``plt.get_cmap`` with custom/batlow fallbacks. XY colors and CIF palette paths
+now use this helper instead of ``matplotlib.cm.get_cmap``. Style import
+(``_apply_curve_palette``), session save/load (``curve_palettes``), and undo
+(``b``) now keep palette metadata and synced dots-only marker colors through
+``p`` / ``i`` / ``s`` / ``b``.
+
+### Compatibility
+Works on Windows, macOS, and Linux across matplotlib 3.6–3.11+.
+
+### Affected Files
+- `batplot/color_utils.py`
+- `batplot/plot_modes/xy/colors.py`
+- `batplot/plot_modes/xy/cif.py`
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/session.py`
+- `tests/test_color_utils.py`
+- `tests/test_xy_modules.py`
+
+---
+
+## 2026-06-10: Dots-only marker colors out of sync with legend after color change
+
+### Summary
+In 1D interactive mode, switching a curve to dots-only (`l` → `d`) then
+changing its color (`c` → `1:red 2:blue`) updated the legend label colors but
+left the marker dots on the old default colors (e.g. blue/orange tab10).
+
+### Root Cause
+The dots-only preset copies the current line color into `markerfacecolor` and
+`markeredgecolor` once at apply time. Later color changes only called
+`Line2D.set_color()`, which does not update explicitly set marker colors.
+
+### Fix
+Added `apply_curve_color()` in `plotting.py` to set line color and sync marker
+face/edge colors when markers are visible (skipping hollow `none` markers).
+Used it in XY/EC color menus, palette application, style import, session line
+style restore, and dots-only/line+dots presets. Style import applies structural
+line props before color so saved marker colors cannot override a new curve color.
+
+### Compatibility
+Works on Windows, macOS, and Linux. Undo (`b`), print/export style (`p`),
+import style (`i`), and save session (`s`) all preserve consistent colors
+because snapshots and style files store marker colors that match after apply.
+
+### Affected Files
+- `batplot/plotting.py`
+- `batplot/plot_modes/xy/colors.py`
+- `batplot/plot_modes/xy/line_style.py`
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/electrochem/colors.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/session.py`
+- `tests/test_xy_modules.py`
+
+---
+
+## 2026-06-10: Read mixed label/value CSV exports (refinement tables)
+
+### Summary
+Plotting CSV files such as `Surface_Refinement.csv` with `--readcol` failed with
+"No numeric data found" even though the file contains numeric scan and phase
+columns.
+
+### Root Cause
+`robust_loadtxt_skipheader()` only accepted lines that were fully numeric after
+whitespace tokenization. Comma-separated refinement exports interleave text
+labels, `;` markers, and numbers in one row, so every data line was rejected.
+
+### Fix
+Added `read_csv_numeric_grid()` which parses comma-separated CSV with
+`csv.reader`, skips a header row, converts numeric cells to floats, and stores
+text/`;` cells as NaN. `robust_loadtxt_skipheader()` uses this path for `.csv`
+files before falling back to the legacy line parser.
+
+### Compatibility
+Works on Windows, macOS, and Linux. European semicolon-decimal CSV files still
+use the existing `read_csv_file()` path where applicable.
+
+### Affected Files
+- `batplot/readers.py`
+- `tests/test_csv_readers.py`
+
+---
+
+## 2026-06-10: Operando+EC session reload — overlapping Scan index and missing EC y ticks
+
+### Summary
+Reloading legacy operando+EC `.pkl` files (e.g. `Synthesis_750.pkl`) showed
+"Scan index" overlapping contour y tick labels, EC side-panel y tick labels
+missing (so contour scale appeared on the EC panel), and layout looking wrong
+after entering interactive mode.
+
+### Root Cause
+- Session load restored small saved `y_labelpad` values (e.g. 4 pt) without
+  running the shared label-positioning helpers used in interactive mode.
+- Legacy sessions captured EC y ticks on the **left** side while the y-axis title
+  (`Time (h)`) lived on the **right**, so reload applied `right.ticks=false` /
+  `right.labels=false` and hid the EC y tick labels.
+
+### Fix
+- Added `_finalize_operando_session_axes()` and call it after operando session
+  load and when a loaded session enters interactive mode.
+- Detect the legacy left-tick/right-title drift pattern on load and restore EC
+  right ticks/labels while keeping intentional tick-off states when both sides
+  are saved off.
+- Skip default EC xlim expansion for loaded sessions; fixed operando rename `y`
+  menu to reposition the left y label (not a duplicate right artist).
+
+### Affected Files
+- `batplot/plot_modes/operando/layout.py`
+- `batplot/session.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/operando/labels.py`
+- `tests/test_operando_roundtrip.py`
+
+---
+
+## 2026-06-10: Harden `--dev-upgrade` GitHub staging and remote sync
+
+### Summary
+`batplot --dev-upgrade` could fail at the GitHub push step when local build or
+cache directories existed (`dist/`, `.pytest_cache/`), because
+`git add -- .` exits with an error on gitignored paths even when pathspec
+excludes are present. The release commit was also created before pulling from
+GitHub, increasing rebase/push conflicts.
+
+### Root Cause
+- Repository-wide `git add -- .` with `:(exclude)…` pathspecs still errors on
+  ignored directories present in the working tree.
+- `is_dev_environment()` required a missing `upgrade.sh`, so dev detection was
+  brittle.
+- PyPI archive validation only checked `*.py`, not `package-data` files from
+  `pyproject.toml`.
+
+### Fix
+- Stage tracked changes with `git add -u`, then add only untracked paths from
+  `git ls-files --others --exclude-standard` (future new files are picked up
+  automatically).
+- Unstage local-only assets (`batplot/data/USER_MANUAL.md`,
+  `batplot_user_manual.docx`) after staging.
+- Fetch/rebase onto the current branch **before** committing; stash unstaged
+  local changes with `--keep-index` so the release snapshot stays staged.
+- Validate wheels/sdists against both package Python files and declared
+  `package-data` entries.
+- Detect dev environment via `pyproject.toml`, `batplot/`, and
+  `batplot/dev_upgrade.py`.
+
+### Compatibility
+Works on Windows, macOS, and Linux (standard Git CLI only).
+
+### Affected Files
+- `batplot/dev_upgrade.py`
+- `tests/test_dev_upgrade.py`
+- `.gitignore`
+
+---
+
+## 2026-06-11: session.py import cleanup and type-check hygiene
+
+### Summary
+Cleaned `batplot/session.py` imports (duplicate numpy aliases, unused ticker
+imports after ions-axis extraction), unified `_np` → `np`, added import
+silences consistent with other modules, and kept the operando ions helper as a
+lazy import to avoid a session↔operando circular import.
+
+### Also
+- `basedpyright` added to `[project.optional-dependencies].test` and CI.
+- `[tool.basedpyright]` / `pyrightconfig.json` now explicitly include
+  `batplot` and `tests`.
+
+### Verification
+Full pytest suite and `basedpyright .` → 0 errors, 0 warnings.
+
+---
+
+## 2026-06-10: Operando ions mode status bar showed rounded Y (e.g. 1.8 not 1.832)
+
+### Summary
+In operando **ey → ions** mode, the matplotlib bottom-right cursor readout
+(`x=…, y=…`) used the same rounded tick formatter as the Y axis, so ion counts
+appeared as coarse values like `1.8` instead of e.g. `1.832`.
+
+### Root Cause
+The EC curve is still plotted vs **time** on Y; ions mode only relabels ticks.
+Tick labels were rounded to a 1-2-5 step (e.g. 1.746 → **1.8**), while the
+status bar and crosshair showed the true interpolated ion count (**1.7462**).
+Aligning the crosshair on a tick therefore looked wrong.
+
+### Fix
+New `batplot/plot_modes/operando/ions_axis.py` centralizes ions display:
+- Tick labels show the **true** ion value at each time tick (3 decimals), not
+  step-rounded “nice” numbers.
+- Status bar / crosshair use the same interpolation (4 decimals).
+
+Applied on **ey** toggle, **et** range refresh, undo (**b**), session load (**s**),
+and style import (**i** / `.bpsg`).
+
+### Compatibility
+Runtime axis hook only; existing session/style files unchanged.
+Windows/macOS/Linux identical.
+
+---
+
+## 2026-06-10: XY session reload failed to open interactive menu (`labels_list`)
+
+### Summary
+Loading a saved XY session (e.g. `batplot BM30.pkl`) printed
+`Interactive menu failed: interactive_menu() got an unexpected keyword argument
+'labels_list'` and exited without opening the menu.
+
+### Root Cause
+`session.load_xy_session()` built `menu_kwargs` with key `labels_list`, but
+`xy.interactive.interactive_menu()` expects `labels`. The mismatch was a known
+latent bug from the batplot.py split; callers using `**menu_kwargs` failed
+before the menu loop started.
+
+### Fix
+- `batplot/session.py`: emit `labels` in `menu_kwargs`.
+- `batplot/plot_modes/xy/interactive.py`: add `normalize_xy_menu_kwargs()` and
+  optional legacy `labels_list` parameter.
+- `session_routing.py` and `canvas_interactive.py`: normalize kwargs before
+  calling `interactive_menu`.
+
+### Compatibility
+Existing `.pkl` files unchanged; reload + interactive menu works on
+Windows/macOS/Linux. Legacy code passing `labels_list=` still accepted.
+
+---
+
+## 2026-06-10: Operando horizontal offset menu supports 1 px nudges (a/d)
+
+### Summary
+In operando **v → m** (move horizontal position), the colorbar and EC panel
+offset editors now accept **`a`** / **`d`** to nudge left/right by one screen
+pixel, in addition to typing an offset in inches.
+
+### Root Cause
+Offset editors only accepted a single numeric inches prompt; fine pixel
+alignment required manual inch conversion.
+
+### Fix
+`batplot/plot_modes/operando/visibility.py`: shared offset editor loop with
+`a` (−1/dpi in), `d` (+1/dpi in), direct inches, and `q` back. Applies to
+both colorbar (`c`) and EC panel (`e`).
+
+### p/i/s/b behavior
+Offsets remain stored on `_cb_h_offset_in` / `_ec_h_offset_in` (inches).
+Style export (`p`), import (`i`), session save (`s`), and undo (`b`) already
+round-trip these attributes unchanged.
+
+### Compatibility
+Pixel step uses `1.0 / fig.dpi`; identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-10: Axis range inputs accept inverted limits in all modes (p/i/s/b)
+
+### Summary
+Range commands across **XY**, **electrochem**, **CPC**, and **operando** now accept
+two limits in either order (e.g. `31 0` as well as `0 31`). Previously several
+handlers forced `min`/`max` sorting, which blocked inverted Y axes unless the
+user ran a separate reverse command.
+
+### Root Cause
+- Shared `run_axis_limit_menu` defaulted to `normalize_pair=True`, sorting every
+  pair input before `set_xlim`/`set_ylim`.
+- CPC X/Y menus passed `normalize_pair=True` explicitly; EC Y did the same.
+- Operando **et** (EC time Y) still sorted limits; **oy** had the same bug (fixed
+  in the same pass).
+
+### Fix
+- `run_axis_limit_menu`: default `normalize_pair=False`; menu text now says
+  `limit1 limit2 (either order)`.
+- Removed `normalize_pair=True` from CPC and EC Y callers.
+- Operando **et** passes user limits directly to `set_ylim`, matching **ox**,
+  **oy**, **ex**, and **oz**.
+- Operando style import (`i` / `.bpsg`): when geometry restores EC Y limits,
+  `_saved_time_ylim` is updated so **ey** toggles and session undo stay aligned.
+
+### p/i/s/b behavior
+Snapshots, session save/load, and style geometry already store
+`list(ax.get_xlim())` / `list(ax.get_ylim())` in entered order. Operando style
+export still records `y_reversed` when `ylim[0] > ylim[1]`. No reordering on
+restore.
+
+### Compatibility
+Matplotlib-native limit calls; identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-10: Workspace-wide basedpyright cleanup (21 errors, 123 warnings → 0)
+
+### Summary
+Cleared every remaining basedpyright diagnostic across the codebase. Most were
+type-checker false positives around defensively-written code (attribute access
+inside `try/except` on possibly-None matplotlib objects), but a few were real
+latent bugs.
+
+### Real bugs fixed
+1. `batplot/plot_modes/electrochem/routing.py` — `legend.get_title().set_fontsize(...)`
+   was placed *outside* its own `if legend is not None:` guard in three places
+   (GC, dQ/dV, CV legend setup). Moved inside the guard so a None legend can no
+   longer crash.
+2. `batplot/plot_modes/electrochem/routing.py` — `handle_gc_mode` /
+   `handle_dqdv_mode` are declared `-> int` but could fall off the end and
+   return `None` (e.g. single non-EC file skipped by the loop). Added explicit
+   `return 0` (identical exit-code semantics: `sys.exit(None)` == success).
+
+### Type-checker-only changes (no runtime behavior change)
+- `common/axis_state.py`: bound the resolved tick-state dict to a typed local
+  so the Optional parameter no longer taints `.get()` calls.
+- `style.py`: inline suppression for the dynamic `__all__` mirror in the
+  compatibility shim (analyzers cannot evaluate it by design).
+- `electrochem/interactive.py`: `fig = ax.figure or fig` (+ cast) keeps `fig`
+  non-None across menu loop iterations; 4 inline suppressions for guarded
+  `fig.canvas` calls flagged via fallback matplotlib stubs.
+- `electrochem/routing.py`: `cast(Tuple[Any, ...])` on `read_mpt_file(...)`
+  unpacking (the reader's union return type confused the checker, cascading
+  into bogus `&` operator errors on the masks).
+- `operando/actions.py`: added explicit `ctx.ec_ax is not None` to two patch
+  conditions (previously relied on `getattr(None, ...)` returning None — same
+  outcome, now provable).
+- `operando/interactive.py`: explicit None-guards for `ec_ax`/`cbar` blocks
+  that previously relied on `try/except` to skip None (identical behavior);
+  inline suppressions for guarded layout calls.
+- `session_routing.py`: unreachable `sess is None` guard after the diagnostics
+  loader (it always pairs None with an error code) — clears 50 cascade
+  warnings; `cast` for the 3-tuple EC session unpack.
+- `cpc/interactive.py`: annotated `ax2: Any` and
+  `file_data: Optional[List[Dict]]` on `_apply_style` / `cpc_interactive_menu`;
+  replaced a ternary `getattr(ax2.yaxis, ...) if ax2 is not None else None`
+  with an equivalent nested-`getattr` chain (the ternary's None-branch leaked
+  into all later `ax2` accesses).
+- `xy/style.py`, `electrochem/actions.py`, `operando/actions.py`: moved/added
+  inline suppressions for basedpyright's "code is too complex to analyze"
+  notices on three large style-import functions.
+
+Note: other 2026-06-10 entries document separate functional fixes (`cif_cached_wavelength` scoping, `file:q` axis mode, CPC `_rebuild_legend` import path) that are not repeated here.
+
+### Verification
+- `basedpyright`: 0 errors, 0 warnings, 0 notes across the whole workspace.
+- Full test suite: 248 passed.
+- All changes are pure-Python typing/guard adjustments; identical on Windows,
+  macOS, and Linux.
+
+---
+
+## 2026-06-10: Fix latent `NameError` in CIF wavelength caching (XY pipeline)
+
+### Summary
+basedpyright flagged `"cif_cached_wavelength" is unbound` in
+`batplot/plot_modes/xy/pipeline.py` (`_ensure_wavelength_for_2theta`). This was
+a real latent bug: the nested helper declared `global cif_cached_wavelength`,
+but no module-level variable of that name exists — the cache is a local of
+`run_xy_pipeline` (initialized to `None`). If the helper ran with no wavelength
+stored in any CIF tick series and no `--wl` given, reading the cache raised
+`NameError` at runtime.
+
+### Change
+- `global cif_cached_wavelength` → `nonlocal cif_cached_wavelength`, binding the
+  helper to the enclosing pipeline's cache variable as intended (the cache lives
+  for the duration of one plotting session, which is what the interactive menu
+  needs).
+- Also hardened `target_ax = ax2 if is_right_y else ax` to
+  `ax2 if (is_right_y and ax2 is not None) else ax` to clear three
+  `reportOptionalMemberAccess` warnings; runtime behavior is identical since
+  `ax2` is always created before the first right-y curve is plotted.
+
+### Compatibility
+Pure-Python scoping fix, identical on Windows, macOS, and Linux. Full test
+suite passes (248 passed).
+
+---
+
+## 2026-06-10: Auto Q mode no longer errors on wavelength-less files; new `file:q` marker
+
+### Summary
+Mixing per-file wavelength data (e.g. `scan_56.xy:0.709`) with files already in
+Q space (e.g. simulated powder-pattern CSVs) raised
+`ValueError: In Q mode, wavelength must be provided for all 2θ XRD data files
+unless you explicitly force Q with '--xaxis Q'`, forcing users to add
+`--xaxis q` even though the wavelength suffixes already implied Q mode.
+
+### Root Cause
+In `batplot/plot_modes/xy/pipeline.py` (`run_xy_pipeline`), when Q mode was
+auto-selected (via `file:wl` suffix, `.qye`, or `--wl`), every 2θ-type file
+(`.xy`, `.xye`, `.dat`, `.csv`, `.raw`) without its own wavelength hit a hard
+error unless `--xaxis Q` was explicitly passed. There was also no way to mark
+an individual file as already being in Q.
+
+### Change
+1. `batplot/plot_modes/xy/pipeline.py`:
+   - In auto-selected Q mode, files without wavelength info are now assumed to
+     be already in Q (Å⁻¹). A note is printed once per file instead of raising,
+     so unconverted 2θ data is still easy to spot. Explicit `--xaxis q`/`Q`
+     continues to work exactly as before (no note).
+   - New per-file suffix `file:q` (case-insensitive) marks a file's x data as
+     already in Q: no conversion is applied, no note is printed, and the suffix
+     implies Q axis mode (same as `file:wl`). Windows drive-letter paths
+     (`C:\path\file.xy:q`) are handled.
+   - In 2θ mode with a known wavelength, `file:q` data are converted Q→2θ
+     (same path as `.qye` files).
+   - λ legend label is suppressed for `file:q` files in Q mode (a global `--wl`
+     no longer mislabels unconverted curves).
+2. `batplot/showcol.py`: `resolve_path_token` and `_WL_SUFFIX_RE` accept the
+   `:q` suffix so `--showcol file.xy:q` resolves the underlying file.
+3. Help text (`batplot/args.py`) and `batplot/data/USER_MANUAL.md` document the
+   new syntax and the auto-Q assumption.
+
+### Compatibility
+Pure-Python string/NumPy logic; identical on Windows, macOS, and Linux
+(Windows drive-letter colon handling preserved). All previous invocations keep
+working: `--xaxis q`, `--wl`, `file:wl`, `file:wl1:wl2`, `.qye`, 2θ mode, CIF
+overlays, and the "Unknown file type" error for files with no axis hints are
+unchanged. Verified with the full test suite (248 passed).
+
+---
+
+## 2026-06-10: Fix `_rebuild_legend` import in CPC session loader
+
+### Summary
+`batplot/session.py` (CPC session loading, `_load_cpc_session_impl`) imported
+`_rebuild_legend` from `batplot.plot_modes.cpc.interactive`, where the symbol is
+only a re-import. basedpyright flagged it as an unknown import symbol
+(line 3760: `"_rebuild_legend" is unknown import symbol`).
+
+### Root Cause
+`_rebuild_legend` is defined in `batplot/plot_modes/cpc/legend.py` and merely
+imported by `interactive.py` for its own use. Importing it indirectly through
+`interactive` relied on a transitive re-export not declared in that module's
+public surface, which the type checker rejects.
+
+### Change
+- Changed the import in `batplot/session.py` to import `_rebuild_legend`
+  directly from its defining module `batplot.plot_modes.cpc.legend`, which
+  explicitly exports it via `__all__`.
+
+### Compatibility
+Runtime behavior is identical: the same function object is imported, with the
+same signature `(ax, ax2, file_data, preserve_position=True)`. No other code
+paths were touched. Pure-Python import change; works on Windows, macOS, and
+Linux.
+
+### Verification
+- `from batplot.plot_modes.cpc.legend import _rebuild_legend` and
+  `import batplot.session` both succeed.
+- Fresh basedpyright run on `batplot/session.py` reports zero diagnostics.
+
+---
+
+## 2026-06-07: Move XY style ownership and extract quick-overwrite prompts
+
+### Summary
+The root `batplot/style.py` module still owned XY style export/import logic even
+after most mode-specific code moved under `plot_modes/`. Quick overwrite command
+handlers also repeated the same "last path exists, confirm overwrite" flow across
+XY, EC, CPC, and operando.
+
+### Change
+- Moved the XY `.bps` / `.bpsg` style implementation to
+  `batplot/plot_modes/xy/style.py`.
+- Kept `batplot/style.py` as a compatibility shim so old imports such as
+  `from batplot import style` and `batplot.style.export_style_config` still work.
+- Updated XY interactive code to import its style helpers from the mode module.
+- Added `plot_modes/common/files.confirm_previous_path()` and reused it in the
+  quick-overwrite figure/session/style handlers for all interactive modes.
+- Added a root `.gitignore` for generated caches, bytecode, `.DS_Store`, build
+  outputs, virtual environments, logs, and local archive backups.
+
+### Compatibility
+No style payload keys, `.bps` / `.bpsg` schemas, pickle session schemas, or
+platform-specific paths were changed. Existing root `batplot.style` imports
+continue to resolve to the same functions, now owned by the XY mode package.
+
+### Verification
+- Contract, common file helper, and XY/EC/CPC/operando round-trip tests passed.
+- Lints on touched files passed.
+
+---
+
+## 2026-06-07: Start splitting session APIs by mode without changing pickle schemas
+
+### Summary
+`batplot/session.py` is the largest cross-mode compatibility surface because it
+owns XY, EC, CPC, and operando `.pkl` serialization. A broad move would be risky
+for old session files, so the first split creates mode-owned API seams while
+leaving the existing serialization implementations and payload schemas intact.
+
+### Change
+- Renamed the current session implementations to private `_..._impl` functions
+  inside `batplot.session`.
+- Updated `batplot.session.dump_*` / `load_*` public functions to delegate
+  through `plot_modes/{xy,electrochem,cpc,operando}/session.py`.
+- Updated the per-mode session modules to own their mode API and call the
+  unchanged private implementations.
+- Preserved public wrapper signatures with `functools.wraps`.
+- Added contract tests proving facade delegation and signature preservation.
+
+### Compatibility
+No `.pkl` keys, pickle contents, loader behavior, or old-session fallback logic
+were changed. This pass only adds a safe boundary for future mode-by-mode
+extraction.
+
+### Verification
+- Contract tests passed.
+- XY, EC, CPC, and operando round-trip tests passed.
+- Lints on touched files passed.
+
+---
+
+## 2026-06-07: Make `--dev-upgrade` stage the full GitHub release snapshot
+
+### Summary
+`batplot --dev-upgrade` updated release files such as `CHANGELOG.md` and
+`CITATION.cff`, but the GitHub push step only staged `batplot/` plus a small
+hand-maintained set of root files. That meant some existing repository files
+could be left unchanged on GitHub after a release.
+
+### Fix
+- Replaced the narrow staging list with full-repository staging: tracked
+  modifications/deletions are staged first, then new files are added.
+- Kept new generated/local artifacts out of the release commit with explicit Git
+  pathspec exclusions for build outputs, caches, bytecode, and `.DS_Store`.
+- Added a focused test to pin that `--dev-upgrade` stages the whole repository
+  snapshot instead of only selected paths.
+
+### Compatibility
+The command still asks before committing/pushing and still uses normal Git push
+semantics. It now includes source, tests, docs, workflows, metadata, new files,
+and tracked deletions so GitHub is replaced by the current repository state.
+
+---
+
+## 2026-06-07: Centralize shared palette helpers and tab10 colors
+
+### Summary
+Palette shortcuts, recommended palette lists, tab10 hex colors, and colormap
+sampling logic were duplicated across EC, CPC, operando, and routing paths. The
+copies made it easier for palette options to drift between modes.
+
+### Change
+- Added shared palette aliases, tab10 colors, palette option builders, display
+  item helpers, and sampled color helpers to `common/palettes.py`.
+- Updated EC, CPC, and operando palette wrappers/menus to consume the shared
+  helpers while keeping the existing public wrapper functions.
+- Replaced hardcoded tab10 lists in CPC/EC routing and EC/operando palette
+  menus with `TAB10_HEX`.
+- Added tests for numeric aliases, reverse suffix handling, tab10 exact colors,
+  option ordering, and sampled color output.
+
+### Compatibility
+Existing numeric shortcuts and color ordering are preserved. Style/session
+payloads and `p`/`i`/`s`/`b` command behavior are unchanged.
+
+### Verification
+- Palette/common tests passed.
+- Interactive menu smoke tests passed.
+- EC, CPC, and operando round-trip tests passed.
+- Lints on touched files passed.
+
+---
+
+## 2026-06-07: Add rainbow palette option to all interactive palette menus
+
+### Summary
+The interactive color palette menus did not consistently offer Matplotlib's
+`rainbow` colormap in the numbered/recommended palette lists. Users could still
+type some Matplotlib colormap names manually in several paths, but `rainbow`
+was not shown together with the preview/colorbar-style display.
+
+### Change
+- Added `rainbow` to the shared XY/CIF palette option list.
+- Added `rainbow` to CPC palette options.
+- Added `6: rainbow` to EC cycle/file palette shortcuts while preserving old
+  numeric shortcuts (`4=viridis`, `5=plasma`).
+- Added `rainbow` to the operando main colormap menu and the operando CIF
+  colormap submenu, both with preview bars.
+- Added tests pinning `rainbow` availability across XY, CPC, EC, and operando.
+
+### Compatibility
+Existing numeric palette shortcuts are unchanged; `rainbow` is appended after
+the existing options. This is pure Matplotlib colormap selection and is
+cross-platform.
+
+### Verification
+- Palette/common tests passed.
+- Interactive menu smoke tests passed.
+- Lints on touched files passed.
+
+---
+
+## 2026-06-07: Reduce CPC interactive complexity and expand command smoke coverage
+
+### Summary
+`batplot/plot_modes/cpc/interactive.py` still had two basedpyright complexity
+warnings: `_apply_style` and `cpc_interactive_menu` were too large for static
+analysis. The refactor keeps behavior and compatibility paths intact while
+moving the largest self-contained blocks behind local helper functions.
+
+### Fix
+- Extracted the CPC `t` spine/tick submenu into `_handle_key_t()`.
+- Split `_apply_style` into local helpers for font, series, legend, tick,
+  spine, labelpad, grid, title-offset, and legend-label restoration sections.
+- Removed the two obsolete `# pyright: ignore[reportGeneralTypeIssues]`
+  suppressions after the file became analyzable.
+- Added explicit local narrowing for CPC scatter artists where nested closures
+  capture values that are already required by the CPC menu.
+- Expanded `tests/test_interactive_menu_smoke.py` so CPC now enters every
+  top-level command branch (`n`, `b`, `p`, `i`, `s`, `e`, `d`, `h`, `l`, `k`,
+  `r`, `t`, `c`, `v`, `ry`, `f`, `m`, `x`, `y`, `g`, `ie`, `oe`, `os`, `ops`,
+  `opsg`) and backs out cleanly.
+
+### Compatibility
+The extraction does not change `.pkl`, `.bps`, or `.bpsg` serialization logic.
+The moved `_apply_style` blocks still run in the same order and preserve the
+existing backward-compatibility fallbacks for display mode, tick state,
+title-offset formats, marker defaults, multi-file labels, and style geometry.
+
+### Verification
+- `ReadLints` on `cpc/interactive.py`: no errors/warnings.
+- CPC branch smoke tests and CPC round-trip tests passed.
+- Full test suite passed.
+
+---
+
+## 2026-06-07: Preserve old EC/CPC `.bpsg` geometry imports with `axes_geometry`
+
+### Summary
+Older or stale EC/CPC style+geometry files could store geometry under
+`axes_geometry` instead of the current `geometry` key. Current exports already
+write `geometry`, but importing an old `.bpsg` that only had `axes_geometry`
+would skip the saved labels and axis limits.
+
+### Fix
+- `batplot/plot_modes/electrochem/actions.py`: EC `.bpsg` import now falls back
+  to `axes_geometry` when `geometry` is absent.
+- `batplot/plot_modes/cpc/actions.py`: CPC `.bpsg` import now uses the same
+  fallback.
+- Added regression coverage so old `axes_geometry` `.bpsg` files still restore
+  EC/CPC labels and limits, while current exporters continue writing
+  `geometry`.
+
+### Verification
+- Focused backward-compatibility tests passed.
+- Full test suite passed.
+- Lints on touched files passed.
+
+---
+
+## 2026-06-06: Clear remaining basedpyright errors/warnings in EC + operando interactive menus
+
+### Summary
+After the complexity-reduction refactor (below), basedpyright could finally
+analyze both interactive files and surfaced 14 latent diagnostics (2 in EC, 12
+in operando). All were resolved without changing menu behaviour. These were
+type-safety issues only - the affected code paths already behaved correctly at
+runtime because of upstream guards that the type checker could not "see" through
+closures and `dict.get()` results.
+
+### Fixes
+
+**`electrochem/interactive.py` (2 errors)**
+- L3120 / L3146: `auto_limits=` was passed a tuple-returning `lambda`
+  (`lambda: (ax.set_xlim(...), ax.relim(), ax.autoscale_view(...))`), which
+  conflicts with `run_axis_limit_menu`'s `auto_limits` parameter type. Replaced
+  each lambda with a small named function (`_auto_x_limits` / `_auto_y_limits`)
+  that performs the three calls as statements and implicitly returns `None`.
+  Behaviour is identical (the tuple result was always discarded); the functions
+  are self-contained so the diagnostic clears regardless of how the shared
+  `menus.py` annotation is cached by the language server.
+
+**`operando/interactive.py` (12 errors/warnings)**
+- L2473: `target._saved_tick_state = ...` inside the nested
+  `_sync_operando_pane_tick_state` closure. `target` is guarded non-`None` at
+  menu scope (`if target is None: continue`), but the closure loses that
+  narrowing, so `target` is seen as `Axes | None`. Added an explicit
+  `if target is not None:` guard inside the existing `try` block.
+- L3514-L3550 (ions overlay, `ey->ions`): `mass_mg`, `cap_per_ion` and
+  `start_ions` originate from `getattr(ec_ax, '_ion_params', {...}).get(...)`,
+  so each is typed `Any | float | None`. Control flow already guarantees they
+  are set before use, but the checker flagged `float(...)` and `cap_per_ion > 0`.
+  Added an explicit `if mass_mg is None or cap_per_ion is None or start_ions is
+  None: continue` guard before the computation (matches the existing "Bad input"
+  messaging).
+- L3797 / L3798 (panel resize): `ec_pos = ec_ax.get_position() if ec_ax else
+  None` is `Bbox | None`, but the block that reads `ec_pos.x0` / `ec_pos.width`
+  was guarded by `if ec_ax:`, which the checker does not correlate with
+  `ec_pos`. Changed the guard to `if ec_pos is not None:` (logically equivalent
+  since `ec_pos` is non-`None` iff `ec_ax` is truthy).
+
+### Affected files
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+
+### Verification
+- `ReadLints` on both files: 0 errors/warnings (was 14).
+- `tests/test_interactive_menu_smoke.py`: all pass.
+- Full suite: all tests pass (only pre-existing Matplotlib/legacy-module
+  deprecation warnings remain).
+
+---
+
+## 2026-06-06: Reduce complexity of EC / operando interactive menus (basedpyright "Code is too complex to analyze")
+
+### Summary
+`electrochem_interactive_menu` and `operando_ec_interactive_menu` each ended in
+one enormous `while True:` key-dispatch loop (~1,660 and ~2,000 lines). Their
+control-flow graphs exceeded basedpyright's analysis limit, producing
+`Code is too complex to analyze; reduce complexity by refactoring into
+subroutines...`. Because basedpyright gives up on an over-complex function, it
+also suppressed every other diagnostic inside these functions.
+
+The largest dispatch branches were moved **verbatim** into nested handler
+functions so the menu loop now calls a handler instead of inlining hundreds of
+lines. No menu behaviour was changed.
+
+- `electrochem/interactive.py`: extracted branches `a`, `sm`, `2d` →
+  `_handle_key_a/_sm/_2d` (~1,100 lines moved out of the loop body).
+- `operando/interactive.py`: extracted branches `c`, `t`, `et`, `ex`, `ox` →
+  `_handle_op_c/_t/_et/_ex/_ox`.
+
+Both "too complex" warnings are now gone and basedpyright can analyze the files.
+
+### How the extraction preserved behaviour
+Each branch body was copied byte-for-byte into a nested function defined just
+before the loop (kept at the original indentation - a `def` at 4 spaces with a
+12-space body is valid Python, so multi-line strings were never disturbed).
+Only two mechanical changes were applied, both verified by AST analysis:
+- Outer-loop `continue` statements (identified by line number, so inner
+  for/while `continue`/`break` are untouched) became `return`.
+- A precise `nonlocal` declaration was added ONLY for variables that genuinely
+  carry state across the branch boundary (read outside the branch and bound at
+  menu scope). Pure per-branch temps stay local. Branches that define a
+  function used elsewhere (e.g. EC `t` defines `_apply_wasd`, used by
+  `restore_state`) were intentionally left inline to avoid breaking those
+  cross-scope references.
+
+### Regression safety net (new)
+Added `tests/test_interactive_menu_smoke.py`: keystroke-driven smoke tests that
+build a headless EC / operando figure, feed scripted keys through the menu's
+input function, enter every dispatch branch, and assert the loop runs and quits
+without error (a hard call-cap turns any runaway loop into a test failure rather
+than a hang). These passed identically before and after the extraction.
+
+### Note on newly visible warnings
+With the functions now analyzable, basedpyright surfaces pre-existing latent
+type issues that were previously masked (e.g. `cycle_lines` being `Optional`,
+`Optional[float]` getattr results). These are NOT regressions from this change;
+they pre-date it and were hidden by the "too complex" state.
+
+The clearly-safe, behaviour-preserving subset was then narrowed:
+- EC: `assert cycle_lines is not None` right after it is assigned from
+  `file_data[0]["cycle_lines"]` (the only None path already raises ValueError
+  earlier) — clears the `cycle_lines`-Optional warnings.
+- EC: `assert wasd is not None` at the top of the `_apply_wasd` /
+  `_sync_tick_state` closures (only invoked once `wasd` is a dict) — clears the
+  `wasd[...]` "not subscriptable" warnings (basedpyright does not flow-narrow
+  variables captured by a nested function).
+- `common/menus.py`: `run_axis_limit_menu`'s `auto_limits` parameter retyped
+  `Callable[[], None]` -> `Callable[[], Any]` (the return value is ignored;
+  callers legitimately pass tuple-returning lambdas).
+
+The remaining operando warnings were intentionally left: they involve genuine
+`Optional` arithmetic / optional-axis access (already defensively wrapped in
+`try/except`), where adding asserts could fire at runtime or mask real None
+cases - i.e. not "safe" narrowings.
+
+### Affected files
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `tests/test_interactive_menu_smoke.py` (new)
+
+### Verification
+- `pytest` full suite green; new smoke suite (46 tests) green.
+- basedpyright: the "Code is too complex to analyze" warning is gone from both
+  files; no new "is not defined" / control-flow regressions.
+
+---
+
+## 2026-06-06: Fix `reportGeneralTypeIssues` warnings in session round-trip tests
+
+### Summary
+The round-trip test files flagged many basedpyright warnings such as
+`"None" is not iterable` / `"yaxis" is not a known attribute of "None"`.
+These were static type-checker warnings only (the tests themselves passed at
+runtime); no plotting/menu logic is touched.
+
+### Root cause
+The `load_*_session` helpers (`load_ec_session`, `load_xy_session`,
+`load_cpc_session`, `load_operando_session`) return `None` on a failed/aborted
+load and a tuple on success, so their inferred return type is `Optional[...]`.
+The tests unpacked the result directly (e.g.
+`fig2, ax2, _meta = S.load_ec_session(p)`), and basedpyright correctly
+reported that `None` cannot be unpacked. A second, deeper warning was exposed
+once unpacking was narrowed: `load_operando_session` returns the EC axis as
+`Axes | None`, so accessing `ec_ax2.yaxis` / `ec_ax2.xaxis` / `ec_ax2._ions_abs`
+was flagged.
+
+### Solution
+- Added a small generic helper `loaded(result) -> T` to `tests/conftest.py`
+  that asserts the loader returned a non-`None` value and narrows the type
+  (`Optional[T] -> T`). It also fails loudly with a clear message if a load
+  ever returns `None`, instead of raising an opaque "cannot unpack" error.
+- Routed every direct loader unpack/index in `test_ec_roundtrip.py`,
+  `test_xy_roundtrip.py`, `test_operando_roundtrip.py`, and
+  `test_cpc_roundtrip.py` through `loaded(...)`. The pre-existing
+  `result = ...; assert result is not None` sites were left as-is (already
+  warning-free) except where consolidated for consistency.
+- Rewrote a brittle walrus-based unpack in `test_cpc_roundtrip.py` into a
+  plain `result = loaded(...)` + tuple unpack.
+- Added `assert ec_ax2 is not None` after each operando load (those tests
+  always build a figure that includes the EC axis), narrowing the optional
+  axis type.
+
+### Affected files
+- `tests/conftest.py` (new `loaded` helper)
+- `tests/test_ec_roundtrip.py`
+- `tests/test_xy_roundtrip.py`
+- `tests/test_operando_roundtrip.py`
+- `tests/test_cpc_roundtrip.py`
+
+### Verification
+- `python -m pytest tests/test_ec_roundtrip.py tests/test_xy_roundtrip.py
+  tests/test_operando_roundtrip.py tests/test_cpc_roundtrip.py` → all pass.
+- basedpyright reports no remaining warnings in `tests/`.
+- No production/source files changed; helper is test-only and OS-agnostic
+  (pure Python `typing`).
+
+---
+
+## 2026-06-06: Split `batplot.py` dispatcher — move per-mode logic into `plot_modes`
+
+### Summary
+`batplot/batplot.py` had grown to ~5,186 lines, dominated by a single
+~4,400-line `batplot_main()` that mixed CLI routing with the full inline
+implementation of every plotting mode. The mode bodies were extracted
+**verbatim** into dedicated modules so the dispatcher now only routes. No
+plotting/menu logic was changed — every moved block is byte-for-byte
+identical (only re-indented and wrapped in a handler function).
+
+`batplot/batplot.py`: **5,186 → 642 lines.** `batplot_main()` is now a thin
+router that delegates each route to a handler.
+
+### New modules (extracted code)
+- `batplot/ec_common.py` — shared electrochem helpers (`_resolve_mass`,
+  `_default_ec_figsize`, `_default_cpc_figsize`, `_apply_default_ec_layout`,
+  `_figsize_for_frame`, `_run_saved_dqdv_2d_companion`, and the EC default
+  layout/figsize constants). Placed in a neutral module so the per-mode
+  routing modules can import them without a circular dependency back to
+  `batplot.batplot`.
+- `batplot/plot_modes/electrochem/routing.py` — `handle_cv_mode`,
+  `handle_gc_mode`, `handle_dqdv_mode` (the `--cv` / `--gc` / `--dqdv` routes).
+- `batplot/plot_modes/cpc/routing.py` — `handle_cpc_mode` (`--cpc` / `--epc`).
+- `batplot/plot_modes/operando/routing.py` — `handle_operando_mode`
+  (`--operando`).
+- `batplot/plot_modes/session_routing.py` — `handle_session_reload` plus the
+  relocated `_load_session_dict_with_diagnostics` (the `batplot session.pkl`
+  reload path for all modes, including the legacy XY reconstruction fallback).
+- `batplot/plot_modes/xy/pipeline.py` — `run_xy_pipeline` (the default 1D XY
+  plotting pipeline, ~1,400 lines).
+
+### Backward compatibility preserved
+- `_handle_cv_mode` remains in `batplot.batplot` as a thin re-delegating
+  wrapper so `batplot.modes.handle_cv_mode` (and its `from .batplot import
+  _handle_cv_mode`) keeps working.
+- The EC default layout constants/functions are re-exported from
+  `batplot.batplot` (imported from `ec_common`) so existing references such as
+  `BP._EC_DEFAULT_LAYOUT` / `BP._default_ec_figsize` (used by
+  `tests/test_contracts.py`) continue to resolve.
+
+### Latent bug fixed during the move (dead legacy path)
+The legacy session-reconstruction fallback referenced
+`_ui_position_bottom_xlabel` / `_ui_position_left_ylabel`, which were **never
+imported** in `batplot.py` (only `position_top_xlabel` /
+`position_right_ylabel` were). That path would have raised `NameError` if ever
+reached. The new `session_routing.py` imports all four `position_*` helpers
+from `batplot.ui`, so the names now resolve. This only affects a path that
+previously always errored, so no working behaviour changed.
+
+### Verification
+- Added `tests/test_cli_smoke.py` (7 end-to-end route smoke tests on synthetic
+  data: XY single/stack, GC, dQ/dV, CPC, CV, operando) — headless (Agg), so
+  they run on Windows/macOS/Linux.
+- Each extraction was validated with an AST free-variable analysis (every name
+  used by a moved block is imported in its new module) plus the full pytest
+  suite after every step. Final: **153 passed** (146 prior + 7 smoke).
+- `tests/test_xy_roundtrip.py::test_cli_pkl_shortcut_preserves_full_untrimmed_data`
+  was updated to patch `interactive_menu` in `session_routing` (its new home).
+
+### Known pre-existing issue (fixed 2026-06-10)
+Reloading a saved XY session via `batplot session.pkl` previously failed to open
+the interactive menu because `load_xy_session()` returned `labels_list` instead
+of `labels` in `menu_kwargs`. See the 2026-06-10 `labels_list` entry above.
+
+---
+
+## 2026-06-06: Align interactive submodule naming + move operando plotting core into its package
+
+### Summary
+File names across the per-mode interactive subpackages had drifted apart, making
+it hard to trace which file backed which command, and the operando plotting core
+was the only mode whose implementation still lived as a top-level module
+(`batplot/operando.py`) instead of inside its `plot_modes` package. This change
+realigns the names and relocates the operando core. No plotting/menu logic was
+changed — only file moves/renames and the import paths that reference them.
+
+### Renames (file-only; public function names unchanged)
+- `batplot/plot_modes/xy/cif_menu.py` -> `xy/cif.py`
+- `batplot/plot_modes/xy/smoothing_menu.py` -> `xy/smoothing.py`
+- `batplot/plot_modes/electrochem/cycles.py` -> `electrochem/colors.py`
+  (aligns the `c`/colors menu name with the xy/cpc/operando modes)
+- `batplot/plot_modes/operando/ec_line.py` -> `operando/line_style.py`
+  (aligns with the `line_style.py` used by xy and electrochem)
+
+Importers updated: `xy/interactive.py`, `electrochem/interactive.py`,
+`electrochem/style.py`, `operando/interactive.py`, plus the test modules
+`tests/test_xy_modules.py`, `tests/test_ec_roundtrip.py`,
+`tests/test_operando_roundtrip.py`.
+
+### Move (hard move, no compatibility shim)
+- `batplot/operando.py` (the contour plotting core) -> `batplot/plot_modes/operando/plot.py`.
+- The moved file's own relative imports were deepened one level
+  (`from .converters` -> `from ...converters`, same for `readers`, `cif`, `utils`).
+- The five importers were repointed: `batplot.py`, `session.py`, and the operando
+  `interactive.py` / `actions.py` / `layout.py`.
+- Per request, no `batplot.operando` alias was added, so `import batplot.operando`
+  no longer resolves (external callers / old pickles referencing that path break
+  by design).
+
+### Bug fixed during the move: operando colorbar lost in non-interactive mode
+Moving the plotting core into the operando package put `plot.py` and `layout.py`
+into the same package-initialization import cycle (they import each other).
+As a result `plot.py`'s module-level `from .layout import _draw_custom_colorbar`
+ran while `layout` was only partially initialized and silently fell back to
+`None`, so `plot_operando_folder()` skipped drawing the colorbar in
+non-interactive mode (a regression vs. the old top-level module, where the helper
+resolved to the real function).
+
+**Fix:** resolve `_draw_custom_colorbar` lazily at its single call site inside
+`plot_operando_folder()` (`from .layout import _draw_custom_colorbar as _draw_cb`),
+keeping the module-level import only as a fallback. By the time the function runs,
+`layout` is fully loaded, so the colorbar is drawn again. This is import-order
+independent and therefore behaves identically on Windows/macOS/Linux.
+
+### Verification
+- `python -m compileall batplot tests` clean.
+- `rg` sweep confirmed no stale `cif_menu` / `smoothing_menu` / `.cycles import` /
+  `ec_line import` / `from .operando import` / `...operando import` references.
+- `npx pyright batplot tests`: 0 errors.
+- `python -m pytest --ignore=tests/test_dev_upgrade.py`: 143 passed.
+
+### Affected files
+- `batplot/plot_modes/xy/{cif.py, smoothing.py, interactive.py}`
+- `batplot/plot_modes/electrochem/{colors.py, interactive.py, style.py}`
+- `batplot/plot_modes/operando/{line_style.py, plot.py, interactive.py, actions.py, layout.py}`
+- `batplot/{batplot.py, session.py}`
+- `tests/{test_xy_modules.py, test_ec_roundtrip.py, test_operando_roundtrip.py}`
+
+---
+
+## 2026-06-06: Clear all static type-checker (pyright) errors across the package
+
+### Summary
+`batplot/plot_modes/xy/interactive.py` (and several other modules / tests) showed
+red type-checker errors in the editor. Across `batplot/` + `tests/` there were 25
+errors. None were runtime bugs — they were type-annotation mismatches and dynamic
+attribute access that pyright cannot prove safe — but they cluttered the editor.
+
+### Fix (no runtime behavior change)
+- `common/spines.py`: relaxed three tick-state signatures from
+  `MutableMapping[str, object]` / `MutableMapping[str, MutableMapping[str, Any]]`
+  to `MutableMapping[str, Any]`. The `object` value type made the mapping
+  invariant, so passing a `Dict[str, bool]` was rejected at every call site
+  (`sync_legacy_tick_keys`, `sync_tick_state_from_wasd`, `run_spine_tick_menu`).
+- `xy/interactive.py`: annotated the local `_line(i)` helper as `-> Any` (it can
+  return `None` as a defensive fallback, which produced ~16
+  "set_data is not a known attribute of None" warnings); switched two dynamic
+  module/`CIFState` attribute writes to `getattr(...)[:]` / `setattr(...)`.
+- `xy/cif_menu.py`: `setattr(_bp_module, 'cif_set_visible', ...)` instead of a
+  direct attribute assignment on a `ModuleType`.
+- `xy/colors.py`: `y_data_list` / `label_text_objects` parameters typed as
+  `List[Any]` (they are always passed lists) so the `update_labels` calls match.
+- `common/title_offsets.py`: `_as_float(value: Any)` so `float(value or 0.0)` is
+  accepted.
+- `session.py`: gave `load_ec_session` an explicit
+  `-> Optional[Tuple[Any, ...]]` return type (it legitimately returns a 3-tuple
+  for single-file sessions or a 4-tuple for multi-file), removing the
+  tuple-size-mismatch errors at its call sites.
+- `canvas_interactive.py`: unpack `load_ec_session` results by index instead of a
+  fixed-arity tuple assignment, matching the polymorphic return.
+- Tests (`test_contracts.py`, `test_ec_roundtrip.py`, `test_interactive_state.py`,
+  `test_xy_roundtrip.py`): guarded `module.__file__` / snapshot `None`, made a
+  `get_limits` lambda return a 2-tuple, and used `setattr` for `__main__`
+  module attributes used by the CIF style round-trip.
+
+### Bonus crash fix found during the audit
+`xy/interactive.py` `_nlines()` read `_lines_by_curve = getattr(fig,
+'_xy_lines_by_curve', None)` and then did
+`return len(_lines_by_curve) if _lines_by_curve is not None else _nlines()` — the
+`else` branch called *itself*, so whenever `_lines_by_curve` was `None` the helper
+recursed infinitely (`RecursionError`). Changed the fallback to `len(ax.lines)`,
+matching the sibling `_iter_lines()` helper. The common (non-None) path is
+unchanged.
+
+### Result
+`npx pyright batplot tests` → **0 errors** (was 25); remaining items are
+non-actionable warnings (matplotlib `Optional` member access on test figures and
+two "code too complex" notices). Full suite: 143 passed.
+
+### Affected Files
+- `batplot/plot_modes/common/{spines,title_offsets}.py`
+- `batplot/plot_modes/xy/{interactive,cif_menu,colors}.py`
+- `batplot/session.py`, `batplot/canvas_interactive.py`
+- `tests/{test_contracts,test_ec_roundtrip,test_interactive_state,test_xy_roundtrip}.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All edits are type annotations and `getattr`/`setattr`/index-access swaps with no
+platform-specific behavior, so they are identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-06: De-duplicate palette / range / CIF helpers into `plot_modes/common`
+
+### Summary
+After the per-mode interactive menus were split into submodules, several small but
+exactly-duplicated helpers were copied across modes (and within XY itself). The
+worst offenders were the 1-based index-range parser, the palette-alias resolver,
+the viridis-family palette option builder, and the colormap clip-sampling block —
+each present in 2–4 places with near-identical bodies. A bug fix in one copy would
+not propagate to the others.
+
+### Fix
+Added shared primitives and routed every duplicate through them, keeping the
+observable behavior identical (the mode-specific clip constants are passed in as
+parameters rather than hard-coded, so output colors are unchanged):
+
+- `plot_modes/common/palettes.py` (new):
+  - `parse_index_ranges(spec, total, warn_out_of_range=...)` — replaces XY
+    `_parse_ranges`, `_cif_parse_ranges`, and `_parse_palette_ranges`. The
+    `warn_out_of_range` flag preserves the one behavioral difference (curve/CIF
+    palette warned on an out-of-range single index; the XY CIF color path stayed
+    silent).
+  - `resolve_palette_token(token, palette_map)` — replaces XY `_resolve_pal_token`
+    / `_resolve_palette_token` and EC `_resolve_palette_alias` (now delegates).
+  - `build_xy_palette_options(ensure_colormap)` — replaces the duplicated
+    viridis-family + extras (turbo/batlowK/batlowW) list build in `xy/colors.py`
+    and `xy/cif_menu.py`.
+  - `sample_colormap(cmap, n, single=, pair=, span=)` — replaces the
+    `n==1 → 0.55 / n==2 → pair / else linspace(span)` block in `xy/colors.py`
+    (×2), `xy/cif_menu.py`, `cpc/colors.py` (`cpc_palette_color`), and the EC
+    per-cycle palette path. XY uses the default `(0.08, 0.85)` clips; CPC and EC
+    pass `pair=(0.15, 0.85), span=(0.08, 0.88)` to match their existing output.
+- `plot_modes/common/sources.py`: added `cif_present(args_files, series_getter)`
+  — replaces the `has_cif` detection copied in `xy/labels.py` and `xy/colors.py`.
+- `plot_modes/common/terminal.py`: added `prompt_float(safe_input, prompt, ...)`
+  — replaces the `_prompt_float` helper in `xy/line_style.py`.
+
+### Deliberately left alone
+- EC multi-file palette paths (`cycles.py` fall / per-file / file-palette) only
+  branch `n==1` vs `n>1` (no `n==2` special case), so routing them through
+  `sample_colormap` would *introduce* a new two-color case and change output.
+  They were left untouched.
+- The EC range tokenizers (`_expand_cycle_number_tokens`, etc.) use 1-based cycle
+  numbers and `f`/`fall` prefixes, so they are not drop-in compatible with
+  `parse_index_ranges` and were left as-is.
+- `resolve_color_token` / `color_block` were already centralized in
+  `color_utils`; only the surrounding menu listing loops differ per mode.
+
+### Result
+Removed ~6 near-identical helper bodies across XY and unified the palette-sampling
+and alias logic with CPC/EC. Added `tests/test_common_palettes.py` (17 tests)
+pinning the extracted behavior, including the warn-flag parity and the CPC/EC clip
+constants. Full suite: 143 passed (excluding an unrelated in-progress
+`test_dev_upgrade.py`). No new pyright errors versus the pre-change baseline.
+
+### Affected Files
+- `batplot/plot_modes/common/palettes.py` (new)
+- `batplot/plot_modes/common/sources.py`
+- `batplot/plot_modes/common/terminal.py`
+- `batplot/plot_modes/xy/{colors,cif_menu,labels,line_style}.py`
+- `batplot/plot_modes/cpc/colors.py`
+- `batplot/plot_modes/electrochem/cycles.py`
+- `tests/test_common_palettes.py` (new)
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes are pure-Python helper consolidation around existing matplotlib and
+string parsing. No platform-specific filesystem, shell, or GUI APIs were added, so
+behavior is identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-06: Split the XY interactive menu into per-command modules (taxonomy alignment)
+
+### Summary
+`batplot/plot_modes/xy/interactive.py` was by far the largest dispatcher in the project (~5285 lines) and the least aligned with the split pattern already established for `cpc`, `electrochem`, and `operando`. Almost the entire XY menu (CIF ticks, colors, rename, rearrange, X/Y range, derivative, line styles, smoothing/data-reduction, peak finder, the hidden game, and menu printing) lived inline in one function, so a fix in one mode did not naturally carry over and the file was hard to maintain.
+
+### Fix
+Extracted self-contained XY command bodies into single-purpose modules that mirror the naming taxonomy used by the other modes (`menu.py`, `colors.py`, `labels.py`, `line_style.py`, plus domain modules). Each extracted submenu is a `run_*` helper that receives injected callbacks (`safe_input`, `colorize_*`, `push_state`, line accessors, axis-title positioners, CIF bridge callbacks, data-lifecycle callbacks) so undo, session save/load, style export/import, and CIF redraw behavior are byte-for-byte unchanged:
+
+- `xy/game.py` — hidden terminal mini-game (`play_jump_game`), no plot state.
+- `xy/peaks.py` — peak-finder submenu (`v`), read-only analysis + text export.
+- `xy/data_ops.py` — pure FFT / adjacent-average / derivative kernels.
+- `xy/line_style.py` — line/marker/width/grid submenu (`l`).
+- `xy/labels.py` — rename submenu (`r`) for curve / CIF phase / axis labels.
+- `xy/colors.py` — colors submenu (`c`) incl. palettes, spine colors, and CIF color sub-submenu.
+- `xy/menu.py` — top-level menu column printing (`print_xy_menu`).
+- `xy/arrange.py` — curve rearrange submenu (`a`).
+- `xy/axis_range.py` — X (`x`) and Y (`y`) range submenus.
+- `xy/derivative.py` — derivative submenu (`d`).
+- `xy/smoothing_menu.py` — smoothing & data-reduction submenu (`sm`).
+- `xy/cif_menu.py` — CIF ticks submenu (`cif`/`z`/`j`).
+
+Large blocks were relocated by a verbatim de-indent (no logic edits); only the dispatcher's outer-loop `continue` statements inside the CIF body were converted to `return` since they now sit in a function rather than the menu loop. Stale imports left behind in `interactive.py` were removed after confirming (via AST analysis) they had zero remaining references.
+
+### Deliberately left inline
+- The offset submenu (`o`) was kept in `interactive.py`. It rebinds the local `delta`, which is read live by the dispatcher's `push_state` closure for undo snapshots; extracting it to a function would capture a stale `delta` across repeated offset changes within one session, so it was left in place to avoid an undo regression.
+- The undo core (`push_state`/`restore_state`) and the `XyActionContext` builder remain in `interactive.py` because they own all live state.
+
+### Result
+`xy/interactive.py` went from ~5285 to ~2427 lines (now the smallest of the four dispatchers) with no behavior change. Added `tests/test_xy_modules.py` covering the numeric helpers, the game, the peak finder, the module API contracts, and a guard that the dispatcher still delegates every command to its module. Full suite: 129 passed.
+
+### Affected Files
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/xy/{game,peaks,data_ops,line_style,labels,colors,menu,arrange,axis_range,derivative,smoothing_menu,cif_menu}.py` (new)
+- `tests/test_xy_modules.py` (new)
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes are pure Python module extractions around existing matplotlib and JSON/pickle-compatible helpers. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-06: Split EC style snapshots and dQ/dV 2D helpers out of interactive menu
+
+### Summary
+`batplot/plot_modes/electrochem/interactive.py` was still too large after the first EC extraction pass because style/session snapshot helpers and dQ/dV 2D companion-figure helpers remained inline with the menu dispatcher. This made EC harder to maintain and left it less aligned with the CPC and operando split pattern.
+
+### Fix
+- Moved EC geometry/style snapshot, cycle-style application, style summary printing, and style export dialog helpers into `batplot/plot_modes/electrochem/style.py`.
+- Moved dQ/dV 2D contour stack building, companion figure binding, potential-window refresh, snapshot creation, and companion restoration helpers into `batplot/plot_modes/electrochem/dqdv_2d.py`.
+- Kept compatibility imports in `batplot/plot_modes/electrochem/interactive.py` so existing tests and callers that reference the old helper names continue to work.
+- Removed stale imports from `interactive.py` that were only needed by the moved helpers.
+
+### Affected Files
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/plot_modes/electrochem/dqdv_2d.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes are pure Python module extractions around existing matplotlib and JSON/pickle-compatible state helpers. No platform-specific filesystem, shell, or GUI APIs were added, so behavior remains the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-05: Split EC line, rename, legend, cycle, spine-color, and export helpers out of interactive menu
+
+### Summary
+`batplot/plot_modes/electrochem/interactive.py` had grown past 5700 lines because several self-contained command bodies and helper routines still lived directly inside the dispatcher. This made EC menu maintenance harder and increased the chance of unrelated changes affecting existing GC/CV/dQ/dV behavior.
+
+### Fix
+- Moved the `l` line/frame/grid/marker submenu into `batplot/plot_modes/electrochem/line_style.py`, preserving curve linewidth storage, frame/tick widths, grid toggling, marker modes, legend rebuilds, and dQ/dV smoothing reapplication callbacks.
+- Moved the `r` rename submenu into `batplot/plot_modes/electrochem/labels.py`, preserving axis label storage, file display names, legend label updates, and top/right duplicate label positioning callbacks.
+- Moved the `k` spine-color submenu into `batplot/plot_modes/electrochem/spine_colors.py`, preserving saved-color reuse, dual-x-axis top/bottom behavior, and tick/label color matching.
+- Moved the `ra` multi-file legend order submenu into `batplot/plot_modes/electrochem/legend_order.py`.
+- Moved the `c` cycles/colors submenu into `batplot/plot_modes/electrochem/cycles.py`, preserving manual cycle colors, palette modes, multi-file file/cycle syntax, display-mode reapplication, dQ/dV smoothing reapplication, and legend/tick redraw callbacks.
+- Moved EC cycle iteration, visibility/color application, and parser helpers (`fall`, `f1-5`, per-file cycles, ranges, and compact cycle formatting) into `batplot/plot_modes/electrochem/cycles.py` while keeping compatibility imports in `interactive.py`.
+- Moved EC legend rebuild, legend title/preference storage, file-display-name legend application, absolute-position sanitizing, and no-frame legend rendering into `batplot/plot_modes/electrochem/legend.py`.
+- Moved the EC plot-window savefig helper into `batplot/plot_modes/electrochem/export.py`.
+- Added focused tests for the extracted line-style, rename, spine-color, legend-order, cycles parser, and legend helpers.
+- Left high-risk style/session import/export, dQ/dV 2D companion figure logic, and capacity/ion axis conversion in place for now because those paths own compatibility-sensitive state.
+
+### Affected Files
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/electrochem/line_style.py`
+- `batplot/plot_modes/electrochem/labels.py`
+- `batplot/plot_modes/electrochem/spine_colors.py`
+- `batplot/plot_modes/electrochem/legend.py`
+- `batplot/plot_modes/electrochem/legend_order.py`
+- `batplot/plot_modes/electrochem/cycles.py`
+- `batplot/plot_modes/electrochem/export.py`
+- `tests/test_ec_roundtrip.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes use pure Python and matplotlib helper code only. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Remove stale undefined resize-frame calculation
+
+### Summary
+Static analysis found that the shared plot-frame resize helper referenced an undefined `sp` variable after applying a new axes position. The calculated values were not used, but the stale reference could still confuse static analysis and future maintenance.
+
+### Fix
+- Removed the unused `final_w_in` and `final_h_in` calculation from `batplot/ui.py`.
+- Kept the applied frame geometry and printed user-facing size message unchanged.
+
+### Affected Files
+- `batplot/ui.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+This is a pure Python cleanup in shared matplotlib layout code and has the same behavior on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Split operando command helpers out of interactive menu
+
+### Summary
+`batplot/plot_modes/operando/interactive.py` had grown into a large dispatcher that still owned several self-contained submenu implementations. Keeping colormap selection, axis renaming, visibility/colorbar controls, peak search, EC grid styling, and EC line styling inline made operando fixes harder to review and increased the chance of touching unrelated commands.
+
+### Fix
+- Moved operando colormap registration, numeric/reversed palette resolution, application, and the `oc` submenu into `batplot/plot_modes/operando/colors.py`.
+- Moved operando and EC side-panel axis rename submenus into `batplot/plot_modes/operando/labels.py`, preserving custom-label storage and duplicate top/right title refreshes.
+- Moved visibility/colorbar toggles, label mode/text changes, and horizontal offset controls into `batplot/plot_modes/operando/visibility.py`, preserving the existing stored colorbar and EC offset attributes.
+- Moved peak-search data extraction, refined peak detection, text export, and the `pk` submenu into `batplot/plot_modes/operando/peaks.py`.
+- Moved the EC grid submenu into `batplot/plot_modes/operando/grid.py` while preserving the existing `_ec_grid` state keys used by style/session persistence.
+- Moved the EC line color/width submenu into `batplot/plot_modes/operando/ec_line.py`, preserving saved-color lookup and line-width behavior.
+- Added focused operando tests for the extracted colormap, rename, visibility/colorbar, peak-search, grid, and EC line helpers.
+- Left high-risk style/session import/export and dQ/dV 2D session paths in place for now because they own `.bps`, `.bpsg`, and `.pkl` compatibility.
+
+### Affected Files
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/operando/colors.py`
+- `batplot/plot_modes/operando/labels.py`
+- `batplot/plot_modes/operando/visibility.py`
+- `batplot/plot_modes/operando/peaks.py`
+- `batplot/plot_modes/operando/grid.py`
+- `batplot/plot_modes/operando/ec_line.py`
+- `tests/test_operando_roundtrip.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes use pure Python and matplotlib helper code only. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Split CPC legend, color, and rename helpers out of interactive menu
+
+### Summary
+`batplot/plot_modes/cpc/interactive.py` still contained large CPC-specific helper blocks for legend rebuilding, color/palette handling, and file/axis renaming. Keeping all of that inside the menu dispatcher made future CPC fixes harder to isolate and increased the chance of changing unrelated menu behavior.
+
+### Fix
+- Moved CPC legend orchestration helpers into `batplot/plot_modes/cpc/legend.py`, including compact multi-file legend building, legend title lookup, legend offset sanitizing, legend rebuilds, and legend text-color reapplication.
+- Extracted CPC palette/color parsing and application into `batplot/plot_modes/cpc/colors.py`, preserving charge/discharge paired colors, efficiency colors, saved user colors, file ranges, and all-files palette commands.
+- Extracted CPC file-label and axis-title rename behavior into `batplot/plot_modes/cpc/labels.py`, preserving `Chg`/`DChg`/`Eff` bracket handling and stored title updates.
+- Kept compatibility imports in `cpc/interactive.py` for helper names used by existing callers and tests.
+- Added focused CPC action-handler tests for style export (`p`), style import (`i`), session save (`s`), and undo routing (`b`).
+- Left `_style_snapshot` and `_apply_style` in `cpc/interactive.py` for now because that path owns `.bps`, `.bpsg`, and `.pkl` compatibility and needs a separate higher-risk extraction pass.
+
+### Affected Files
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/cpc/legend.py`
+- `batplot/plot_modes/cpc/colors.py`
+- `batplot/plot_modes/cpc/labels.py`
+- `tests/test_cpc_roundtrip.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes use pure Python and matplotlib helper code only. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Fix CPC quick-overwrite command context
+
+### Summary
+The CPC interactive quick-overwrite commands (`oe`, `os`, `ops`, and `opsg`) were routed to action handlers with a stale variable name. Entering one of those commands could raise a `NameError` instead of overwriting the previous figure, session, or style export.
+
+### Fix
+- Updated the CPC quick-overwrite branches to pass the active `action_ctx` object created for the current menu loop.
+- Tightened the action-handler contract test so CPC quick-overwrite routes must use the same context variable that the menu constructs.
+
+### Affected Files
+- `batplot/plot_modes/cpc/interactive.py`
+- `tests/test_contracts.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+The fix is pure Python dispatch wiring and does not use platform-specific APIs, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Shared EC/CPC legend and font application helpers
+
+### Summary
+EC and CPC still had duplicated legend-position submenu loops and repeated font-application code. That duplication made future legend or font fixes easy to apply in one mode while missing the other.
+
+### Fix
+- Extracted the shared EC/CPC legend toggle and position prompt loop into `run_legend_position_menu`, including WASD nudges, direct `x/y` entry, reset, and current-position derivation from an existing legend.
+- Kept EC and CPC legend rebuild/apply behavior mode-local through callbacks so existing legend contents, visibility rules, and stored position attributes are preserved.
+- Added shared font helpers for matplotlib rc defaults, common axis/tick/title artists, legends, extra text artists, and secondary x-axis text.
+- Wired EC and CPC font menus through the shared helpers while preserving EC mathtext behavior and CPC's sans-serif font stack.
+- Added focused tests for the shared legend menu and font artist helpers.
+
+### Affected Files
+- `batplot/plot_modes/common/menus.py`
+- `batplot/plot_modes/common/fonts.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `tests/test_interactive_state.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes use matplotlib and pure Python callback/helper code only. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Shared spine, tick-display, and frame-width command logic across modes
+
+### Summary
+The interactive modes still had mode-local implementations for some common visual commands. A tick-display problem in one mode could be fixed locally while similar left/right tick behavior in another mode stayed vulnerable.
+
+### Fix
+- Fixed the shared WASD tick-display helper so left and right y-axis tick/label visibility is applied together instead of one side overwriting the other.
+- Wired EC, CPC, and operando `t` menu tick/spine display paths through the shared helper while preserving each mode's axis ownership rules.
+- Added shared frame/tick-width helpers for the `l -> f` line submenu and wired XY, EC, CPC, and operando through them.
+- Kept existing shared font menu behavior in place and added tests around the new shared tick/width helpers so future fixes apply across modes.
+- Preserved existing persistence schema keys; `p`, `i`, `s`, and `b` continue to store/restore the same `wasd_state`, tick width, frame width, and session/style fields.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `tests/test_interactive_state.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes use matplotlib and pure Python helper code only. No platform-specific filesystem, shell, or GUI APIs were added, so behavior is the same on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-04: Clear session.py optional-object static analysis warnings
+
+### Summary
+`session.py` had Pyright/Pylance warnings where restored matplotlib objects were known to exist at runtime, but static analysis could still see optional values. This affected session loader code around embedded EC sessions, restored ions-mode formatters, CPC WASD state capture, and the large legacy XY loader.
+
+### Fix
+- Added an explicit non-`None` assertion for embedded EC session figures before accessing figure attributes such as `get_size_inches`, `transFigure`, and `canvas`.
+- Converted restored EC ions arrays to local non-optional numpy aliases before using them inside the nested tick formatter.
+- Narrowed CPC WASD state to a concrete dictionary before nested helper access.
+- Switched dQ/dV companion bundle restore to `setattr` to avoid optional dynamic-attribute confusion.
+- Added a local Pyright ignore only for the known complexity warning on the large legacy `load_xy_session` function; optional-object diagnostics remain enabled.
+
+### Affected Files
+- `batplot/session.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Static-analysis-only cleanup and pure Python guards; no OS-specific behavior changed.
+
+---
+
+## 2026-06-04: Structural guards for overwrite commands, dispatcher routes, and axis state capture
+
+### Summary
+Follow-up structural work reduced duplication in high-risk command paths without changing user-facing menu behavior or serialized schema keys.
+
+### Fix
+- Moved EC, CPC, and operando quick overwrite commands (`oe`, `os`, `ops`, `opsg`) into their mode action modules so they share the same export/session/style helpers as normal `e`, `s`, and `p` commands.
+- Added contract tests so quick overwrite commands stay action-routed and style overwrites keep using the canonical `.bps/.bpsg` builders.
+- Extracted low-risk CLI convert, canvas, and session-header diagnostics from `batplot_main()` into helper functions.
+- Added menu command-key helpers and parity tests to catch printed commands that are not handled by the interactive dispatch loop.
+- Added shared axis visual-state capture helpers and wired them into style/session capture while preserving existing `wasd_state`, spine, and tick-width schema keys.
+
+### Affected Files
+- `batplot/batplot.py`
+- `batplot/session.py`
+- `batplot/style.py`
+- `batplot/plot_modes/common/axis_state.py`
+- `batplot/plot_modes/common/menu_rendering.py`
+- `batplot/plot_modes/electrochem/actions.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/electrochem/menu.py`
+- `batplot/plot_modes/cpc/actions.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/cpc/menu.py`
+- `batplot/plot_modes/operando/actions.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/operando/menu.py`
+- `tests/test_contracts.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+All changes are pure Python and matplotlib state handling. No OS-specific paths, shell commands, or platform-only APIs were added, so behavior remains consistent on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-03: Operando EC side-panel `a2` tick toggle was undone by right-label positioning
+
+### Summary
+In the operando contour menu, choosing `t` then the EC side panel and entering `a2` did not hide the EC right-side major tick marks. The command toggled the state, but the ticks appeared again immediately.
+
+### Root Cause
+The EC side panel aliases left-side y commands to its actual right y-axis. After applying the WASD tick state, several operando EC paths called `yaxis.tick_right()` just to keep the EC ylabel on the right. Matplotlib's `tick_right()` also changes tick/tick-label visibility, so it could re-enable right ticks after `a2` turned them off. Session load had a related issue: explicit saved right tick/label values could be overridden when the right title was on.
+
+### Solution
+- Added `keep_yaxis_label_on_side(...)` in `common/spines.py` to move a y-axis label without touching tick or tick-label visibility.
+- Replaced post-state `tick_right()` calls in operando interactive and style-import paths with the label-only helper.
+- Updated operando session dumping to capture actual displayed major tick/tick-label visibility before falling back to cached tick state.
+- Updated operando session loading to preserve explicit saved EC right tick/label values independently from the right title flag.
+- Updated operando style export to capture actual displayed EC major tick/tick-label visibility, so `p` exports do not write stale `t` menu state when `_saved_tick_state` drifts.
+- Added regression tests proving label positioning does not alter tick visibility, `p`/`i` style round-trips preserve EC tick state, `s` session round-trips preserve explicit EC right ticks off, and `b` undo restores the pre-toggle EC tick state.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/operando/actions.py`
+- `batplot/plot_modes/operando/style.py`
+- `batplot/session.py`
+- `tests/test_interactive_state.py`
+- `tests/test_operando_roundtrip.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Pure Python/matplotlib axis state handling; no OS-specific behavior. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-03–04: Multi-round `p/i/s/b` persistence audit (XY, EC, CPC, operando)
+
+### Summary
+Four sequential command-by-command audits checked whether interactive menu
+edits survive **p** (style export), **i** (style import), **s** (session save),
+and **b** (undo). Each round found additional state stored in matplotlib
+artists or figure attributes that serializers had not yet captured.
+
+### Round 1 (2026-06-03)
+- Added tick-length persistence (`fig._tick_lengths`) to EC/CPC/operando
+  sessions and EC/operando style export/import; operando keeps separate contour
+  vs EC-panel lengths.
+- Added EC `display_mode` to style export/import.
+
+### Round 2 (2026-06-03 follow-up)
+- CPC: multi-file visibility, twin-axis spine visibility, tick direction in sessions.
+- XY: title offsets in sessions; bottom/left title and curve-name visibility in undo.
+- EC: marker shape/size/colors in sessions; exact axes bbox in undo.
+- Operando: tick direction/locator state in style; colorbar label/mode and full
+  spine specs in undo.
+
+### Round 3 (2026-06-04)
+- dQ/dV 2D contour: extended snapshots for labels, spines, ticks, fonts, colorbar.
+- CPC sessions: apply saved exact axes bbox on load instead of margin reconstruction.
+
+### Round 4 (2026-06-04 final)
+- CPC: hidden legends after rebuild, duplicate top-X title, auto spine-color mode.
+- Operando: all `t` title flags, CIF rename labels, tick direction, colorbar label
+  mode, EC ions-mode limits/guides.
+- XY: curve rename labels, CIF per-set visibility, canvas size from `g→c` undo.
+- EC: complete per-line styles, multi-file visibility, dual top-axis, dQ/dV smooth
+  metadata, ions-only capacity guard.
+- Added focused regression tests for each restored path.
+
+### Affected files (representative)
+- `batplot/session.py`, `batplot/style.py`
+- `batplot/plot_modes/{xy,electrochem,cpc,operando}/interactive.py`
+- `batplot/plot_modes/{electrochem,operando}/actions.py`, `operando/style.py`
+- `tests/test_{xy,ec,cpc,operando}_roundtrip.py`
+
+### Cross-platform
+Pure Python/matplotlib state serialization; identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-03: Minor tick toggles in the shared `t` menu could nudge unrelated axis titles
+
+### Summary
+Using minor-tick commands such as `a3` in the interactive `t` spine/tick menu could make unrelated axis titles, including the bottom title in operando EC side-panel mode, move slightly even though no title or label command was requested.
+
+### Root Cause
+The shared `run_spine_tick_menu(...)` tracked which sides needed title repositioning in `changed_sides`. For spine/tick/minor-only commands this set is intentionally empty. The runner incorrectly converted an empty set to `None` before calling each mode's `apply_wasd(...)`; in all plot modes, `None` means "full refresh/reposition all sides." As a result, a minor-tick command like `a3` could trigger bottom/top/left/right title positioning helpers and cause visible title drift.
+
+### Solution
+- Preserved the empty `changed_sides` set when dispatching from the shared `t` menu runner.
+- Kept `None` reserved for explicit full-refresh calls inside mode-specific code.
+- Added regression tests proving normal tick toggles and minor tick toggles call `apply_wasd(set())`, so no title-position helpers run for those commands.
+- Added command-contract coverage for every modern `w/a/s/d` + `1-5` toggle, legacy alias, combined tick/label alias, non-toggle command, and side-alias path used by the operando EC pane.
+- Centralized title-position dispatch in `common/spines.py` so XY, EC, CPC, operando, and future modes can use the same `None` vs empty-set behavior instead of reimplementing side checks locally.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `tests/test_interactive_state.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Pure Python command dispatch and matplotlib state handling; no OS-specific behavior. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-03: Operando EC side-panel `t` menu moved the right y-axis title when left-side commands were pressed
+
+### Summary
+In the operando contour menu, choosing `t` then the EC side panel and repeatedly entering left-side commands such as `a4` could move the EC y-axis title between left and right instead of keeping the EC title fixed on the right side.
+
+### Root Cause
+The EC side panel uses matplotlib's actual y-axis label on the right, not a duplicated right-side title artist. The shared spine/tick menu still allowed left-side y commands through, and the operando EC branch ignored left tick changes but still called the left-ylabel positioning helper on `ec_ax`. Restore/import and EC rename paths had similar calls that could also reposition the EC ylabel incorrectly.
+
+### Solution
+- Added side-alias support to the shared `run_spine_tick_menu(...)` parser.
+- Mapped left-side y commands to the right side only for the operando EC pane, so `a4`/`a5` and legacy left aliases operate on the actual right-side EC axis instead of touching a nonexistent left EC y-axis.
+- Prevented `ec_ax` from being passed to left/right duplicate-title positioning helpers in live menu, restore/import, and rename paths.
+- Kept the EC ylabel on the right with label-positioning only, while hiding stale duplicate right-title artists.
+- Added focused regression coverage for side aliases in the shared spine/tick parser.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/operando/actions.py`
+- `tests/test_interactive_state.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Pure Python command parsing and matplotlib axis-label positioning; no OS-specific behavior. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-03: Operando and CPC interactive menus referenced undefined callbacks after menu refactoring
+
+### Summary
+The operando contour menu could crash with `Interactive menu failed: name '_title_offset_menu' is not defined` when opening the shared `t` spine/tick menu for the EC side panel. A follow-up undefined-name scan found related latent CPC/operando references that were hidden by broad exception handlers or only triggered on specific menu paths.
+
+### Root Cause
+The shared `t` menu extraction wired `title_offset_handler=_title_offset_menu` into operando and CPC even though those modes did not define that callback locally. CPC style/legend restoration also referenced helpers that existed only inside the interactive menu scope, and operando rename/range code referenced renamed helpers without importing or calling their current names.
+
+### Solution
+- Removed the missing title-offset callback wiring from operando and CPC shared `t` menu calls.
+- Added a module-level CPC legend-offset sanitizer for module-level legend rebuild/style import paths.
+- Added local CPC style-application helpers for legend repositioning, spine colors, and tick-state restoration.
+- Imported the operando CIF redraw helper and IMK warning filter, and corrected operando rename reposition calls to use the current UI helper signatures.
+- Added a regression test that prevents wiring `_title_offset_menu` unless the mode defines it.
+
+### Affected Files
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `tests/test_contracts.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Pure Python menu dispatch and matplotlib state handling; no OS-specific behavior. The IMK warning filter is only active where the existing macOS-specific warning can appear and is a no-op for Windows and Linux behavior.
+
+---
+
+## 2026-06-02: GitHub Actions workflow failed to resolve external actions
+
+### Summary
+The test workflow reported `Unable to resolve action actions/checkout@v4.2.2` on the repository checkout step, preventing the CI definition from validating cleanly.
+
+### Root Cause
+The workflow depended on remote `actions/*` references for checkout and Python setup. In environments where those GitHub-hosted actions cannot be resolved by the validator or runner, the workflow fails before tests can start.
+
+### Solution
+- Replaced `actions/checkout` with a PowerShell `git` checkout step that works for push, pull request, and manual runs.
+- Replaced `actions/setup-python` with a PowerShell toolcache lookup for the matrix Python version.
+- Left the existing Python version and operating-system matrix unchanged.
+
+### Affected Files
+- `.github/workflows/tests.yml`
+- `BUGFIXES.md`
+
+### Cross-platform
+The replacement steps use `pwsh`, `git`, and GitHub-hosted runner toolcache paths with explicit Windows, macOS, and Linux handling.
+
+---
+
+## 2026-06-02: Shared spine/tick helper showed IDE type errors after menu extraction
+
+### Summary
+After centralizing the interactive `t` spine/tick menu in `batplot/plot_modes/common/spines.py`, IDE/static-analysis diagnostics could show many errors in that file even though the code compiled and the runtime tests passed.
+
+### Root Cause
+The shared helper accepted dynamic matplotlib figure/axis objects as plain `object` and directly read private matplotlib locator internals (`_edge`, `_ndivs`) for display text. Matplotlib axes also carry app-specific runtime attributes such as `_tick_lengths`, so strict IDE analysis could not infer those members safely.
+
+### Solution
+- Marked dynamic matplotlib figure/axis boundaries as `Any` in the shared helper signatures.
+- Replaced direct private locator attribute access with guarded `getattr(...)` reads.
+- Kept the command behavior unchanged and verified the focused spine/tick tests.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `BUGFIXES.md`
+
+### Cross-platform
+Pure Python typing/attribute-access cleanup; no OS-specific behavior. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-02: Shared `t` menu kept current controls but dropped legacy XY aliases
+
+### Summary
+After moving the interactive `t` spine/tick menu loop into the shared plot-mode runner, the advertised commands (`i`, `l`, `n`, `m`, `p`, `list`, `q`, and `w/a/s/d+1-5`) were present, including major tick increment (`n`) and minor tick interval/count (`m`). However, older XY-style command aliases such as `btcs`, `blb`, `bx`, `mbx`, and `rt` were no longer accepted by the new shared runner.
+
+### Root Cause
+The shared runner initially implemented only the newer WASD command grammar. The older XY menu had accepted additional internal/legacy codes for spine, tick, label, minor-tick, combined tick+label, and title toggles.
+
+### Solution
+- Added legacy alias support to the common `run_spine_tick_menu(...)` path so all modes can accept the old codes without duplicating menu loops again.
+- Added focused tests for legacy aliases and for the `n`/`m` major/minor interval submenus.
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `tests/test_interactive_state.py`
+
+### Cross-platform
+Pure Python command dispatch and matplotlib tick-locator state; no OS-specific paths. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-01: CPC undo (`b`) did not restore axis labels or limits
+
+### Summary
+In CPC interactive mode, undo used the style snapshot path only. This restored marker/legend/style fields, but not geometry edits such as `x`, `y`, or axis renames from `r`. As a result, changing CPC axis limits or titles and pressing `b` did not return the plot to the previous geometry state.
+
+### Root Cause
+`push_state()` inside `cpc_interactive_menu` captured `_style_snapshot(...)` plus tick visibility, but did not include `_get_geometry_snapshot(ax, ax2)`. The restore path called `_apply_style(...)`, which intentionally handles style fields and not axis label/limit geometry.
+
+### Solution
+- Extracted CPC undo capture/restore into module-level helpers (`push_cpc_state`, `restore_cpc_state`) while keeping the nested menu wrappers intact.
+- Added geometry capture to the undo snapshot and a focused geometry restore helper for CPC axis labels and limits.
+- Added a regression test proving CPC undo restores left/right labels, x/y limits, and tick-state visibility.
+
+### Affected Files
+- `batplot/cpc_interactive.py`
+- `tests/test_cpc_roundtrip.py`
+
+### Cross-platform
+Pure matplotlib state restoration and Python dict serialization; no OS-specific paths. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-01: Operando undo (`b`) after `oy` hid the EC right-axis ticks & labels
+
+### Summary
+In operando (operando + EC panel) mode, after changing the contour Y range with `oy` and then pressing `b` (undo), the EC side panel's right y-axis ticks and tick labels disappeared, even though `oy` only changes the operando contour limits.
+
+### Root Cause
+The undo snapshot (`_snapshot`) captured the EC panel's right-side tick/label visibility from `ec_ax._saved_tick_state` (`r_ticks`/`r_labels`, falling back to `ry`). The EC y-axis is the panel's *primary* axis and is always drawn on the right, but `load_operando_session` populated `_saved_tick_state` from the raw saved WASD dict with a **False** default (`s.get('ticks', False)`), while the same load actually *applied* the ticks **on** (it forces `right_ticks=True` whenever the right title is shown). So `_saved_tick_state` said "right ticks off" while the display showed them on; the snapshot recorded "off," and undo faithfully turned them off. The operando pane's bottom/left sides (also primary, default-on) had the same latent mismatch.
+
+### Solution
+1. `_snapshot` now captures the EC right ticks/labels from the **actual displayed** visibility (`tick2line`/`label2` of the major ticks) instead of the drift-prone `_saved_tick_state`, so undo always reproduces what is on screen.
+2. `load_operando_session` now writes `_saved_tick_state` using the **resolved** values it actually applied: EC `r_ticks`/`r_labels`/`l_ticks`/`l_labels`, and operando `b_*`/`l_*` with the same default-on behaviour as the corresponding `tick_params` calls. This keeps `_saved_tick_state` consistent for every consumer (undo, title positioning, re-save).
+
+### Affected Files
+- `batplot/operando_ec_interactive.py` (snapshot reads real EC right visibility)
+- `batplot/session.py` (load stores resolved/applied tick state for EC + operando)
+
+### Cross-platform
+Pure matplotlib tick-visibility reads and dict bookkeeping; no OS-specific paths. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-01: p/i/s/b parity — XY tick spacing lost on reload; EC/CPC style-overwrite (ops/opsg) dropped/corrupted geometry
+
+### Summary
+Audit of how `p` (export style), `i` (import style), `s` (save session) and `b` (undo) reflect user edits in active vs. saved sessions. Three isolated, verified defects were fixed:
+1. **1D XY save/load lost custom tick spacing & minor-tick count.** Setting tick increment/minor count via `t → n` / `t → m`, then saving (`s`) and reloading the `.pkl`, reverted ticks to matplotlib defaults.
+2. **EC `opsg` (overwrite last style+geometry) wrote geometry under the wrong key.** Overwriting a `.bpsg` via `opsg` stored geometry as `axes_geometry`, but the importer reads `geometry`, so the geometry block was silently ignored on import.
+3. **CPC `ops`/`opsg` (overwrite last style) called the snapshot helpers with wrong arguments.** `_style_snapshot` was called with the wrong signature and `_get_geometry_snapshot(fig, ax)` instead of `(ax, ax2)`, plus the same wrong `axes_geometry` key — so overwrite could crash or emit a corrupt/un-importable style file.
+
+### Root Cause
+1. `dump_session` saved `tick_locator_state` (line ~617), but `load_xy_session` never called `_restore_session_tick_locator`. The operando/EC/CPC loaders all restore it; only the XY loader omitted the call.
+2. The EC `opsg` overwrite branch used `cfg['axes_geometry']`, diverging from the normal `p` export (which uses `cfg['geometry']`) and from the importer (`cfg.get('geometry')`).
+3. The CPC `ops`/`opsg` overwrite branch was written against an outdated `_style_snapshot` signature (`fig, ax, file_data, is_multi_file, current_file_idx, tick_state`) instead of the actual `(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)`, and also used the wrong geometry function args and the wrong `axes_geometry` key.
+
+### Solution
+- Added `_restore_session_tick_locator(ax, sess.get('tick_locator_state'))` in `load_xy_session`, after the WASD block so it does not get overridden by minor-visibility toggling. Custom tick spacing/minor count now survive save+load like the other plot types.
+- EC `opsg` now writes `cfg['geometry']` (matching the normal export and the importer).
+- CPC `ops`/`opsg` now mirror the normal `p` export exactly: `_style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)`, `_get_geometry_snapshot(ax, ax2)`, and the `geometry` key.
+
+### Verified separately (no change needed)
+- **`.raw` / `.brml` full-data retention in `.pkl`.** Vendor readers return full arrays; `batplot.py` stores the untrimmed `x_full`/`y_full_raw` *before* applying any x-range crop; `dump_session` serializes `x_full_data`/`raw_y_full_data`; `load_xy_session` restores them into `x_full_list`/`raw_y_full_list`; and the `x` (change-X) handler expands from those. A round-trip test (201 displayed points → 1001 full points restored) confirms expanding the x range after save+load recovers all data.
+
+### Affected Files
+- `batplot/session.py` (XY tick-locator restore)
+- `batplot/electrochem_interactive.py` (EC `opsg` geometry key)
+- `batplot/cpc_interactive.py` (CPC `ops`/`opsg` snapshot/geometry call)
+
+### Cross-platform
+Pure Python/matplotlib state handling and JSON keys; no OS-specific paths. Identical on Windows, macOS, and Linux.
+
+---
+
+## 2026-06-01: Operando undo/session-load — x tick labels jump to top & EC right title duplicated
+
+### Summary
+In operando (and operando+EC) mode, performing any undo (`b`) — e.g. after changing the contour Y range with `oy` — moved the contour x tick labels from the bottom (default) to the top, and spawned a second EC right-axis title overlapping the original. The same label flip also occurred when loading 1D `.pkl` sessions.
+
+### Root Cause
+1. **Inverted top/bottom mapping.** The WASD restore code mapped `side=='top'` to matplotlib's `tick1On`/`label1On` (which are the *bottom* tick/label) and `side=='bottom'` to `tick2On`/`label2On` (the *top*). The capture side stored top→top correctly, so restoring flipped them: bottom labels turned off, top labels turned on. Present in the operando undo path (twice), `session.load_xy_session`, and the 1D session restore in `batplot.py`.
+2. **Duplicate EC right title.** The undo and style-import paths called `position_right_ylabel(ec_ax, …)`, which builds a duplicate text artist. The EC pane uses its real right-side ylabel, so this created an overlapping second title. The live `t`-menu path already skipped this call for EC; the restore/import paths did not.
+
+### Solution
+- Corrected the x-axis mapping to `top→tick2On/label2On`, `bottom→tick1On/label1On` in all four locations (`operando_ec_interactive.py` ×2, `session.py`, `batplot.py`). The y-axis (left/right) mapping was already correct and left untouched.
+- In operando restore and style-import, replaced `position_right_ylabel(ec_ax, …)` with hiding any existing EC duplicate artist, so `p`/`i`/`s`/`b` no longer create overlapping EC right titles.
+
+### Affected Files
+- `batplot/operando_ec_interactive.py`
+- `batplot/session.py`
+- `batplot/batplot.py`
+
+### Cross-platform
+Pure matplotlib tick/label logic; no OS-specific paths. Behaves identically on Windows, macOS, and Linux.
+
+---
+
 ## 2026-05-19: dQ/dV 2D contour — charge/discharge potential axis reversed vs tick labels
 
 ### Summary
@@ -819,21 +2605,6 @@ Initialize `all_ignored = []` before the file_palette/else branches so it is alw
 
 ---
 
-## 2026-03-11: Pyright "could not be resolved" for matplotlib/numpy in electrochem_interactive
-
-### Summary
-Pyright/basedpyright reported "Import could not be resolved" for matplotlib and numpy in electrochem_interactive.py (and operando_ec_interactive.py), despite packages being installed and working at runtime.
-
-### Solution
-(1) Added `# type: ignore[import-untyped]` to matplotlib and numpy imports in electrochem_interactive.py and operando_ec_interactive.py. (2) Removed hardcoded `pythonPath` from pyrightconfig.json (was Linux path, fails on macOS). (3) Added `reportMissingImports: "none"` and `reportMissingModuleSource: "none"` in pyrightconfig.json so unresolved third-party imports are not reported project-wide.
-
-### Affected Files
-- `batplot/electrochem_interactive.py`
-- `batplot/operando_ec_interactive.py`
-- `pyrightconfig.json`
-
----
-
 ## 2026-03-11: Remove "both" option from rename; unify tips and shortcuts across menus
 
 ### Summary
@@ -912,8 +2683,35 @@ pyrightconfig.json had a hardcoded `"pythonPath": "/opt/miniconda3/bin/python3"`
 (1) Removed the hardcoded `pythonPath` from pyrightconfig.json so Pyright uses the workspace's selected Python interpreter (Cursor/VSCode: Python: Select Interpreter). (2) Added `"reportMissingImports": "none"` and `"reportMissingModuleSource": "none"` so unresolved imports are not reported—packages in pyproject.toml work at runtime; the checker may still fail to find them in some IDE configurations. (3) Added .vscode/settings.json for consistent Python analysis.
 
 ### Affected Files
+- `batplot/electrochem_interactive.py` and `batplot/operando_ec_interactive.py` (added `# type: ignore[import-untyped]` on NumPy/Matplotlib imports)
 - `pyrightconfig.json`
 - `.vscode/settings.json` (new)
+
+---
+
+## 2026-03-02–03: Per-module `# type: ignore[import]` for third-party imports (stubless IDE environments)
+
+### Summary
+Before and alongside the project-level `pyrightconfig.json` fix (see the
+2026-03-11 pyrightconfig entry), many modules showed noisy *"Import could not
+be resolved"* diagnostics when the IDE's analysis environment lacked NumPy,
+Matplotlib, setuptools, or optional packages like `rich`/`cmcrameri`. Runtime
+behavior was always correct; only static analysis was affected.
+
+### Fix
+Added targeted `# type: ignore[import]` (or `# type: ignore[import-untyped]`)
+annotations on module-scope imports in:
+- `setup.py` (setuptools)
+- `batplot/batch.py`, `batplot/cif.py`, `batplot/plotting.py`, `batplot/style.py`
+- `batplot/color_utils.py`, `batplot/ui.py`, `batplot/args.py` (optional `rich`)
+- Legacy paths: `batplot/interactive.py`, `batplot/electrochem_interactive.py`,
+  `batplot/operando_ec_interactive.py`
+
+These per-file silences complement — not replace — the global
+`reportMissingImports: "none"` setting in `pyrightconfig.json`.
+
+### Cross-platform
+Annotation-only; identical on Windows, macOS, and Linux.
 
 ---
 
@@ -1560,38 +3358,6 @@ Declared `file_data_saved` as `Optional[List[Dict[str, Any]]]` before the multi-
 
 ---
 
-## 2026-03-03: Silence false-positive `setuptools` import error in `setup.py`
-
-### Summary
-Static type checking (basedpyright) reported *"Import `setuptools` could not be resolved from source"* at the top-level `from setuptools import setup` statement in `setup.py`, even though `setuptools` is a standard packaging dependency that will be present in any environment where `setup.py` is actually executed.
-
-### Root Cause
-The linter runs in generic or minimally provisioned environments where `setuptools` may not be installed or its type information is not available. In those contexts, the analyzer treats `setuptools` as missing and raises a warning for the import, even though the code itself is correct and the real installation environments (Python package builds, `pip`, etc.) always include `setuptools`.
-
-### Fix
-Annotated the import with a type-checker-only suppression comment: `from setuptools import setup  # type: ignore[import]`. This preserves the runtime behavior across Windows, macOS, and Linux while telling static analyzers to treat the import as intentionally untyped/externally provided, preventing this spurious warning from recurring.
-
-### Affected Files
-- `setup.py`
-
----
-
-## 2026-03-03: Silence false-positive NumPy/Matplotlib import errors in `batch.py`
-
-### Summary
-Static type checking (basedpyright) reported *"Import `matplotlib.cm` could not be resolved"*, *"Import `numpy` could not be resolved"*, and *"Import `matplotlib.pyplot` could not be resolved"* at the top of `batplot/batch.py`, even though these are standard scientific Python dependencies that are required for batch plotting and available in real runtime environments.
-
-### Root Cause
-The analyzer is running in an environment where NumPy and Matplotlib (or their type stubs) are not installed, so it treats these imports as missing. This produces spurious errors in the batch module despite the code being correct and fully functional wherever Batplot is actually executed with its documented dependencies installed.
-
-### Fix
-Annotated the three scientific imports with `# type: ignore[import]` comments: `import matplotlib.cm as cm`, `import numpy as np`, and `import matplotlib.pyplot as plt`. This preserves cross-platform runtime behavior on Windows, macOS, and Linux while telling the type checker to trust these external packages and stop emitting unresolved-import errors for them.
-
-### Affected Files
-- `batplot/batch.py`
-
----
-
 ## 2026-03-03: Fix tuple-unpack type errors for `read_mpt_file` results in `batch.py`
 
 ### Summary
@@ -1701,86 +3467,6 @@ Annotated the `cell` dictionary as `dict[str, float | str | None]` and, in the d
 
 ### Affected Files
 - `batplot/cif.py`
-
----
-
-## 2026-03-03: Silence false-positive Matplotlib/cmcrameri import errors in `color_utils.py`
-
-### Summary
-Static analysis tools may report unresolved imports for `matplotlib.pyplot`, `matplotlib.colors`, `matplotlib.colors.LinearSegmentedColormap`, and the optional `cmcrameri.cm` dependency in `batplot/color_utils.py`, even though these are valid runtime dependencies used to build and preview colormaps.
-
-### Root Cause
-The type checker can run in environments that lack Matplotlib or the optional `cmcrameri` package, or where their type stubs are not installed. In such environments, these imports appear missing, generating noisy errors despite the code being correct for actual Batplot installations, where Matplotlib is required and `cmcrameri` is an optional enhancement.
-
-### Fix
-Annotated the Matplotlib imports at the top of `color_utils.py` and the inline `cmcrameri.cm` import inside the batlow-variant handling block with `# type: ignore[import]`. This leaves the runtime behavior unchanged on Windows, macOS, and Linux—Matplotlib and `cmcrameri` are still imported when present—but tells the type checker to stop flagging those imports as unresolved.
-
-### Affected Files
-- `batplot/color_utils.py`
-
----
-
-## 2026-03-03: Suppress Pyright complexity warnings for CPC interactive menu
-
-### Summary
-Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the `cpc_interactive_menu` function in `batplot/cpc_interactive.py`. This diagnostic is a static-analysis limitation rather than a runtime bug, but it cluttered the diagnostics view for a function that is intentionally large and stateful.
-
-### Root Cause
-The CPC interactive menu function aggregates many interactive features (keyboard commands, legend controls, tick/geometry styling, style import/export, etc.) into a single, deeply branched function. Pyright’s control-flow analyzer hits its built-in complexity limit on this function and emits a generic warning on the definition line.
-
-### Fix
-Added a targeted Pyright directive comment immediately above the `cpc_interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This tells the type checker to suppress general type-issue diagnostics (including the complexity warning) for the function’s definition line while leaving the rest of the module analyzed as before. The runtime behavior and cross-platform compatibility of the CPC interactive menu are unchanged.
-
-### Affected Files
-- `batplot/cpc_interactive.py`
-
----
-
-## 2026-03-03: Suppress Pyright complexity warnings for EC interactive menu
-
-### Summary
-Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the `electrochem_interactive_menu` function in `batplot/electrochem_interactive.py`. As with the CPC menu, this is a limitation of the analyzer on a large, multi-feature interactive function rather than a runtime defect.
-
-### Root Cause
-The EC interactive menu aggregates many behaviors (GC/CV/dQdV modes, multi-file management, smoothing and filtering, legend/axes controls, style import/export, etc.) into a single function with numerous nested branches. This exceeds Pyright’s internal complexity threshold for full flow-sensitive analysis, causing a generic warning at the function definition.
-
-### Fix
-Added a targeted Pyright directive comment directly above the `electrochem_interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This suppresses general type-issue diagnostics (including the complexity warning) for that function’s definition line while leaving the rest of the file fully analyzed. No changes were made to the EC interactive behavior or its cross-platform semantics.
-
-### Affected Files
-- `batplot/electrochem_interactive.py`
-
----
-
-## 2026-03-03: Silence false-positive Matplotlib/NumPy import errors in `interactive.py`
-
-### Summary
-Static analysis reported unresolved imports for `numpy`, `matplotlib.pyplot`, `matplotlib.ticker`, and `matplotlib.colors` at the top of `batplot/interactive.py` in environments where those libraries or their type stubs are not installed, even though they are valid runtime dependencies for 1D interactive plots.
-
-### Root Cause
-The type checker can run in minimal or stubless environments, so heavy scientific packages frequently appear as missing. Since `interactive.py` is a core module that always imports these packages at module scope, these missing-import diagnostics became persistent noise unrelated to actual runtime behavior.
-
-### Fix
-Annotated all Matplotlib/NumPy imports in `interactive.py` with `# type: ignore[import]`, including `numpy`, `matplotlib.pyplot`, `matplotlib.ticker` helpers, `matplotlib.colors`, and `LinearSegmentedColormap`. This keeps the imports and behavior unchanged for real Batplot installations on all platforms while instructing Pyright/basedpyright to stop treating these imports as errors.
-
-### Affected Files
-- `batplot/interactive.py`
-
----
-
-## 2026-03-03: Silence false-positive NumPy import error in `plotting.py`
-
-### Summary
-Static type checking reported an unresolved import for `numpy` in `batplot/plotting.py` when running in environments without NumPy or its type stubs installed, even though NumPy is a valid runtime dependency for label-position calculations.
-
-### Root Cause
-The plot-label helper module imports `numpy` directly at module scope to perform array operations when computing label positions. In stubless or minimal analysis environments, this import appears missing to Pyright/basedpyright, generating a noisy diagnostic unrelated to actual Batplot usage where NumPy is always present.
-
-### Fix
-Annotated the `numpy` import in `plotting.py` with `# type: ignore[import]`, preserving the existing runtime behavior on all platforms while telling the type checker to stop treating the import as an error.
-
-### Affected Files
-- `batplot/plotting.py`
 
 ---
 
@@ -2025,70 +3711,6 @@ The menu also shows current curve colors, saved user colors, and available palet
 
 ### Affected Files
 - `batplot/interactive.py`
-
----
-
-## 2026-03-02: Pyright "Import 'numpy' could not be resolved" in cif.py
-
-### Summary
-Pyright reported a `Import "numpy" could not be resolved` warning for `batplot/cif.py` even though `numpy` is a required runtime dependency for diffraction and CIF utilities.
-
-### Root Cause
-The warning originates from the static type checker environment not being able to locate the `numpy` package (missing stubs or interpreter environment mismatch), rather than a real runtime bug in batplot itself. The code legitimately depends on `numpy` and imports it at module scope.
-
-### Solution
-Annotated the `numpy` import in `batplot/cif.py` with `# type: ignore[import]` so Pyright no longer emits a missing-import diagnostic for this known runtime dependency. This keeps the import behavior unchanged at runtime while silencing the spurious tooling warning.
-
-### Affected Files
-- `batplot/cif.py`
-
----
-
-## 2026-03-03: Silence false-positive Matplotlib/NumPy import errors in `style.py`
-
-### Summary
-Static analysis reported unresolved imports for `numpy`, `matplotlib.pyplot`, `matplotlib.colors`, and `matplotlib.ticker` in `batplot/style.py` in environments where those libraries or their type stubs are not installed, even though they are required runtime dependencies for style capture and application.
-
-### Root Cause
-The style helper module imports several Matplotlib and NumPy components at module scope (for tick locator manipulation, colormap handling, etc.). In stubless or minimal analysis environments, these imports appear missing to Pyright/basedpyright, generating noisy diagnostics unrelated to actual Batplot usage where these packages are always present.
-
-### Fix
-Annotated all Matplotlib/NumPy imports in `style.py` with `# type: ignore[import]`, including `numpy`, `matplotlib.pyplot`, `matplotlib.colors` (as `mcolors`), `MultipleLocator`, `AutoLocator`, `AutoMinorLocator`, `NullFormatter`, and `LinearSegmentedColormap`. This preserves the existing cross-platform behavior while instructing the type checker to stop treating these imports as errors.
-
-### Affected Files
-- `batplot/style.py`
-
----
-
-## 2026-03-03: Suppress Pyright complexity warnings for 1D interactive menu
-
-### Summary
-Pyright reported *"Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths"* on the main `interactive_menu` function in `batplot/interactive.py`, which aggregates many 1D plotting features into a single, large interactive handler.
-
-### Root Cause
-The 1D interactive menu function handles a wide variety of commands (colors, fonts, lines, axes, legends, smoothing, CIF ticks, style import/export, sessions, etc.) in a deeply branched structure. This exceeds Pyright’s internal complexity threshold for full flow-sensitive analysis, resulting in a generic warning on the function definition even though the code is stable and well-tested.
-
-### Fix
-Added a targeted Pyright directive comment immediately above the `interactive_menu` definition: `# pyright: ignore[reportGeneralTypeIssues]`. This suppresses general type-issue diagnostics (including the complexity warning) for the function’s definition line while leaving the rest of `interactive.py` fully analyzed. No changes were made to the 1D interactive behavior.
-
-### Affected Files
-- `batplot/interactive.py`
-
----
-
-## 2026-03-03: Fix CPC legend offset sanitizer reference in `cpc_interactive.py`
-
-### Summary
-Pyright reported *"_sanitize_legend_offset" is not defined* at a call site in the CPC legend rebuild helper in `batplot/cpc_interactive.py`, even though a helper of that name existed later in the same enclosing scope. This mismatch stemmed from earlier refactoring that introduced a typed `_sanitize_legend_offset(xy: Optional[tuple])` near the bottom of the CPC interactive function.
-
-### Root Cause
-The call `offset = _sanitize_legend_offset(offset)` in the legend-position capture block preceded the nested helper definition and confused the analyzer, which treated `_sanitize_legend_offset` as potentially undefined at that point in the function. While valid at runtime in Python (the name is resolved when the code path is executed), the static checker flagged it as a missing symbol.
-
-### Fix
-Left the runtime behavior unchanged but annotated the call with `# type: ignore[name-defined]` so the type checker no longer treats `_sanitize_legend_offset` as undefined at that site. All other uses of `_sanitize_legend_offset` (and its definition) remain intact, and legend offsets continue to be sanitized and persisted correctly across CPC interactive sessions.
-
-### Affected Files
-- `batplot/cpc_interactive.py`
 
 ---
 
@@ -2412,6 +4034,9 @@ When saving an operando session (s) to a custom path (c), existing .pkl files in
 - **s** (save session): Saves colormap.
 - **b** (undo): Restores colormap.
 
+### Follow-up (same day)
+- **b (undo)**: snapshot stored CIF colors in `tick_series` but `_restore` did not reapply them to `ax._operando_cif_tick_series`; fixed so color changes undo correctly.
+
 ### Affected Files
 - `batplot/operando.py`, `batplot/operando_ec_interactive.py`, `batplot/session.py`
 
@@ -2436,25 +4061,6 @@ CIF ticks are drawn as figure annotations with a blended transform (x from opera
 ### Behavior
 - Changing operando X range (ox): CIF ticks redraw with peaks filtered to the new range; labels stay aligned.
 - Changing operando width (ow), height (h), canvas size (g), or other layout: CIF tick y-positions recompute from the new axes bbox.
-
----
-
-## 2026-02-04: Operando CIF — full p/i/s/b persistence (undo colors)
-
-### Summary
-**b (undo)** did not restore CIF colors when undoing a color change. The snapshot stored `tick_series` (which includes colors) but the restore did not reapply it to `ax._operando_cif_tick_series`.
-
-### Solution
-In `_restore`, when restoring operando CIF state, also restore `ax._operando_cif_tick_series` from `cif_snap.get('tick_series')` so color changes are correctly undone.
-
-### Affected Files
-- `batplot/operando_ec_interactive.py` (_restore CIF block)
-
-### p/i/s/b Status (operando CIF)
-- **p** (print/export style): Exports show_hkl, show_titles, placement, y_positions, colors ✓
-- **i** (import style): Applies all CIF config including colors ✓
-- **s** (save session): Saves tick_series (with colors), hkl_label_map, show_hkl, show_titles, placement, y_positions, axis_mode, wl ✓
-- **b** (undo): Now restores tick_series (colors), show_hkl, show_titles, placement, y_positions ✓
 
 ---
 
@@ -4615,27 +6221,6 @@ EXCLUDED_EXT = {".mpt", ".pkl", ".json", ".txt", ".md", ".pdf", ".png", ".jpg", 
 
 ---
 
-## 2026-03-03: Silence optional `rich.console` import error in `batplot/args.py`
-
-### Summary
-Static analysis reported *"Import `rich.console` could not be resolved"* at the optional color-support import in `batplot/args.py`, even though the `rich` dependency is correctly declared in `pyproject.toml` and the code already guards the import with a `try`/`except ImportError` block.
-
-### Root Cause
-The CLI help-coloring code uses `from rich.console import Console` and `from rich.markup import escape` inside a `try` block to enable colored help text when `rich` is installed and gracefully fall back to plain text when it is not. Some editors and type checkers (e.g. Pyright/Pylance) still flag this as an unresolved import in certain environments, typically when `rich` is not installed in the active analysis environment, despite being a declared project dependency.
-
-### Fix
-Annotated the `from rich.console import Console` line in `batplot/args.py` with `# type: ignore[import]` while keeping the existing `try`/`except ImportError` logic intact. This preserves the current runtime behavior (optional colored help when `rich` is available, plain text otherwise) while silencing the false-positive unresolved-import error from static analysis tools.
-
-### Affected Files
-- `batplot/args.py`
-
-### Cross-Platform Compatibility
-- ✅ macOS: Works (colored help when `rich` installed, plain text otherwise)
-- ✅ Windows: Works
-- ✅ Linux: Works
-
----
-
 ## 2026-03-03: Restrict `--dev-upgrade` git push scope to `batplot/` and selected root files
 
 ### Summary
@@ -4658,39 +6243,6 @@ The extra "include all other modified and new files" prompt and the repository-w
 - ✅ macOS: Uses standard `git` CLI commands (`git add`, `git add -A path`, `git commit`, `git push`)
 - ✅ Windows: Works in any environment with Git available in `PATH`
 - ✅ Linux: Works with standard Git installations
-
----
-
-## 2026-03-03: Silence optional `numpy`/`matplotlib` import errors in `batplot/ui.py`
-
-### Summary
-Static analysis reported unresolved-import errors for `numpy` and several `matplotlib` modules used by the plotting utilities in `batplot/ui.py`, even though these libraries are declared as dependencies and required at runtime.
-
-### Root Cause
-The UI helpers in `batplot/ui.py` import:
-- `numpy` as `np`
-- `matplotlib.pyplot` as `plt`
-- `AutoMinorLocator` and `NullFormatter` from `matplotlib.ticker`
-- `matplotlib.transforms` as `mtransforms`
-
-Some development environments (e.g. isolated type-checker environments) may not have `numpy`/`matplotlib` installed, causing tools like basedpyright to flag these imports as "could not be resolved", despite them being valid and required in real runtime environments where `batplot` is used.
-
-### Fix
-Annotated the four imports in `batplot/ui.py` with `# type: ignore[import]` so that type checkers skip unresolved-import diagnostics while leaving the actual runtime imports unchanged:
-- `import numpy as np  # type: ignore[import]`
-- `import matplotlib.pyplot as plt  # type: ignore[import]`
-- `from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import]`
-- `import matplotlib.transforms as mtransforms  # type: ignore[import]`
-
-This removes the noisy errors in strict type-checking environments without affecting behavior.
-
-### Affected Files
-- `batplot/ui.py`
-
-### Cross-Platform Compatibility
-- ✅ macOS: No behavioral change; imports still required at runtime
-- ✅ Windows: Same behavior; only static analysis hints adjusted
-- ✅ Linux: Same behavior; imports continue to function normally
 
 ---
 
@@ -4894,3 +6446,67 @@ This makes CPC tick persistence robust for left axis and equivalent side states 
 - ✅ macOS: Pure Python/matplotlib state sync; no OS-specific behavior
 - ✅ Windows: Same session serialization/deserialization behavior
 - ✅ Linux: Same session serialization/deserialization behavior
+
+---
+
+## 2026-06-04: Clean stale mode/manual paths and guard developer release archives
+
+### Summary
+Structural cleanup removed broken or duplicate entry paths that could drift from the active code, and `--dev-upgrade` now verifies built archives before upload.
+
+### Root Cause
+- `pyproject.toml` still exposed `batplot-manual = batplot.manual:main` even though the local manual module is no longer the source of truth.
+- `batplot --manual` attempted to import `batplot.manual`, which can fail now that the PDF manual is used.
+- `batplot/modes.py` carried a second copy of old mode logic rather than delegating to the active dispatcher.
+- `--dev-upgrade` built and uploaded distributions without checking that new `batplot/**/*.py` modules were included in the wheel/sdist.
+
+### Fix
+- Removed the stale `batplot-manual` console script.
+- Changed `--manual` to open the published PDF manual URL directly, with a printed fallback URL if browser opening fails.
+- Tightened `MANIFEST.in` so the obsolete markdown manual is not copied into source distributions or wheel builds.
+- Replaced `batplot/modes.py` with a compatibility wrapper so legacy imports still resolve without carrying duplicate mode implementations.
+- Added developer-release archive validation that inspects built wheel/sdist files and refuses upload if any current `batplot/**/*.py` package module is missing.
+- Added per-mode session routing modules and switched interactive mode code to import session save functions from the mode-local paths while preserving the public `batplot.session` API.
+- Standardized XY session/style schema metadata and centralized EC/CPC normal-export and overwrite-export style payload construction.
+
+### Affected Files
+- `pyproject.toml`
+- `MANIFEST.in`
+- `batplot/args.py`
+- `batplot/modes.py`
+- `batplot/dev_upgrade.py`
+- `batplot/session.py`
+- `batplot/style.py`
+- `batplot/plot_modes/*/session.py`
+- `batplot/plot_modes/*/actions.py`
+- `batplot/plot_modes/*/interactive.py`
+- `tests/test_contracts.py`
+- `tests/test_dev_upgrade.py`
+- `tests/test_xy_roundtrip.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Uses Python stdlib `webbrowser`, `zipfile`, and `tarfile`; no platform-specific release checks
+- ✅ Windows: Archive validation normalizes path separators before checking package members
+- ✅ Linux: Same release validation and manual URL fallback behavior
+
+---
+
+## 2026-06-04: Match default electrochem plot frame sizes across modes
+
+### Summary
+CPC and EPC default plots used the same 10 x 6 inch canvas as GC, CV, and dQ/dV, but CPC/EPC reserved extra right-side margin for the twin efficiency axis. That made the actual plotted frame narrower than the other electrochem modes.
+
+### Fix
+- Added shared electrochem default frame-size helpers in `batplot/batplot.py`.
+- Kept GC, CV, and dQ/dV on the existing default frame.
+- Widened the default CPC/EPC canvas just enough to preserve right-axis label room while matching the same plotted frame width and height.
+- Added a contract test to keep the default electrochem frame sizes equal.
+
+### Affected Files
+- `batplot/batplot.py`
+- `tests/test_contracts.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Matplotlib figure sizing only; no OS-specific behavior
+- ✅ Windows: Same inch-based canvas/frame calculation
+- ✅ Linux: Same inch-based canvas/frame calculation

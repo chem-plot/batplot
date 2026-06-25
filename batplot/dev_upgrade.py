@@ -16,30 +16,156 @@ This will:
 6. Commit and push changes to GitHub (with confirmation prompt)
 """
 
+import fnmatch
 import os
 import re
 import sys
 import json
 import subprocess
 import shutil
+import tarfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 
+# Kept for tests that assert the old pathspec-based approach is not used.
+GIT_STAGE_EXCLUDE_PATHS = (
+    ":(exclude).DS_Store",
+    ":(exclude)**/.DS_Store",
+    ":(exclude)__pycache__/**",
+    ":(exclude)**/__pycache__/**",
+    ":(exclude)**/*.pyc",
+    ":(exclude)**/*.pyo",
+    ":(exclude)**/*.pyd",
+    ":(exclude).pytest_cache/**",
+    ":(exclude).ruff_cache/**",
+    ":(exclude).mypy_cache/**",
+    ":(exclude).pyright/**",
+    ":(exclude).coverage",
+    ":(exclude)htmlcov/**",
+    ":(exclude)build/**",
+    ":(exclude)dist/**",
+    ":(exclude)*.egg-info/**",
+    ":(exclude)**/*.egg-info/**",
+)
+
+# fnmatch patterns applied to repository-relative paths when adding untracked files.
+GIT_STAGE_EXCLUDE_GLOBS = (
+    ".DS_Store",
+    "**/.DS_Store",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/*.pyo",
+    "**/*.pyd",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".mypy_cache/**",
+    ".pyright/**",
+    ".coverage",
+    "htmlcov/**",
+    "build/**",
+    "dist/**",
+    "*.egg-info/**",
+    "**/*.egg-info/**",
+    ".venv/**",
+    "venv/**",
+    "env/**",
+)
+
+# Paths intentionally kept out of GitHub release commits (PyPI/local-only assets).
+GIT_RELEASE_SKIP_PATHS = (
+    "batplot/data/USER_MANUAL.md",
+    "batplot_user_manual.docx",
+)
+
+
+def _git_run(cmd: list[str], project_root: Path, *, check: bool = True, **kwargs):
+    return subprocess.run(cmd, cwd=project_root, check=check, **kwargs)
+
+
+def _git_current_branch(project_root: Path) -> str:
+    result = _git_run(
+        ["git", "branch", "--show-current"],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    branch = (result.stdout or "").strip()
+    return branch or "main"
+
+
+def _path_matches_any_glob(relpath: str, patterns: tuple[str, ...]) -> bool:
+    normalized = relpath.replace("\\", "/")
+    for pattern in patterns:
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+        if pattern.endswith("/**"):
+            prefix = pattern[:-3]
+            if normalized == prefix or normalized.startswith(prefix + "/"):
+                return True
+    return False
+
+
+def _list_untracked_release_paths(project_root: Path) -> list[str]:
+    """Return untracked, non-ignored repository paths eligible for release staging."""
+    result = _git_run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", "."],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        relpath = line.strip().replace("\\", "/")
+        if not relpath:
+            continue
+        if relpath in GIT_RELEASE_SKIP_PATHS:
+            continue
+        if _path_matches_any_glob(relpath, GIT_STAGE_EXCLUDE_GLOBS):
+            continue
+        paths.append(relpath)
+    return sorted(paths)
+
+
+def _git_unstage_release_skips(project_root: Path) -> None:
+    """Keep local-only assets out of the release commit even when they are tracked."""
+    for relpath in GIT_RELEASE_SKIP_PATHS:
+        _git_run(["git", "reset", "HEAD", "--", relpath], project_root, check=False)
+
+
+def _git_stage_release_snapshot(project_root: Path) -> None:
+    """Stage the repository snapshot that should replace GitHub on release.
+
+    Uses ``git add -u`` for tracked updates/deletions, then adds only untracked
+    paths reported by ``git ls-files --others --exclude-standard``. This avoids
+    ``git add -- .`` failing when ignored build/cache directories exist locally,
+    and automatically picks up future new source/test/workflow files without a
+    hand-maintained allow-list.
+    """
+    _git_run(["git", "add", "-u", "--", "."], project_root)
+    untracked = _list_untracked_release_paths(project_root)
+    if untracked:
+        _git_run(["git", "add", "--", *untracked], project_root)
+    _git_unstage_release_skips(project_root)
+
+
 def is_dev_environment():
     """Check if we're running from the development directory."""
-    # Check if we're in the batplot package directory
     current_file = Path(__file__).resolve()
     package_dir = current_file.parent
     project_root = package_dir.parent
-    
-    # Check for development indicators
+
     has_pyproject = (project_root / "pyproject.toml").exists()
-    has_upgrade_script = (project_root / "upgrade.sh").exists()
     has_batplot_dir = (project_root / "batplot").is_dir()
-    
-    return has_pyproject and has_batplot_dir
+    has_dev_upgrade = (project_root / "batplot" / "dev_upgrade.py").exists()
+
+    return has_pyproject and has_batplot_dir and has_dev_upgrade
 
 
 def get_current_version():
@@ -181,6 +307,24 @@ def write_latest_release_notes_json(project_root: Path, new_version: str, update
     print("\033[0;32m✓ Wrote batplot/data/latest_release_notes.json (commit & push so users see notes)\033[0m")
 
 
+def _git_restore_stash(project_root: Path, stashed: bool) -> None:
+    if not stashed:
+        return
+    pop_result = _git_run(
+        ["git", "stash", "pop"],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if pop_result.returncode == 0:
+        print("\033[0;32m✓ Restored stashed local changes\033[0m")
+    else:
+        print("\033[0;33mStash pop had conflicts. Resolve with: git stash pop\033[0m")
+        if pop_result.stderr or pop_result.stdout:
+            print(pop_result.stderr or pop_result.stdout)
+
+
 def git_commit_and_push(project_root: Path, new_version: str, update_notes: str) -> bool:
     """Commit version changes and push to GitHub.
     
@@ -200,11 +344,12 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
     
     try:
         # Check git status
-        result = subprocess.run(
+        result = _git_run(
             ["git", "status", "--porcelain"],
-            cwd=project_root,
+            project_root,
+            check=False,
             capture_output=True,
-            text=True
+            text=True,
         )
         
         if not result.stdout.strip():
@@ -212,12 +357,13 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             return True
         
         print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
-        print(f"  Files to commit:")
-        print(f"    - All changes under batplot/ (source, data, version files)")
-        print(f"    - pyproject.toml")
-        print(f"    - BUGFIXES.md")
-        print(f"    - README.md")
-        print(f"    - RELEASE_NOTES.txt")
+        print("  This will stage:")
+        print("    - All batplot source, tests, CI workflows, docs, and metadata")
+        print("    - New files added since the last release (no hand-maintained list)")
+        print("    - Tracked deletions so removed files disappear from GitHub")
+        print("  Excludes:")
+        print("    - Build outputs, caches, bytecode, .DS_Store, virtualenvs")
+        print("    - Local-only assets (USER_MANUAL.md, batplot_user_manual.docx)")
         
         try:
             choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
@@ -229,121 +375,130 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             print(f"{YELLOW}Skipped git push{NC}")
             return True
         
-        # Stage the files:
-        # - Everything under batplot/ (source, data, version files)
-        # - Selected root-level metadata/docs needed for a release
-        root_files_to_commit = [
-            "pyproject.toml",
-            "BUGFIXES.md",
-            "README.md",
-            "RELEASE_NOTES.txt",
-        ]
-        
-        for f in root_files_to_commit:
-            file_path = project_root / f
-            if file_path.exists():
-                subprocess.run(["git", "add", f], cwd=project_root, check=True)
-        
-        # Stage all changes (including deletions) under batplot/ only
-        subprocess.run(["git", "add", "-A", "batplot"], cwd=project_root, check=True)
-        # Exclude USER_MANUAL.md from commit (no longer uploaded to GitHub/PyPI)
-        user_manual_path = project_root / "batplot" / "data" / "USER_MANUAL.md"
-        if user_manual_path.exists():
-            subprocess.run(["git", "reset", "batplot/data/USER_MANUAL.md"], cwd=project_root, capture_output=True)
-        
+        _git_stage_release_snapshot(project_root)
+
+        staged = _git_run(
+            ["git", "diff", "--cached", "--name-only"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        staged_files = [line.strip() for line in (staged.stdout or "").splitlines() if line.strip()]
+        if not staged_files:
+            print(f"{YELLOW}Nothing staged for commit after applying release filters.{NC}")
+            return True
+
+        stat = _git_run(
+            ["git", "diff", "--cached", "--stat"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if stat.stdout:
+            print(f"\n{BLUE}Staged release snapshot:{NC}")
+            print(stat.stdout.rstrip())
+
+        branch = _git_current_branch(project_root)
+
+        # Keep staged release changes while syncing with GitHub before commit.
+        stashed = False
+        status_result = _git_run(
+            ["git", "status", "--porcelain"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            has_unstaged = any(
+                line.startswith("??") or (len(line) >= 2 and line[1] != " ")
+                for line in status_result.stdout.splitlines()
+            )
+            if has_unstaged:
+                print(f"\n{BLUE}Stashing unstaged local changes (keeping staged release)...{NC}")
+                stash_result = _git_run(
+                    ["git", "stash", "push", "--keep-index", "-m", "batplot dev-upgrade: temporary stash"],
+                    project_root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if stash_result.returncode == 0 and "No local changes to save" not in (stash_result.stdout or ""):
+                    stashed = True
+                    print(f"{GREEN}✓ Stashed{NC}")
+                elif stash_result.returncode != 0:
+                    print(f"{YELLOW}Could not stash unstaged changes. Pull may fail.{NC}")
+
+        print(f"\n{BLUE}Fetching and rebasing onto origin/{branch}...{NC}")
+        _git_run(["git", "fetch", "origin"], project_root, check=False)
+        pull_result = _git_run(
+            ["git", "pull", "--rebase", "origin", branch],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if pull_result.returncode != 0:
+            pull_result = _git_run(
+                ["git", "pull", "--rebase"],
+                project_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        if pull_result.returncode != 0:
+            _git_restore_stash(project_root, stashed)
+            print(f"{YELLOW}Could not pull (remote may have diverged):{NC}")
+            print(pull_result.stderr or pull_result.stdout)
+            print(f"{YELLOW}Resolve manually (e.g. git pull --rebase, then git push), or push later.{NC}")
+            return False
+
+        # Re-stage in case the rebase touched the working tree metadata.
+        _git_stage_release_snapshot(project_root)
+
         # Create commit message
         commit_msg = f"Release v{new_version}\n\n"
         if update_notes:
             commit_msg += f"{update_notes}\n"
         
         # Commit
-        subprocess.run(
+        _git_run(
             ["git", "commit", "-m", commit_msg],
-            cwd=project_root,
-            check=True
+            project_root,
         )
         print(f"{GREEN}✓ Committed changes{NC}")
         
-        # Stash unstaged changes if any (git pull --rebase refuses to run with uncommitted changes)
-        stashed = False
-        status_result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=project_root,
-            capture_output=True,
-            text=True
-        )
-        if status_result.returncode == 0 and status_result.stdout.strip():
-            # Has uncommitted changes; stash them
-            print(f"\n{BLUE}Stashing unstaged changes...{NC}")
-            stash_result = subprocess.run(
-                ["git", "stash", "push", "-m", "batplot dev-upgrade: temporary stash"],
-                cwd=project_root,
-                capture_output=True,
-                text=True
-            )
-            if stash_result.returncode == 0:
-                stashed = True
-                print(f"{GREEN}✓ Stashed{NC}")
-            else:
-                print(f"{YELLOW}Could not stash. Pull may fail if you have unstaged changes.{NC}")
-        
-        # Pull first to integrate any remote changes (e.g. from another machine or GitHub UI)
-        print(f"\n{BLUE}Pulling from GitHub...{NC}")
-        pull_result = subprocess.run(
-            ["git", "pull", "--rebase", "origin", "main"],
-            cwd=project_root,
-            capture_output=True,
-            text=True
-        )
-        if pull_result.returncode != 0:
-            # Try without specifying branch (uses upstream)
-            pull_result = subprocess.run(
-                ["git", "pull", "--rebase"],
-                cwd=project_root,
-                capture_output=True,
-                text=True
-            )
-        if pull_result.returncode != 0:
-            if stashed:
-                subprocess.run(["git", "stash", "pop"], cwd=project_root, capture_output=True)
-            print(f"{YELLOW}Could not pull (remote may have diverged):{NC}")
-            print(pull_result.stderr or pull_result.stdout)
-            print(f"{YELLOW}Resolve manually (e.g. git pull --rebase, then git push), or push later.{NC}")
-            return False
-        
         # Push
         print(f"\n{BLUE}Pushing to GitHub...{NC}")
-        result = subprocess.run(
-            ["git", "push"],
-            cwd=project_root,
+        result = _git_run(
+            ["git", "push", "origin", branch],
+            project_root,
+            check=False,
             capture_output=True,
-            text=True
+            text=True,
         )
+        if result.returncode != 0:
+            result = _git_run(
+                ["git", "push"],
+                project_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
         
         if result.returncode == 0:
             print(f"{GREEN}✓ Pushed to GitHub successfully{NC}")
-            
-            # Restore stashed changes if any
-            if stashed:
-                print(f"\n{BLUE}Restoring stashed changes...{NC}")
-                pop_result = subprocess.run(
-                    ["git", "stash", "pop"],
-                    cwd=project_root,
-                    capture_output=True,
-                    text=True
-                )
-                if pop_result.returncode == 0:
-                    print(f"{GREEN}✓ Restored{NC}")
-                else:
-                    print(f"{YELLOW}Stash pop had conflicts. Resolve with: git stash pop{NC}")
-                    print(pop_result.stderr or pop_result.stdout)
+            _git_restore_stash(project_root, stashed)
             
             # Try to get the remote URL to show the user
-            remote_result = subprocess.run(
+            remote_result = _git_run(
                 ["git", "remote", "get-url", "origin"],
-                cwd=project_root,
+                project_root,
+                check=False,
                 capture_output=True,
-                text=True
+                text=True,
             )
             if remote_result.returncode == 0:
                 remote_url = remote_result.stdout.strip()
@@ -356,9 +511,7 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             
             return True
         else:
-            if stashed:
-                print(f"\n{BLUE}Restoring stashed changes...{NC}")
-                subprocess.run(["git", "stash", "pop"], cwd=project_root, capture_output=True)
+            _git_restore_stash(project_root, stashed)
             print(f"{RED}✗ Git push failed:{NC}")
             print(result.stderr)
             print(f"{YELLOW}You can manually push later with: git push{NC}")
@@ -424,6 +577,96 @@ def clean_build_files(project_root: Path):
             shutil.rmtree(item)
     
     print("✓ Cleaned dist/, build/, and .egg-info directories")
+
+
+def _required_package_data_files(project_root: Path) -> list[str]:
+    """Return package-data files declared in pyproject.toml (relative to project root)."""
+    toml_file = project_root / "pyproject.toml"
+    if not toml_file.exists():
+        return []
+    content = toml_file.read_text(encoding="utf-8")
+    match = re.search(
+        r'\[tool\.setuptools\.package-data\]\s*\n(?P<body>(?:[^\[]|\[[^\]]+\])*)',
+        content,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        return []
+    body = match.group("body")
+    package_match = re.search(r'"batplot"\s*=\s*\[(?P<items>[^\]]*)\]', body)
+    if not package_match:
+        return []
+    rel_paths: list[str] = []
+    for item in re.findall(r'"([^"]+)"', package_match.group("items")):
+        rel_paths.append(f"batplot/{item.replace('\\\\', '/')}")
+    return sorted(set(rel_paths))
+
+
+def _required_package_python_files(project_root: Path) -> list[str]:
+    """Return package Python files that every built archive must contain."""
+    package_root = project_root / "batplot"
+    required: list[str] = []
+    for path in package_root.rglob("*.py"):
+        rel = path.relative_to(project_root).as_posix()
+        if "__pycache__" in path.parts:
+            continue
+        required.append(rel)
+    return sorted(required)
+
+
+def _archive_member_names(archive_path: Path) -> set[str]:
+    """Return normalized member names for wheels/zips and source tarballs."""
+    suffixes = archive_path.suffixes
+    if archive_path.suffix == ".whl" or archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path) as zf:
+            return {name.replace("\\", "/") for name in zf.namelist()}
+    if archive_path.suffix == ".gz" and ".tar" in suffixes:
+        with tarfile.open(archive_path, "r:gz") as tf:
+            return {member.name.replace("\\", "/") for member in tf.getmembers()}
+    if archive_path.suffix == ".tar":
+        with tarfile.open(archive_path, "r") as tf:
+            return {member.name.replace("\\", "/") for member in tf.getmembers()}
+    return set()
+
+
+def _archive_contains(member_names: set[str], relpath: str) -> bool:
+    """Return True when an archive contains relpath, allowing sdist prefixes."""
+    return relpath in member_names or any(name.endswith("/" + relpath) for name in member_names)
+
+
+def validate_distribution_contents(project_root: Path, dist_files: list[Path]) -> bool:
+    """Fail release upload if built archives miss current batplot package files."""
+    required = sorted(
+        set(_required_package_python_files(project_root))
+        | set(_required_package_data_files(project_root))
+    )
+    if not required:
+        print("No package Python files found to validate.")
+        return False
+    archives = [Path(p) for p in dist_files if Path(p).suffix in {".whl", ".zip", ".tar"} or Path(p).suffixes[-2:] == [".tar", ".gz"]]
+    if not archives:
+        print("No wheel/sdist archives found to validate.")
+        return False
+
+    ok = True
+    for archive in archives:
+        try:
+            members = _archive_member_names(archive)
+        except Exception as exc:
+            print(f"Could not inspect {archive.name}: {exc}")
+            ok = False
+            continue
+        missing = [rel for rel in required if not _archive_contains(members, rel)]
+        if missing:
+            ok = False
+            print(f"Archive validation failed for {archive.name}; missing {len(missing)} package files:")
+            for rel in missing[:20]:
+                print(f"  - {rel}")
+            if len(missing) > 20:
+                print(f"  ... and {len(missing) - 20} more")
+        else:
+            print(f"✓ Archive validation passed for {archive.name} ({len(required)} package files)")
+    return ok
 
 
 def run_upgrade():
@@ -625,6 +868,10 @@ def run_upgrade():
             for item in dist_dir.iterdir():
                 size = item.stat().st_size / 1024  # KB
                 print(f"  {item.name} ({size:.1f} KB)")
+            dist_files_for_validation = [p for p in dist_dir.iterdir() if p.is_file()]
+            if not validate_distribution_contents(project_root, dist_files_for_validation):
+                print(f"{RED}Distribution validation failed; refusing to upload incomplete archives.{NC}")
+                return 1
         print("✓ Distribution files created")
         
         # Step 5: Upload

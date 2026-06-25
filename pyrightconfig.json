@@ -1,4 +1,5 @@
 {
+  "include": ["batplot", "tests"],
   "typeCheckingMode": "basic",
   "reportMissingImports": "none",
   "reportMissingModuleSource": "none",

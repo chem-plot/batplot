@@ -1,2 +1,1 @@
 batplot
-batplot_manuscript

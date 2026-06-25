@@ -1,2 +1,3 @@
-include README.md LICENSE USER_MANUAL.md
-recursive-include batplot/data *.md
+include README.md LICENSE DEVELOPING.md
+recursive-include batplot/data CHANGELOG.md
+exclude batplot/data/USER_MANUAL.md

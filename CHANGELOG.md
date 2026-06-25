@@ -1,6 +1,103 @@
 # Changelog
 
+## [1.8.44] - 2026-06-25
+- Bug fixes
+
+
+## [1.8.43] - 2026-06-25
+- Bug fixes
+
+
+## [1.8.42] - 2026-06-12
+- Bug fixes
+
+
+## [1.8.41] - 2026-06-12
+- Bug fixes
+- Complete update of the codebase
+
+
 ## [Unreleased]
+- New `file:q` suffix marks a file's x data as already in Q (no conversion, implies Q axis)
+- Auto Q mode (from `file:wl` / `.qye` / `--wl`) no longer requires `--xaxis q` when some files lack wavelength info; such files are assumed already in Q with a printed note
+
+## [1.8.40] - 2026-05-27
+- Bug fixes
+
+
+## [1.8.39] - 2026-05-01
+- Bug fixes for BatX operando plot
+
+
+## [1.8.38] - 2026-04-03
+- Bug fixes
+
+
+## [1.8.37] - 2026-03-31
+- Bug fixes
+
+
+## [1.8.36] - 2026-03-30
+- Bug fixes
+
+
+## [1.8.35] - 2026-03-26
+- Bug fixes
+
+
+## [1.8.34] - 2026-03-24
+- Bug fixes
+
+
+## [1.8.32] - 2026-03-24
+- Improved multi-file support for EC mode
+
+
+## [1.8.33] - 2026-03-24
+- Bug fixes
+
+
+## [1.8.25] - 2026-03-16
+- Improved interactive menu functionality for colors/ticks
+- Bug fixes
+
+
+## [1.8.26] - 2026-03-16
+- Improved interactive menu functionality for ec mode
+- Bug fixes
+
+
+## [1.8.27] - 2026-03-16
+- Improved interactive menu functionality for cpc mode
+- Improved interactive menu display
+- Bug fixes
+
+
+## [1.8.28] - 2026-03-16
+- Bug fixes
+
+
+## [1.8.29] - 2026-03-16
+- Improved compatibility of --convert with --readcol: conversion now respects per-file, per-extension, and global column selection
+- Use custom columns when converting XRD data: batplot data.csv --readcol 3 4 --convert 1.54 q
+- Per-file columns for convert: batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
+- Fixed --all style.bps --readcol 2 3: style files no longer steal readcol; global readcol applies to all data files
+
+
+## [1.8.30] - 2026-03-16
+- Bug fixes
+- Improved reader for different data formats
+
+
+## [1.8.31] - 2026-03-16
+- Major update: support for batX plotting, navigate to the folder containing EC data and brml files, and run batplot --operando --i
+
+
+## [Unreleased]
+- **Canvas mode** (`--canvas`): Combine multiple .pkl sessions into one layout. `batplot xrd.pkl operando.pkl gc.pkl dqdv.pkl --canvas` — displays all sessions in a grid; use numbers (1–9) to edit each panel with its interactive menu; layout commands (1x1, 2x2, etc.); export (e) or save canvas (s) to .pkl for later editing. Supports EC, operando, CPC sessions. XY/1D sessions not yet supported in canvas.
+- CV: Multi-file combined mode — when multiple .mpt/.txt files are provided with `--cv`, all files are overlaid on one figure (like GC/dQ/dV). Full c (cycles/colors) menu: fall:, f1:1,5,10, fall viridis, etc. p, i, s, b work correctly.
+- GC/CV/dQdV: `fall:1 2 3 5 4` — show cycles 1,2,3,5 for ALL files, one color per file from palette 4 (file 1→first color, file last→last color).
+- GC/CV/dQdV: Per-file cycle selection in c (cycles/colors): type `f1:1,5,10 f2:2,4,6 viridis` to show different cycles per file (file 1: cycles 1,5,10; file 2: cycles 2,4,6). Use `f1:all` for all cycles in a file.
 - EC/CV/dQdV: Simplified multi-file palette: press c, then type `fall viridis` (all files), `f1-5 viridis` (files 1–5), or `f1 f3 f5 4`—no intermediate file selection step
 - CPC: In ly/ry color submenu, added file range palette: `1-5 viridis`, `1 3 5 4` to apply palette to files 1–5 or 1,3,5
 - EC/CV/dQdV: File-palette colors persist via p (print style), i (import style), s (save session), or b (undo). Style export now includes per-file cycle styles for multi-file plots.

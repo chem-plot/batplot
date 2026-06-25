@@ -162,7 +162,6 @@ batplot battery.mpt --gc --mass 7.0 --i
 
 ```bash
 batplot cyclic.mpt --cv --i
-batplot cyclic.mpt --cv --i
 ```
 
 ### Differential capacity (dQ/dV)
@@ -305,16 +304,17 @@ With `--interactive`:
 ## Help & Documentation
 
 ```bash
-batplot --help              # General help
-batplot --help xy           # XY mode guide
-batplot --help ec           # Electrochemistry guide
-batplot --help op           # Operando guide
-batplot --version           # Version and release notes
-batplot --manual            # Open illustrated manual
+batplot --h              # General help
+batplot --h xy           # XY mode guide
+batplot --h ec           # Electrochemistry guide
+batplot --h op           # Operando guide
+batplot --v           # Version and release notes
+batplot --m            # Open illustrated manual
 ```
 
 - [USER_MANUAL.md](USER_MANUAL.md) — Detailed usage and workflows
 - [FLAGS_REFERENCE.md](FLAGS_REFERENCE.md) — Complete flag reference by mode
+- [DEVELOPING.md](DEVELOPING.md) — Developer guide for extending Batplot
 
 ---
 

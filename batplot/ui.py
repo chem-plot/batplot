@@ -849,8 +849,6 @@ def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args
             update_labels_func(ax, y_data_list, label_text_objects, args.stack)
             fig._last_user_axes_inches = (new_w_in, new_h_in)
             fig._last_user_margins = (left, bottom, w_frac, h_frac)
-            final_w_in = (sp.right - sp.left) * fig_w_in
-            final_h_in = (sp.top - sp.bottom) * fig_h_in
             # Show the requested size (which is what was applied)
             print(f"Plot frame set to {req_w_in:.2f} x {req_h_in:.2f} in inside canvas {fig_w_in:.2f} x {fig_h_in:.2f} in.")
         except KeyboardInterrupt:

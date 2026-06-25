@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 import re
+import webbrowser
 
 # ====================================================================
 # HELP OUTPUT
@@ -169,13 +170,13 @@ def _print_general_help() -> None:
         "  • More: --help xy / --help ec / --help op\n\n"
         
         "More help:\n"
-        "  batplot --version       # Version and release info (with option to show full release notes)\n"
+        "  batplot --v       # Version and release info (with option to show full release notes)\n"
         "  batplot --showcol FILE [FILE...]   # Preview column names + first 10 values per column\n"
-        "  batplot --help          # This help\n"
-        "  batplot --help xy       # XY file plotting guide\n"
-        "  batplot --help ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
-        "  batplot --help op       # Operando contour guide (also: batplot --help contour)\n"
-        "  batplot --manual        # Open the illustrated txt manual with highlights\n\n"
+        "  batplot --h          # This help\n"
+        "  batplot --h xy       # XY file plotting guide\n"
+        "  batplot --h ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
+        "  batplot --h op       # Operando contour guide (also: batplot --help contour)\n"
+        "  batplot --m        # Open the illustrated PDF manual\n\n"
 
         "Contact & Updates:\n"
         "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
@@ -246,10 +247,14 @@ def _print_xy_help() -> None:
         "                              - file:wl          : single wavelength (for Q conversion or CIF 2theta calculation)\n"
         "                              - file:wl1:wl2     : dual wavelength (convert 2theta→Q using wl1, then Q→2theta using wl2)\n"
         "                              - file.cif:wl      : CIF file with wavelength for 2theta tick calculation\n"
+        "                              - file:q           : mark file as already in Q (no conversion; implies Q axis)\n"
+        "                              Any file:wl or file:q suffix implies Q mode automatically (no --xaxis q needed);\n"
+        "                              files without wavelength info are then assumed to be already in Q.\n"
         "                              Examples:\n"
         "                                batplot data.xye:1.5406 --xaxis 2theta\n"
         "                                batplot data.xye:0.25:1.54 --xaxis 2theta\n"
         "                                batplot data.xye pattern.cif:0.25448 --xaxis 2theta\n"
+        "                                batplot scan.xy:0.709 sim.csv:q --stack --i\n"
         "  --readcol <x_col> <y_col> : specify which columns to read as x and y (1-indexed)\n"
         "    Per-file:  file1.xy --readcol 2 3 file2.xy --readcol 4 5  (different cols per file)\n"
         "    Multi-curve: file.xy --readcol 1 2 1 3  (plot cols 1,2 and 1,3 as two curves)\n"
@@ -375,6 +380,107 @@ def _print_op_help() -> None:
     _print_help(msg)
 
 
+def _add_help_and_entry_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register help/version/manual flags and positional file inputs."""
+    parser.add_argument("--help", nargs="?", const="", metavar="topic",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="store_true", dest="version",
+                        help="Show version and current release info, then exit.")
+    parser.add_argument(
+        "--showcol",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--manual", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
+
+
+def _add_xy_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register XY/general plotting arguments."""
+    parser.add_argument("--delta", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--autoscale", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--xrange", nargs=2, type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--out", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--errors", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--xaxis", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--convert", nargs=2, metavar=("FROM", "TO"), 
+                        help="Convert XRD data: wavelength-to-wavelength (e.g., 1.54 0.25), wavelength-to-Q (e.g., 1.54 q), or Q-to-wavelength (e.g., q 1.54). Exports to 'converted' subfolder.")
+    parser.add_argument("--extract-brml-scans", nargs="?", const="", metavar="OUT_DIR",
+                        help="Extract each XRD scan from .brml file to separate .xy files. Optional OUT_DIR (default: <brml_stem>_scans).")
+    parser.add_argument("--wl", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--fullprof", nargs="+", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--norm", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--chik", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--kchik", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--k2chik", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--k3chik", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--1d", action="store_true", dest="derivative_1d", help=argparse.SUPPRESS)
+    parser.add_argument("--2d", action="store_true", dest="derivative_2d", help=argparse.SUPPRESS)
+
+
+def _add_interactive_export_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register interactive, export, and batch-output arguments."""
+    parser.add_argument("--i", "--interactive", action="store_true", dest="interactive", help=argparse.SUPPRESS)
+    parser.add_argument("--savefig", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--stack", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ry", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--txaxis", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ro", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--all", type=str, nargs='?', const='all', help=argparse.SUPPRESS)
+    parser.add_argument("--format", type=str, default='svg', 
+                       choices=['svg', 'png', 'pdf', 'jpg', 'jpeg', 'eps', 'tif', 'tiff'],
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--canvas", action="store_true", dest="canvas",
+                        help="Canvas mode: combine multiple .pkl sessions into one layout. Use numbers to edit each panel.")
+
+
+def _add_electrochem_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register electrochemistry mode arguments."""
+    parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--mass", type=parse_mass_mg_from_cli, action='append', help=argparse.SUPPRESS)
+    parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--epc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--pw", nargs=2, type=float, metavar=('V_MIN', 'V_MAX'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--cd", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--b", nargs=2, type=float, metavar=('TOL_UPPER', 'TOL_LOWER'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--anode", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cathode", action="store_true", help=argparse.SUPPRESS)
+
+
+def _add_operando_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register operando contour arguments."""
+    parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
+    parser.add_argument("--average", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--sum", dest="scan_sum", type=int, help=argparse.SUPPRESS)
+
+
+def _add_read_column_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register column-selection arguments."""
+    parser.add_argument("--readcol", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolxy", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolxye", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolqye", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolnor", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcoldat", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolcsv", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcolc", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+    parser.add_argument("--readcols", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
+                       help=argparse.SUPPRESS)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the argument parser for batplot command-line interface.
@@ -412,108 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Create parser with custom help system (we handle help ourselves)
     parser = argparse.ArgumentParser(add_help=False)
     
-    # ====================================================================
-    # TOPIC-AWARE HELP SYSTEM
-    # ====================================================================
-    # Instead of standard --help, we support topic-specific help:
-    #   batplot --help        → general help
-    #   batplot --help xy     → XY mode help
-    #   batplot --help ec     → EC mode help
-    #   batplot --help op     → Operando mode help
-    #
-    # nargs="?" means the argument is optional:
-    #   - If not provided: const="" (empty string)
-    #   - If provided: uses the value (e.g., "xy", "ec", "op")
-    # ====================================================================
-    parser.add_argument("--help", nargs="?", const="", metavar="topic",
-                        help=argparse.SUPPRESS)  # SUPPRESS hides from auto-generated help
-    parser.add_argument("--version", action="store_true", dest="version",
-                        help="Show version and current release info, then exit.")
-    parser.add_argument(
-        "--showcol",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--manual", action="store_true", help=argparse.SUPPRESS)
-    
-    # ====================================================================
-    # POSITIONAL ARGUMENTS (FILE PATHS)
-    # ====================================================================
-    # 'files' is a positional argument, meaning it doesn't need a flag.
-    # nargs="*" means it accepts 0 or more values (list).
-    # Examples:
-    #   batplot file1.xy file2.xy        → args.files = ['file1.xy', 'file2.xy']
-    #   batplot allfiles                 → args.files = ['allfiles']
-    #   batplot --i            → args.files = [] (empty list)
-    # ====================================================================
-    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
-    parser.add_argument("--delta", type=float, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--autoscale", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--xrange", nargs=2, type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--out", type=str, help=argparse.SUPPRESS)
-    parser.add_argument("--errors", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--xaxis", type=str, help=argparse.SUPPRESS)
-    parser.add_argument("--convert", nargs=2, metavar=("FROM", "TO"), 
-                        help="Convert XRD data: wavelength-to-wavelength (e.g., 1.54 0.25), wavelength-to-Q (e.g., 1.54 q), or Q-to-wavelength (e.g., q 1.54). Exports to 'converted' subfolder.")
-    parser.add_argument("--extract-brml-scans", nargs="?", const="", metavar="OUT_DIR",
-                        help="Extract each XRD scan from .brml file to separate .xy files. Optional OUT_DIR (default: <brml_stem>_scans).")
-    parser.add_argument("--wl", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--fullprof", nargs="+", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--norm", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--chik", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--kchik", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--k2chik", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--k3chik", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--i", "--interactive", action="store_true", dest="interactive", help=argparse.SUPPRESS)
-    parser.add_argument("--savefig", type=str, help=argparse.SUPPRESS)
-    parser.add_argument("--stack", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--ry", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--txaxis", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
-    parser.add_argument("--average", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--sum", dest="scan_sum", type=int, help=argparse.SUPPRESS)
-    parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--mass", type=parse_mass_mg_from_cli, action='append', help=argparse.SUPPRESS)
-    parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--cpc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--epc", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--pw", nargs=2, type=float, metavar=('V_MIN', 'V_MAX'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--cd", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--b", nargs=2, type=float, metavar=('TOL_UPPER', 'TOL_LOWER'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--anode", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--cathode", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--ro", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--all", type=str, nargs='?', const='all', help=argparse.SUPPRESS)
-    parser.add_argument("--format", type=str, default='svg', 
-                       choices=['svg', 'png', 'pdf', 'jpg', 'jpeg', 'eps', 'tif', 'tiff'],
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcol", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    # Add extension-specific readcol arguments
-    parser.add_argument("--readcolxy", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcolxye", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcolqye", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcolnor", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcoldat", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcolcsv", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcolc", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--readcols", nargs=2, type=int, metavar=('X_COL', 'Y_COL'),
-                       help=argparse.SUPPRESS)
-    parser.add_argument("--1d", action="store_true", dest="derivative_1d", help=argparse.SUPPRESS)
-    parser.add_argument("--2d", action="store_true", dest="derivative_2d", help=argparse.SUPPRESS)
-    parser.add_argument("--canvas", action="store_true", dest="canvas",
-                        help="Canvas mode: combine multiple .pkl sessions into one layout. Use numbers to edit each panel.")
+    _add_help_and_entry_arguments(parser)
+    _add_xy_arguments(parser)
+    _add_interactive_export_arguments(parser)
+    _add_operando_arguments(parser)
+    _add_electrochem_arguments(parser)
+    _add_read_column_arguments(parser)
     return parser
 
 
@@ -711,18 +721,23 @@ def parse_args(argv=None):
     # weren't in the parser yet when we built it
     ns, _unknown = parser.parse_known_args(argv)
     if getattr(ns, "manual", False):
+        manual_url = "https://github.com/chem-plot/batplot/blob/main/batplot_user_manual.pdf"
         try:
-            from .manual import open_manual_url  # Lazy import avoids matplotlib startup unless needed
-            open_manual_url()
+            opened = webbrowser.open(manual_url)
             if _HAS_RICH and _console:
-                _console.print("\n[green]Opened manual in browser[/green]")
+                if opened:
+                    _console.print("\n[green]Opened PDF manual in browser[/green]")
+                else:
+                    _console.print(f"\n[yellow]Manual PDF:[/yellow] {manual_url}")
             else:
-                print("\nOpened manual in browser")
+                print("\nOpened PDF manual in browser" if opened else f"\nManual PDF: {manual_url}")
         except Exception as exc:  # pragma: no cover - best effort
             if _HAS_RICH and _console:
                 _console.print(f"\n[red]Failed to open manual:[/red] {exc}")
+                _console.print(f"[yellow]Manual PDF:[/yellow] {manual_url}")
             else:
                 print(f"\nFailed to open manual: {exc}")
+                print(f"Manual PDF: {manual_url}")
         sys.exit(0)
     
     topic = getattr(ns, 'help', None)

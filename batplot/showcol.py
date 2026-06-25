@@ -12,23 +12,24 @@ from io import StringIO
 from typing import Any, List, Optional, Sequence, Tuple
 
 # -----------------------------------------------------------------------------
-# Path tokens like file.xye:1.5406 (wavelength suffix)
+# Path tokens like file.xye:1.5406 (wavelength suffix) or file.xy:q (Q marker)
 # -----------------------------------------------------------------------------
 
-_WL_SUFFIX_RE = re.compile(r"^(.+\.\w+):(\d+(?:\.\d+)?)$")
+_WL_SUFFIX_RE = re.compile(r"^(.+\.\w+):(\d+(?:\.\d+)?|[qQ])$")
 
 
 def resolve_path_token(token: str) -> str:
-    """Strip trailing ``:wavelength`` from a path when the base file exists."""
+    """Strip trailing ``:wavelength`` or ``:q`` from a path when the base file exists."""
     if os.path.isfile(token):
         return token
     if ":" not in token:
         return token
     base, tail = token.rsplit(":", 1)
-    try:
-        float(tail)
-    except ValueError:
-        return token
+    if tail.strip().lower() != "q":
+        try:
+            float(tail)
+        except ValueError:
+            return token
     if os.path.isfile(base):
         return base
     m = _WL_SUFFIX_RE.match(token.replace("\\", "/"))

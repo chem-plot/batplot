@@ -906,12 +906,60 @@ def loadtxt_with_decimal_comma(fname: str, comments: str = "#", **kwargs: Any) -
     return np.loadtxt(fname, comments=comments, converters=conv, **kwargs)
 
 
+def _csv_cell_to_float(cell: str) -> float:
+    """Convert one CSV cell to float; non-numeric markers become NaN."""
+    raw = (cell or "").strip()
+    if not raw or raw == ";":
+        return float("nan")
+    try:
+        return float(raw.replace(",", "."))
+    except ValueError:
+        return float("nan")
+
+
+def read_csv_numeric_grid(fname: str) -> np.ndarray:
+    """Read comma-separated CSV into a float grid (NaN for text or ';' cells).
+
+    Skips a leading header row when the first column is not numeric. Handles
+    UTF-8 BOMs and wide refinement exports that interleave labels with values.
+    """
+    with open(fname, newline="", encoding="utf-8-sig", errors="ignore") as f:
+        rows = [row for row in csv.reader(f) if row and any((c or "").strip() for c in row)]
+    if not rows:
+        raise ValueError(f"No numeric data found in {fname}")
+
+    start = 0
+    first_col = _csv_cell_to_float(rows[0][0]) if rows[0] else float("nan")
+    if not np.isfinite(first_col):
+        start = 1
+    data_rows = rows[start:]
+    if not data_rows:
+        raise ValueError(f"No numeric data found in {fname}")
+
+    ncols = max(len(row) for row in data_rows)
+    grid = np.full((len(data_rows), ncols), np.nan, dtype=float)
+    for i, row in enumerate(data_rows):
+        for j, cell in enumerate(row):
+            if j < ncols:
+                grid[i, j] = _csv_cell_to_float(cell)
+
+    if not np.any(np.isfinite(grid)):
+        raise ValueError(f"No numeric data found in {fname}")
+    return grid
+
+
 def robust_loadtxt_skipheader(fname: str):
     """Skip comments/non-numeric lines and load at least 2-column numeric data.
     
     Flexibly handles comma, space, tab, or mixed delimiters.
     Supports comma as decimal separator (European locale, e.g. 1,5 for 1.5).
     """
+    if str(fname).lower().endswith(".csv"):
+        try:
+            return read_csv_numeric_grid(fname)
+        except ValueError:
+            pass
+
     data_lines: List[str] = []
     with open(fname, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:

@@ -177,6 +177,76 @@ def ensure_colormap(name: Optional[str]) -> bool:
         return False
 
 
+def get_colormap(name: Optional[str]) -> Optional[Colormap]:
+    """Return a Colormap by name across matplotlib versions and custom maps.
+
+    Prefer this over ``matplotlib.cm.get_cmap`` — that API was removed in
+    matplotlib 3.11, which broke palette commands such as ``all viridis`` on
+    Windows installs with newer matplotlib.
+    """
+    if not name:
+        return None
+
+    ensure_colormap(name)
+
+    candidates: List[str] = []
+    for candidate in (name, name.lower()):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    try:
+        from matplotlib import colormaps as mpl_colormaps
+
+        registry_get = getattr(mpl_colormaps, "get_cmap", None)
+        if callable(registry_get):
+            for candidate in candidates:
+                try:
+                    return registry_get(candidate)
+                except Exception:
+                    pass
+        for candidate in candidates:
+            try:
+                return mpl_colormaps[candidate]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        try:
+            return plt.get_cmap(candidate)
+        except Exception:
+            pass
+
+    reversed_flag = name.lower().endswith("_r")
+    base = name[:-2] if reversed_flag else name
+    base_lower = base.lower()
+
+    custom = _CUSTOM_CMAPS.get(base_lower)
+    if custom:
+        try:
+            cmap_obj = LinearSegmentedColormap.from_list(base_lower, custom, N=256)
+            if reversed_flag:
+                cmap_obj = cmap_obj.reversed()
+            return cmap_obj
+        except Exception:
+            pass
+
+    if base_lower.startswith("batlow"):
+        try:
+            import cmcrameri.cm as cmc  # type: ignore[import]
+
+            cmap_obj = getattr(cmc, base_lower, None) or getattr(cmc, "batlow", None)
+            if cmap_obj is not None:
+                if reversed_flag and hasattr(cmap_obj, "reversed"):
+                    return cmap_obj.reversed()
+                return cmap_obj
+        except Exception:
+            pass
+
+    return None
+
+
 def _ansi_color_block_from_rgba(rgba) -> str:
     """Return a two-space block with the given RGBA color."""
     try:
@@ -570,6 +640,8 @@ __all__ = [
     'clear_user_colors',
     'color_bar',
     'color_block',
+    'ensure_colormap',
+    'get_colormap',
     'manage_user_colors',
     'palette_preview',
     'print_user_colors',

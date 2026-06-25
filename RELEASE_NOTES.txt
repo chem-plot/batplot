@@ -106,3 +106,16 @@
 
 ## 1.8.40
 - Bug fixes
+
+## 1.8.41
+- Bug fixes
+- Complete update of the codebase
+
+## 1.8.42
+- Bug fixes
+
+## 1.8.43
+- Bug fixes
+
+## 1.8.44
+- Bug fixes

@@ -34,18 +34,17 @@ import pickle
 import subprocess
 import sys
 import traceback
+from functools import wraps
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import numpy
-import numpy as np
-import numpy as _np
+import numpy as np  # type: ignore[import-untyped]
 from numpy import ma as _ma
-import matplotlib.pyplot as plt
-from matplotlib.colorbar import Colorbar as _Colorbar
-from matplotlib.colors import to_hex, to_rgba
-from matplotlib.ticker import (
+import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+from matplotlib.colorbar import Colorbar as _Colorbar  # type: ignore[import-untyped]
+from matplotlib.colors import to_hex, to_rgba  # type: ignore[import-untyped]
+from matplotlib.ticker import (  # type: ignore[import-untyped]
     MultipleLocator, AutoLocator, AutoMinorLocator,
-    NullFormatter, NullLocator, FuncFormatter, MaxNLocator,
+    NullFormatter, NullLocator,
 )
 
 from .utils import (
@@ -68,8 +67,58 @@ from .ui import (
     restore_axes_tick_locators,
     apply_wasd_minor_ticks,
 )
-from .operando import _draw_operando_cif_ticks
-from .plotting import update_labels
+from .plot_modes.common.interactive_state import build_saved_tick_state
+from .plot_modes.common.axis_state import (
+    capture_axis_spines_and_tick_widths,
+    capture_axis_wasd_state,
+)
+from .plotting import apply_curve_color, update_labels
+
+
+def _capture_xy_axis_style_for_session(ax) -> Dict[str, Any]:
+    from .plot_modes.xy.style import capture_xy_axis_style
+    return capture_xy_axis_style(ax)
+
+
+def _restore_xy_axis_style_from_session(ax, axis_cfg: Dict[str, Any], *, fig=None, spines_cfg=None) -> None:
+    from .plot_modes.xy.style import apply_xy_axis_style
+    style = {
+        "tick_colors": axis_cfg.get("tick_colors"),
+        "axis_label_colors": axis_cfg.get("axis_label_colors"),
+        "labelpads": axis_cfg.get("labelpads") or {
+            "x": axis_cfg.get("x_labelpad"),
+            "y": axis_cfg.get("y_labelpad"),
+        },
+    }
+    apply_xy_axis_style(ax, style, fig=fig, spines_cfg=spines_cfg or {})
+
+
+def _serialize_xy_curve_palettes(fig) -> List[Dict[str, Any]]:
+    """Serialize XY curve palette history for session files."""
+    from .plot_modes.xy.style import serialize_curve_palette_history
+    return serialize_curve_palette_history(fig)
+
+
+def _restore_xy_curve_palette_history(fig, palette_cfg) -> None:
+    """Restore ``fig._curve_palette_history`` from a session/style record list."""
+    if palette_cfg:
+        history = []
+        for rec in palette_cfg:
+            palette_name = rec.get('palette')
+            indices = rec.get('indices')
+            if not palette_name or not indices:
+                continue
+            history.append({
+                'palette': palette_name,
+                'indices': list(indices),
+                'low_clip': float(rec.get('low_clip', 0.08)),
+                'high_clip': float(rec.get('high_clip', 0.85)),
+            })
+        if history:
+            fig._curve_palette_history = history
+            return
+    if hasattr(fig, '_curve_palette_history'):
+        delattr(fig, '_curve_palette_history')
 
 
 def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
@@ -108,7 +157,7 @@ def _get_current_numpy_version() -> str:
     """
     # Method 1: Try direct import
     try:
-        return numpy.__version__
+        return np.__version__
     except Exception:
         pass
     
@@ -177,6 +226,70 @@ def _current_tick_width(axis_obj, which: str):
         # If anything fails (attribute error, type error, etc.), return None
         pass
     return None
+
+
+def _current_tick_length(axis_obj, which: str):
+    """Return the configured/displayed tick length for the given X/Y axis."""
+    try:
+        tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
+        length = tick_kw.get('size') or tick_kw.get('length')
+        if length is not None:
+            return float(length)
+    except Exception:
+        pass
+    try:
+        ticks = axis_obj.get_major_ticks() if which == 'major' else axis_obj.get_minor_ticks()
+        if ticks:
+            line = ticks[0].tick1line
+            if line is not None:
+                return float(line.get_markersize())
+    except Exception:
+        pass
+    try:
+        axis_name = getattr(axis_obj, 'axis_name', 'x')
+        rc_key = f"{axis_name}tick.{which}.size"
+        length = plt.rcParams.get(rc_key)
+        return float(length) if length is not None else None
+    except Exception:
+        return None
+
+
+def _apply_session_tick_lengths(fig, axes, lengths: Dict[str, Any] | None) -> None:
+    """Apply saved major/minor tick lengths to one or more axes."""
+    if not lengths:
+        return
+    major = lengths.get('major')
+    minor = lengths.get('minor')
+    if major is None:
+        major = lengths.get('x_major', lengths.get('y_major', lengths.get('ly_major', lengths.get('ry_major'))))
+    if minor is None:
+        minor = lengths.get('x_minor', lengths.get('y_minor', lengths.get('ly_minor', lengths.get('ry_minor'))))
+    try:
+        if major is not None:
+            for axis in axes:
+                if axis is not None:
+                    axis.tick_params(axis='both', which='major', length=float(major))
+        if minor is not None:
+            for axis in axes:
+                if axis is not None:
+                    axis.tick_params(axis='both', which='minor', length=float(minor))
+        if major is not None or minor is not None:
+            if not hasattr(fig, '_tick_lengths') or not isinstance(getattr(fig, '_tick_lengths', None), dict):
+                fig._tick_lengths = {}
+            if major is not None:
+                fig._tick_lengths['major'] = float(major)
+            if minor is not None:
+                fig._tick_lengths['minor'] = float(minor)
+    except Exception:
+        pass
+
+
+def _grid_enabled(ax) -> bool:
+    """Return True if any gridline is currently visible."""
+    try:
+        return any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines())
+    except Exception:
+        return bool(ax.xaxis._gridOnMajor) if hasattr(ax.xaxis, '_gridOnMajor') else False
 
 
 def _axis_label_text(ax, attr_name: str, getter):
@@ -354,7 +467,7 @@ def _restore_session_tick_locator(ax, state):
 # ------------------------- Generic XY session (existing) -------------------------
 
 
-def dump_session(
+def _dump_session_impl(
     filename: str,
     *,
     fig,
@@ -503,37 +616,11 @@ def dump_session(
         'top': float(sp.top),
     }
     
-    # Helper to capture WASD state
-    def _capture_wasd_state(axis):
-        ts = getattr(axis, '_saved_tick_state', {})
-        wasd = {}
-        for side in ('top', 'bottom', 'left', 'right'):
-            sp_obj = axis.spines.get(side)
-            prefix = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}[side]
-            # Consistent tick/title state logic for all sides
-            if side == 'left':
-                title_state = bool(axis.yaxis.label.get_visible())
-            elif side == 'bottom':
-                title_state = bool(axis.xaxis.label.get_visible())
-            elif side == 'top':
-                title_state = bool(getattr(axis, '_top_xlabel_on', False))
-            elif side == 'right':
-                title_state = bool(getattr(axis, '_right_ylabel_on', False))
-            else:
-                title_state = False
-            wasd[side] = {
-                'spine': bool(sp_obj.get_visible() if sp_obj else False),
-                'ticks': bool(ts.get(f'{prefix}_ticks', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                'minor': bool(ts.get(f'm{prefix}x' if side in ('top','bottom') else f'm{prefix}y', False)),
-                'labels': bool(ts.get(f'{prefix}_labels', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                'title': title_state,
-            }
-        return wasd
-    
-    wasd_state = _capture_wasd_state(ax)
+    wasd_state = capture_axis_wasd_state(ax)
 
     try:
         sess = {
+            'kind': 'xy',
             'version': 3,
             'x_data': [np.array(a) for a in x_data_list],
             'y_data': [np.array(a) for a in y_data_list],
@@ -583,6 +670,7 @@ def dump_session(
                 } for ln in (getattr(fig, '_xy_lines_by_curve', None) or ax.lines)
                 if ln is not None
             ],
+            'curve_palettes': _serialize_xy_curve_palettes(fig),
             'right_y_curve_indices': list(getattr(fig, '_xy_right_y_curve_indices', frozenset())),
             'txaxis': bool(getattr(fig, '_xy_use_top_x', False)),
             'delta': float(delta),
@@ -595,6 +683,7 @@ def dump_session(
                 'ylim': ax.get_ylim(),
                 'norm_xlim': getattr(ax, '_norm_xlim', None),  # x-range used for normalization
                 'norm_ylim': getattr(ax, '_norm_ylim', None),  # y-range used for normalization
+                **{k: v for k, v in _capture_xy_axis_style_for_session(ax).items()},
             },
             'figure': {
                 'size': tuple(map(float, fig.get_size_inches())),
@@ -618,6 +707,7 @@ def dump_session(
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
+                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
             },
             'args_subset': {
                 'stack': bool(getattr(args, 'stack', False)),
@@ -647,6 +737,14 @@ def dump_session(
             'has_bottom_x': bool(ax.xaxis.label.get_visible()),
             'has_left_y': bool(ax.yaxis.label.get_visible()),
         }
+        sess['title_offsets'] = {
+            'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'top_x': float(getattr(ax, '_top_xlabel_manual_offset_x_pts', 0.0) or 0.0),
+            'bottom_y': float(getattr(ax, '_bottom_xlabel_manual_offset_y_pts', 0.0) or 0.0),
+            'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
+            'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        }
         right_y_text = _get_duplicate_axis_label(ax, 'right', _get_primary_axis_label(ax, 'y'))
         ax2_xy = getattr(fig, '_xy_ax2', None)
         if ax2_xy is not None:
@@ -665,7 +763,7 @@ def dump_session(
         sess['stack_label_at_bottom'] = bool(getattr(fig, '_stack_label_at_bottom', False))
         sess['label_anchor_left'] = bool(getattr(fig, '_label_anchor_left', False))
         # Save grid state
-        sess['grid'] = ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
+        sess['grid'] = _grid_enabled(ax)
         if skip_confirm:
             target = filename
         else:
@@ -684,7 +782,7 @@ def dump_session(
 
 # --------------------- Operando + EC combined session helpers --------------------
 
-def dump_operando_session(
+def _dump_operando_session_impl(
     filename: str,
     *,
     fig,
@@ -728,7 +826,7 @@ def dump_operando_session(
         # Operando image state
         arr = im.get_array()
         # Use masked arrays to preserve NaNs if present
-        data = _np.array(arr)  # preserves mask where possible
+        data = np.array(arr)  # preserves mask where possible
         extent = tuple(map(float, im.get_extent())) if hasattr(im, 'get_extent') else None
         # Get colormap name: first check if we stored it explicitly, otherwise try to get from colormap object
         cmap_name = getattr(im, '_operando_cmap_name', None)
@@ -769,73 +867,22 @@ def dump_operando_session(
         except Exception:
             cb_clim = None
 
-        # Helper to capture WASD state for an axis
-        def _capture_wasd_state(axis):
-            ts = getattr(axis, '_saved_tick_state', {})
-            wasd = {}
-            # Check if ylabel is positioned on right (typical for EC axis)
-            ylabel_on_right = False
-            try:
-                ylabel_on_right = (axis.yaxis.get_label_position() == 'right')
-            except Exception:
-                pass
-            
-            for side in ('top', 'bottom', 'left', 'right'):
-                sp = axis.spines.get(side)
-                prefix = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}[side]
-                # Title state logic
-                if side == 'left':
-                    # If ylabel is positioned on right (EC axis), left has no title
-                    if ylabel_on_right:
-                        title_state = False
-                    else:
-                        ylabel_text = axis.get_ylabel()
-                        title_state = bool(ylabel_text)  # True only if currently visible with text
-                elif side == 'bottom':
-                    title_state = bool(axis.get_xlabel())
-                elif side == 'top':
-                    title_state = bool(getattr(axis, '_top_xlabel_on', False))
-                elif side == 'right':
-                    # If ylabel is positioned on right (EC axis), check if ylabel is visible (not empty)
-                    if ylabel_on_right:
-                        title_state = bool(axis.get_ylabel())  # Empty string = hidden by user
-                    else:
-                        title_state = bool(getattr(axis, '_right_ylabel_on', False))
-                else:
-                    title_state = False
-                
-                wasd[side] = {
-                    'spine': bool(sp.get_visible() if sp else False),
-                    'ticks': bool(ts.get(f'{prefix}_ticks', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                    'minor': bool(ts.get(f'm{prefix}x' if side in ('top','bottom') else f'm{prefix}y', False)),
-                    'labels': bool(ts.get(f'{prefix}_labels', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                    'title': title_state,
-                }
-            return wasd
-        
-        # Helper to capture spine and tick widths
-        def _capture_spine_tick_widths(axis):
-            spines = {}
-            for name in ('bottom', 'top', 'left', 'right'):
-                sp = axis.spines.get(name)
-                if sp:
-                    spines[name] = {
-                        'linewidth': float(sp.get_linewidth()),
-                        'visible': bool(sp.get_visible()),
-                        'color': sp.get_edgecolor()
-                    }
-            
-            ticks = {
-                'x_major': _current_tick_width(axis.xaxis, 'major'),
-                'x_minor': _current_tick_width(axis.xaxis, 'minor'),
-                'y_major': _current_tick_width(axis.yaxis, 'major'),
-                'y_minor': _current_tick_width(axis.yaxis, 'minor'),
+        def _capture_tick_lengths(axis):
+            return {
+                'x_major': _current_tick_length(axis.xaxis, 'major'),
+                'x_minor': _current_tick_length(axis.xaxis, 'minor'),
+                'y_major': _current_tick_length(axis.yaxis, 'major'),
+                'y_minor': _current_tick_length(axis.yaxis, 'minor'),
             }
-            return spines, ticks
         
         # Capture operando WASD state, spines, and tick widths
-        op_wasd_state = _capture_wasd_state(ax)
-        op_spines, op_ticks = _capture_spine_tick_widths(ax)
+        op_wasd_state = capture_axis_wasd_state(
+            ax,
+            use_actual_major_visibility=True,
+            use_right_ylabel_position=True,
+        )
+        op_spines, op_ticks = capture_axis_spines_and_tick_widths(ax, _current_tick_width)
+        op_tick_lengths = _capture_tick_lengths(ax)
         
         # Capture operando title offsets
         op_title_offsets = {
@@ -850,16 +897,32 @@ def dump_operando_session(
         # EC panel (optional)
         ec_state = None
         if ec_ax is not None:
-            time_h = _np.asarray(getattr(ec_ax, '_ec_time_h', []), float)
-            volt_v = _np.asarray(getattr(ec_ax, '_ec_voltage_v', []), float)
-            curr_mA = _np.asarray(getattr(ec_ax, '_ec_current_mA', []), float)
+            time_h = np.asarray(getattr(ec_ax, '_ec_time_h', []), float)
+            volt_v = np.asarray(getattr(ec_ax, '_ec_voltage_v', []), float)
+            curr_mA = np.asarray(getattr(ec_ax, '_ec_current_mA', []), float)
             mode = getattr(ec_ax, '_ec_y_mode', 'time')
             xlim = tuple(map(float, ec_ax.get_xlim()))
             ylim = tuple(map(float, ec_ax.get_ylim()))
             # Persist prior time-mode ylim and any ions array/params
             saved_time_ylim = getattr(ec_ax, '_saved_time_ylim', None)
-            ions_abs = _np.asarray(getattr(ec_ax, '_ions_abs', []), float) if getattr(ec_ax, '_ions_abs', None) is not None else None
+            ions_abs = np.asarray(getattr(ec_ax, '_ions_abs', []), float) if getattr(ec_ax, '_ions_abs', None) is not None else None
             ion_params = getattr(ec_ax, '_ion_params', None)
+            prev_ec_xlim = getattr(ec_ax, '_prev_ec_xlim', None)
+            ions_xlim_expanded = bool(getattr(ec_ax, '_ions_xlim_expanded', False))
+            ion_guides = []
+            for gl in getattr(ec_ax, '_ion_guides', []) or []:
+                try:
+                    ydata = np.asarray(gl.get_ydata(), float)
+                    if ydata.size:
+                        ion_guides.append(float(ydata[0]))
+                except Exception:
+                    pass
+            ion_annots = []
+            for ann in getattr(ec_ax, '_ion_annots', []) or []:
+                try:
+                    ion_annots.append({'text': ann.get_text(), 'xy': tuple(float(v) for v in ann.xy)})
+                except Exception:
+                    pass
             custom = getattr(ec_ax, '_custom_labels', {'x': None, 'y_time': None, 'y_ions': None})
             # EC line style (if present)
             ln = getattr(ec_ax, '_ec_line', None)
@@ -881,8 +944,13 @@ def dump_operando_session(
                     line_style = None
             
             # Capture EC WASD state, spines, and tick widths
-            ec_wasd_state = _capture_wasd_state(ec_ax)
-            ec_spines, ec_ticks = _capture_spine_tick_widths(ec_ax)
+            ec_wasd_state = capture_axis_wasd_state(
+                ec_ax,
+                use_actual_major_visibility=True,
+                use_right_ylabel_position=True,
+            )
+            ec_spines, ec_ticks = capture_axis_spines_and_tick_widths(ec_ax, _current_tick_width)
+            ec_tick_lengths = _capture_tick_lengths(ec_ax)
             
             # Capture EC title offsets
             ec_title_offsets = {
@@ -904,11 +972,19 @@ def dump_operando_session(
                 'saved_time_ylim': tuple(map(float, saved_time_ylim)) if isinstance(saved_time_ylim, (list, tuple)) else None,
                 'ions_abs': ions_abs,
                 'ion_params': ion_params,
+                'prev_ec_xlim': tuple(map(float, prev_ec_xlim)) if isinstance(prev_ec_xlim, (list, tuple)) else None,
+                'ions_xlim_expanded': ions_xlim_expanded,
+                'ion_guides': ion_guides,
+                'ion_annots': ion_annots,
                 'custom_labels': custom,
                 'line_style': line_style,
                 'wasd_state': ec_wasd_state,
                 'spines': ec_spines,
-                'ticks': {'widths': ec_ticks},
+                'ticks': {
+                    'widths': ec_ticks,
+                    'lengths': ec_tick_lengths,
+                    'direction': getattr(fig, '_tick_direction', 'out'),
+                },
                 'tick_locator_state': _capture_session_tick_locator(ec_ax),
                 'title_offsets': ec_title_offsets,
                 'stored_ylabel': getattr(ec_ax, '_stored_ylabel', None),  # Save hidden ylabel text
@@ -945,7 +1021,11 @@ def dump_operando_session(
                 'custom_labels': op_custom,
                 'wasd_state': op_wasd_state,
                 'spines': op_spines,
-                'ticks': {'widths': op_ticks},
+                'ticks': {
+                    'widths': op_ticks,
+                    'lengths': op_tick_lengths,
+                    'direction': getattr(fig, '_tick_direction', 'out'),
+                },
                 'tick_locator_state': _capture_session_tick_locator(ax),
                 'title_offsets': op_title_offsets,
                 'stored_ylabel': getattr(ax, '_stored_ylabel', None),  # Save hidden ylabel text
@@ -960,6 +1040,7 @@ def dump_operando_session(
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
+                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
             },
         }
         # CIF tick labels for operando (if present)
@@ -996,7 +1077,7 @@ def dump_operando_session(
         print(f"Error saving operando session: {e}")
 
 
-def load_operando_session(filename: str):
+def _load_operando_session_impl(filename: str):
     """Load an operando+EC session (.pkl) and reconstruct figure and axes.
 
     Returns: (fig, ax, im, cbar, ec_ax)
@@ -1127,13 +1208,13 @@ def load_operando_session(filename: str):
                 # Apply minor ticks (left y only when EC panel shares the figure)
                 _op_y_minor = 'left' if ec_wf > 0 else 'both'
                 apply_wasd_minor_ticks(ax, op_wasd, y_minor_mode=_op_y_minor)
-                # Store WASD state
-                op_ts = {}
-                for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
-                    s = op_wasd.get(side_key, {})
-                    op_ts[f'{prefix}_ticks'] = bool(s.get('ticks', False))
-                    op_ts[f'{prefix}_labels'] = bool(s.get('labels', False))
-                    op_ts[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
+                # Store WASD state with the same defaults used in tick_params above.
+                op_defaults = {'top': False, 'bottom': True, 'left': True, 'right': False}
+                op_ts = build_saved_tick_state(
+                    op_wasd,
+                    tick_defaults=op_defaults,
+                    label_defaults=op_defaults,
+                )
                 ax._saved_tick_state = op_ts
                 # Apply title flags (must be set before restoring labels below)
                 ax._top_xlabel_on = bool(op_wasd.get('top', {}).get('title', False))
@@ -1158,10 +1239,11 @@ def load_operando_session(filename: str):
     else:
         ax.set_xlabel('')  # Hidden by user via s5
     
-    # Left ylabel: restore if title is True (default) or if no WASD state
+    # Left ylabel: restore if title is True (default) or if saved text exists
     left_title_on = op_wasd.get('left', {}).get('title', True) if op_wasd else True
-    if left_title_on:
-        ax.set_ylabel(op['labels'].get('ylabel') or 'Scan index')
+    saved_ylabel = (op['labels'].get('ylabel') or '').strip()
+    if left_title_on or saved_ylabel:
+        ax.set_ylabel(saved_ylabel or 'Scan index')
         try:
             lp = op['labels'].get('y_labelpad')
             if lp is not None:
@@ -1241,6 +1323,14 @@ def load_operando_session(filename: str):
             if op_tick_widths.get('y_minor'): ax.tick_params(axis='y', which='minor', width=op_tick_widths['y_minor'])
         except Exception:
             pass
+    _apply_session_tick_lengths(fig, [ax], op.get('ticks', {}).get('lengths'))
+    try:
+        tick_direction = op.get('ticks', {}).get('direction')
+        if tick_direction:
+            setattr(fig, '_tick_direction', tick_direction)
+            ax.tick_params(axis='both', which='both', direction=tick_direction)
+    except Exception:
+        pass
 
     # Colorbar
     cbar = _Colorbar(cbar_ax, im)
@@ -1265,6 +1355,11 @@ def load_operando_session(filename: str):
         setattr(cbar.ax, '_colorbar_label_mode', label_mode)
         setattr(cbar.ax, '_colorbar_im', im)
         setattr(fig, '_colorbar_label_mode', label_mode)
+        try:
+            from .plot_modes.operando.layout import _update_custom_colorbar
+            _update_custom_colorbar(cbar.ax, im, label=label_text, label_mode=label_mode)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1306,6 +1401,9 @@ def load_operando_session(filename: str):
         # Persist saved time ylim
         if isinstance(ec.get('saved_time_ylim'), (list, tuple)):
             setattr(ec_ax, '_saved_time_ylim', tuple(ec['saved_time_ylim']))
+        if isinstance(ec.get('prev_ec_xlim'), (list, tuple)):
+            setattr(ec_ax, '_prev_ec_xlim', tuple(ec['prev_ec_xlim']))
+        setattr(ec_ax, '_ions_xlim_expanded', bool(ec.get('ions_xlim_expanded', False)))
         
         # Apply EC WASD state BEFORE setting labels (if version 2+)
         ec_wasd = None
@@ -1333,19 +1431,22 @@ def load_operando_session(filename: str):
                     left_ticks = False
                     left_labels = False
                     
-                    # EC right side should be True when ylabel is visible
-                    right_title = ec_wasd.get('right', {}).get('title', True)
-                    
-                    # If right title is ON, ticks/labels should also be ON
-                    if right_title:
-                        right_ticks = True
-                        right_labels = True
-                    else:
-                        # Title is hidden - respect the saved tick/label state or use False
-                        right_ticks_val = ec_wasd.get('right', {}).get('ticks')
-                        right_labels_val = ec_wasd.get('right', {}).get('labels')
-                        right_ticks = bool(right_ticks_val) if right_ticks_val is not None else False
-                        right_labels = bool(right_labels_val) if right_labels_val is not None else False
+                    # Preserve explicit saved right tick/label state. Older sessions
+                    # may only have a right title flag, so use it as a fallback.
+                    right_state = ec_wasd.get('right', {})
+                    right_title = bool(right_state.get('title', True))
+                    right_ticks_val = right_state.get('ticks')
+                    right_labels_val = right_state.get('labels')
+                    right_ticks = bool(right_ticks_val) if right_ticks_val is not None else right_title
+                    right_labels = bool(right_labels_val) if right_labels_val is not None else right_title
+                    # Legacy operando+EC sessions captured y ticks on the left side
+                    # while the y-axis title lived on the right. Restore right ticks
+                    # only for that drift pattern so intentional tick-off states remain.
+                    if right_title and not right_ticks and not right_labels:
+                        left_state = ec_wasd.get('left', {})
+                        if bool(left_state.get('ticks')) or bool(left_state.get('labels')):
+                            right_ticks = True
+                            right_labels = True
                     
                     ec_ax.tick_params(axis='y',
                                      left=left_ticks,
@@ -1353,13 +1454,19 @@ def load_operando_session(filename: str):
                                      labelleft=left_labels,
                                      labelright=right_labels)
                     apply_wasd_minor_ticks(ec_ax, ec_wasd, y_minor_mode='right')
-                    # Store WASD state
-                    ec_ts = {}
-                    for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
-                        s = ec_wasd.get(side_key, {})
-                        ec_ts[f'{prefix}_ticks'] = bool(s.get('ticks', False))
-                        ec_ts[f'{prefix}_labels'] = bool(s.get('labels', False))
-                        ec_ts[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
+                    # Store WASD state using the resolved left/right values actually applied above.
+                    ec_defaults = {'top': False, 'bottom': True, 'left': False, 'right': False}
+                    ec_ts = build_saved_tick_state(
+                        ec_wasd,
+                        tick_defaults=ec_defaults,
+                        label_defaults=ec_defaults,
+                        overrides={
+                            'l_ticks': left_ticks,
+                            'l_labels': left_labels,
+                            'r_ticks': right_ticks,
+                            'r_labels': right_labels,
+                        },
+                    )
                     ec_ax._saved_tick_state = ec_ts
                     # Apply title flags
                     ec_ax._top_xlabel_on = bool(ec_wasd.get('top', {}).get('title', False))
@@ -1380,54 +1487,32 @@ def load_operando_session(filename: str):
         if mode == 'ions':
             try:
                 # Rebuild ions formatter based on stored ions array if present; else leave time labels
-                t = _np.asarray(th, float)
+                t = np.asarray(th, float)
                 ions_abs = ec.get('ions_abs')
                 ion_params = ec.get('ion_params')
                 if ions_abs is None and ion_params and t is not None:
                     # Fallback: recompute ions from params
-                    i_mA = _np.asarray(ec.get('curr_mA'), float)
-                    v = _np.asarray(vv, float)
-                    dt = _np.diff(t)
-                    inc = _np.empty_like(t); inc[0] = 0.0
+                    i_mA = np.asarray(ec.get('curr_mA'), float)
+                    v = np.asarray(vv, float)
+                    dt = np.diff(t)
+                    inc = np.empty_like(t); inc[0] = 0.0
                     if t.size > 1:
                         inc[1:] = 0.5 * (i_mA[:-1] + i_mA[1:]) * dt
-                    cap_mAh = _np.cumsum(inc)
+                    cap_mAh = np.cumsum(inc)
                     mass_g = float(ion_params.get('mass_mg', 0.0)) / 1000.0
-                    with _np.errstate(divide='ignore', invalid='ignore'):
-                        cap_mAh_g = _np.where(mass_g>0, cap_mAh / mass_g, _np.nan)
-                        ions_delta = _np.where(ion_params.get('cap_per_ion_mAh_g', 0.0)>0,
-                                               cap_mAh_g / float(ion_params['cap_per_ion_mAh_g']), _np.nan)
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        cap_mAh_g = np.where(mass_g>0, cap_mAh / mass_g, np.nan)
+                        ions_delta = np.where(ion_params.get('cap_per_ion_mAh_g', 0.0)>0,
+                                               cap_mAh_g / float(ion_params['cap_per_ion_mAh_g']), np.nan)
                     ions_abs = float(ion_params.get('start_ions', 0.0)) + ions_delta
-                if ions_abs is not None and t is not None and len(ions_abs) == len(t):
-                    setattr(ec_ax, '_ions_abs', _np.asarray(ions_abs, float))
-                    # Install formatter and label
-                    y0, y1 = ec_ax.get_ylim()
-                    ions_y0 = float(_np.interp(y0, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
-                    ions_y1 = float(_np.interp(y1, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
-                    rng = abs(ions_y1 - ions_y0)
-                    def _nice_step(r, approx=6):
-                        if not _np.isfinite(r) or r <= 0:
-                            return 1.0
-                        raw = r / max(1, approx)
-                        exp = _np.floor(_np.log10(raw))
-                        base = raw / (10**exp)
-                        if base < 1.5: step = 1.0
-                        elif base < 3.5: step = 2.0
-                        elif base < 7.5: step = 5.0
-                        else: step = 10.0
-                        return step * (10**exp)
-                    step = _nice_step(rng)
-                    def _fmt(y, pos):
-                        try:
-                            val = float(_np.interp(y, t, ions_abs, left=ions_abs[0], right=ions_abs[-1]))
-                            if step > 0:
-                                val = round(val / step) * step
-                            s = ("%f" % val).rstrip('0').rstrip('.')
-                            return s
-                        except Exception:
-                            return ""
-                    ec_ax.yaxis.set_major_formatter(FuncFormatter(_fmt))
-                    ec_ax.yaxis.set_major_locator(MaxNLocator(nbins='auto', steps=[1,2,5], min_n_ticks=4))
+                if ions_abs is not None:
+                    ions_abs_arr = np.asarray(ions_abs, float)
+                    t_arr = np.asarray(t, float)
+                    if ions_abs_arr.size != t_arr.size:
+                        raise ValueError("stored ions array length does not match EC time array")
+                    setattr(ec_ax, '_ions_abs', ions_abs_arr)
+                    from .plot_modes.operando.ions_axis import install_ec_ions_y_display  # lazy: avoid operando→session cycle
+                    install_ec_ions_y_display(ec_ax, t_arr, ions_abs_arr)
                     # Label (custom if set) - respect WASD right title state
                     right_title_on = ec_wasd.get('right', {}).get('title', True) if ec_wasd else True
                     if right_title_on:
@@ -1435,6 +1520,21 @@ def load_operando_session(filename: str):
                         ec_ax.set_ylabel(lab)
                     else:
                         ec_ax.set_ylabel('')  # Hidden by user via d5
+                    ec_ax._ion_guides = []
+                    for y_guide in ec.get('ion_guides', []) or []:
+                        try:
+                            ec_ax._ion_guides.append(ec_ax.axhline(y=float(y_guide), color='0.7', linestyle='--', linewidth=0.8, alpha=0.5, zorder=0))
+                        except Exception:
+                            pass
+                    ec_ax._ion_annots = []
+                    for ann in ec.get('ion_annots', []) or []:
+                        try:
+                            txt = ec_ax.annotate(str(ann.get('text', '')), xy=tuple(ann.get('xy', (0.0, 0.0))), xytext=(0, 4), textcoords='offset points',
+                                                 ha='right', va='bottom', fontsize=9,
+                                                 bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='0.7', alpha=0.8))
+                            ec_ax._ion_annots.append(txt)
+                        except Exception:
+                            pass
             except Exception:
                 pass
         else:
@@ -1505,6 +1605,14 @@ def load_operando_session(filename: str):
                     if ec_tick_widths.get('y_minor'): ec_ax.tick_params(axis='y', which='minor', width=ec_tick_widths['y_minor'])
                 except Exception:
                     pass
+            _apply_session_tick_lengths(fig, [ec_ax], ec.get('ticks', {}).get('lengths'))
+            try:
+                tick_direction = ec.get('ticks', {}).get('direction')
+                if tick_direction:
+                    setattr(fig, '_tick_direction', tick_direction)
+                    ec_ax.tick_params(axis='both', which='both', direction=tick_direction)
+            except Exception:
+                pass
             # Restore tick locator state for ec_ax, then re-apply WASD minor visibility
             try:
                 _restore_session_tick_locator(ec_ax, ec.get('tick_locator_state'))
@@ -1542,7 +1650,7 @@ def load_operando_session(filename: str):
         # Apply layout with loaded offsets to ensure visual position matches saved position
         # This must happen after all offsets and geometry parameters are set
         try:
-            from .operando_ec_interactive import _apply_group_layout_inches, _ensure_fixed_params
+            from .plot_modes.operando.layout import _apply_group_layout_inches, _ensure_fixed_params
             # Get current geometry parameters (which should match what was just loaded)
             cb_w_i, cb_gap_i, ec_gap_i, ec_w_i, ax_w_i, ax_h_i = _ensure_fixed_params(fig, ax, cbar_ax, ec_ax)
             # Apply layout with loaded offsets (offsets are already set as attributes above)
@@ -1561,6 +1669,8 @@ def load_operando_session(filename: str):
             plt.rcParams['font.sans-serif'] = f['chain']
         if f.get('size'):
             plt.rcParams['font.size'] = f['size']
+        if f.get('mathtext_fontset'):
+            plt.rcParams['mathtext.fontset'] = f['mathtext_fontset']
     except Exception:
         pass
 
@@ -1619,10 +1729,20 @@ def load_operando_session(filename: str):
             dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
             while len(fig._operando_cif_y_positions) < len(ax._operando_cif_tick_series):
                 fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+            from .plot_modes.operando.plot import _draw_operando_cif_ticks
             _draw_operando_cif_ticks(ax, fig, ax._operando_cif_tick_series, ax._operando_cif_hkl_label_map,
                                     axis_mode=fig._operando_axis_mode, wl=fig._operando_wl,
                                     show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
                                     placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions)
+    except Exception:
+        pass
+
+    try:
+        fig._operando_session_loaded = True
+        if ec_ax is not None:
+            setattr(ec_ax, '_xlim_expanded_default', True)
+        from .plot_modes.operando.layout import _finalize_operando_session_axes
+        _finalize_operando_session_axes(fig, ax, ec_ax)
     except Exception:
         pass
 
@@ -1701,10 +1821,20 @@ def _ec_cycle_lines_to_lines_state(cycle_lines: Dict[int, Dict[str, Any]]) -> Di
                         'alpha': ln.get_alpha(),
                         'visible': bool(ln.get_visible()),
                         'label': ln.get_label() or '',
+                        'marker': ln.get_marker(),
+                        'markersize': ln.get_markersize(),
+                        'markerfacecolor': ln.get_markerfacecolor(),
+                        'markeredgecolor': ln.get_markeredgecolor(),
                     }
                 except Exception:
                     st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
-                entry[role] = {'x': x, 'y': y, 'style': st}
+                payload = {'x': x, 'y': y, 'style': st}
+                try:
+                    if hasattr(ln, '_orig_xdata_gc'):
+                        payload['orig_xdata_gc'] = np.asarray(getattr(ln, '_orig_xdata_gc'), float)
+                except Exception:
+                    pass
+                entry[role] = payload
         else:
             ln = parts
             try:
@@ -1728,15 +1858,25 @@ def _ec_cycle_lines_to_lines_state(cycle_lines: Dict[int, Dict[str, Any]]) -> Di
                     'alpha': ln.get_alpha(),
                     'visible': bool(ln.get_visible()),
                     'label': ln.get_label() or '',
+                    'marker': ln.get_marker(),
+                    'markersize': ln.get_markersize(),
+                    'markerfacecolor': ln.get_markerfacecolor(),
+                    'markeredgecolor': ln.get_markeredgecolor(),
                 }
             except Exception:
                 st = {'color': '#1f77b4', 'linewidth': 1.0, 'linestyle': '-', 'alpha': None, 'visible': True, 'label': ''}
-            entry['line'] = {'x': x, 'y': y, 'style': st}
+            payload = {'x': x, 'y': y, 'style': st}
+            try:
+                if hasattr(ln, '_orig_xdata_gc'):
+                    payload['orig_xdata_gc'] = np.asarray(getattr(ln, '_orig_xdata_gc'), float)
+            except Exception:
+                pass
+            entry['line'] = payload
         lines_state[int(cyc)] = entry
     return lines_state
 
 
-def dump_ec_session(
+def _dump_ec_session_impl(
     filename: str,
     *,
     fig,
@@ -1784,29 +1924,8 @@ def dump_ec_session(
             'xlabel_color': ax.xaxis.label.get_color(),
             'ylabel_color': ax.yaxis.label.get_color(),
         }
-        # Helper to capture WASD state
-        def _capture_wasd_state(axis):
-            ts = getattr(axis, '_saved_tick_state', {})
-            wasd = {}
-            for side in ('top', 'bottom', 'left', 'right'):
-                sp = axis.spines.get(side)
-                prefix = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}[side]
-                wasd[side] = {
-                    'spine': bool(sp.get_visible() if sp else False),
-                    'ticks': bool(ts.get(f'{prefix}_ticks', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                    'minor': bool(ts.get(f'm{prefix}x' if side in ('top','bottom') else f'm{prefix}y', False)),
-                    'labels': bool(ts.get(f'{prefix}_labels', ts.get({'top':'tx','bottom':'bx','left':'ly','right':'ry'}[side], side=='bottom' or side=='left'))),
-                    'title': (
-                        bool(getattr(axis, '_top_xlabel_on', False)) if side == 'top'
-                        else bool(getattr(axis, '_right_ylabel_on', False)) if side == 'right'
-                        else bool(axis.xaxis.label.get_visible()) if side == 'bottom'
-                        else bool(axis.yaxis.label.get_visible())
-                    ),
-                }
-            return wasd
-        
         # Capture WASD state
-        wasd_state = _capture_wasd_state(ax)
+        wasd_state = capture_axis_wasd_state(ax)
         
         # Tick visibility state (if present from interactive menu) - kept for backward compatibility
         tick_state = dict(getattr(ax, '_saved_tick_state', {
@@ -1821,6 +1940,12 @@ def dump_ec_session(
             'x_minor': _tick_width(ax.xaxis, 'minor'),
             'y_major': _tick_width(ax.yaxis, 'major'),
             'y_minor': _tick_width(ax.yaxis, 'minor'),
+        }
+        tick_lengths = {
+            'x_major': _current_tick_length(ax.xaxis, 'major'),
+            'x_minor': _current_tick_length(ax.xaxis, 'minor'),
+            'y_major': _current_tick_length(ax.yaxis, 'major'),
+            'y_minor': _current_tick_length(ax.yaxis, 'minor'),
         }
         # Tick direction
         tick_direction = getattr(fig, '_tick_direction', 'out')
@@ -1888,6 +2013,20 @@ def dump_ec_session(
                 legend_xy_in = (float(xy[0]), float(xy[1]))
         except Exception:
             legend_xy_in = None
+        dual_top_axis = None
+        try:
+            secax = getattr(fig, '_xaxis_secondary', None)
+            if secax is not None:
+                top_spine = secax.spines.get('top')
+                dual_top_axis = {
+                    'xlabel': secax.get_xlabel(),
+                    'xlabel_visible': bool(secax.xaxis.label.get_visible()),
+                    'label_color': to_hex(secax.xaxis.label.get_color()),
+                    'spine_visible': bool(top_spine.get_visible()) if top_spine is not None else True,
+                    'spine_color': to_hex(top_spine.get_edgecolor()) if top_spine is not None else None,
+                }
+        except Exception:
+            dual_top_axis = None
         sess = {
             'kind': 'ec_gc',
             'version': 2,
@@ -1912,6 +2051,7 @@ def dump_ec_session(
             'font': {
                 'size': plt.rcParams.get('font.size'),
                 'chain': list(plt.rcParams.get('font.sans-serif', [])),
+                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
             },
             'legend': {
                 'visible': legend_visible,
@@ -1922,6 +2062,7 @@ def dump_ec_session(
             'wasd_state': wasd_state,
             'tick_state': tick_state,
             'tick_widths': tick_widths,
+            'tick_lengths': tick_lengths,
             'tick_direction': tick_direction,
             'tick_locator_state': _capture_session_tick_locator(ax),
             'spines': spines_state,
@@ -1930,6 +2071,10 @@ def dump_ec_session(
             'mode': getattr(ax, '_is_dqdv_mode', None),  # Store dQdV mode flag
             'display_mode': getattr(fig, '_ec_display_mode', 'both'),  # charge/discharge/both
             'rotation_angle': getattr(fig, '_ec_rotation_angle', 0),  # Store rotation angle
+            'dqdv_smooth_settings': (
+                dict(getattr(fig, '_dqdv_smooth_settings', {}))
+                if hasattr(fig, '_dqdv_smooth_settings') else None
+            ),
             'source_paths': list(getattr(fig, '_bp_source_paths', []) or []),
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
@@ -1938,6 +2083,7 @@ def dump_ec_session(
                 'mode': getattr(fig, '_xaxis_mode', 'capacity'),
                 'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
                 'swapped': getattr(fig, '_xaxis_swapped', False),
+                'top_axis': dual_top_axis,
             },
         }
         if skip_confirm:
@@ -1960,11 +2106,11 @@ def dump_ec_session(
         print(f"Error saving EC session: {e}")
 
 
-def load_ec_session(
+def _load_ec_session_impl(
     filename: str,
     parent_fig: Optional[Any] = None,
     rect: Optional[Tuple[float, float, float, float]] = None,
-):
+) -> Optional[Tuple[Any, ...]]:
     """Load an EC GC session and reconstruct figure, axes, and cycle_lines or file_data.
 
     Returns: (fig, ax, cycle_lines) for single-file sessions, or (fig, ax, None, file_data) for multi-file.
@@ -2017,6 +2163,7 @@ def load_ec_session(
     embed = parent_fig is not None and rect is not None
 
     if embed:
+        assert parent_fig is not None and rect is not None
         fig = parent_fig
         ax = fig.add_axes(rect)
     else:
@@ -2072,6 +2219,8 @@ def load_ec_session(
             plt.rcParams['font.sans-serif'] = f['chain']
         if f.get('size'):
             plt.rcParams['font.size'] = f['size']
+        if f.get('mathtext_fontset'):
+            plt.rcParams['mathtext.fontset'] = f['mathtext_fontset']
     except Exception:
         pass
 
@@ -2123,9 +2272,33 @@ def load_ec_session(
                     ls = st.get('linestyle', '-') or '-'
                     alpha = st.get('alpha', None)
                     label = st.get('label', f'Cycle {cyc}')
+                    marker = st.get('marker', None)
+                    markersize = st.get('markersize', None)
+                    markerfacecolor = st.get('markerfacecolor', None)
+                    markeredgecolor = st.get('markeredgecolor', None)
                     try:
-                        ln_obj, = ax.plot(x, y, linestyle=ls, linewidth=lw, color=color, alpha=alpha, label=label)
+                        plot_kwargs = {
+                            'linestyle': ls,
+                            'linewidth': lw,
+                            'color': color,
+                            'alpha': alpha,
+                            'label': label,
+                        }
+                        if marker is not None:
+                            plot_kwargs['marker'] = marker
+                        if markersize is not None:
+                            plot_kwargs['markersize'] = markersize
+                        ln_obj, = ax.plot(x, y, **plot_kwargs)
+                        if markerfacecolor is not None:
+                            ln_obj.set_markerfacecolor(markerfacecolor)
+                        if markeredgecolor is not None:
+                            ln_obj.set_markeredgecolor(markeredgecolor)
                         ln_obj.set_visible(bool(st.get('visible', True)))
+                        if rec.get('orig_xdata_gc') is not None:
+                            try:
+                                setattr(ln_obj, '_orig_xdata_gc', np.asarray(rec.get('orig_xdata_gc'), float))
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 out[cyc] = ln_obj
@@ -2145,9 +2318,33 @@ def load_ec_session(
                         label = st.get('label', f'Cycle {cyc}')
                         if role == 'discharge' and (not label or label.startswith('_')):
                             label = '_nolegend_'
+                        marker = st.get('marker', None)
+                        markersize = st.get('markersize', None)
+                        markerfacecolor = st.get('markerfacecolor', None)
+                        markeredgecolor = st.get('markeredgecolor', None)
                         try:
-                            ln_obj, = ax.plot(x, y, linestyle=ls, linewidth=lw, color=color, alpha=alpha, label=label)
+                            plot_kwargs = {
+                                'linestyle': ls,
+                                'linewidth': lw,
+                                'color': color,
+                                'alpha': alpha,
+                                'label': label,
+                            }
+                            if marker is not None:
+                                plot_kwargs['marker'] = marker
+                            if markersize is not None:
+                                plot_kwargs['markersize'] = markersize
+                            ln_obj, = ax.plot(x, y, **plot_kwargs)
+                            if markerfacecolor is not None:
+                                ln_obj.set_markerfacecolor(markerfacecolor)
+                            if markeredgecolor is not None:
+                                ln_obj.set_markeredgecolor(markeredgecolor)
                             ln_obj.set_visible(bool(st.get('visible', True)))
+                            if rec.get('orig_xdata_gc') is not None:
+                                try:
+                                    setattr(ln_obj, '_orig_xdata_gc', np.asarray(rec.get('orig_xdata_gc'), float))
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                     cyc_entry[role] = ln_obj
@@ -2314,6 +2511,7 @@ def load_ec_session(
                 if tw.get('y_minor') is not None: ax.tick_params(axis='y', which='minor', width=float(tw['y_minor']))
             except Exception:
                 pass
+        _apply_session_tick_lengths(fig, [ax], sess.get('tick_lengths'))
         
         # Apply tick direction from version 2
         try:
@@ -2495,6 +2693,12 @@ def load_ec_session(
             ax._is_dqdv_mode = bool(mode)
     except Exception:
         pass
+    try:
+        smooth_cfg = sess.get('dqdv_smooth_settings')
+        if isinstance(smooth_cfg, dict) and smooth_cfg:
+            fig._dqdv_smooth_settings = dict(smooth_cfg)
+    except Exception:
+        pass
 
     # Restore dual x-axis (capacity bottom, ions top) for EC GC mode
     try:
@@ -2533,6 +2737,23 @@ def load_ec_session(
                     else:
                         ax.set_xlabel(capacity_label)
                         secax.set_xlabel(ions_label)
+                    top_axis_cfg = xd.get('top_axis') if isinstance(xd, dict) else None
+                    if isinstance(top_axis_cfg, dict):
+                        try:
+                            if top_axis_cfg.get('xlabel') is not None:
+                                secax.set_xlabel(str(top_axis_cfg.get('xlabel') or ''))
+                            secax.xaxis.label.set_visible(bool(top_axis_cfg.get('xlabel_visible', True)))
+                            if top_axis_cfg.get('label_color'):
+                                secax.xaxis.label.set_color(top_axis_cfg['label_color'])
+                            sp = secax.spines.get('top')
+                            if sp is not None:
+                                if top_axis_cfg.get('spine_visible') is not None:
+                                    sp.set_visible(bool(top_axis_cfg.get('spine_visible')))
+                                if top_axis_cfg.get('spine_color'):
+                                    sp.set_edgecolor(top_axis_cfg['spine_color'])
+                                    secax.tick_params(axis='x', which='both', colors=top_axis_cfg['spine_color'])
+                        except Exception:
+                            pass
                     try:
                         font_fam = plt.rcParams.get('font.sans-serif', [''])
                         font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
@@ -2636,10 +2857,10 @@ def load_ec_session(
         try:
             blob = sess.get('dqdv_2d')
             if isinstance(blob, dict) and blob.get('Z') is not None:
-                from .electrochem_interactive import restore_dqdv_2d_companion_figure
+                from .plot_modes.electrochem.interactive import restore_dqdv_2d_companion_figure
                 cbundle = restore_dqdv_2d_companion_figure(blob)
                 if cbundle:
-                    fig._dqdv_2d_companion_bundle = cbundle
+                    setattr(fig, '_dqdv_2d_companion_bundle', cbundle)
         except Exception as _e2d:
             print(f"Warning: could not restore dQ/dV 2D companion: {_e2d}")
     if file_data_out is not None:
@@ -2648,7 +2869,7 @@ def load_ec_session(
 
 # --------------------- CPC (Capacity-Per-Cycle) session helpers -----------------
 
-def dump_cpc_session(
+def _dump_cpc_session_impl(
     filename: str,
     *,
     fig,
@@ -2678,12 +2899,12 @@ def dump_cpc_session(
         def _scatter_xy(sc):
             try:
                 offs = sc.get_offsets()
-                arr = _np.asarray(offs, float)
+                arr = np.asarray(offs, float)
                 if arr.ndim == 2 and arr.shape[1] >= 2:
-                    return _np.array(arr[:,0], float), _np.array(arr[:,1], float)
+                    return np.array(arr[:,0], float), np.array(arr[:,1], float)
             except Exception:
                 pass
-            return _np.array([]), _np.array([])
+            return np.array([]), np.array([])
         x_c, y_c = _scatter_xy(sc_charge)
         x_d, y_d = _scatter_xy(sc_discharge)
         x_e, y_e = _scatter_xy(sc_eff)
@@ -2764,6 +2985,14 @@ def dump_cpc_session(
             'ry_major': _tick_width(ax2.yaxis, 'major'),
             'ry_minor': _tick_width(ax2.yaxis, 'minor'),
         }
+        tick_lengths = {
+            'x_major': _current_tick_length(ax.xaxis, 'major'),
+            'x_minor': _current_tick_length(ax.xaxis, 'minor'),
+            'ly_major': _current_tick_length(ax.yaxis, 'major'),
+            'ly_minor': _current_tick_length(ax.yaxis, 'minor'),
+            'ry_major': _current_tick_length(ax2.yaxis, 'major'),
+            'ry_minor': _current_tick_length(ax2.yaxis, 'minor'),
+        }
         
         # Subplot margins
         sp = fig.subplotpars
@@ -2776,12 +3005,12 @@ def dump_cpc_session(
         
         # Capture WASD state: start from figure attr when present, then reconcile with
         # current axes + saved tick keys so every save path stays accurate.
-        wasd_state = getattr(fig, '_cpc_wasd_state', None)
-        if not isinstance(wasd_state, dict):
-            wasd_state = {}
+        wasd_state_raw = getattr(fig, '_cpc_wasd_state', None)
+        wasd_state: Dict[str, Any] = wasd_state_raw if isinstance(wasd_state_raw, dict) else {}
         ts = dict(getattr(ax, '_saved_tick_state', {}) or {})
         def _merged_side(side_name, default_ticks, default_labels, default_spine, default_minor):
-            s = wasd_state.get(side_name, {}) if isinstance(wasd_state.get(side_name, {}), dict) else {}
+            side_state = wasd_state.get(side_name, {})
+            s = side_state if isinstance(side_state, dict) else {}
             alias_map = {'top': 'tx', 'bottom': 'bx', 'left': 'ly', 'right': 'ry'}
             prefix_map = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}
             pref = prefix_map[side_name]
@@ -2924,6 +3153,8 @@ def dump_cpc_session(
             },
             'wasd_state': wasd_state,
             'tick_widths': tick_widths,
+            'tick_lengths': tick_lengths,
+            'tick_direction': getattr(fig, '_tick_direction', 'out'),
             'tick_locator_state_ax': _capture_session_tick_locator(ax),
             'tick_locator_state_ax2': _capture_session_tick_locator(ax2),
             'stored_titles': stored_titles,
@@ -2936,6 +3167,7 @@ def dump_cpc_session(
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
             ),
             'display_mode': getattr(fig, '_cpc_display_mode', 'both'),
+            'spine_colors_auto': bool(getattr(fig, '_cpc_spine_auto', False)),
         }
         
         # Add multi-file data if available
@@ -2978,8 +3210,8 @@ def dump_cpc_session(
                     'display_name': f.get('display_name', f.get('filename', 'unknown')),
                     'visible': f.get('visible', True),
                     'charge': {
-                        'x': _np.array(_scatter_xy(sc_ch)[0]),
-                        'y': _np.array(_scatter_xy(sc_ch)[1]),
+                        'x': np.array(_scatter_xy(sc_ch)[0]),
+                        'y': np.array(_scatter_xy(sc_ch)[1]),
                         'color': ch_col,
                         'hollow': ch_hollow,
                         'size': _size_of(sc_ch, 32.0),
@@ -2989,8 +3221,8 @@ def dump_cpc_session(
                         'visible': _visible_of(sc_ch),
                     },
                     'discharge': {
-                        'x': _np.array(_scatter_xy(sc_dh)[0]),
-                        'y': _np.array(_scatter_xy(sc_dh)[1]),
+                        'x': np.array(_scatter_xy(sc_dh)[0]),
+                        'y': np.array(_scatter_xy(sc_dh)[1]),
                         'color': dh_col,
                         'hollow': dh_hollow,
                         'size': _size_of(sc_dh, 32.0),
@@ -3000,8 +3232,8 @@ def dump_cpc_session(
                         'visible': _visible_of(sc_dh),
                     },
                     'efficiency': {
-                        'x': _np.array(_scatter_xy(sc_ef)[0]),
-                        'y': _np.array(_scatter_xy(sc_ef)[1]),
+                        'x': np.array(_scatter_xy(sc_ef)[0]),
+                        'y': np.array(_scatter_xy(sc_ef)[1]),
                         'color': ef_col,
                         'hollow': ef_hollow,
                         'size': _size_of(sc_ef, 40.0),
@@ -3028,7 +3260,7 @@ def dump_cpc_session(
         print(f"Error saving CPC session: {e}")
 
 
-def load_cpc_session(filename: str):
+def _load_cpc_session_impl(filename: str):
     """Load a CPC session and reconstruct fig, axes, scatter artists, and file_data.
 
     Returns: (fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
@@ -3139,9 +3371,9 @@ def load_cpc_session(filename: str):
         ef = sr.get('efficiency', {})
         def _mk_sc(axX, rec, default_marker='o'):
             x_val = rec.get('x')
-            x = _np.asarray(x_val if x_val is not None else [], float)
+            x = np.asarray(x_val if x_val is not None else [], float)
             y_val = rec.get('y')
-            y = _np.asarray(y_val if y_val is not None else [], float)
+            y = np.asarray(y_val if y_val is not None else [], float)
             col = rec.get('color') or 'tab:blue'
             s = float(rec.get('size', 32.0) or 32.0)
             alpha = rec.get('alpha', None)
@@ -3251,6 +3483,7 @@ def load_cpc_session(filename: str):
         try:
             if not hasattr(fig, '_cpc_spine_colors') or not isinstance(fig._cpc_spine_colors, dict):
                 fig._cpc_spine_colors = {}
+            fig._cpc_spine_auto = bool(sess.get('spine_colors_auto', False))
             fig_meta = sess.get('figure', {})
             spines_state = fig_meta.get('spines', {})
             for key, props in spines_state.items():
@@ -3302,6 +3535,7 @@ def load_cpc_session(filename: str):
                 ax2.tick_params(axis='y', which='minor', width=tick_widths['ry_minor'])
         except Exception:
             pass
+        _apply_session_tick_lengths(fig, [ax, ax2], sess.get('tick_lengths'))
         
         # Restore tick direction (version 2+)
         try:
@@ -3334,10 +3568,17 @@ def load_cpc_session(filename: str):
                     bottom=margins.get('bottom', 0.11),
                     top=margins.get('top', 0.88)
                 )
-            
+            axes_bbox = fig_meta.get('axes_bbox')
+            applied_axes_bbox = _apply_axes_bbox(ax, axes_bbox)
+            if applied_axes_bbox:
+                try:
+                    ax2.set_position(ax.get_position())
+                except Exception:
+                    pass
+
             # Restore exact frame size if stored (for precision)
             frame_size = fig_meta.get('frame_size')
-            if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+            if (not applied_axes_bbox) and frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
                 target_w_in, target_h_in = map(float, frame_size)
                 # Get current canvas size
                 canvas_w_in, canvas_h_in = fig.get_size_inches()
@@ -3554,7 +3795,7 @@ def load_cpc_session(filename: str):
                 fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
             except Exception:
                 fig._cpc_legend_xy_in = None
-            from .cpc_interactive import _rebuild_legend
+            from .plot_modes.cpc.legend import _rebuild_legend
             _rebuild_legend(ax, ax2, file_data, preserve_position=True)
             if not vis:
                 leg = ax.get_legend() or ax2.get_legend()
@@ -3576,7 +3817,7 @@ def load_cpc_session(filename: str):
         return None
 
 
-def load_xy_session(filename: str):
+def _load_xy_session_impl(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  # pyright: ignore[reportGeneralTypeIssues]
     """Load an XY/1D session (sessions with 'version' and 'x_data' but no 'kind').
 
     Replicates the reconstruction logic from batplot.py for XY sessions.
@@ -3605,7 +3846,7 @@ def load_xy_session(filename: str):
 
     if not isinstance(sess, dict) or 'version' not in sess or 'x_data' not in sess:
         return None
-    if sess.get('kind') is not None:
+    if sess.get('kind') not in (None, 'xy'):
         return None
 
     try:
@@ -3796,8 +4037,6 @@ def load_xy_session(filename: str):
             for ln, st in zip(lines_to_style, stored_styles):
                 if ln is None:
                     continue
-                if 'color' in st:
-                    ln.set_color(st['color'])
                 if 'linewidth' in st:
                     ln.set_linewidth(st['linewidth'])
                 if 'linestyle' in st:
@@ -3817,16 +4056,24 @@ def load_xy_session(filename: str):
                         ln.set_markersize(st['markersize'])
                     except Exception:
                         pass
-                if 'markerfacecolor' in st and st['markerfacecolor'] is not None:
-                    try:
-                        ln.set_markerfacecolor(st['markerfacecolor'])
-                    except Exception:
-                        pass
-                if 'markeredgecolor' in st and st['markeredgecolor'] is not None:
-                    try:
-                        ln.set_markeredgecolor(st['markeredgecolor'])
-                    except Exception:
-                        pass
+                if 'color' in st:
+                    apply_curve_color(ln, st['color'])
+                else:
+                    if 'markerfacecolor' in st and st['markerfacecolor'] is not None:
+                        try:
+                            ln.set_markerfacecolor(st['markerfacecolor'])
+                        except Exception:
+                            pass
+                    if 'markeredgecolor' in st and st['markeredgecolor'] is not None:
+                        try:
+                            ln.set_markeredgecolor(st['markeredgecolor'])
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        try:
+            _restore_xy_curve_palette_history(fig, sess.get('curve_palettes', []))
         except Exception:
             pass
 
@@ -3917,6 +4164,8 @@ def load_xy_session(filename: str):
             plt.rcParams['font.sans-serif'] = font_cfg['chain']
         if font_cfg.get('size'):
             plt.rcParams['font.size'] = font_cfg['size']
+        if font_cfg.get('mathtext_fontset'):
+            plt.rcParams['mathtext.fontset'] = font_cfg['mathtext_fontset']
 
         saved_tick = sess.get('tick_state', {})
         for k, v in saved_tick.items():
@@ -3977,8 +4226,9 @@ def load_xy_session(filename: str):
                         sp.set_visible(bool(state['spine']))
                 for side in ('top', 'bottom'):
                     state = wasd.get(side, {})
-                    tick_key = 'tick1On' if side == 'top' else 'tick2On'
-                    label_key = 'label1On' if side == 'top' else 'label2On'
+                    # x-axis: tick2/label2 = top, tick1/label1 = bottom
+                    tick_key = 'tick2On' if side == 'top' else 'tick1On'
+                    label_key = 'label2On' if side == 'top' else 'label1On'
                     if 'ticks' in state:
                         ax.tick_params(axis='x', which='major', **{tick_key: bool(state['ticks'])})
                     if 'labels' in state:
@@ -4011,6 +4261,14 @@ def load_xy_session(filename: str):
                         setattr(ax, '_stored_ylabel', stored_ylabel)
                 setattr(ax, '_top_xlabel_on', wasd.get('top', {}).get('title', False))
                 setattr(ax, '_right_ylabel_on', wasd.get('right', {}).get('title', False))
+        except Exception:
+            pass
+
+        # Restore tick spacing / minor-count locators (saved as 'tick_locator_state').
+        # Must run after WASD (which only toggles minor visibility) so custom MultipleLocator /
+        # AutoMinorLocator settings from the t->n / t->m menus survive save+load like the other menus.
+        try:
+            _restore_session_tick_locator(ax, sess.get('tick_locator_state'))
         except Exception:
             pass
 
@@ -4250,11 +4508,19 @@ def load_xy_session(filename: str):
 
         titles = sess.get('axis_titles', {})
         title_texts = sess.get('axis_title_texts', {})
+        title_offsets = sess.get('title_offsets', {})
         bottom_text = title_texts.get('bottom_x') or title_texts.get('bottom')
         left_text = title_texts.get('left_y') or title_texts.get('left')
         top_text = title_texts.get('top_x') or title_texts.get('top')
         right_text = title_texts.get('right_y') or title_texts.get('right')
         try:
+            if title_offsets:
+                ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
+                ax._top_xlabel_manual_offset_x_pts = float(title_offsets.get('top_x', 0.0) or 0.0)
+                ax._bottom_xlabel_manual_offset_y_pts = float(title_offsets.get('bottom_y', 0.0) or 0.0)
+                ax._left_ylabel_manual_offset_x_pts = float(title_offsets.get('left_x', 0.0) or 0.0)
+                ax._right_ylabel_manual_offset_x_pts = float(title_offsets.get('right_x', 0.0) or 0.0)
+                ax._right_ylabel_manual_offset_y_pts = float(title_offsets.get('right_y', 0.0) or 0.0)
             if bottom_text is not None:
                 ax._stored_xlabel = bottom_text
             if left_text is not None:
@@ -4316,6 +4582,14 @@ def load_xy_session(filename: str):
         except Exception:
             pass
 
+        try:
+            fig_cfg_spines = sess.get('figure', {}).get('spines', {})
+            _restore_xy_axis_style_from_session(ax, axis_cfg, fig=fig, spines_cfg=fig_cfg_spines)
+            _ui_position_bottom_xlabel(ax, fig, tick_state)
+            _ui_position_left_ylabel(ax, fig, tick_state)
+        except Exception:
+            pass
+
         args_subset = sess.get('args_subset', {})
         Args = type('Args', (), {
             'stack': saved_stack,
@@ -4339,7 +4613,7 @@ def load_xy_session(filename: str):
         menu_kwargs = {
             'y_data_list': y_data_list,
             'x_data_list': x_data_list,
-            'labels_list': labels_list,
+            'labels': labels_list,
             'orig_y': orig_y,
             'label_text_objects': label_text_objects,
             'delta': delta,
@@ -4360,3 +4634,58 @@ def load_xy_session(filename: str):
         print(f"Error loading XY session: {e}")
         traceback.print_exc()
         return None
+
+
+# Public facade -------------------------------------------------------------
+#
+# Keep the stable batplot.session API while routing ownership through the
+# per-mode session modules. The mode modules currently call the private
+# implementations above; future extraction can move those implementations into
+# the mode modules without changing callers or pickle schemas.
+
+@wraps(_dump_session_impl)
+def dump_session(*args, **kwargs):
+    from .plot_modes.xy.session import dump_session as _dump
+    return _dump(*args, **kwargs)
+
+
+@wraps(_load_xy_session_impl)
+def load_xy_session(*args, **kwargs):
+    from .plot_modes.xy.session import load_xy_session as _load
+    return _load(*args, **kwargs)
+
+
+@wraps(_dump_ec_session_impl)
+def dump_ec_session(*args, **kwargs):
+    from .plot_modes.electrochem.session import dump_ec_session as _dump
+    return _dump(*args, **kwargs)
+
+
+@wraps(_load_ec_session_impl)
+def load_ec_session(*args, **kwargs):
+    from .plot_modes.electrochem.session import load_ec_session as _load
+    return _load(*args, **kwargs)
+
+
+@wraps(_dump_cpc_session_impl)
+def dump_cpc_session(*args, **kwargs):
+    from .plot_modes.cpc.session import dump_cpc_session as _dump
+    return _dump(*args, **kwargs)
+
+
+@wraps(_load_cpc_session_impl)
+def load_cpc_session(*args, **kwargs):
+    from .plot_modes.cpc.session import load_cpc_session as _load
+    return _load(*args, **kwargs)
+
+
+@wraps(_dump_operando_session_impl)
+def dump_operando_session(*args, **kwargs):
+    from .plot_modes.operando.session import dump_operando_session as _dump
+    return _dump(*args, **kwargs)
+
+
+@wraps(_load_operando_session_impl)
+def load_operando_session(*args, **kwargs):
+    from .plot_modes.operando.session import load_operando_session as _load
+    return _load(*args, **kwargs)

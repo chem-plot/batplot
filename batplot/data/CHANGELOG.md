@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.8.44] - 2026-06-25
+- Bug fixes
+
+
+## [1.8.43] - 2026-06-25
+- Bug fixes
+
+
+## [1.8.42] - 2026-06-12
+- Bug fixes
+
+
+## [1.8.41] - 2026-06-12
+- Bug fixes
+- Complete update of the codebase
+
+
+## [Unreleased]
+- New `file:q` suffix marks a file's x data as already in Q (no conversion, implies Q axis)
+- Auto Q mode (from `file:wl` / `.qye` / `--wl`) no longer requires `--xaxis q` when some files lack wavelength info; such files are assumed already in Q with a printed note
+
 ## [1.8.40] - 2026-05-27
 - Bug fixes
 
