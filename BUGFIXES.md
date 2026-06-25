@@ -4,6 +4,45 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-06-25: GitHub Actions CI failures (checkout, Agg backend, matplotlib 3.11 colormaps)
+
+### Summary
+Every push to `main` emailed CI failure notices. The workflow checkout script broke
+(`$ref` eaten by GitHub Actions), pytest on Windows tried Tk without Tcl, `--gc`
+routes ignored `MPLBACKEND=Agg`, and matplotlib 3.11 removed `cm.get_cmap`.
+
+### Fix
+- Replaced custom PowerShell checkout with `actions/checkout` and
+  `actions/setup-python`.
+- Added `batplot/_mpl_backend.py` and import it from `cli.py` so Agg is selected
+  before pyplot loads.
+- `_ensure_gui_backend_for_interactive()` now respects explicit non-interactive
+  `MPLBACKEND` values instead of forcing TkAgg on Windows for `--gc`.
+- Routed remaining palette lookups through `color_utils.get_colormap()` instead of
+  deprecated `matplotlib.cm.get_cmap` / bare `plt.get_cmap`.
+- Fixed f-string backslash syntax in `dev_upgrade.py` that broke test collection
+  on Python 3.11+.
+
+### Compatibility
+Windows, macOS, Linux. CI matrix restored: all three OSes × Python 3.9–3.13.
+
+### Affected Files
+- `.github/workflows/tests.yml`
+- `batplot/_mpl_backend.py` (new)
+- `batplot/cli.py`
+- `batplot/batplot.py`
+- `batplot/batch.py`
+- `batplot/color_utils.py`
+- `batplot/dev_upgrade.py`
+- `batplot/plot_modes/common/palettes.py`
+- `batplot/plot_modes/cpc/{colors,routing}.py`
+- `batplot/plot_modes/electrochem/colors.py`
+- `batplot/plot_modes/operando/{colors,interactive,plot}.py`
+- `batplot/plot_modes/xy/pipeline.py`
+- `tests/conftest.py`
+
+---
+
 ## 2026-06-10: Unified default canvas and plot size for GC, CV, dQ/dV, and CPC
 
 ### Summary

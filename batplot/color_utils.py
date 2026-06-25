@@ -171,7 +171,9 @@ def ensure_colormap(name: Optional[str]) -> bool:
     # STEP 4: Final fallback - try to get it directly from matplotlib
     # This handles any other matplotlib-compatible colormap
     try:
-        plt.get_cmap(base_lower)
+        from matplotlib import colormaps as mpl_colormaps
+
+        _ = mpl_colormaps[base_lower]
         return True
     except Exception:
         return False
@@ -313,24 +315,7 @@ def palette_preview(name: str, steps: int = 8) -> str:
     ensure_colormap(name)
     
     # Try to get the colormap from matplotlib
-    cmap: Optional[Colormap]
-    try:
-        cmap = plt.get_cmap(name)
-    except Exception:
-        cmap = None
-        # Fallback: try cmcrameri if it's a batlow variant
-        lower = name.lower()
-        if lower.startswith('batlow'):
-            try:
-                import cmcrameri.cm as cmc  # type: ignore[import]
-                if hasattr(cmc, lower):
-                    cmap = getattr(cmc, lower)
-                elif hasattr(cmc, 'batlow'):
-                    cmap = getattr(cmc, 'batlow')
-            except Exception:
-                return ""
-        else:
-            return ""
+    cmap: Optional[Colormap] = get_colormap(name)
 
     # If we still don't have a colormap, bail out
     if cmap is None:

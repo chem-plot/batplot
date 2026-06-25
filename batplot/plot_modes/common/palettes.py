@@ -15,6 +15,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
+from ...color_utils import get_colormap
+
 
 TAB10_HEX: Tuple[str, ...] = (
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -181,7 +183,7 @@ def sample_palette_colors(
     if not ensure_colormap(name):
         name = "viridis"
         ensure_colormap(name)
-    cmap_getter = get_cmap or plt.get_cmap
+    cmap_getter = get_cmap or get_colormap
     try:
         cmap = cmap_getter(name)
     except Exception:

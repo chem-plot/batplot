@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import matplotlib.cm as cm  # type: ignore[import]
 from matplotlib.colors import hsv_to_rgb, rgb_to_hsv, to_rgb  # type: ignore[import]
 
 from ...color_utils import (
     color_block,
     ensure_colormap,
+    get_colormap,
     get_user_color_list,
     manage_user_colors,
     palette_preview,
@@ -41,7 +41,7 @@ def cpc_palette_color(name: str, idx: int = 0, total: int = 1):
         name,
         max(total, 1),
         ensure_colormap=ensure_colormap,
-        get_cmap=cm.get_cmap,
+        get_cmap=get_colormap,
         prefer_listed_colors=True,
         pair=(0.15, 0.85),
         span=(0.08, 0.88),
@@ -59,7 +59,8 @@ def parse_file_range_palette(tokens: list[str], n_files: int, palette_opts: list
     try:
         if not ensure_colormap(last):
             raise ValueError(last)
-        cm.get_cmap(last)
+        if get_colormap(last) is None:
+            raise ValueError(last)
         palette = last
     except Exception:
         if last.isdigit() and 1 <= int(last) <= len(palette_opts):

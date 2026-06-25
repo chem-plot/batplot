@@ -18,8 +18,9 @@ from typing import Tuple, cast
 
 import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
-import matplotlib.cm as cm  # type: ignore[import-untyped]
 import matplotlib.colors as mcolors  # type: ignore[import-untyped]
+
+from ...color_utils import get_colormap
 
 from ...ec_common import (
     _resolve_mass,
@@ -88,7 +89,10 @@ def handle_cpc_mode(args) -> int:
         eff_positions = np.linspace(0.08, 0.88, n_files)
     
     # Use viridis for efficiency
-    efficiency_cmap = cm.get_cmap('viridis')
+    efficiency_cmap = get_colormap('viridis')
+    if efficiency_cmap is None:
+        print("Could not load viridis colormap.")
+        exit(1)
     efficiency_colors = [mcolors.rgb2hex(efficiency_cmap(pos)[:3]) for pos in eff_positions]
     
     for file_idx, ec_file in enumerate(data_files):

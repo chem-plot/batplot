@@ -6,9 +6,10 @@ import os
 import json
 from typing import Tuple, cast
 
-import matplotlib.cm as cm  # type: ignore[import]
-import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
+import numpy as np  # type: ignore[import]
+
+from .color_utils import get_colormap
 
 from .readers import (
     read_gr_file,
@@ -961,9 +962,11 @@ def batch_process_ec(directory: str, args):
             
             if remaining <= 60:
                 # Use tab20, tab20b, tab20c for categorical colors (up to 70 total)
-                tab20 = cm.get_cmap('tab20')
-                tab20b = cm.get_cmap('tab20b')
-                tab20c = cm.get_cmap('tab20c')
+                tab20 = get_colormap('tab20')
+                tab20b = get_colormap('tab20b')
+                tab20c = get_colormap('tab20c')
+                if tab20 is None or tab20b is None or tab20c is None:
+                    return colors[:n_colors]
                 
                 for i in range(remaining):
                     cmap_idx = i % 60
@@ -987,7 +990,9 @@ def batch_process_ec(directory: str, args):
                 colors_per_map = (remaining + len(cmaps) - 1) // len(cmaps)
                 
                 for cmap_name in cmaps:
-                    cmap = cm.get_cmap(cmap_name)
+                    cmap = get_colormap(cmap_name)
+                    if cmap is None:
+                        continue
                     # Sample evenly across the colormap
                     for i in range(colors_per_map):
                         if len(colors) >= n_colors:

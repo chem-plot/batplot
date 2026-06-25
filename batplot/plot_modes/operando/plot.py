@@ -47,6 +47,7 @@ import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
 
 from ...converters import convert_to_qye
+from ...color_utils import get_colormap
 from ...readers import (
     robust_loadtxt_skipheader,
     read_mpt_file,
@@ -909,8 +910,8 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
                     label += f" (λ={wl_file:.5f} Å)"
                 # Use tab10 cycle for distinct default colors
                 try:
-                    tab10 = plt.get_cmap('tab10')
-                    default_col = tab10(i % 10)
+                    tab10 = get_colormap('tab10')
+                    default_col = tab10(i % 10) if tab10 is not None else 'k'
                 except Exception:
                     default_col = 'k'
                 cif_tick_series.append((label, str(Path(fname).resolve()), refl, wl_file if use_2th else None, qmax_sim, default_col))

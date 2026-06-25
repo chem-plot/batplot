@@ -494,11 +494,14 @@ def batplot_main() -> int:  # type: ignore
         wants_interactive = wants_interactive or ("--gc" in argv)
         if not wants_interactive:
             return
-        # If MPLBACKEND is set to a GUI backend, respect it; if it's non-interactive, we'll override below
+        # If MPLBACKEND is set to a GUI backend, respect it.
         env_be = os.environ.get("MPLBACKEND")
         if env_be:
             low = env_be.lower()
-            if low in {"macosx","tkagg","qtagg"}:
+            if low in {"macosx", "tkagg", "qtagg"}:
+                return
+            # Respect explicit non-interactive backends (CI, pytest, batch export).
+            if ("agg" in low) or ("inline" in low) or (low in {"pdf", "ps", "svg", "template"}):
                 return
         try:
             be = _mpl.get_backend()

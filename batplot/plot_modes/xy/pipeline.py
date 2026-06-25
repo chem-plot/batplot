@@ -22,6 +22,7 @@ import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
 from ...batch import _apply_xy_style
+from ...color_utils import get_colormap
 from ...utils import (
     _confirm_overwrite,
     xy_cif_stack_y_offset,
@@ -1177,7 +1178,10 @@ def run_xy_pipeline(args) -> int:
             try:
                 n_cif = len(cif_tick_series)
                 if n_cif <= 10:
-                    tab10 = plt.get_cmap('tab10').colors
+                    tab10_cmap = get_colormap('tab10')
+                    tab10 = tab10_cmap.colors if tab10_cmap is not None and hasattr(tab10_cmap, 'colors') else None
+                    if not tab10:
+                        raise ValueError("tab10 colormap unavailable")
                     # Reorder indices for more distinct neighboring colors
                     order = [0, 3, 6, 1, 4, 7, 2, 5, 8, 9]
                     new_series = []
@@ -1186,7 +1190,9 @@ def run_xy_pipeline(args) -> int:
                         color = tab10[idx]
                         new_series.append((lab, fname, peaksQ, wl, qmax_sim, color))
                 else:
-                    cmap = plt.get_cmap('viridis')
+                    cmap = get_colormap('viridis')
+                    if cmap is None:
+                        raise ValueError("viridis colormap unavailable")
                     positions = np.linspace(0.0, 1.0, n_cif)
                     new_series = []
                     for (pos, (lab, fname, peaksQ, wl, qmax_sim, col)) in zip(positions, cif_tick_series):

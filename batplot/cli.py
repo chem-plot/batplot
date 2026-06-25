@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
+from . import _mpl_backend  # noqa: F401  — set Agg before pyplot loads
+
 
 def main(argv: Optional[list] = None) -> int:
 	"""

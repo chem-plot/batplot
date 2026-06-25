@@ -13,6 +13,7 @@ from ...color_utils import (
     color_bar,
     color_block,
     ensure_colormap,
+    get_colormap,
     get_user_color_list,
     manage_user_colors,
     palette_preview,
@@ -100,7 +101,8 @@ def _parse_file_palette_tokens(tokens: List[str], n_files: int, fig=None) -> Opt
     try:
         if not ensure_colormap(alias):
             raise ValueError(alias)
-        plt.get_cmap(alias)
+        if get_colormap(alias) is None:
+            raise ValueError(alias)
         palette = alias
     except Exception:
         return None
@@ -190,7 +192,8 @@ def _parse_per_file_cycle_tokens(
         try:
             if not ensure_colormap(alias):
                 raise ValueError(alias)
-            plt.get_cmap(alias)
+            if get_colormap(alias) is None:
+                raise ValueError(alias)
             palette = alias
             remaining = remaining[:-1]
         except Exception:
@@ -217,7 +220,8 @@ def _parse_fall_cycles_tokens(
         try:
             if not ensure_colormap(alias):
                 raise ValueError(alias)
-            plt.get_cmap(alias)
+            if get_colormap(alias) is None:
+                raise ValueError(alias)
             palette = alias
             cycle_tokens = cycle_tokens[:-1]
         except Exception:
@@ -313,7 +317,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
         try:
             if not ensure_colormap(alias):
                 raise ValueError(alias)
-            plt.get_cmap(alias)
+            if get_colormap(alias) is None:
+                raise ValueError(alias)
             return ("palette", [], {}, alias, True)
         except Exception:
             # Unknown palette -> still select all, no recolor
@@ -350,7 +355,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
         try:
             if not ensure_colormap(alias):
                 raise ValueError(alias)
-            plt.get_cmap(alias)
+            if get_colormap(alias) is None:
+                raise ValueError(alias)
             palette = alias
             num_tokens = tokens[:-1]
             cycles = _expand_cycle_number_tokens(num_tokens)
@@ -362,7 +368,8 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
     try:
         if not ensure_colormap(last):
             raise ValueError(last)
-        plt.get_cmap(last)
+        if get_colormap(last) is None:
+            raise ValueError(last)
         palette = last
         num_tokens = tokens[:-1]
         cycles = _expand_cycle_number_tokens(num_tokens)
@@ -467,7 +474,7 @@ def run_ec_cycles_menu(
                               for i in range(n_visible)]
             else:
                 try:
-                    cmap = plt.get_cmap(fc_palette) if fc_palette else None
+                    cmap = get_colormap(fc_palette) if fc_palette else None
                 except Exception:
                     cmap = None
                 if cmap is not None:
@@ -532,7 +539,7 @@ def run_ec_cycles_menu(
                         ]
                     elif pf_palette:
                         try:
-                                    cmap = plt.get_cmap(pf_palette)
+                                    cmap = get_colormap(pf_palette)
                         except Exception:
                             cmap = None
                         if cmap is not None:
@@ -586,7 +593,7 @@ def run_ec_cycles_menu(
                         cols = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)]) for i in range(n_files)]
                     else:
                         try:
-                                    cmap = plt.get_cmap(fp_palette) if fp_palette else None
+                                    cmap = get_colormap(fp_palette) if fp_palette else None
                         except Exception:
                             cmap = None
                         if cmap is None:
@@ -676,7 +683,7 @@ def run_ec_cycles_menu(
                                         for i in range(n)]
                             else:
                                 try:
-                                            cmap = plt.get_cmap(palette) if palette else None
+                                            cmap = get_colormap(palette) if palette else None
                                 except Exception:
                                     cmap = None
                                 if cmap is None:

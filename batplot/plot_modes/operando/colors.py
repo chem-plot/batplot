@@ -5,7 +5,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib.colors import LinearSegmentedColormap  # type: ignore[import-untyped]
 
-from ...color_utils import palette_preview
+from ...color_utils import get_colormap, palette_preview
 from ..common.palettes import palette_items
 
 try:
@@ -92,10 +92,9 @@ def apply_operando_colormap(im, choice: str):
         else:
             raise ValueError(f"Unknown colormap '{choice}'")
     if palette_obj is None:
-        try:
-            palette_obj = plt.get_cmap(base_choice)
-        except Exception as exc:
-            raise ValueError(f"Unknown colormap '{choice}'") from exc
+        palette_obj = get_colormap(base_choice)
+        if palette_obj is None:
+            raise ValueError(f"Unknown colormap '{choice}'")
     if reversed_choice:
         palette_obj = palette_obj.reversed()
     im.set_cmap(palette_obj)

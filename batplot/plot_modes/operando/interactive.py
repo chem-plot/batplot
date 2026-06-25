@@ -98,6 +98,7 @@ from ...color_utils import (
     palette_preview,
     resolve_color_token,
     ensure_colormap,
+    get_colormap,
 )
 from matplotlib import colors as mcolors  # type: ignore[import-untyped]
 import re
@@ -105,7 +106,6 @@ import traceback
 from io import StringIO
 
 import matplotlib as mpl  # type: ignore[import-untyped]
-import matplotlib.cm as cm  # type: ignore[import-untyped]
 import matplotlib.lines  # type: ignore[import-untyped]
 from matplotlib.ticker import ScalarFormatter  # type: ignore[import-untyped]
 try:
@@ -2164,7 +2164,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         if base.lower() == 'tab10':
                             colors = [TAB10_HEX[i % len(TAB10_HEX)] for i in range(n)]
                         else:
-                            cmap = cm.get_cmap(pal_name)
+                            cmap = get_colormap(pal_name)
+                            if cmap is None:
+                                raise ValueError(f"Unknown colormap '{pal_name}'")
                             colors = [mcolors.to_hex(cmap(i / max(n - 1, 1))) for i in range(n)]
                     except Exception as e:
                         print(f"Could not apply colormap: {e}")
