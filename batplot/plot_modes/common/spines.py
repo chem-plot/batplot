@@ -7,7 +7,7 @@ application that is identical across modes.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence, cast
 
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib.ticker import (  # type: ignore[import-untyped]
@@ -340,7 +340,7 @@ def current_tick_width(axis_obj: Any, which: str) -> Optional[float]:
         width = tick_kw.get("width")
         if width is None:
             axis_name = getattr(axis_obj, "axis_name", "x")
-            width = plt.rcParams.get(f"{axis_name}tick.{which}.width")
+            width = plt.rcParams.get(cast(Any, f"{axis_name}tick.{which}.width"))
         return float(width) if width is not None else None
     except Exception:
         return None

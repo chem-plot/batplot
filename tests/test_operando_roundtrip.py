@@ -30,7 +30,7 @@ from conftest import assert_allclose, loaded
 def _build_operando_figure():
     fig, ax = plt.subplots()
     Z = np.random.default_rng(0).random((50, 80))
-    im = ax.imshow(Z, aspect="auto", origin="lower", extent=[10.0, 40.0, 0.0, 20.0],
+    im = ax.imshow(Z, aspect="auto", origin="lower", extent=(10.0, 40.0, 0.0, 20.0),
                    cmap="viridis")
     cbar = fig.colorbar(im, ax=ax)
     ec_ax = fig.add_axes((0.78, 0.1, 0.18, 0.8))

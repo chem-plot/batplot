@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 import matplotlib.patches as mpatches  # type: ignore[import]
@@ -116,7 +116,7 @@ def _color_of(artist):
                     return color[0]
             if color is not None:
                 try:
-                    return to_hex(color)
+                    return to_hex(cast(Any, color))
                 except Exception:
                     return color
         if hasattr(artist, "get_facecolors"):

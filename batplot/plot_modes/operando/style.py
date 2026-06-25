@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Any, Tuple, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +20,7 @@ def _axis_tick_width(axis_obj, which: str = 'major'):
             if width is None:
                 axis_name = getattr(axis_obj, 'axis_name', 'x')
                 rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(rc_key)
+                width = plt.rcParams.get(cast(Any, rc_key))
             return float(width) if width is not None else None
         for tick in ticks:
             line = tick.tick1line

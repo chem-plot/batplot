@@ -18,6 +18,8 @@ were dominated by matplotlib/numpy stub mismatches (dynamic Figure/Axes attrs,
   and test fixtures.
 - `np.where` mask coerced with `np.asarray(..., dtype=bool)`.
 - `np.trapz` → `getattr(np, "trapezoid", np.trapz)(...)` for numpy 2.x stubs.
+- Targeted typing fixes for CI-only basedpyright errors: `rcParams.get` keys,
+  `set_position`/`imshow` extent tuples, `cycles is None` guards, colormap cast.
 - Stopped tracking `batplot.egg-info/` (already in `.gitignore`).
 
 ### Compatibility

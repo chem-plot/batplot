@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, cast
 
 import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
@@ -1220,7 +1220,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     if width is None:
                         axis_name = getattr(axis_obj, 'axis_name', 'x')
                         rc_key = f"{axis_name}tick.{which}.width"
-                        width = plt.rcParams.get(rc_key)
+                        width = plt.rcParams.get(cast(Any, rc_key))
                     if width is not None:
                         return float(width)
                 except Exception:

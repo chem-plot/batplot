@@ -109,7 +109,7 @@ def handle_gc_mode(args) -> int:
             blocks.append((start, prev))
             return blocks
 
-        def _broken_arrays_from_indices(idx, x, y):
+        def _broken_arrays_from_idx(idx, x, y):
             if idx.size == 0:
                 return np.array([]), np.array([])
             parts_x, parts_y = [], []
@@ -200,7 +200,7 @@ def handle_gc_mode(args) -> int:
                         idx = np.where(mask_c)[0]
                         ln_c = None
                         if idx.size >= 2:
-                            x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                            x_b, y_b = _broken_arrays_from_idx(idx, cap_x, voltage)
                             col = base_colors[(color_offset + cyc - 1) % len(base_colors)]
                             leg_cyc = f"{file_lbl}: {cyc}" if file_lbl else str(cyc)
                             if getattr(args, 'ro', False):
@@ -211,7 +211,7 @@ def handle_gc_mode(args) -> int:
                         idxd = np.where(mask_d)[0]
                         ln_d = None
                         if idxd.size >= 2:
-                            xd_b, yd_b = _broken_arrays_from_indices(idxd, cap_x, voltage)
+                            xd_b, yd_b = _broken_arrays_from_idx(idxd, cap_x, voltage)
                             lbl = '_nolegend_' if ln_c is not None else (f"{file_lbl}: {cyc}" if file_lbl else str(cyc))
                             col = base_colors[(color_offset + cyc - 1) % len(base_colors)]
                             if getattr(args, 'ro', False):
@@ -231,7 +231,7 @@ def handle_gc_mode(args) -> int:
                         if i < len(ch_blocks):
                             a, b = ch_blocks[i]
                             idx = np.arange(a, b + 1)
-                            x_b, y_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                            x_b, y_b = _broken_arrays_from_idx(idx, cap_x, voltage)
                             if getattr(args, 'ro', False):
                                 ln_c, = ax.plot(y_b, x_b, '-', color=col, linewidth=2.0, label=leg_cyc, alpha=0.8)
                             else:
@@ -240,7 +240,7 @@ def handle_gc_mode(args) -> int:
                         if i < len(dch_blocks):
                             a, b = dch_blocks[i]
                             idx = np.arange(a, b + 1)
-                            xd_b, yd_b = _broken_arrays_from_indices(idx, cap_x, voltage)
+                            xd_b, yd_b = _broken_arrays_from_idx(idx, cap_x, voltage)
                             lbl = '_nolegend_' if ln_c is not None else (f"{file_lbl}: {cyc}" if file_lbl else str(cyc))
                             if getattr(args, 'ro', False):
                                 ln_d, = ax.plot(yd_b, xd_b, '-', color=col, linewidth=2.0, label=lbl, alpha=0.8)
@@ -1260,6 +1260,8 @@ def handle_cv_mode(args) -> int:
                     voltage = mpt_result[0]
                     current = mpt_result[1]
                     cycles = mpt_result[2]
+                if cycles is None:
+                    continue
                 cyc_int_raw = np.array(np.rint(cycles), dtype=int)
                 if cyc_int_raw.size:
                     unique_cycles_raw = np.unique(cyc_int_raw)
@@ -1391,6 +1393,8 @@ def handle_cv_mode(args) -> int:
                 voltage = mpt_result[0]
                 current = mpt_result[1]
                 cycles = mpt_result[2]
+            if cycles is None:
+                continue
             # Normalize cycle indices to start at 1
             # Find the first cycle with at least 2 data points (needed for plotting)
             cyc_int_raw = np.array(np.rint(cycles), dtype=int)

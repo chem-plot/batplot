@@ -271,6 +271,7 @@ def convert_xrd_data(
         
         # Perform conversion based on type
         if conversion_type == "wavelength_to_wavelength":
+            assert from_wl is not None and to_wl is not None
             # Step 1: Convert 2θ (from_wl) → Q
             theta_rad = np.radians(x / 2)  # Convert 2θ to θ in radians
             q = 4 * np.pi * np.sin(theta_rad) / from_wl
@@ -287,12 +288,14 @@ def convert_xrd_data(
             output_ext = os.path.splitext(fname)[1]  # Keep original extension
             
         elif conversion_type == "wavelength_to_q":
+            assert from_wl is not None
             # Convert 2θ → Q
             theta_rad = np.radians(x / 2)  # Convert 2θ to θ in radians
             x_new = 4 * np.pi * np.sin(theta_rad) / from_wl
             output_ext = ".qye"
             
         elif conversion_type == "q_to_wavelength":
+            assert to_wl is not None
             # Convert Q → 2θ
             # Q = 4π sin(θ) / λ, so sin(θ) = Q × λ / (4π)
             sin_theta = x * to_wl / (4 * np.pi)

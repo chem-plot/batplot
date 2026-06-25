@@ -169,7 +169,7 @@ def test_dump_load_preserves_tick_lengths(session_path):
 
 def test_dump_load_preserves_exact_axes_bbox(session_path):
     fig, ax, ax2, sc_c, sc_d, sc_e, cyc = _build_cpc_figure()
-    ax.set_position([0.20, 0.25, 0.50, 0.45])
+    ax.set_position((0.20, 0.25, 0.50, 0.45))
     ax2.set_position(ax.get_position())
     p = session_path("cpc_axes_bbox.pkl")
 

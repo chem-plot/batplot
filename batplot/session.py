@@ -35,7 +35,7 @@ import subprocess
 import sys
 import traceback
 from functools import wraps
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 import numpy as np  # type: ignore[import-untyped]
 from numpy import ma as _ma
@@ -217,7 +217,7 @@ def _current_tick_width(axis_obj, which: str):
             axis_name = getattr(axis_obj, 'axis_name', 'x')
             # Build rcParams key: 'xtick.major.width' or 'ytick.minor.width'
             rc_key = f"{axis_name}tick.{which}.width"
-            width = plt.rcParams.get(rc_key)  # Get from global settings
+            width = plt.rcParams.get(cast(Any, rc_key))  # Get from global settings
         
         # Convert to float if found
         if width is not None:
@@ -248,7 +248,7 @@ def _current_tick_length(axis_obj, which: str):
     try:
         axis_name = getattr(axis_obj, 'axis_name', 'x')
         rc_key = f"{axis_name}tick.{which}.size"
-        length = plt.rcParams.get(rc_key)
+        length = plt.rcParams.get(cast(Any, rc_key))
         return float(length) if length is not None else None
     except Exception:
         return None
@@ -2933,7 +2933,7 @@ def _dump_cpc_session_impl(
                     if isinstance(c, (list, tuple)) and c and not isinstance(c, str):
                         return (to_hex(c[0]), False)
                     try:
-                        return (to_hex(c), False)
+                        return (to_hex(cast(Any, c)), False)
                     except Exception:
                         return (c, False)
             except Exception:

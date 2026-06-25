@@ -461,7 +461,7 @@ def read_csv_file(fname: str):
                         ncols = max(ncols, len(line.strip().split(delim)))
                         break
             _conv = {i: _to_float_decimal for i in range(min(ncols, 256))}
-            data = np.genfromtxt(fname, delimiter=delim, comments="#", converters=_conv)
+            data = np.genfromtxt(fname, delimiter=delim, comments="#", converters=cast(Any, _conv))
             if data.ndim == 1:
                 data = data.reshape(1, -1)
             if data.shape[1] >= 2:
@@ -903,7 +903,7 @@ def loadtxt_with_decimal_comma(fname: str, comments: str = "#", **kwargs: Any) -
             ncols = max(ncols, len(line.split()))
             break
     conv = {i: _to_float_decimal for i in range(min(ncols, 256))}
-    return np.loadtxt(fname, comments=comments, converters=conv, **kwargs)
+    return np.loadtxt(fname, comments=comments, converters=cast(Any, conv), **kwargs)
 
 
 def _csv_cell_to_float(cell: str) -> float:

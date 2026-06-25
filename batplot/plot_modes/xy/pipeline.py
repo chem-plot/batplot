@@ -17,6 +17,7 @@ import os
 import sys
 import json
 import pickle
+from typing import Any, cast
 
 import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
@@ -968,7 +969,7 @@ def run_xy_pipeline(args) -> int:
         else:
             new_ymin = min(needed_min, prev_ylim[0])
             ylim_draw = (new_ymin, prev_ylim[1])
-        ax.set_ylim(ylim_draw)
+        ax.set_ylim(cast(Any, ylim_draw))
 
         cur_ylim = ax.get_ylim()
         yr = cur_ylim[1] - cur_ylim[0]

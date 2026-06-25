@@ -134,7 +134,7 @@ def test_dump_load_preserves_dqdv_smooth_and_ions_original_x(session_path):
 def test_dqdv_2d_snapshot_preserves_interactive_style_state():
     fig, ax = plt.subplots()
     z = np.arange(20, dtype=float).reshape(4, 5)
-    im = ax.imshow(z, aspect="auto", origin="lower", extent=[0.0, 2.0, -0.5, 3.5])
+    im = ax.imshow(z, aspect="auto", origin="lower", extent=(0.0, 2.0, -0.5, 3.5))
     cbar = fig.colorbar(im, ax=ax)
     ax.set_xlabel("Custom voltage")
     ax.set_ylabel("Custom row")

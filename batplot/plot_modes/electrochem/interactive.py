@@ -918,7 +918,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             if width is None:
                 axis_name = getattr(axis_obj, 'axis_name', 'x')
                 rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(rc_key)
+                width = plt.rcParams.get(cast(Any, rc_key))
             if width is not None:
                 return float(width)
         except Exception:

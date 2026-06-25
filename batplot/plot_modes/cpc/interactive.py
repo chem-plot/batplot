@@ -33,7 +33,7 @@ This is useful for comparing different battery cells, materials, or conditions.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 import json
 import os
 import sys
@@ -226,7 +226,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             if width is None:
                 axis_name = getattr(axis_obj, 'axis_name', 'x')
                 rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(rc_key)
+                width = plt.rcParams.get(cast(Any, rc_key))
             if width is not None:
                 return float(width)
         except Exception:

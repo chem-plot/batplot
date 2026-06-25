@@ -9,7 +9,7 @@ keeps its own established defaults.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple, cast
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -197,7 +197,7 @@ def sample_palette_colors(
             if isinstance(rgb, tuple) and len(rgb) >= 3:
                 out.append(mcolors.rgb2hex(rgb[:3]))
             else:
-                out.append(mcolors.to_hex(rgb))
+                out.append(mcolors.to_hex(cast(Any, rgb)))
         return out
     sampled = sample_colormap(cmap, n, single=single, pair=pair, span=span)
     return [mcolors.rgb2hex(color[:3]) for color in sampled]

@@ -14,7 +14,7 @@ The menu supports both dual-panel mode (with .mpt file) and operando-only mode.
 
 from __future__ import annotations
 
-from typing import Tuple, Dict, Optional, Any
+from typing import Tuple, Dict, Optional, Any, cast
 import json
 import os
 import sys
@@ -131,7 +131,7 @@ def _axis_tick_width(axis_obj, which: str = 'major'):
         if width is None:
             axis_name = getattr(axis_obj, 'axis_name', 'x')
             rc_key = f"{axis_name}tick.{which}.width"
-            width = plt.rcParams.get(rc_key)
+            width = plt.rcParams.get(cast(Any, rc_key))
         if width is not None:
             return float(width)
     except (AttributeError, TypeError, ValueError, KeyError):

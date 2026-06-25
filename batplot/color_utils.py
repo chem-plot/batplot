@@ -41,7 +41,7 @@ This is useful when you want the color order flipped.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, cast
 
 import matplotlib.pyplot as plt  # type: ignore[import]
 from matplotlib import colors as mcolors  # type: ignore[import]
@@ -203,7 +203,7 @@ def get_colormap(name: Optional[str]) -> Optional[Colormap]:
         if callable(registry_get):
             for candidate in candidates:
                 try:
-                    return registry_get(candidate)
+                    return cast(Colormap, registry_get(candidate))
                 except Exception:
                     pass
         for candidate in candidates:

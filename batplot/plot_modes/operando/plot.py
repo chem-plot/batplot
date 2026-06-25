@@ -41,10 +41,12 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, cast
 
 import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
+from matplotlib.figure import Figure  # type: ignore[import]
+from matplotlib.axes import Axes  # type: ignore[import]
 
 from ...converters import convert_to_qye
 from ...color_utils import get_colormap
@@ -276,7 +278,7 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
                         transform=trans, clip_on=False, zorder=5 if highlight else 3)
             if pe:
                 try:
-                    ln.set_path_effects(pe)
+                    ln.set_path_effects(cast(Any, pe))
                 except Exception:
                     pass
             fig.add_artist(ln)
@@ -306,7 +308,7 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
         pass
 
 
-def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure, plt.Axes, Dict[str, Any]]:
+def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[Figure, Axes, Dict[str, Any]]:
     """
     Plot operando contour from a folder of diffraction files.
     
@@ -831,10 +833,10 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[plt.Figure,
         ax_x0_new = cb_x0_new + cb_wf_new + cb_gap_f
         ec_x0_new = ax_x0_new + ax_wf_new + ec_gap_f if ec_ax is not None else None
         # Apply (operando, cbar, ec – CIF ticks drawn as figure annotations, no separate axis)
-        ax.set_position([ax_x0_new, y0, ax_wf_new, ax_hf_new])
-        cbar.ax.set_position([cb_x0_new, y0, cb_wf_new, ax_hf_new])
+        ax.set_position((ax_x0_new, y0, ax_wf_new, ax_hf_new))
+        cbar.ax.set_position((cb_x0_new, y0, cb_wf_new, ax_hf_new))
         if ec_ax is not None and ec_x0_new is not None:
-            ec_ax.set_position([ec_x0_new, y0, ec_wf_new, ax_hf_new])
+            ec_ax.set_position((ec_x0_new, y0, ec_wf_new, ax_hf_new))
         
         # Draw the colorbar (even in non-interactive mode). Resolve the helper
         # lazily so it works regardless of module import order (plot.py and

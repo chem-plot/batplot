@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 import json
 import os
 
@@ -71,7 +71,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
             if width is None:
                 axis_name = getattr(axis_obj, 'axis_name', 'x')
                 rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(rc_key)
+                width = plt.rcParams.get(cast(Any, rc_key))
             if width is not None:
                 return float(width)
         except Exception:
