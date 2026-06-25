@@ -598,7 +598,7 @@ def _required_package_data_files(project_root: Path) -> list[str]:
         return []
     rel_paths: list[str] = []
     for item in re.findall(r'"([^"]+)"', package_match.group("items")):
-        rel_paths.append(f"batplot/{item.replace('\\\\', '/')}")
+        rel_paths.append("batplot/" + item.replace("\\", "/"))
     return sorted(set(rel_paths))
 
 
