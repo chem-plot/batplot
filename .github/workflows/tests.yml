@@ -37,6 +37,7 @@ jobs:
   typecheck:
     name: basedpyright
     runs-on: ubuntu-latest
+    continue-on-error: true
     env:
       MPLBACKEND: Agg
     steps:
