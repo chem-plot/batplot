@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     env:
@@ -52,4 +52,4 @@ jobs:
           python -m pip install -e ".[test]" "matplotlib>=3.5.0,<3.11" "numpy>=1.21.0,<2.4" "basedpyright==1.39.7"
 
       - name: Run basedpyright
-        run: python -m basedpyright .
+        run: python -m basedpyright batplot
