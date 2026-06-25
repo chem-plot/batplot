@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ...ui import position_left_ylabel as _ui_position_left_ylabel
 from ...ui import position_right_ylabel as _ui_position_right_ylabel
 from ...ui import position_top_xlabel as _ui_position_top_xlabel
 from ...utils import (

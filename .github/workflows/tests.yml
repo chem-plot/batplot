@@ -17,86 +17,14 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     env:
-      # Headless Matplotlib so the suite runs identically with no display.
       MPLBACKEND: Agg
 
     steps:
-      - name: Check out repository
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SERVER_URL: ${{ github.server_url }}
-          REF_NAME: ${{ github.ref }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          git init .
-          git remote add origin "$env:SERVER_URL/$env:REPOSITORY.git"
+      - uses: actions/checkout@v4
 
-          $ref = $env:REF_NAME
-          if ($env:EVENT_NAME -eq "pull_request") {
-            $ref = "refs/pull/$env:PR_NUMBER/merge"
-          }
-
-          git -c "http.extraheader=AUTHORIZATION: bearer $env:GITHUB_TOKEN" fetch --depth=1 origin "+$ref:refs/remotes/origin/ci-ref"
-          git checkout --force refs/remotes/origin/ci-ref
-
-      - name: Set up Python ${{ matrix.python-version }}
-        shell: pwsh
-        env:
-          PYTHON_VERSION: ${{ matrix.python-version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $toolCache = $env:AGENT_TOOLSDIRECTORY
-          if (-not $toolCache) {
-            if ($IsWindows) {
-              $toolCache = "C:\hostedtoolcache\windows"
-            } elseif ($IsMacOS) {
-              $toolCache = "/Users/runner/hostedtoolcache"
-            } else {
-              $toolCache = "/opt/hostedtoolcache"
-            }
-          }
-
-          $pythonRoot = Join-Path $toolCache "Python"
-          if (-not (Test-Path $pythonRoot)) {
-            throw "Python toolcache was not found at $pythonRoot."
-          }
-
-          $versionPrefix = [regex]::Escape($env:PYTHON_VERSION)
-          $install = Get-ChildItem $pythonRoot -Directory |
-            Where-Object { $_.Name -match "^$versionPrefix\." } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1
-
-          if (-not $install) {
-            throw "Python $env:PYTHON_VERSION was not found in runner toolcache at $pythonRoot."
-          }
-
-          $machineArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-          $preferredArch = if ($machineArch -eq "arm64") { "arm64" } else { "x64" }
-          $archRoot = Get-ChildItem $install.FullName -Directory |
-            Where-Object { $_.Name -in @($preferredArch, "x64", "arm64") } |
-            Select-Object -First 1
-
-          if (-not $archRoot) {
-            throw "No Python architecture directory was found under $($install.FullName)."
-          }
-
-          $binDir = if ($IsWindows) { $archRoot.FullName } else { Join-Path $archRoot.FullName "bin" }
-          $pythonExe = if ($IsWindows) { Join-Path $binDir "python.exe" } else { Join-Path $binDir "python" }
-
-          if (-not (Test-Path $pythonExe)) {
-            throw "Python executable was not found at $pythonExe."
-          }
-
-          $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          if ($IsWindows) {
-            (Join-Path $archRoot.FullName "Scripts") | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          }
-          $pythonExe --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install package + test dependencies
         run: |
@@ -112,71 +40,11 @@ jobs:
     env:
       MPLBACKEND: Agg
     steps:
-      - name: Check out repository
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SERVER_URL: ${{ github.server_url }}
-          REF_NAME: ${{ github.ref }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          git init .
-          git remote add origin "$env:SERVER_URL/$env:REPOSITORY.git"
+      - uses: actions/checkout@v4
 
-          $ref = $env:REF_NAME
-          if ($env:EVENT_NAME -eq "pull_request") {
-            $ref = "refs/pull/$env:PR_NUMBER/merge"
-          }
-
-          git -c "http.extraheader=AUTHORIZATION: bearer $env:GITHUB_TOKEN" fetch --depth=1 origin "+$ref:refs/remotes/origin/ci-ref"
-          git checkout --force refs/remotes/origin/ci-ref
-
-      - name: Set up Python 3.12
-        shell: pwsh
-        env:
-          PYTHON_VERSION: "3.12"
-        run: |
-          $ErrorActionPreference = "Stop"
-          $toolCache = $env:AGENT_TOOLSDIRECTORY
-          if (-not $toolCache) {
-            $toolCache = "/opt/hostedtoolcache"
-          }
-
-          $pythonRoot = Join-Path $toolCache "Python"
-          if (-not (Test-Path $pythonRoot)) {
-            throw "Python toolcache was not found at $pythonRoot."
-          }
-
-          $versionPrefix = [regex]::Escape($env:PYTHON_VERSION)
-          $install = Get-ChildItem $pythonRoot -Directory |
-            Where-Object { $_.Name -match "^$versionPrefix\." } |
-            Sort-Object { [version]$_.Name } -Descending |
-            Select-Object -First 1
-
-          if (-not $install) {
-            throw "Python $env:PYTHON_VERSION was not found in runner toolcache at $pythonRoot."
-          }
-
-          $archRoot = Get-ChildItem $install.FullName -Directory |
-            Where-Object { $_.Name -in @("x64", "arm64") } |
-            Select-Object -First 1
-
-          if (-not $archRoot) {
-            throw "No Python architecture directory was found under $($install.FullName)."
-          }
-
-          $binDir = Join-Path $archRoot.FullName "bin"
-          $pythonExe = Join-Path $binDir "python"
-
-          if (-not (Test-Path $pythonExe)) {
-            throw "Python executable was not found at $pythonExe."
-          }
-
-          $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          $pythonExe --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install package + type checker
         run: |
