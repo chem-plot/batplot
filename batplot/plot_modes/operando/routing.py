@@ -13,6 +13,7 @@ import os
 
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
+from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
 from .plot import plot_operando_folder
 
 try:
@@ -23,6 +24,7 @@ except ImportError:
 
 def handle_operando_mode(args) -> int:
     """Handle the ``--operando`` route. Always exits via ``exit()`` on completion."""
+    ensure_gui_backend(args)
     try:
         # Determine target folder and optional CIF files
         # Usage: batplot folder [phase.cif:1.54 ...] --operando --interactive
@@ -99,18 +101,7 @@ def handle_operando_mode(args) -> int:
 
         # Interactive or show
         if args.interactive:
-            try:
-                _backend = plt.get_backend()
-            except Exception:
-                _backend = "unknown"
-            # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-            _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-            _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-            if _is_noninteractive:
-                print(f"Matplotlib backend '{_backend}' is non-interactive; a window cannot be shown.")
-                print("Tips: unset MPLBACKEND or set a GUI backend")
-                print("Or run without --interactive and use --out to save the figure.")
-            else:
+            if require_interactive_display(args, context="operando interactive menu"):
                 try:
                     plt.ion()
                 except Exception:
@@ -120,8 +111,6 @@ def handle_operando_mode(args) -> int:
                 except Exception:
                     pass
                 try:
-                    # Call interactive menu regardless of EC presence
-                    # When ec_ax is None, EC-related commands will be disabled
                     if operando_ec_interactive_menu is not None:
                         operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=args.files)
                     else:
@@ -131,17 +120,7 @@ def handle_operando_mode(args) -> int:
                 plt.show()
         else:
             if not (args.savefig or args.out):
-                try:
-                    _backend = plt.get_backend()
-                except Exception:
-                    _backend = "unknown"
-                # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-                _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-                _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-                if not _is_noninteractive:
-                    plt.show()
-                else:
-                    print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
+                show_figure_if_possible(args)
         exit()
     except Exception as _e:
         print(f"Operando plot failed: {_e}")

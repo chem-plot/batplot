@@ -6,7 +6,69 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
-## 2026-06-25: numpy 2.x CPC/EPC energy integration crash (`np.trapz` removed)
+## 2026-06-30: `--dev-upgrade` GitHub push failed with staged index; add `--dev-git`
+
+### Summary
+After PyPI upload, ``batplot --dev-upgrade`` could fail at the GitHub step with
+``cannot pull with rebase: Your index contains uncommitted changes``. The staged
+release snapshot also included tracked ``__pycache__``/``.DS_Store`` files.
+PyPI was updated but ``latest_release_notes.json`` never reached GitHub, so old
+installs showed generic "Bug fixes" in update notifications.
+
+### Fix
+- **Commit before pull --rebase** (rebase runs on the release commit, not a staged index).
+- **Unstage excluded paths** (bytecode, caches, build artifacts) even when tracked.
+- **`batplot --dev-git`**: sync ``latest_release_notes.json`` + push to GitHub with **no** PyPI bump/upload.
+- Update notification no longer prints duplicate lines when ``custom_message`` equals ``update_notes[0]``.
+
+### Affected Files
+- `batplot/dev_upgrade.py`
+- `batplot/cli.py`
+- `batplot/version_check.py`
+- `tests/test_dev_upgrade.py`
+
+---
+
+
+### Summary
+Opening a saved session (`batplot session.pkl`) printed
+`FigureCanvasAgg is non-interactive, and thus cannot be shown` and the contour
+menu ran without a visible figure. `_mpl_backend.py` wrote `MPLBACKEND=Agg` into
+the environment for every CLI start, which blocked the GUI-backend upgrade path;
+`.pkl` reload was also not treated as an interactive invocation.
+
+### Fix
+- Default to Agg via `matplotlib.use()` only when `MPLBACKEND` is unset; do not
+  mutate `os.environ` so interactive routes can switch to MacOSX/TkAgg/QtAgg.
+- Centralize backend helpers in `_mpl_backend.py`:
+  `ensure_gui_backend`, `require_interactive_display`, `show_figure_if_possible`,
+  `is_interactive_backend`, `wants_interactive_window`.
+- Override inherited ``MPLBACKEND=Agg`` (conda/shell profiles) for interactive
+  CLI use (``--i``, ``.pkl``, ``--canvas``); keep Agg under pytest/CI only.
+- Call backend preparation at the start of every interactive route (GC, CV,
+  dQ/dV, CPC, operando, XY, canvas, session reload) and replace duplicated
+  per-file backend checks with the shared helpers.
+- Platform-specific GUI fallback order: macOS MacOSX/Tk/Qt; Windows/Linux
+  Tk/Qt/Gtk; detect PyQt5/6 and PySide2/6.
+- User-facing recovery text when no GUI is available: upgrade to v1.8.45+,
+  platform one-liner workaround, or `--out` export fallback.
+
+### Compatibility
+Windows, macOS, Linux. CI/pytest still use explicit `MPLBACKEND=Agg`.
+
+### Affected Files
+- `batplot/_mpl_backend.py`
+- `batplot/batplot.py`
+- `batplot/canvas_interactive.py`
+- `batplot/plot_modes/session_routing.py`
+- `batplot/plot_modes/electrochem/routing.py`
+- `batplot/plot_modes/cpc/routing.py`
+- `batplot/plot_modes/operando/routing.py`
+- `batplot/plot_modes/xy/pipeline.py`
+- `tests/test_mpl_backend.py`
+
+---
+
 
 ### Summary
 Batch CPC/EPC and live CPC routing used `getattr(np, "trapezoid", np.trapz)(...)`.

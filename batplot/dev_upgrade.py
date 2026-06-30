@@ -1,19 +1,15 @@
-"""Developer-only upgrade functionality for batplot.
+"""Developer-only release tooling for batplot.
 
-This module provides a convenient way to upgrade batplot to PyPI directly
-from the command line. It's only available when running from the development
-directory.
+This module is only available when running from the development directory.
 
 Usage:
     batplot --dev-upgrade
+        Bump version, build, upload to PyPI, commit, and push to GitHub.
 
-This will:
-1. Read the latest ## VERSION from RELEASE_NOTES.txt (or prompt if none)
-2. Clean old build files
-3. Update version in __init__.py and pyproject.toml
-4. Build the package
-5. Upload to PyPI
-6. Commit and push changes to GitHub (with confirmation prompt)
+    batplot --dev-git
+        Sync release metadata and push to GitHub **without** a PyPI upload or
+        version bump. Use after ``--dev-upgrade`` if the GitHub push failed, or
+        to publish ``latest_release_notes.json`` so update notifications work.
 """
 
 import fnmatch
@@ -139,6 +135,57 @@ def _git_unstage_release_skips(project_root: Path) -> None:
         _git_run(["git", "reset", "HEAD", "--", relpath], project_root, check=False)
 
 
+def _git_staged_paths(project_root: Path) -> list[str]:
+    result = _git_run(
+        ["git", "diff", "--cached", "--name-only"],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+
+
+def _git_unstage_excluded_patterns(project_root: Path) -> None:
+    """Drop bytecode, caches, and build artifacts from the index even if tracked."""
+    staged = _git_staged_paths(project_root)
+    to_reset = [
+        relpath
+        for relpath in staged
+        if relpath in GIT_RELEASE_SKIP_PATHS or _path_matches_any_glob(relpath, GIT_STAGE_EXCLUDE_GLOBS)
+    ]
+    if to_reset:
+        _git_run(["git", "reset", "HEAD", "--", *to_reset], project_root, check=False)
+
+
+def _git_worktree_dirty(project_root: Path) -> bool:
+    result = _git_run(
+        ["git", "status", "--porcelain"],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return bool((result.stdout or "").strip())
+
+
+def _git_stash_worktree(project_root: Path, message: str) -> bool:
+    """Stash unstaged/untracked changes. Returns True when a stash was created."""
+    if not _git_worktree_dirty(project_root):
+        return False
+    stash_result = _git_run(
+        ["git", "stash", "push", "-u", "-m", message],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if stash_result.returncode != 0:
+        return False
+    combined = (stash_result.stdout or "") + (stash_result.stderr or "")
+    return "No local changes to save" not in combined
+
+
 def _git_stage_release_snapshot(project_root: Path) -> None:
     """Stage the repository snapshot that should replace GitHub on release.
 
@@ -153,6 +200,7 @@ def _git_stage_release_snapshot(project_root: Path) -> None:
     if untracked:
         _git_run(["git", "add", "--", *untracked], project_root)
     _git_unstage_release_skips(project_root)
+    _git_unstage_excluded_patterns(project_root)
 
 
 def is_dev_environment():
@@ -325,9 +373,18 @@ def _git_restore_stash(project_root: Path, stashed: bool) -> None:
             print(pop_result.stderr or pop_result.stdout)
 
 
-def git_commit_and_push(project_root: Path, new_version: str, update_notes: str) -> bool:
+def git_commit_and_push(
+    project_root: Path,
+    version: str,
+    update_notes: str,
+    *,
+    commit_title: str | None = None,
+) -> bool:
     """Commit version changes and push to GitHub.
-    
+
+    Commits **before** ``git pull --rebase`` so a staged index never blocks the
+    sync. Bytecode and cache files are kept out of the commit even when tracked.
+
     Returns:
         True if successful or skipped, False if failed
     """
@@ -336,14 +393,14 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
     RED = "\033[0;31m"
     BLUE = "\033[0;34m"
     NC = "\033[0m"
-    
-    # Check if we're in a git repo
+
+    title = commit_title or f"Release v{version}"
+
     if not (project_root / ".git").exists():
         print(f"\n{YELLOW}Skipping git push: not a git repository{NC}")
         return True
-    
+
     try:
-        # Check git status
         result = _git_run(
             ["git", "status", "--porcelain"],
             project_root,
@@ -351,11 +408,11 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             capture_output=True,
             text=True,
         )
-        
+
         if not result.stdout.strip():
             print(f"\n{YELLOW}No changes to commit{NC}")
             return True
-        
+
         print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
         print("  This will stage:")
         print("    - All batplot source, tests, CI workflows, docs, and metadata")
@@ -364,27 +421,20 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
         print("  Excludes:")
         print("    - Build outputs, caches, bytecode, .DS_Store, virtualenvs")
         print("    - Local-only assets (USER_MANUAL.md, batplot_user_manual.docx)")
-        
+
         try:
             choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print(f"\n{YELLOW}Skipped git push{NC}")
             return True
-        
+
         if choice != 'y':
             print(f"{YELLOW}Skipped git push{NC}")
             return True
-        
+
         _git_stage_release_snapshot(project_root)
 
-        staged = _git_run(
-            ["git", "diff", "--cached", "--name-only"],
-            project_root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        staged_files = [line.strip() for line in (staged.stdout or "").splitlines() if line.strip()]
+        staged_files = _git_staged_paths(project_root)
         if not staged_files:
             print(f"{YELLOW}Nothing staged for commit after applying release filters.{NC}")
             return True
@@ -402,34 +452,24 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
 
         branch = _git_current_branch(project_root)
 
-        # Keep staged release changes while syncing with GitHub before commit.
-        stashed = False
-        status_result = _git_run(
-            ["git", "status", "--porcelain"],
+        commit_msg = f"{title}\n\n"
+        if update_notes:
+            commit_msg += f"{update_notes}\n"
+
+        _git_run(
+            ["git", "commit", "-m", commit_msg],
             project_root,
-            check=False,
-            capture_output=True,
-            text=True,
         )
-        if status_result.returncode == 0 and status_result.stdout.strip():
-            has_unstaged = any(
-                line.startswith("??") or (len(line) >= 2 and line[1] != " ")
-                for line in status_result.stdout.splitlines()
-            )
-            if has_unstaged:
-                print(f"\n{BLUE}Stashing unstaged local changes (keeping staged release)...{NC}")
-                stash_result = _git_run(
-                    ["git", "stash", "push", "--keep-index", "-m", "batplot dev-upgrade: temporary stash"],
-                    project_root,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                if stash_result.returncode == 0 and "No local changes to save" not in (stash_result.stdout or ""):
-                    stashed = True
-                    print(f"{GREEN}✓ Stashed{NC}")
-                elif stash_result.returncode != 0:
-                    print(f"{YELLOW}Could not stash unstaged changes. Pull may fail.{NC}")
+        print(f"{GREEN}✓ Committed changes{NC}")
+
+        stashed = False
+        if _git_worktree_dirty(project_root):
+            print(f"\n{BLUE}Stashing leftover local changes before syncing with GitHub...{NC}")
+            stashed = _git_stash_worktree(project_root, "batplot dev-release: temporary stash")
+            if stashed:
+                print(f"{GREEN}✓ Stashed{NC}")
+            else:
+                print(f"{YELLOW}Could not stash local changes; pull may fail.{NC}")
 
         print(f"\n{BLUE}Fetching and rebasing onto origin/{branch}...{NC}")
         _git_run(["git", "fetch", "origin"], project_root, check=False)
@@ -450,27 +490,14 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             )
         if pull_result.returncode != 0:
             _git_restore_stash(project_root, stashed)
-            print(f"{YELLOW}Could not pull (remote may have diverged):{NC}")
+            print(f"{RED}Could not sync with GitHub before push.{NC}")
             print(pull_result.stderr or pull_result.stdout)
-            print(f"{YELLOW}Resolve manually (e.g. git pull --rebase, then git push), or push later.{NC}")
+            print(f"{YELLOW}Your release commit is saved locally. Fix conflicts, then run:{NC}")
+            print(f"  git pull --rebase origin {branch}")
+            print(f"  git push origin {branch}")
+            print(f"{YELLOW}Or run: batplot --dev-git  (GitHub-only sync, no PyPI){NC}")
             return False
 
-        # Re-stage in case the rebase touched the working tree metadata.
-        _git_stage_release_snapshot(project_root)
-
-        # Create commit message
-        commit_msg = f"Release v{new_version}\n\n"
-        if update_notes:
-            commit_msg += f"{update_notes}\n"
-        
-        # Commit
-        _git_run(
-            ["git", "commit", "-m", commit_msg],
-            project_root,
-        )
-        print(f"{GREEN}✓ Committed changes{NC}")
-        
-        # Push
         print(f"\n{BLUE}Pushing to GitHub...{NC}")
         result = _git_run(
             ["git", "push", "origin", branch],
@@ -487,12 +514,11 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
                 capture_output=True,
                 text=True,
             )
-        
+
         if result.returncode == 0:
             print(f"{GREEN}✓ Pushed to GitHub successfully{NC}")
             _git_restore_stash(project_root, stashed)
-            
-            # Try to get the remote URL to show the user
+
             remote_result = _git_run(
                 ["git", "remote", "get-url", "origin"],
                 project_root,
@@ -502,24 +528,25 @@ def git_commit_and_push(project_root: Path, new_version: str, update_notes: str)
             )
             if remote_result.returncode == 0:
                 remote_url = remote_result.stdout.strip()
-                # Convert SSH to HTTPS for display
                 if remote_url.startswith("git@github.com:"):
                     remote_url = remote_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
                 elif remote_url.endswith(".git"):
                     remote_url = remote_url[:-4]
                 print(f"  {remote_url}")
-            
+                print(f"{GREEN}✓ Users on older batplot versions will fetch release notes from:{NC}")
+                print(f"  https://raw.githubusercontent.com/chem-plot/batplot/main/batplot/data/latest_release_notes.json")
+
             return True
-        else:
-            _git_restore_stash(project_root, stashed)
-            print(f"{RED}✗ Git push failed:{NC}")
-            print(result.stderr)
-            print(f"{YELLOW}You can manually push later with: git push{NC}")
-            return False
-            
+
+        _git_restore_stash(project_root, stashed)
+        print(f"{RED}✗ Git push failed:{NC}")
+        print(result.stderr or result.stdout)
+        print(f"{YELLOW}Try: batplot --dev-git  (push to GitHub without uploading to PyPI again){NC}")
+        return False
+
     except subprocess.CalledProcessError as e:
         print(f"{RED}✗ Git operation failed: {e}{NC}")
-        print(f"{YELLOW}You can manually commit and push later{NC}")
+        print(f"{YELLOW}Try: batplot --dev-git{NC}")
         return False
     except Exception as e:
         print(f"{RED}✗ Unexpected error during git operations: {e}{NC}")
@@ -667,6 +694,102 @@ def validate_distribution_contents(project_root: Path, dist_files: list[Path]) -
         else:
             print(f"✓ Archive validation passed for {archive.name} ({len(required)} package files)")
     return ok
+
+
+def get_release_notes_for_version(project_root: Path, version: str) -> str:
+    """Return the RELEASE_NOTES.txt block for ``version``, or \"\"."""
+    release_notes_file = project_root / "RELEASE_NOTES.txt"
+    if not release_notes_file.exists():
+        return ""
+    blocks = parse_release_notes_blocks(release_notes_file.read_text())
+    return blocks.get(version, "").strip()
+
+
+def sync_release_metadata_files(project_root: Path, version: str, update_notes: str) -> None:
+    """Refresh files that old installs fetch for update notifications."""
+    if not update_notes or not update_notes.strip():
+        print(f"\033[0;33mNo release notes for v{version}; skipped metadata sync.\033[0m")
+        return
+    update_version_check_update_info(project_root, update_notes)
+    write_latest_release_notes_json(project_root, version, update_notes)
+    changelog_src = project_root / "CHANGELOG.md"
+    changelog_dst = project_root / "batplot" / "data" / "CHANGELOG.md"
+    if changelog_src.exists():
+        changelog_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(changelog_src, changelog_dst)
+        print("\033[0;32m✓ Synced CHANGELOG.md to batplot/data/\033[0m")
+
+
+def _dev_project_root() -> Path | None:
+    if not is_dev_environment():
+        return None
+    return Path(__file__).resolve().parent.parent
+
+
+def run_git_sync() -> int:
+    """Push the current repo to GitHub without a PyPI upload or version bump."""
+    BLUE = "\033[0;34m"
+    GREEN = "\033[0;32m"
+    YELLOW = "\033[1;33m"
+    RED = "\033[0;31m"
+    NC = "\033[0m"
+
+    print(f"{BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{NC}")
+    print(f"{BLUE}    Batplot GitHub Sync (--dev-git){NC}")
+    print(f"{BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{NC}\n")
+
+    project_root = _dev_project_root()
+    if project_root is None:
+        print(f"{RED}Error: This command only works in the development environment.{NC}")
+        return 1
+
+    os.chdir(project_root)
+    print(f"{YELLOW}Working directory:{NC} {project_root}\n")
+
+    version = get_current_version()
+    if not version:
+        print(f"{RED}Could not read __version__ from batplot/__init__.py{NC}")
+        return 1
+
+    print(f"{YELLOW}Current version (unchanged):{NC} {version}")
+    update_notes = get_release_notes_for_version(project_root, version)
+    if update_notes:
+        print(f"{GREEN}Release notes for v{version}:{NC}")
+        print(f"{YELLOW}{update_notes[:200]}{'...' if len(update_notes) > 200 else ''}{NC}")
+    else:
+        print(f"{YELLOW}No ## {version} block in RELEASE_NOTES.txt — metadata sync may be skipped.{NC}")
+
+    print(f"\n{YELLOW}This will:{NC}")
+    print("  - Refresh batplot/data/latest_release_notes.json (for update notifications)")
+    print("  - Refresh version_check.py UPDATE_INFO")
+    print("  - Commit and push to GitHub")
+    print(f"{YELLOW}This will NOT:{NC} bump version, build, or upload to PyPI")
+
+    try:
+        confirm = input("\nContinue? (y/n): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        return 1
+    if confirm not in ("y", "yes"):
+        print("Aborted.")
+        return 1
+
+    sync_release_metadata_files(project_root, version, update_notes)
+    ok = git_commit_and_push(
+        project_root,
+        version,
+        update_notes,
+        commit_title=f"Sync GitHub for v{version}",
+    )
+    if not ok:
+        return 1
+
+    print(f"\n{GREEN}✓ GitHub sync complete for v{version}{NC}")
+    if update_notes:
+        print(f"\n{BLUE}What's on GitHub:{NC}")
+        for line in update_notes.split("\n"):
+            print(f"  {line}")
+    return 0
 
 
 def run_upgrade():
@@ -821,9 +944,7 @@ def run_upgrade():
         print(f"\n{GREEN}✓ Added to CHANGELOG.md{NC}")
     
     if update_notes:
-        # So users see this message in the "new version available" notification
-        update_version_check_update_info(project_root, update_notes)
-        write_latest_release_notes_json(project_root, new_version, update_notes)
+        sync_release_metadata_files(project_root, new_version, update_notes)
     else:
         print(f"\n{YELLOW}Skipped update notes{NC}")
     

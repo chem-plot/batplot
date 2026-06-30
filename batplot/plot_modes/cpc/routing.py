@@ -27,6 +27,7 @@ from ...ec_common import (
     _default_ec_figsize,
     _apply_default_ec_layout,
 )
+from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
 from ...batch import _apply_ec_style
 from ...readers import (
     read_mpt_file,
@@ -45,6 +46,7 @@ except ImportError:
 
 
 def handle_cpc_mode(args) -> int:
+    ensure_gui_backend(args)
     # Separate style files from data files
     data_files = []
     style_file_path = None
@@ -472,22 +474,7 @@ def handle_cpc_mode(args) -> int:
             print(f"Warning: Style file not found: {style_file_path}")
 
     if args.interactive and cpc_interactive_menu is not None:
-        # Guard against non-interactive backends (e.g., Agg)
-        try:
-            _backend = plt.get_backend()
-        except Exception:
-            _backend = "unknown"
-        # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-        _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-        _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-        if _is_noninteractive:
-            print(f"Matplotlib backend '{_backend}' is non-interactive; a window cannot be shown.")
-            print("Tips: unset MPLBACKEND or set a GUI backend, e.g. on macOS:")
-            print("  export MPLBACKEND=MacOSX   # built-in macOS backend")
-            print("  export MPLBACKEND=TkAgg    # if Tk is available")
-            print("  export MPLBACKEND=QtAgg    # if PyQt is installed")
-            print("Or run without --interactive and use --out to save the figure.")
-        else:
+        if require_interactive_display(args, context="CPC interactive menu"):
             try:
                 plt.ion()
             except Exception:
@@ -502,19 +489,8 @@ def handle_cpc_mode(args) -> int:
                                        file_data=file_data)
             except Exception as _ie:
                 print(f"CPC interactive menu failed: {_ie}")
-            # Keep window open after menu
             plt.show()
     else:
         if not (args.savefig or args.out):
-            try:
-                _backend = plt.get_backend()
-            except Exception:
-                _backend = "unknown"
-            # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-            _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-            _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-            if not _is_noninteractive:
-                plt.show()
-            else:
-                print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
+            show_figure_if_possible(args)
     exit(0)

@@ -27,6 +27,7 @@ from ...ec_common import (
     _default_ec_figsize,
     _apply_default_ec_layout,
 )
+from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
 from ...batch import _apply_ec_style
 from ...utils import ensure_subdirectory
 from ...readers import (
@@ -50,6 +51,7 @@ from ..common.palettes import TAB10_HEX
 
 
 def handle_gc_mode(args) -> int:
+    ensure_gui_backend(args)
     # Separate style files from data files
     data_files = []
     style_file_path = None
@@ -645,23 +647,7 @@ def handle_gc_mode(args) -> int:
 
             # Show plot / interactive menu
             if args.interactive:
-                # Guard against non-interactive backends (e.g., Agg)
-                try:
-                    _backend = plt.get_backend()
-                except Exception:
-                    _backend = "unknown"
-                # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-                _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-                _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-                if _is_noninteractive:
-                    print(f"Matplotlib backend '{_backend}' is non-interactive; a window cannot be shown.")
-                    print("Tips: unset MPLBACKEND or set a GUI backend, e.g. on macOS:")
-                    print("  export MPLBACKEND=MacOSX   # built-in macOS backend")
-                    print("  export MPLBACKEND=TkAgg    # if Tk is available")
-                    print("  export MPLBACKEND=QtAgg    # if PyQt is installed")
-                    print("Or run without --interactive and use --out to save the figure.")
-                else:
-                    # Turn on interactive mode and show non-blocking window
+                if require_interactive_display(args, context="GC interactive menu"):
                     try:
                         plt.ion()
                     except Exception:
@@ -675,22 +661,10 @@ def handle_gc_mode(args) -> int:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    # Keep window open after menu
                     plt.show()
             else:
                 if not (args.savefig or args.out):
-                    # Only show when a GUI backend is available
-                    try:
-                        _backend = plt.get_backend()
-                    except Exception:
-                        _backend = "unknown"
-                    # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-                    _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-                    _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-                    if not _is_noninteractive:
-                        plt.show()
-                    else:
-                        print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
+                    show_figure_if_possible(args)
             # For multiple files, close the figure and continue to next file
             if len(data_files) > 1:
                 plt.close(fig)
@@ -711,6 +685,7 @@ def handle_gc_mode(args) -> int:
 
 
 def handle_dqdv_mode(args) -> int:
+    ensure_gui_backend(args)
     # Separate style files from data files
     data_files = []
     style_file_path = None
@@ -1136,21 +1111,7 @@ def handle_dqdv_mode(args) -> int:
 
             # Show / interactive
             if args.interactive:
-                try:
-                    _backend = plt.get_backend()
-                except Exception:
-                    _backend = "unknown"
-                # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-                _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-                _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-                if _is_noninteractive:
-                    print(f"Matplotlib backend '{_backend}' is non-interactive; a window cannot be shown.")
-                    print("Tips: unset MPLBACKEND or set a GUI backend, e.g. on macOS:")
-                    print("  export MPLBACKEND=MacOSX   # built-in macOS backend")
-                    print("  export MPLBACKEND=TkAgg    # if Tk is available")
-                    print("  export MPLBACKEND=QtAgg    # if PyQt is installed")
-                    print("Or run without --interactive and use --out to save the figure.")
-                else:
+                if require_interactive_display(args, context="dQ/dV interactive menu"):
                     try:
                         plt.ion()
                     except Exception:
@@ -1167,17 +1128,7 @@ def handle_dqdv_mode(args) -> int:
                     plt.show()
             else:
                 if not (args.savefig or args.out):
-                    try:
-                        _backend = plt.get_backend()
-                    except Exception:
-                        _backend = "unknown"
-                    # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-                    _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-                    _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-                    if not _is_noninteractive:
-                        plt.show()
-                    else:
-                        print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
+                    show_figure_if_possible(args)
             # For multiple files, close the figure and continue to next file
             if len(data_files) > 1:
                 plt.close(fig)
@@ -1202,6 +1153,7 @@ def handle_cv_mode(args) -> int:
     Handle CV mode plotting and routing.
     Returns an integer exit code (0 for success, non-zero for error).
     """
+    ensure_gui_backend(args)
     # Separate style files from data files
     data_files = []
     style_file_path = None
@@ -1503,28 +1455,28 @@ def handle_cv_mode(args) -> int:
 
             # Interactive menu: use electrochem_interactive_menu for consistency with GC
             if args.interactive:
-                try:
-                    plt.ion()
-                except Exception:
-                    pass
-                plt.show(block=False)
-                # Track whether data axes were swapped via --ro for this EC figure
-                try:
-                    fig._ro_active = bool(getattr(args, "ro", False))
-                except Exception:
-                    pass
-                try:
-                    fig._bp_source_paths = [os.path.abspath(ec_file)]
-                except Exception:
-                    pass
-                try:
-                    electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
-                except Exception as _ie:
-                    print(f"Interactive menu failed: {_ie}")
-                plt.show()
+                if require_interactive_display(args, context="CV interactive menu"):
+                    try:
+                        plt.ion()
+                    except Exception:
+                        pass
+                    plt.show(block=False)
+                    try:
+                        fig._ro_active = bool(getattr(args, "ro", False))
+                    except Exception:
+                        pass
+                    try:
+                        fig._bp_source_paths = [os.path.abspath(ec_file)]
+                    except Exception:
+                        pass
+                    try:
+                        electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
+                    except Exception as _ie:
+                        print(f"Interactive menu failed: {_ie}")
+                    plt.show()
             else:
                 if not (args.savefig or args.out):
-                    plt.show()
+                    show_figure_if_possible(args)
                 # For multiple files, close the figure and continue to next file
                 if len(data_files) > 1:
                     plt.close(fig)

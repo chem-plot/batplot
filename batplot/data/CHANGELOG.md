@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.45] - 2026-06-30
+- Bug fixes with backend setting
+
+
 ## [1.8.44] - 2026-06-25
 - Bug fixes
 

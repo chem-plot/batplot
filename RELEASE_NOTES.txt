@@ -119,3 +119,6 @@
 
 ## 1.8.44
 - Bug fixes
+
+## 1.8.45
+- Bug fixes with backend setting

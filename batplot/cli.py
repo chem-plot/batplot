@@ -68,6 +68,16 @@ def main(argv: Optional[list] = None) -> int:
 	# This is checked BEFORE anything else to allow quick upgrades.
 	# Only works when running from the development directory.
 	# ====================================================================
+	if '--dev-git' in sys.argv:
+		try:
+			from .dev_upgrade import run_git_sync
+			return run_git_sync()
+		except ImportError:
+			print("Error: Developer git sync module not available.")
+			return 1
+		except Exception as e:
+			print(f"Error during git sync: {e}")
+			return 1
 	if '--dev-upgrade' in sys.argv:
 		try:
 			from .dev_upgrade import run_upgrade

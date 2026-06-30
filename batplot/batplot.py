@@ -421,6 +421,10 @@ def batplot_main() -> int:  # type: ignore
         print("Use 'batplot --v' for version and release info, 'batplot --h' for CLI help, or 'batplot --m' to open the user manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
+    from ._mpl_backend import ensure_gui_backend
+
+    ensure_gui_backend(args)
+
     # ====================================================================
     # STEP 3: ROUTE TO APPROPRIATE MODE HANDLER
     # ====================================================================
@@ -482,67 +486,6 @@ def batplot_main() -> int:  # type: ignore
     """
 
 
-    # Ensure an interactive (GUI) backend when a window is expected (interactive mode or operando/GC plots)
-    def _ensure_gui_backend_for_interactive():
-        try:
-            argv = sys.argv
-        except Exception:
-            argv = []
-        # Trigger if interactive is requested OR when operando/GC plotting likely calls show()
-        wants_interactive = any(flag in argv for flag in ("--interactive",))
-        wants_interactive = wants_interactive or ("--operando" in argv or "--contour" in argv)
-        wants_interactive = wants_interactive or ("--gc" in argv)
-        if not wants_interactive:
-            return
-        # If MPLBACKEND is set to a GUI backend, respect it.
-        env_be = os.environ.get("MPLBACKEND")
-        if env_be:
-            low = env_be.lower()
-            if low in {"macosx", "tkagg", "qtagg"}:
-                return
-            # Respect explicit non-interactive backends (CI, pytest, batch export).
-            if ("agg" in low) or ("inline" in low) or (low in {"pdf", "ps", "svg", "template"}):
-                return
-        try:
-            be = _mpl.get_backend()
-        except Exception:
-            be = None
-        def _is_noninteractive(name):
-            if not isinstance(name, str):
-                return False
-            low = name.lower()
-            return ("agg" in low) or ("inline" in low) or (low in {"pdf","ps","svg","template"})
-        if not _is_noninteractive(be):
-            return
-        # Try GUI backends in order of likelihood
-        candidates = [
-            ("darwin", ["MacOSX", "TkAgg", "QtAgg"]),
-            ("win", ["TkAgg", "QtAgg"]),
-            ("other", ["TkAgg", "QtAgg"]),
-        ]
-        plat = sys.platform
-        if plat == "darwin":
-            order = candidates[0][1]
-        elif plat.startswith("win"):
-            order = candidates[1][1]
-        else:
-            order = candidates[2][1]
-        for cand in order:
-            try:
-                if cand == "TkAgg":
-                    if importlib.util.find_spec("tkinter") is None:
-                        continue
-                elif cand == "QtAgg":
-                    if (importlib.util.find_spec("PyQt5") is None) and (importlib.util.find_spec("PySide6") is None):
-                        continue
-                # MacOSX: attempt; will fail on non-framework builds
-                _mpl.use(cand, force=True)
-                break
-            except Exception:
-                continue
-
-    _ensure_gui_backend_for_interactive()
-
     # Set global default font
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -552,10 +495,6 @@ def batplot_main() -> int:  # type: ignore
         'mathtext.fontset': 'dejavusans',   # keeps math consistent with sans-serif
         'font.size': 16
     })
-
-    # Parse CLI arguments early; many top-level branches depend on args
-    args = _bp_parse_args()
-
 
     """
     Note: CIF parsing and simulation helpers now come from batplot.cif.

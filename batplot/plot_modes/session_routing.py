@@ -21,6 +21,12 @@ import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import-untyped]
 
 from ..ec_common import _run_saved_dqdv_2d_companion
+from .._mpl_backend import (
+    ensure_gui_backend,
+    is_interactive_backend,
+    running_headless,
+    warn_if_noninteractive,
+)
 from ..session import (
     load_xy_session,
     load_ec_session,
@@ -104,6 +110,10 @@ def _load_session_dict_with_diagnostics(sess_path: str) -> tuple[dict | None, in
 
 
 def handle_session_reload(args) -> int:
+    ensure_gui_backend(args)
+    if not is_interactive_backend() and not running_headless():
+        warn_if_noninteractive("saved session reload")
+        return 1
     sess_path = args.files[0]
     if not os.path.isfile(sess_path):
         print(f"Session file not found: {sess_path}")

@@ -8,7 +8,7 @@ HOW VERSION CHECKING WORKS:
 When you run batplot, it automatically (and silently) checks for updates:
 
 1. **Check Cache**: First checks a local cache file to see if we've checked recently
-   - Cache is valid for 1 hour (3600 seconds)
+   - Cache is valid for 1 minute (60 seconds)
    - If cache is fresh, use cached result (no network request)
 
 2. **Fetch from PyPI**: If cache is stale or missing:
@@ -101,10 +101,10 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Bug fixes',
+    'custom_message': '- Bug fixes with backend setting',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Bug fixes'
+        '- Bug fixes with backend setting'
     ],
     'show_update_notes': True,
 }
@@ -234,8 +234,8 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
             with open(cache_file, 'r') as f:
                 cache = json.load(f)
                 latest = cache.get('latest_version')
-                # Check once per hour (3600 seconds); skip cache if previous fetch failed (latest is None)
-                if latest and (now - cache.get('timestamp', 0) < 3600):
+                # Check once per minute (60 seconds); skip cache if previous fetch failed (latest is None)
+                if latest and (now - cache.get('timestamp', 0) < 60):
                     if parse_version(latest) > parse_version(current_version):
                         _print_update_message(current_version, latest, 0)  # count unknown when from cache
                     return
@@ -307,10 +307,11 @@ def _print_update_message(current: str, latest: str, versions_behind: int = 0) -
         for line in _wrap_line(custom_msg, content_width):
             print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
 
-    # Add update notes (wrapped, no truncation)
+    # Add update notes (wrapped, no truncation); skip duplicates of custom_message
     if update_notes and show_notes and isinstance(update_notes, list):
+        custom_norm = (custom_msg or "").strip()
         for note in update_notes:
-            if note and note.strip():
+            if note and note.strip() and note.strip() != custom_norm:
                 for line in _wrap_line(note, content_width):
                     print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
 

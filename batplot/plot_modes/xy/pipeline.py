@@ -23,6 +23,7 @@ import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
 from ...batch import _apply_xy_style
+from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
 from ...color_utils import get_colormap
 from ...utils import (
     _confirm_overwrite,
@@ -58,6 +59,7 @@ keep_canvas_fixed = False
 
 
 def run_xy_pipeline(args) -> int:
+    ensure_gui_backend(args)
     # ---------------- Plotting ----------------
     offset = 0.0
     direction = -1 if args.stack else 1  # stack downward
@@ -1312,6 +1314,8 @@ def run_xy_pipeline(args) -> int:
 
     # ---------------- Show and interactive menu ----------------
     if args.interactive:
+        if not require_interactive_display(args, context="XY interactive menu"):
+            return 0
         # Show the current figure once (non-blocking) so interactive menu updates reuse this window
         try:
             plt.ion()
@@ -1461,17 +1465,7 @@ def run_xy_pipeline(args) -> int:
             print(f"Saved plot to {export_target}")
     else:
         # Default: show the plot in non-interactive, non-save mode
-        try:
-            _backend = plt.get_backend()
-        except Exception:
-            _backend = "unknown"
-        # TkAgg, QtAgg, Qt5Agg, WXAgg, MacOSX etc. are interactive
-        _interactive_backends = {"tkagg", "qt5agg", "qt4agg", "qtagg", "wxagg", "macosx", "gtk3agg", "gtk4agg", "wx", "qt", "gtk", "gtk3", "gtk4"}
-        _is_noninteractive = isinstance(_backend, str) and (_backend.lower() not in _interactive_backends) and ("agg" in _backend.lower() or _backend.lower() in {"pdf","ps","svg","template"})
-        if not _is_noninteractive:
-            plt.show()
-        else:
-            print(f"Matplotlib backend '{_backend}' is non-interactive; use --out to save the figure.")
+        show_figure_if_possible(args)
     
     # Success
     return 0

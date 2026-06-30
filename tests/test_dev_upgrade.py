@@ -10,9 +10,11 @@ from batplot.dev_upgrade import (
     GIT_RELEASE_SKIP_PATHS,
     GIT_STAGE_EXCLUDE_GLOBS,
     _git_stage_release_snapshot,
+    _git_unstage_excluded_patterns,
     _list_untracked_release_paths,
     _path_matches_any_glob,
     _required_package_data_files,
+    get_release_notes_for_version,
     validate_distribution_contents,
 )
 
@@ -130,6 +132,33 @@ def test_git_stage_release_snapshot_stages_tracked_updates_and_untracked_files(t
     assert calls[2][0:3] == ["git", "reset", "HEAD"]
     for skip_path in GIT_RELEASE_SKIP_PATHS:
         assert ["git", "reset", "HEAD", "--", skip_path] in calls
+
+
+def test_git_unstage_excluded_patterns_drops_tracked_pycache(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, _project_root, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="batplot/__pycache__/cli.cpython-314.pyc\nbatplot/_mpl_backend.py\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("batplot.dev_upgrade._git_run", fake_run)
+    _git_unstage_excluded_patterns(tmp_path)
+    assert ["git", "reset", "HEAD", "--", "batplot/__pycache__/cli.cpython-314.pyc"] in calls
+
+
+def test_get_release_notes_for_version_reads_block(tmp_path):
+    (tmp_path / "RELEASE_NOTES.txt").write_text(
+        "## 1.8.44\n- old\n\n## 1.8.45\n- Bug fixes with backend setting\n",
+        encoding="utf-8",
+    )
+    notes = get_release_notes_for_version(tmp_path, "1.8.45")
+    assert "backend setting" in notes
 
 
 def test_git_stage_release_snapshot_does_not_use_repo_wide_git_add_dot(tmp_path, monkeypatch):

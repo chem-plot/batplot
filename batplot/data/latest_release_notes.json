@@ -1,7 +1,7 @@
 {
-  "version": "1.8.44",
-  "custom_message": "- Bug fixes",
+  "version": "1.8.45",
+  "custom_message": "- Bug fixes with backend setting",
   "update_notes": [
-    "- Bug fixes"
+    "- Bug fixes with backend setting"
   ]
 }

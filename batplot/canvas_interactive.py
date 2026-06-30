@@ -25,6 +25,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 
 from .session import load_ec_session, load_operando_session, load_cpc_session, load_xy_session
+from ._mpl_backend import ensure_gui_backend
 from .plot_modes.electrochem.interactive import electrochem_interactive_menu
 from .plot_modes.xy.interactive import interactive_menu, normalize_xy_menu_kwargs
 from .utils import _confirm_overwrite
@@ -290,6 +291,7 @@ def _normalize_loaded_annotation(raw: Any, base_dir: Optional[str]) -> Optional[
 
 
 def run_canvas_mode(pkl_paths: List[str]) -> None:
+    ensure_gui_backend(None)
     pkl_paths, loaded_positions, raw_annotations, manifest_base_dir = _expand_canvas_paths(pkl_paths)
 
     if not pkl_paths:
