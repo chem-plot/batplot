@@ -95,6 +95,114 @@ def _git_current_branch(project_root: Path) -> str:
     return branch or "main"
 
 
+def _git_ahead_of_origin(project_root: Path, branch: str) -> int:
+    """Return how many commits ``HEAD`` is ahead of ``origin/<branch>``."""
+    result = _git_run(
+        ["git", "rev-list", "--count", f"origin/{branch}..HEAD"],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return 0
+    try:
+        return int((result.stdout or "0").strip())
+    except ValueError:
+        return 0
+
+
+def _git_fetch_rebase_and_push(project_root: Path, branch: str) -> bool:
+    """Fetch, rebase onto origin, and push. Stashes dirty worktree first if needed."""
+    GREEN = "\033[0;32m"
+    YELLOW = "\033[0;33m"
+    RED = "\033[0;31m"
+    BLUE = "\033[0;34m"
+    NC = "\033[0m"
+
+    stashed = False
+    if _git_worktree_dirty(project_root):
+        print(f"\n{BLUE}Stashing leftover local changes before syncing with GitHub...{NC}")
+        stashed = _git_stash_worktree(project_root, "batplot dev-release: temporary stash")
+        if stashed:
+            print(f"{GREEN}✓ Stashed{NC}")
+        else:
+            print(f"{YELLOW}Could not stash local changes; pull may fail.{NC}")
+
+    print(f"\n{BLUE}Fetching and rebasing onto origin/{branch}...{NC}")
+    _git_run(["git", "fetch", "origin"], project_root, check=False)
+    pull_result = _git_run(
+        ["git", "pull", "--rebase", "origin", branch],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if pull_result.returncode != 0:
+        pull_result = _git_run(
+            ["git", "pull", "--rebase"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if pull_result.returncode != 0:
+        _git_restore_stash(project_root, stashed)
+        print(f"{RED}Could not sync with GitHub before push.{NC}")
+        print(pull_result.stderr or pull_result.stdout)
+        print(f"{YELLOW}Your release commit is saved locally. Fix conflicts, then run:{NC}")
+        print(f"  git pull --rebase origin {branch}")
+        print(f"  git push origin {branch}")
+        print(f"{YELLOW}Or run: batplot --dev-git  (GitHub-only sync, no PyPI){NC}")
+        return False
+
+    print(f"\n{BLUE}Pushing to GitHub...{NC}")
+    result = _git_run(
+        ["git", "push", "origin", branch],
+        project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        result = _git_run(
+            ["git", "push"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode == 0:
+        print(f"{GREEN}✓ Pushed to GitHub successfully{NC}")
+        _git_restore_stash(project_root, stashed)
+
+        remote_result = _git_run(
+            ["git", "remote", "get-url", "origin"],
+            project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if remote_result.returncode == 0:
+            remote_url = remote_result.stdout.strip()
+            if remote_url.startswith("git@github.com:"):
+                remote_url = remote_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
+            elif remote_url.endswith(".git"):
+                remote_url = remote_url[:-4]
+            print(f"  {remote_url}")
+            print(f"{GREEN}✓ Users on older batplot versions will fetch release notes from:{NC}")
+            print("  https://raw.githubusercontent.com/chem-plot/batplot/main/batplot/data/latest_release_notes.json")
+
+        return True
+
+    _git_restore_stash(project_root, stashed)
+    print(f"{RED}✗ Git push failed:{NC}")
+    print(result.stderr or result.stdout)
+    print(f"{YELLOW}Try: batplot --dev-git  (push to GitHub without uploading to PyPI again){NC}")
+    return False
+
+
 def _path_matches_any_glob(relpath: str, patterns: tuple[str, ...]) -> bool:
     normalized = relpath.replace("\\", "/")
     for pattern in patterns:
@@ -613,7 +721,20 @@ def git_commit_and_push(
 
         if not result.stdout.strip():
             print(f"\n{YELLOW}No changes to commit{NC}")
-            return True
+            branch = _git_current_branch(project_root)
+            ahead = _git_ahead_of_origin(project_root, branch)
+            if ahead <= 0:
+                return True
+            print(f"\n{BLUE}Git: Push {ahead} local commit(s) to GitHub?{NC}")
+            try:
+                choice = input(f"\n{YELLOW}Push to GitHub? (y/n): {NC}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{YELLOW}Skipped git push{NC}")
+                return True
+            if choice != "y":
+                print(f"{YELLOW}Skipped git push{NC}")
+                return True
+            return _git_fetch_rebase_and_push(project_root, branch)
 
         print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
         print("  This will stage:")
@@ -637,114 +758,41 @@ def git_commit_and_push(
         _git_stage_release_snapshot(project_root)
 
         staged_files = _git_staged_paths(project_root)
-        if not staged_files:
-            print(f"{YELLOW}Nothing staged for commit after applying release filters.{NC}")
-            return True
-
-        stat = _git_run(
-            ["git", "diff", "--cached", "--stat"],
-            project_root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if stat.stdout:
-            print(f"\n{BLUE}Staged release snapshot:{NC}")
-            print(stat.stdout.rstrip())
-
         branch = _git_current_branch(project_root)
 
-        commit_msg = f"{title}\n\n"
-        if update_notes:
-            commit_msg += f"{update_notes}\n"
-
-        _git_run(
-            ["git", "commit", "-m", commit_msg],
-            project_root,
-        )
-        print(f"{GREEN}✓ Committed changes{NC}")
-
-        stashed = False
-        if _git_worktree_dirty(project_root):
-            print(f"\n{BLUE}Stashing leftover local changes before syncing with GitHub...{NC}")
-            stashed = _git_stash_worktree(project_root, "batplot dev-release: temporary stash")
-            if stashed:
-                print(f"{GREEN}✓ Stashed{NC}")
-            else:
-                print(f"{YELLOW}Could not stash local changes; pull may fail.{NC}")
-
-        print(f"\n{BLUE}Fetching and rebasing onto origin/{branch}...{NC}")
-        _git_run(["git", "fetch", "origin"], project_root, check=False)
-        pull_result = _git_run(
-            ["git", "pull", "--rebase", "origin", branch],
-            project_root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if pull_result.returncode != 0:
-            pull_result = _git_run(
-                ["git", "pull", "--rebase"],
+        if not staged_files:
+            print(f"{YELLOW}Nothing staged for commit after applying release filters.{NC}")
+            ahead = _git_ahead_of_origin(project_root, branch)
+            if ahead <= 0:
+                print(f"{YELLOW}Nothing to push — local branch matches origin/{branch}.{NC}")
+                return True
+            print(
+                f"{BLUE}Local branch is {ahead} commit(s) ahead of origin/{branch}; "
+                f"pushing without a new commit.{NC}"
+            )
+        else:
+            stat = _git_run(
+                ["git", "diff", "--cached", "--stat"],
                 project_root,
                 check=False,
                 capture_output=True,
                 text=True,
             )
-        if pull_result.returncode != 0:
-            _git_restore_stash(project_root, stashed)
-            print(f"{RED}Could not sync with GitHub before push.{NC}")
-            print(pull_result.stderr or pull_result.stdout)
-            print(f"{YELLOW}Your release commit is saved locally. Fix conflicts, then run:{NC}")
-            print(f"  git pull --rebase origin {branch}")
-            print(f"  git push origin {branch}")
-            print(f"{YELLOW}Or run: batplot --dev-git  (GitHub-only sync, no PyPI){NC}")
-            return False
+            if stat.stdout:
+                print(f"\n{BLUE}Staged release snapshot:{NC}")
+                print(stat.stdout.rstrip())
 
-        print(f"\n{BLUE}Pushing to GitHub...{NC}")
-        result = _git_run(
-            ["git", "push", "origin", branch],
-            project_root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            result = _git_run(
-                ["git", "push"],
+            commit_msg = f"{title}\n\n"
+            if update_notes:
+                commit_msg += f"{update_notes}\n"
+
+            _git_run(
+                ["git", "commit", "-m", commit_msg],
                 project_root,
-                check=False,
-                capture_output=True,
-                text=True,
             )
+            print(f"{GREEN}✓ Committed changes{NC}")
 
-        if result.returncode == 0:
-            print(f"{GREEN}✓ Pushed to GitHub successfully{NC}")
-            _git_restore_stash(project_root, stashed)
-
-            remote_result = _git_run(
-                ["git", "remote", "get-url", "origin"],
-                project_root,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if remote_result.returncode == 0:
-                remote_url = remote_result.stdout.strip()
-                if remote_url.startswith("git@github.com:"):
-                    remote_url = remote_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
-                elif remote_url.endswith(".git"):
-                    remote_url = remote_url[:-4]
-                print(f"  {remote_url}")
-                print(f"{GREEN}✓ Users on older batplot versions will fetch release notes from:{NC}")
-                print(f"  https://raw.githubusercontent.com/chem-plot/batplot/main/batplot/data/latest_release_notes.json")
-
-            return True
-
-        _git_restore_stash(project_root, stashed)
-        print(f"{RED}✗ Git push failed:{NC}")
-        print(result.stderr or result.stdout)
-        print(f"{YELLOW}Try: batplot --dev-git  (push to GitHub without uploading to PyPI again){NC}")
-        return False
+        return _git_fetch_rebase_and_push(project_root, branch)
 
     except subprocess.CalledProcessError as e:
         print(f"{RED}✗ Git operation failed: {e}{NC}")

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from batplot.dev_upgrade import (
     GIT_RELEASE_SKIP_PATHS,
     GIT_STAGE_EXCLUDE_GLOBS,
+    _git_ahead_of_origin,
     _git_stage_release_snapshot,
     _git_unstage_excluded_patterns,
     _list_untracked_release_paths,
@@ -17,6 +18,7 @@ from batplot.dev_upgrade import (
     discover_shippable_package_data,
     find_stale_hardcoded_versions,
     get_release_notes_for_version,
+    git_commit_and_push,
     read_version_from_init_file,
     read_version_from_pyproject,
     sync_pyproject_package_data,
@@ -269,3 +271,32 @@ def test_find_stale_hardcoded_versions(tmp_path):
     (pkg / "helper.py").write_text('MSG = "upgrade to 1.0.0"\n', encoding="utf-8")
     hits = find_stale_hardcoded_versions(tmp_path, "1.0.0")
     assert hits == ["batplot/helper.py"]
+
+
+def test_git_commit_and_push_pushes_when_nothing_staged_but_ahead(tmp_path, monkeypatch):
+    pushed = {"called": False}
+
+    def fake_run(cmd, _project_root, **kwargs):
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(returncode=0, stdout=" M batplot/__pycache__/x.pyc\n", stderr="")
+        if cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:4] == ["git", "rev-list", "--count"]:
+            return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
+        if cmd[:3] == ["git", "branch", "--show-current"]:
+            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_push(_root, _branch):
+        pushed["called"] = True
+        return True
+
+    monkeypatch.setattr("batplot.dev_upgrade._git_run", fake_run)
+    monkeypatch.setattr("batplot.dev_upgrade._git_stage_release_snapshot", lambda _root: None)
+    monkeypatch.setattr("batplot.dev_upgrade._git_staged_paths", lambda _root: [])
+    monkeypatch.setattr("batplot.dev_upgrade._git_fetch_rebase_and_push", fake_push)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    ok = git_commit_and_push(tmp_path, "1.8.46", "- notes")
+    assert ok is True
+    assert pushed["called"] is True

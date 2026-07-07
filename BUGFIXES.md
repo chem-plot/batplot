@@ -6,6 +6,29 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-07-07: ``--dev-git`` falsely reported success without pushing
+
+### Summary
+After ``--dev-upgrade`` failed to push (network), running ``batplot --dev-git``
+printed ``GitHub sync complete`` even though GitHub was unchanged.
+
+### Root Cause
+``git_commit_and_push`` returned success when nothing was staged for a new
+commit, without checking whether the local branch was still ahead of
+``origin/main``. The existing ``Release v1.8.46`` commit was never pushed.
+
+### Fix
+- When nothing is staged but local commits are ahead of origin, fetch/rebase/push
+  those commits instead of exiting early.
+- Same when the worktree is clean but unpushed commits exist.
+
+### Affected Files
+- `batplot/dev_upgrade.py`
+- `tests/test_dev_upgrade.py`
+- `BUGFIXES.md`
+
+---
+
 ## 2026-07-07: Batch session interactive mode — save/overwrite/quit parity
 
 ### Summary
