@@ -58,6 +58,7 @@ from ...readers import (
     is_biologic_datalogger_csv,
     read_biologic_datalogger_time_voltage,
     extract_bruker_brml_scans,
+    sanitize_xrd_intensity,
 )
 from ...cif import cif_reflection_positions, list_reflections_with_hkl, build_hkl_label_map_from_list
 from ...utils import natural_sort_key
@@ -120,7 +121,7 @@ def _load_curve(path: Path, readcol=None):
     suffix = path.suffix.lower()
     if suffix in ('.brml', '.xrdml', '.rasx') or (suffix == '.raw' and is_bruker_raw(str(path))):
         x, y, _, _ = read_xrd_vendor_file(str(path))
-        return np.asarray(x, float), np.asarray(y, float)
+        return np.asarray(x, float), sanitize_xrd_intensity(np.asarray(y, float))
 
     data = robust_loadtxt_skipheader(str(path))
     if data.ndim == 1:
@@ -144,7 +145,7 @@ def _load_curve(path: Path, readcol=None):
         else:
             x = data[:,0]
             y = data[:,1]
-    return np.asarray(x, float), np.asarray(y, float)
+    return np.asarray(x, float), sanitize_xrd_intensity(np.asarray(y, float))
 
 def _maybe_convert_to_Q(x, wl):
     # Accept degrees (2theta) -> Q
@@ -409,7 +410,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[Figure, Axe
                 continue
             for i, (x, y) in enumerate(scans):
                 x = np.asarray(x, float)
-                y = np.asarray(y, float)
+                y = sanitize_xrd_intensity(np.asarray(y, float))
                 if axis_mode == "Q" and wl is not None:
                     x = _maybe_convert_to_Q(x, wl)
                 x_arrays.append(x)
@@ -494,6 +495,7 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[Figure, Axe
     # STEP 4: Interpolate each scan to common grid
     # For each scan, interpolate its Y values to the common X grid
     stack = []
+    blank_scans = 0
     for x, y in zip(x_arrays, y_arrays):
         if x.size < 2:
             # Can't interpolate with less than 2 points, fill with NaN
@@ -505,7 +507,14 @@ def plot_operando_folder(folder: str, args, cif_files=None) -> Tuple[Figure, Axe
             #   - left=np.nan: If grid_x < x.min(), use NaN (outside scan range)
             #   - right=np.nan: If grid_x > x.max(), use NaN (outside scan range)
             interp = np.interp(grid_x, x, y, left=np.nan, right=np.nan)
+        if not np.any(np.isfinite(interp)):
+            blank_scans += 1
         stack.append(interp)
+    if blank_scans:
+        print(
+            f"[operando] {blank_scans} scan(s) have no valid intensity "
+            "(Bruker -9999 missing data); shown as blank in the contour."
+        )
     
     # STEP 5: Stack all interpolated scans into 2D array
     # np.vstack() stacks arrays vertically (one scan per row)

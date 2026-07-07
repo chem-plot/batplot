@@ -77,6 +77,8 @@ def running_headless() -> bool:
 
 def wants_interactive_window(args) -> bool:
     """Return True when this CLI invocation should open an interactive figure."""
+    if args is None:
+        return False
     if getattr(args, "all", None) is not None:
         return False
     files = getattr(args, "files", None) or []
@@ -86,12 +88,17 @@ def wants_interactive_window(args) -> bool:
         return True
     if getattr(args, "interactive", False):
         return True
-    # Headless export: mode flags with --out/--savefig do not need a GUI window.
+    # Headless export / session save: --out, --savefig, or --save (without --i).
     if getattr(args, "savefig", False) or getattr(args, "out", None):
         return False
-    for attr in ("operando", "contour", "gc", "cv", "dqdv", "cpc", "epc"):
+    if getattr(args, "save", False) and not getattr(args, "interactive", False):
+        return False
+    for attr in ("operando", "contour", "gc", "cv", "dqdv", "cpc", "epc", "histo"):
         if getattr(args, attr, False):
             return True
+    # Default XY / multi-file diffraction view (no --out, no --all).
+    if files:
+        return True
     return False
 
 
@@ -190,7 +197,7 @@ def _print_interactive_backend_help(context: str = "interactive menu") -> None:
     print("Try these steps, in order:")
     print("  1. Upgrade batplot (fixes most cases):")
     print("       pip install --upgrade batplot")
-    print(f"     You need v1.8.45 or newer (installed: {_bp_version}).")
+    print(f"     You need the latest batplot release (installed: {_bp_version}).")
     print("  2. If you cannot upgrade yet, force a GUI backend for this session:")
     print(f"       {_one_line_backend_workaround()}")
     print("  3. To save a figure without the interactive menu:")
@@ -223,8 +230,13 @@ def require_interactive_display(
     return False
 
 
-def show_figure_if_possible(args=None, *, block: bool = False) -> bool:
-    """Show the current figure when the backend supports windows."""
+def show_figure_if_possible(args=None, *, block: bool = True) -> bool:
+    """Show the current figure when the backend supports windows.
+
+    Defaults to ``block=True`` so the window stays open until the user closes it.
+    Non-interactive view mode (no ``--i``) relies on this; ``block=False`` would
+    return immediately and the process would exit before the figure is visible.
+    """
     ensure_gui_backend(args)
     if not is_interactive_backend():
         if args is not None and not (getattr(args, "savefig", False) or getattr(args, "out", None)):
@@ -234,3 +246,35 @@ def show_figure_if_possible(args=None, *, block: bool = False) -> bool:
 
     plt.show(block=block)
     return True
+
+
+def prime_interactive_figure(fig=None) -> None:
+    """Prepare a matplotlib window before an interactive menu (non-blocking)."""
+    import matplotlib.pyplot as plt
+
+    try:
+        plt.ion()
+    except Exception:
+        pass
+    if fig is not None:
+        try:
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+        except Exception:
+            pass
+    try:
+        plt.show(block=False)
+    except Exception:
+        pass
+
+
+def hold_figure_open() -> None:
+    """Keep the current figure window open until the user closes it."""
+    if not is_interactive_backend():
+        return
+    import matplotlib.pyplot as plt
+
+    try:
+        plt.show()
+    except Exception:
+        pass

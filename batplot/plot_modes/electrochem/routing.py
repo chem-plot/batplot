@@ -27,7 +27,15 @@ from ...ec_common import (
     _default_ec_figsize,
     _apply_default_ec_layout,
 )
-from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
+from ...cli_save import run_cli_save_if_requested, should_show_plot
+from ...session import dump_ec_session
+from ..._mpl_backend import (
+    ensure_gui_backend,
+    hold_figure_open,
+    prime_interactive_figure,
+    require_interactive_display,
+    show_figure_if_possible,
+)
 from ...batch import _apply_ec_style
 from ...utils import ensure_subdirectory
 from ...readers import (
@@ -48,6 +56,69 @@ from ...readers import (
 )
 from .interactive import electrochem_interactive_menu
 from ..common.palettes import TAB10_HEX
+
+
+def _ec_combined_cli_save(args, fig, ax, file_data) -> bool:
+    """Run ``--save`` for multi-file EC overlay; exit process when done."""
+    paths = [os.path.abspath(f.get("filepath", "")) for f in file_data if f.get("filepath")]
+
+    def _save(target: str) -> None:
+        dump_ec_session(
+            target,
+            fig=fig,
+            ax=ax,
+            cycle_lines={},
+            file_data=file_data,
+            skip_confirm=True,
+        )
+        fig._last_session_save_path = os.path.abspath(target)
+
+    if run_cli_save_if_requested(
+        args,
+        paths,
+        purpose="EC session save",
+        default_stem=None,
+        combined_plot=True,
+        save_fn=_save,
+    ):
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+        exit(0)
+    return False
+
+
+def _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file) -> bool:
+    """Run ``--save`` for a single EC file plot; exit process when done."""
+    ec_path = os.path.abspath(ec_file)
+    default_stem = os.path.splitext(os.path.basename(ec_file))[0]
+
+    def _save(target: str) -> None:
+        dump_ec_session(
+            target,
+            fig=fig,
+            ax=ax,
+            cycle_lines=cycle_lines,
+            file_data=None,
+            skip_confirm=True,
+        )
+        fig._last_session_save_path = os.path.abspath(target)
+
+    if run_cli_save_if_requested(
+        args,
+        [ec_path],
+        purpose="EC session save",
+        default_stem=default_stem,
+        combined_plot=False,
+        save_fn=_save,
+    ):
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+        exit(0)
+    return False
 
 
 def handle_gc_mode(args) -> int:
@@ -281,17 +352,18 @@ def handle_gc_mode(args) -> int:
             plt.ion()
         except Exception:
             pass
-        plt.show(block=False)
+        prime_interactive_figure(fig)
         try:
             fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
         except Exception:
             pass
+        _ec_combined_cli_save(args, fig, ax, file_data)
         if args.interactive:
             try:
                 electrochem_interactive_menu(fig, ax, file_data=file_data)
             except Exception as _ie:
                 print(f"Interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
         else:
             if out_dir and (args.savefig or getattr(args, 'out', None)):
                 out_path = getattr(args, 'out', None)
@@ -308,7 +380,8 @@ def handle_gc_mode(args) -> int:
             except Exception:
                 pass
             print(f"Processed {len(file_data)} GC files.")
-            plt.show(block=True)
+            if should_show_plot(args):
+                show_figure_if_possible(args)
         exit(0)
 
     for ec_file_idx, ec_file in enumerate(data_files):
@@ -646,13 +719,10 @@ def handle_gc_mode(args) -> int:
                 print(f"GC plot saved to {outname} ({x_label_gc})")
 
             # Show plot / interactive menu
+            _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file)
             if args.interactive:
                 if require_interactive_display(args, context="GC interactive menu"):
-                    try:
-                        plt.ion()
-                    except Exception:
-                        pass
-                    plt.show(block=False)
+                    prime_interactive_figure(fig)
                     try:
                         fig._bp_source_paths = [os.path.abspath(ec_file)]
                     except Exception:
@@ -661,9 +731,9 @@ def handle_gc_mode(args) -> int:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    plt.show()
+                    hold_figure_open()
             else:
-                if not (args.savefig or args.out):
+                if should_show_plot(args):
                     show_figure_if_possible(args)
             # For multiple files, close the figure and continue to next file
             if len(data_files) > 1:
@@ -877,17 +947,18 @@ def handle_dqdv_mode(args) -> int:
             plt.ion()
         except Exception:
             pass
-        plt.show(block=False)
+        prime_interactive_figure(fig)
         try:
             fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
         except Exception:
             pass
+        _ec_combined_cli_save(args, fig, ax, file_data)
         if args.interactive:
             try:
                 electrochem_interactive_menu(fig, ax, file_data=file_data)
             except Exception as _ie:
                 print(f"Interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
         else:
             if out_dir and (args.savefig or getattr(args, 'out', None)):
                 out_path = getattr(args, 'out', None)
@@ -904,7 +975,8 @@ def handle_dqdv_mode(args) -> int:
             except Exception:
                 pass
             print(f"Processed {len(file_data)} dQ/dV files.")
-            plt.show(block=True)
+            if should_show_plot(args):
+                show_figure_if_possible(args)
         exit(0)
 
     for _dqdv_file_idx, ec_file in enumerate(data_files):
@@ -1110,13 +1182,10 @@ def handle_dqdv_mode(args) -> int:
                 print(f"dQ/dV plot saved to {outname} ({y_label})")
 
             # Show / interactive
+            _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file)
             if args.interactive:
                 if require_interactive_display(args, context="dQ/dV interactive menu"):
-                    try:
-                        plt.ion()
-                    except Exception:
-                        pass
-                    plt.show(block=False)
+                    prime_interactive_figure(fig)
                     try:
                         fig._bp_source_paths = [os.path.abspath(ec_file)]
                     except Exception:
@@ -1125,9 +1194,9 @@ def handle_dqdv_mode(args) -> int:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    plt.show()
+                    hold_figure_open()
             else:
-                if not (args.savefig or args.out):
+                if should_show_plot(args):
                     show_figure_if_possible(args)
             # For multiple files, close the figure and continue to next file
             if len(data_files) > 1:
@@ -1294,7 +1363,7 @@ def handle_cv_mode(args) -> int:
             plt.ion()
         except Exception:
             pass
-        plt.show(block=False)
+        prime_interactive_figure(fig)
         try:
             fig._ro_active = bool(getattr(args, "ro", False))
         except Exception:
@@ -1303,12 +1372,13 @@ def handle_cv_mode(args) -> int:
             fig._bp_source_paths = [os.path.abspath(f.get('filepath', '')) for f in file_data if f.get('filepath')]
         except Exception:
             pass
+        _ec_combined_cli_save(args, fig, ax, file_data)
         if args.interactive:
             try:
                 electrochem_interactive_menu(fig, ax, file_data=file_data)
             except Exception as _ie:
                 print(f"Interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
         else:
             if out_dir and (args.savefig or getattr(args, 'out', None)):
                 out_path = getattr(args, 'out', None)
@@ -1325,7 +1395,8 @@ def handle_cv_mode(args) -> int:
             except Exception:
                 pass
             print(f"Processed {len(file_data)} CV files.")
-            plt.show(block=True)
+            if should_show_plot(args):
+                show_figure_if_possible(args)
         return 0
 
     for ec_file in data_files:
@@ -1454,13 +1525,10 @@ def handle_cv_mode(args) -> int:
                     print(f"Warning: Could not save CV plot: {e}")
 
             # Interactive menu: use electrochem_interactive_menu for consistency with GC
+            _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file)
             if args.interactive:
                 if require_interactive_display(args, context="CV interactive menu"):
-                    try:
-                        plt.ion()
-                    except Exception:
-                        pass
-                    plt.show(block=False)
+                    prime_interactive_figure(fig)
                     try:
                         fig._ro_active = bool(getattr(args, "ro", False))
                     except Exception:
@@ -1473,9 +1541,9 @@ def handle_cv_mode(args) -> int:
                         electrochem_interactive_menu(fig, ax, cycle_lines, file_path=ec_file)
                     except Exception as _ie:
                         print(f"Interactive menu failed: {_ie}")
-                    plt.show()
+                    hold_figure_open()
             else:
-                if not (args.savefig or args.out):
+                if should_show_plot(args):
                     show_figure_if_possible(args)
                 # For multiple files, close the figure and continue to next file
                 if len(data_files) > 1:

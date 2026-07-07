@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.8.45"
+version = "1.8.46"
 description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
@@ -73,4 +73,4 @@ include = ["batplot*"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-"batplot" = ["data/CHANGELOG.md"]
+"batplot" = ["data/CHANGELOG.md", "data/latest_release_notes.json"]

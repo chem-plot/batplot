@@ -1,7 +1,7 @@
 {
-  "version": "1.8.45",
-  "custom_message": "- Bug fixes with backend setting",
+  "version": "1.8.46",
+  "custom_message": "- Added Histogram mode, use batplot -h to learn more",
   "update_notes": [
-    "- Bug fixes with backend setting"
+    "- Added Histogram mode, use batplot -h to learn more"
   ]
 }

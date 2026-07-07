@@ -14,8 +14,16 @@ from batplot.dev_upgrade import (
     _list_untracked_release_paths,
     _path_matches_any_glob,
     _required_package_data_files,
+    discover_shippable_package_data,
+    find_stale_hardcoded_versions,
     get_release_notes_for_version,
+    read_version_from_init_file,
+    read_version_from_pyproject,
+    sync_pyproject_package_data,
+    sync_manifest_package_data,
+    update_version_files,
     validate_distribution_contents,
+    verify_release_versions,
 )
 
 
@@ -190,3 +198,74 @@ def test_list_untracked_release_paths_skips_local_only_assets(tmp_path, monkeypa
     monkeypatch.setattr("batplot.dev_upgrade._git_run", fake_run)
 
     assert _list_untracked_release_paths(tmp_path) == ["tests/test_new.py"]
+
+
+def test_update_version_files_updates_init_and_pyproject(tmp_path):
+    pkg = tmp_path / "batplot"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text('__version__ = "1.0.0"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"batplot\"\nversion = \"1.0.0\"\n",
+        encoding="utf-8",
+    )
+    update_version_files(tmp_path, "2.0.0", old_version="1.0.0")
+    assert read_version_from_init_file(pkg / "__init__.py") == "2.0.0"
+    assert read_version_from_pyproject(tmp_path / "pyproject.toml") == "2.0.0"
+
+
+def test_discover_shippable_package_data_excludes_manual(tmp_path):
+    data = tmp_path / "batplot" / "data"
+    data.mkdir(parents=True)
+    (data / "CHANGELOG.md").write_text("# c\n", encoding="utf-8")
+    (data / "latest_release_notes.json").write_text("{}", encoding="utf-8")
+    (data / "USER_MANUAL.md").write_text("manual\n", encoding="utf-8")
+    paths = discover_shippable_package_data(tmp_path)
+    assert "data/CHANGELOG.md" in paths
+    assert "data/latest_release_notes.json" in paths
+    assert "data/USER_MANUAL.md" not in paths
+
+
+def test_sync_pyproject_package_data_rewrites_list(tmp_path):
+    data = tmp_path / "batplot" / "data"
+    data.mkdir(parents=True)
+    (data / "CHANGELOG.md").write_text("# c\n", encoding="utf-8")
+    (data / "notes.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools.package-data]\n"batplot" = ["data/CHANGELOG.md"]\n',
+        encoding="utf-8",
+    )
+    sync_pyproject_package_data(tmp_path)
+    content = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"data/notes.json"' in content
+    assert '"data/CHANGELOG.md"' in content
+
+
+def test_verify_release_versions_detects_mismatch(tmp_path):
+    pkg = tmp_path / "batplot"
+    data = pkg / "data"
+    data.mkdir(parents=True)
+    (pkg / "__init__.py").write_text('__version__ = "1.0.0"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nversion = \"1.0.0\"\n", encoding="utf-8")
+    (tmp_path / "CITATION.cff").write_text("version: v1.0.0\n", encoding="utf-8")
+    (data / "latest_release_notes.json").write_text('{"version": "9.9.9"}', encoding="utf-8")
+    assert verify_release_versions(tmp_path, "1.0.0") is False
+
+
+def test_sync_manifest_package_data_writes_explicit_includes(tmp_path):
+    data = tmp_path / "batplot" / "data"
+    data.mkdir(parents=True)
+    (data / "CHANGELOG.md").write_text("# c\n", encoding="utf-8")
+    (data / "extra.json").write_text("{}", encoding="utf-8")
+    sync_manifest_package_data(tmp_path)
+    manifest = (tmp_path / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "include batplot/data/extra.json" in manifest
+    assert "recursive-include batplot/data" not in manifest
+    assert "exclude batplot/data/USER_MANUAL.md" in manifest
+
+
+def test_find_stale_hardcoded_versions(tmp_path):
+    pkg = tmp_path / "batplot"
+    pkg.mkdir()
+    (pkg / "helper.py").write_text('MSG = "upgrade to 1.0.0"\n', encoding="utf-8")
+    hits = find_stale_hardcoded_versions(tmp_path, "1.0.0")
+    assert hits == ["batplot/helper.py"]

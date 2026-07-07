@@ -12,6 +12,8 @@ Usage:
         to publish ``latest_release_notes.json`` so update notifications work.
 """
 
+from __future__ import annotations
+
 import fnmatch
 import os
 import re
@@ -214,6 +216,206 @@ def is_dev_environment():
     has_dev_upgrade = (project_root / "batplot" / "dev_upgrade.py").exists()
 
     return has_pyproject and has_batplot_dir and has_dev_upgrade
+
+
+# Package data files under batplot/data/ that must never be published (local/GitHub-only).
+PACKAGE_DATA_EXCLUDE_NAMES = frozenset(
+    {
+        "USER_MANUAL.md",
+        "USER_MANUAL.pdf",
+    }
+)
+
+# Repository paths checked after a version bump (single source of truth for release verification).
+VERSION_CANONICAL_PATHS = (
+    "batplot/__init__.py",
+    "pyproject.toml",
+    "CITATION.cff",
+    "batplot/data/latest_release_notes.json",
+)
+
+
+def read_version_from_init_file(init_path: Path) -> str | None:
+    """Parse ``__version__`` from ``batplot/__init__.py`` without importing batplot."""
+    if not init_path.is_file():
+        return None
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', init_path.read_text(encoding="utf-8"))
+    return match.group(1) if match else None
+
+
+def read_version_from_pyproject(toml_path: Path) -> str | None:
+    """Parse ``[project] version`` from pyproject.toml."""
+    if not toml_path.is_file():
+        return None
+    content = toml_path.read_text(encoding="utf-8")
+    in_project = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_project = stripped == "[project]"
+            continue
+        if in_project:
+            match = re.match(r'^version\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+    return None
+
+
+def read_version_from_citation_cff(cff_path: Path) -> str | None:
+    """Parse ``version: vX.Y.Z`` from CITATION.cff."""
+    if not cff_path.is_file():
+        return None
+    match = re.search(r'^version:\s*v([0-9]+(?:\.[0-9]+)*)', cff_path.read_text(encoding="utf-8"), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def read_version_from_latest_release_notes(json_path: Path) -> str | None:
+    if not json_path.is_file():
+        return None
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    version = payload.get("version")
+    return str(version) if version else None
+
+
+def discover_shippable_package_data(project_root: Path) -> list[str]:
+    """Return ``batplot/data/*`` paths that should ship in wheels/sdists (relative to batplot/)."""
+    data_dir = project_root / "batplot" / "data"
+    if not data_dir.is_dir():
+        return []
+    rel_paths: list[str] = []
+    for path in sorted(data_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name in PACKAGE_DATA_EXCLUDE_NAMES:
+            continue
+        if path.suffix.lower() in {".zip", ".docx", ".pdf"}:
+            continue
+        rel_paths.append(path.relative_to(project_root / "batplot").as_posix())
+    return rel_paths
+
+
+def sync_pyproject_package_data(project_root: Path) -> list[str]:
+    """Rewrite ``[tool.setuptools.package-data]`` from files on disk.
+
+    New files dropped into ``batplot/data/`` are picked up automatically on the
+    next ``--dev-upgrade`` without hand-editing ``pyproject.toml``.
+    """
+    discovered = discover_shippable_package_data(project_root)
+    toml_path = project_root / "pyproject.toml"
+    if not toml_path.is_file():
+        return discovered
+    content = toml_path.read_text(encoding="utf-8")
+    items = ", ".join(f'"{p}"' for p in discovered)
+    pattern = r'(\[tool\.setuptools\.package-data\]\s*\n"batplot"\s*=\s*)\[[^\]]*\]'
+    replacement = rf"\1[{items}]"
+    new_content, count = re.subn(pattern, replacement, content, count=1)
+    if count and new_content != content:
+        toml_path.write_text(new_content, encoding="utf-8")
+        print(f"✓ Synced pyproject.toml package-data ({len(discovered)} file(s) under batplot/data/)")
+    return discovered
+
+
+def update_version_files(project_root: Path, new_version: str, *, old_version: str | None = None) -> None:
+    """Update canonical version strings in release metadata files."""
+    _ = old_version  # reserved for stale-version scans
+
+    init_file = project_root / "batplot" / "__init__.py"
+    init_content = init_file.read_text(encoding="utf-8")
+    new_init, n_init = re.subn(
+        r'(__version__\s*=\s*")[^"]+(")',
+        rf"\g<1>{new_version}\2",
+        init_content,
+        count=1,
+    )
+    if n_init:
+        init_file.write_text(new_init, encoding="utf-8")
+        print("✓ Updated batplot/__init__.py")
+    else:
+        raise RuntimeError("Could not update __version__ in batplot/__init__.py")
+
+    toml_file = project_root / "pyproject.toml"
+    toml_content = toml_file.read_text(encoding="utf-8")
+    lines = toml_content.splitlines()
+    in_project = False
+    replaced = False
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_project = stripped == "[project]"
+            continue
+        if in_project and re.match(r'^version\s*=\s*"[^"]+"', stripped):
+            lines[idx] = f'version = "{new_version}"'
+            replaced = True
+            break
+    if replaced:
+        toml_file.write_text("\n".join(lines) + ("\n" if toml_content.endswith("\n") else ""), encoding="utf-8")
+        print("✓ Updated pyproject.toml")
+    else:
+        raise RuntimeError('Could not update [project] version in pyproject.toml')
+
+
+def verify_release_versions(project_root: Path, expected_version: str) -> bool:
+    """Fail the release when canonical version files disagree."""
+    checks: list[tuple[str, str | None]] = [
+        ("batplot/__init__.py", read_version_from_init_file(project_root / "batplot" / "__init__.py")),
+        ("pyproject.toml", read_version_from_pyproject(project_root / "pyproject.toml")),
+        ("CITATION.cff", read_version_from_citation_cff(project_root / "CITATION.cff")),
+        (
+            "batplot/data/latest_release_notes.json",
+            read_version_from_latest_release_notes(project_root / "batplot" / "data" / "latest_release_notes.json"),
+        ),
+    ]
+    ok = True
+    print("\nVersion consistency:")
+    for label, found in checks:
+        if found is None:
+            print(f"  ⚠ {label}: not found or unreadable (skipped)")
+            continue
+        if found != expected_version:
+            ok = False
+            print(f"  ✗ {label}: expected {expected_version}, found {found}")
+        else:
+            print(f"  ✓ {label}: {found}")
+    return ok
+
+
+def find_stale_hardcoded_versions(project_root: Path, old_version: str | None) -> list[str]:
+    """Return batplot/*.py paths that still mention the pre-bump version string."""
+    if not old_version:
+        return []
+    hits: list[str] = []
+    package_root = project_root / "batplot"
+    skip_names = {"dev_upgrade.py"}
+    for path in sorted(package_root.rglob("*.py")):
+        if path.name in skip_names or "__pycache__" in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if old_version in text:
+            hits.append(path.relative_to(project_root).as_posix())
+    return hits
+
+
+def sync_manifest_package_data(project_root: Path) -> None:
+    """Rewrite ``MANIFEST.in`` include lines for shippable ``batplot/data`` files."""
+    manifest_path = project_root / "MANIFEST.in"
+    discovered = discover_shippable_package_data(project_root)
+    lines = [
+        "include README.md LICENSE DEVELOPING.md",
+        "exclude batplot/data/USER_MANUAL.md",
+    ]
+    for rel in discovered:
+        lines.append(f"include batplot/{rel}")
+    content = "\n".join(lines) + "\n"
+    if manifest_path.exists() and manifest_path.read_text(encoding="utf-8") == content:
+        return
+    manifest_path.write_text(content, encoding="utf-8")
+    print(f"✓ Synced MANIFEST.in package-data includes ({len(discovered)} file(s))")
 
 
 def get_current_version():
@@ -566,30 +768,6 @@ def update_citation_cff(project_root: Path, new_version: str) -> None:
     print(f"✓ Updated CITATION.cff (version v{new_version}, date {today})")
 
 
-def update_version_files(project_root: Path, new_version: str):
-    """Update version in __init__.py and pyproject.toml."""
-    # Update __init__.py
-    init_file = project_root / "batplot" / "__init__.py"
-    content = init_file.read_text()
-    updated = content.replace(
-        f'__version__ = "{get_current_version()}"',
-        f'__version__ = "{new_version}"'
-    )
-    init_file.write_text(updated)
-    print(f"✓ Updated batplot/__init__.py")
-    
-    # Update pyproject.toml
-    toml_file = project_root / "pyproject.toml"
-    content = toml_file.read_text()
-    updated = re.sub(
-        r'version = "[^"]*"',
-        f'version = "{new_version}"',
-        content
-    )
-    toml_file.write_text(updated)
-    print(f"✓ Updated pyproject.toml")
-
-
 def clean_build_files(project_root: Path):
     """Clean old build files."""
     dirs_to_remove = ['dist', 'build', 'batplot.egg-info']
@@ -607,26 +785,25 @@ def clean_build_files(project_root: Path):
 
 
 def _required_package_data_files(project_root: Path) -> list[str]:
-    """Return package-data files declared in pyproject.toml (relative to project root)."""
+    """Return shippable package-data paths (pyproject list ∪ batplot/data on disk)."""
+    declared: set[str] = set()
     toml_file = project_root / "pyproject.toml"
-    if not toml_file.exists():
-        return []
-    content = toml_file.read_text(encoding="utf-8")
-    match = re.search(
-        r'\[tool\.setuptools\.package-data\]\s*\n(?P<body>(?:[^\[]|\[[^\]]+\])*)',
-        content,
-        flags=re.MULTILINE,
-    )
-    if not match:
-        return []
-    body = match.group("body")
-    package_match = re.search(r'"batplot"\s*=\s*\[(?P<items>[^\]]*)\]', body)
-    if not package_match:
-        return []
-    rel_paths: list[str] = []
-    for item in re.findall(r'"([^"]+)"', package_match.group("items")):
-        rel_paths.append("batplot/" + item.replace("\\", "/"))
-    return sorted(set(rel_paths))
+    if toml_file.exists():
+        content = toml_file.read_text(encoding="utf-8")
+        match = re.search(
+            r'\[tool\.setuptools\.package-data\]\s*\n(?P<body>(?:[^\[]|\[[^\]]+\])*)',
+            content,
+            flags=re.MULTILINE,
+        )
+        if match:
+            body = match.group("body")
+            package_match = re.search(r'"batplot"\s*=\s*\[(?P<items>[^\]]*)\]', body)
+            if package_match:
+                for item in re.findall(r'"([^"]+)"', package_match.group("items")):
+                    declared.add("batplot/" + item.replace("\\", "/"))
+    for rel in discover_shippable_package_data(project_root):
+        declared.add("batplot/" + rel.replace("\\", "/"))
+    return sorted(declared)
 
 
 def _required_package_python_files(project_root: Path) -> list[str]:
@@ -944,7 +1121,7 @@ def run_upgrade():
         print(f"\n{GREEN}✓ Added to CHANGELOG.md{NC}")
     
     if update_notes:
-        sync_release_metadata_files(project_root, new_version, update_notes)
+        print(f"\n{GREEN}Release notes loaded ({len(update_notes)} chars){NC}")
     else:
         print(f"\n{YELLOW}Skipped update notes{NC}")
     
@@ -955,16 +1132,9 @@ def run_upgrade():
         
         # Step 2: Update versions
         print(f"\n{GREEN}[2/5]{NC} Updating version numbers...")
-        update_version_files(project_root, new_version)
+        update_version_files(project_root, new_version, old_version=current_version)
         update_citation_cff(project_root, new_version)
-        
-        # Verification
-        print(f"\n{YELLOW}Verification:{NC}")
-        init_file = project_root / "batplot" / "__init__.py"
-        toml_file = project_root / "pyproject.toml"
-        print(f"  __init__.py: {[line.strip() for line in init_file.read_text().splitlines() if '__version__' in line][0]}")
-        print(f"  pyproject.toml: {[line.strip() for line in toml_file.read_text().splitlines() if line.startswith('version =')][0]}")
-        
+
         # Sync CHANGELOG into package data so "v" shows it (no network)
         data_dir = project_root / "batplot" / "data"
         changelog_src = project_root / "CHANGELOG.md"
@@ -973,6 +1143,30 @@ def run_upgrade():
             data_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(changelog_src, changelog_dst)
             print(f"  {GREEN}✓ Synced CHANGELOG.md to package data (for 'v' command){NC}")
+
+        if update_notes:
+            sync_release_metadata_files(project_root, new_version, update_notes)
+
+        sync_pyproject_package_data(project_root)
+        sync_manifest_package_data(project_root)
+
+        if not verify_release_versions(project_root, new_version):
+            print(f"{RED}Version consistency check failed; fix the files above before releasing.{NC}")
+            return 1
+
+        stale = find_stale_hardcoded_versions(project_root, current_version)
+        if stale:
+            print(f"{YELLOW}Warning: pre-bump version {current_version!r} still appears in:{NC}")
+            for path in stale:
+                print(f"  - {path}")
+            print(f"{YELLOW}Update or remove these references before publishing.{NC}")
+
+        # Verification
+        print(f"\n{YELLOW}Verification:{NC}")
+        init_file = project_root / "batplot" / "__init__.py"
+        toml_file = project_root / "pyproject.toml"
+        print(f"  __init__.py: {[line.strip() for line in init_file.read_text().splitlines() if '__version__' in line][0]}")
+        print(f"  pyproject.toml: {[line.strip() for line in toml_file.read_text().splitlines() if line.startswith('version =')][0]}")
         
         # Step 3: Build
         print(f"\n{GREEN}[3/5]{NC} Building package...")

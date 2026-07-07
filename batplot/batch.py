@@ -480,6 +480,7 @@ def batch_process(directory: str, args):
     """
     print(f"Batch mode: scanning {directory}")
     
+    from .cli_save import wants_cli_session_save, batch_save_xy_directory
     # ====================================================================
     # FILE EXTENSION CLASSIFICATION
     # ====================================================================
@@ -563,6 +564,10 @@ def batch_process(directory: str, args):
     
     if not files:
         print("No data files found.")
+        return
+    
+    if wants_cli_session_save(args):
+        batch_save_xy_directory(directory, args, files)
         return
     
     # Check if --xaxis is required for unknown extensions
@@ -868,6 +873,7 @@ def batch_process_ec(directory: str, args):
     """
     print(f"EC Batch mode: scanning {directory}")
     
+    from .cli_save import wants_cli_session_save, batch_save_ec_directory
     # Check if --all flag was used with a style file
     style_cfg = None
     style_file_arg = getattr(args, 'all', None)
@@ -939,6 +945,10 @@ def batch_process_ec(directory: str, args):
     
     if not files:
         print(f"No {mode.upper()} files found.")
+        return
+    
+    if wants_cli_session_save(args):
+        batch_save_ec_directory(directory, args)
         return
     
     print(f"Found {len(files)} {mode.upper()} files. Exporting SVG plots to Figures/")
@@ -1406,4 +1416,238 @@ def batch_process_ec(directory: str, args):
     print(f"EC batch processing complete ({mode.upper()} mode).")
 
 
-__all__ = ["batch_process", "batch_process_ec"]
+HISTO_BATCH_EXTENSIONS = frozenset({".csv", ".txt", ".tsv", ".dat"})
+
+
+def _resolve_histo_style_path(directory: str, style_file_arg: str | None) -> str | None:
+    """Resolve a histogram style file (.bpsh) from ``--all style.bpsh``."""
+    if not style_file_arg or style_file_arg == "all":
+        return None
+    style_path = None
+    if os.path.isabs(style_file_arg):
+        style_path = os.path.normpath(style_file_arg)
+    else:
+        cwd_path = os.path.normpath(os.path.join(os.getcwd(), style_file_arg))
+        dir_path = os.path.normpath(os.path.join(directory, style_file_arg))
+        for candidate in (cwd_path, dir_path):
+            if os.path.exists(candidate) and candidate.lower().endswith(".bpsh"):
+                style_path = candidate
+                break
+        if style_path is None:
+            for candidate in (cwd_path, dir_path):
+                test_full = candidate if candidate.lower().endswith(".bpsh") else candidate + ".bpsh"
+                if os.path.exists(test_full):
+                    style_path = test_full
+                    break
+    if style_path and os.path.exists(style_path):
+        return style_path
+    print(f"Warning: Could not find histogram style file '{style_file_arg}'")
+    return None
+
+
+def _load_histo_style_file(style_path: str) -> dict | None:
+    try:
+        with open(style_path, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        if isinstance(cfg, dict):
+            return cfg
+    except Exception as exc:
+        print(f"Warning: Could not load histogram style file {style_path}: {exc}")
+    return None
+
+
+def _apply_histo_batch_style(fig, ax, state, cfg: dict) -> None:
+    """Apply visual settings from a .bpsh file without replacing histogram data."""
+    from .plot_modes.histo.interactive import _restore_snapshot
+    from .plot_modes.histo.spines import apply_histo_spine_snapshot
+    from .plot_modes.histo.fonts import sync_histo_font_rcparams
+    from .plot_modes.histo.plot import apply_histo_geometry, refresh_histo_figure
+
+    saved_setup = state.setup
+    saved_source = state.source_path
+    restored = _restore_snapshot(cfg)
+    state.style = restored.style
+    state.setup = saved_setup
+    state.source_path = saved_source
+    sync_histo_font_rcparams(state)
+    apply_histo_spine_snapshot(fig, ax, cfg)
+    apply_histo_geometry(fig, ax, state)
+    refresh_histo_figure(fig, ax, state)
+
+
+def _save_histo_batch_figure(fig, ax, out_path: str) -> None:
+    _, ext = os.path.splitext(out_path)
+    if ext.lower() == ".svg":
+        fig_fc = fig.get_facecolor() if getattr(fig, "patch", None) is not None else None
+        ax_fc = ax.get_facecolor() if getattr(ax, "patch", None) is not None else None
+        try:
+            if getattr(fig, "patch", None) is not None:
+                fig.patch.set_alpha(0.0)
+                fig.patch.set_facecolor("none")
+            if getattr(ax, "patch", None) is not None:
+                ax.patch.set_alpha(0.0)
+                ax.patch.set_facecolor("none")
+            fig.savefig(
+                out_path,
+                dpi=300,
+                bbox_inches="tight",
+                transparent=True,
+                facecolor="none",
+                edgecolor="none",
+            )
+        finally:
+            try:
+                if fig_fc is not None and getattr(fig, "patch", None) is not None:
+                    fig.patch.set_alpha(1.0)
+                    fig.patch.set_facecolor(fig_fc)
+            except Exception:
+                pass
+            try:
+                if ax_fc is not None and getattr(ax, "patch", None) is not None:
+                    ax.patch.set_alpha(1.0)
+                    ax.patch.set_facecolor(ax_fc)
+            except Exception:
+                pass
+    else:
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+
+
+def batch_process_histo(directory: str, args, *, only_files: list[str] | None = None) -> None:
+    """Batch export histogram figures for every CSV/TXT table in a directory.
+
+    Examples::
+
+        batplot --all --histo --histocol Length
+        batplot --all mystyle.bpsh --histo --histocol 7
+        batplot histo_data/ --histo --histocol Length --binwidth 1
+        batplot allfiles --histo --histocol Length
+    """
+    from .plot_modes.histo.load import (
+        TableData,
+        auto_range,
+        build_bin_edges,
+        column_stats,
+        load_table,
+        resolve_column_index,
+        suggest_bin_width,
+    )
+    from .plot_modes.histo.plot import build_histo_state, create_histo_figure
+
+    print(f"Histogram batch mode: scanning {directory}")
+
+    style_cfg = None
+    style_path = _resolve_histo_style_path(directory, getattr(args, "all", None))
+    if style_path:
+        style_cfg = _load_histo_style_file(style_path)
+        if style_cfg:
+            print(f"Using histogram style file: {os.path.basename(style_path)}")
+
+    col = getattr(args, "histocol", None)
+    if col is None and getattr(args, "readcol", None):
+        col = args.readcol[0]
+    if col is None:
+        print("Histogram batch mode requires a column (--histocol N or name).")
+        print("Example: batplot --all --histo --histocol Length")
+        return
+
+    out_dir = ensure_subdirectory("Figures", directory)
+    if only_files:
+        files = []
+        for entry in only_files:
+            name = os.path.basename(entry)
+            full = entry if os.path.isabs(entry) else os.path.join(directory, entry)
+            if not os.path.isfile(full):
+                continue
+            if os.path.splitext(name)[1].lower() not in HISTO_BATCH_EXTENSIONS:
+                continue
+            files.append(name)
+    else:
+        files = [
+            f
+            for f in sorted(os.listdir(directory), key=natural_sort_key)
+            if os.path.isfile(os.path.join(directory, f))
+            and os.path.splitext(f)[1].lower() in HISTO_BATCH_EXTENSIONS
+        ]
+    if not files:
+        print("No CSV/TXT histogram data files found.")
+        return
+
+    from .cli_save import wants_cli_session_save, batch_save_histo_directory
+
+    if wants_cli_session_save(args):
+        batch_save_histo_directory(directory, args, files)
+        return
+
+    print(f"Found {len(files)} file(s). Exporting histogram plots to Figures/")
+
+    def _build_setup(table: TableData):
+        col_index = resolve_column_index(table, col)
+        values = table.column_values(col_index)
+        headers = table.padded_headers()
+        col_name = headers[col_index - 1].strip() or f"column {col_index}"
+        xrange = getattr(args, "xrange", None)
+        if xrange and len(xrange) == 2:
+            xmin, xmax = float(xrange[0]), float(xrange[1])
+        else:
+            xmin, xmax = auto_range(values)
+        bin_width = getattr(args, "binwidth", None)
+        n_bins = getattr(args, "bins", None)
+        if bin_width is None and n_bins is None:
+            bin_width = suggest_bin_width(xmin, xmax, column_stats(values)["n"])
+        edges = build_bin_edges(xmin, xmax, bin_width=bin_width, n_bins=n_bins)
+        from .plot_modes.histo.wizard import HistoSetup
+
+        return HistoSetup(
+            column_index=col_index,
+            column_name=col_name,
+            values=values,
+            xmin=float(edges[0]),
+            xmax=float(edges[-1]),
+            bin_edges=edges,
+        )
+
+    output_format = getattr(args, "format", "svg") or "svg"
+    for fname in files:
+        fpath = os.path.join(directory, fname)
+        fig_b = None
+        try:
+            table = load_table(fpath)
+            setup = _build_setup(table)
+            state = build_histo_state(setup, source_path=fpath)
+            fig_b, ax_b, _meta = create_histo_figure(state)
+
+            if style_cfg:
+                _apply_histo_batch_style(fig_b, ax_b, state, style_cfg)
+            else:
+                base_name = os.path.splitext(fname)[0]
+                per_file_style = os.path.join(directory, base_name + ".bpsh")
+                if os.path.exists(per_file_style):
+                    file_style_cfg = _load_histo_style_file(per_file_style)
+                    if file_style_cfg:
+                        print(f"  Applying style from {base_name}.bpsh")
+                        _apply_histo_batch_style(fig_b, ax_b, state, file_style_cfg)
+
+            if not state.style.title:
+                ax_b.set_title(fname)
+
+            out_name = os.path.splitext(fname)[0] + f"_histo.{output_format}"
+            out_path = os.path.join(out_dir, out_name)
+            target = _confirm_overwrite(out_path)
+            if not target:
+                print(f"  Skipped {out_name} (user canceled)")
+            else:
+                _save_histo_batch_figure(fig_b, ax_b, target)
+                print(f"  Saved {os.path.basename(target)}")
+        except Exception as exc:
+            print(f"  Skipped {fname}: {exc}")
+        finally:
+            if fig_b is not None:
+                try:
+                    plt.close(fig_b)
+                except Exception:
+                    pass
+
+    print("Histogram batch processing complete.")
+
+
+__all__ = ["batch_process", "batch_process_ec", "batch_process_histo"]

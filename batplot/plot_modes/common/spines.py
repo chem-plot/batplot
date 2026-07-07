@@ -501,6 +501,8 @@ def run_spine_tick_menu(
     title_offset_handler: Optional[Callable[[], None]] = None,
     on_quit: Optional[Callable[[], None]] = None,
     print_state: Optional[Callable[[], None]] = None,
+    extra_help_lines: Optional[Sequence[str]] = None,
+    extra_command_handler: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """Run the common interactive spine/tick command loop.
 
@@ -534,12 +536,17 @@ def run_spine_tick_menu(
     print(f"  Minor count     : {cyan}m{reset}=minor ticks per interval  (example: {cyan}x 4{reset}  {cyan}all 0{reset}=off)")
     if title_offset_handler is not None:
         print(f"  Title offsets   : {cyan}p{reset}=adjust  ({cyan}w{reset}=top  {cyan}s{reset}=bottom  {cyan}a{reset}=left  {cyan}d{reset}=right)")
+    if extra_help_lines:
+        for line in extra_help_lines:
+            print(line)
     print(f"  Other           : {cyan}list{reset}=show state   {cyan}q{reset}=back to {back_label}")
     print(colorize_inline_commands("Tip: q backs out of submenus. Blank line repeats this prompt."))
 
     while True:
         cmd = safe_input(colorize_prompt("Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back): ")).strip().lower()
         if not cmd:
+            continue
+        if extra_command_handler is not None and extra_command_handler(cmd):
             continue
         if cmd == "q":
             if on_quit is not None:

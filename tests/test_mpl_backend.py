@@ -10,6 +10,7 @@ import pytest
 from batplot._mpl_backend import (
     ensure_gui_backend,
     is_interactive_backend,
+    show_figure_if_possible,
     wants_interactive_window,
 )
 
@@ -58,6 +59,7 @@ def test_wants_interactive_for_canvas():
     "flags",
     [
         {"operando": True},
+        {"histo": True},
         {"contour": True},
         {"cv": True},
         {"dqdv": True},
@@ -67,6 +69,15 @@ def test_wants_interactive_for_canvas():
 )
 def test_wants_interactive_for_mode_flags(flags):
     assert wants_interactive_window(_args(**flags)) is True
+
+
+def test_wants_interactive_for_plain_xy_files():
+    assert wants_interactive_window(_args(files=["scan.xy"])) is True
+    assert wants_interactive_window(_args(files=["a.xy", "b.xy"])) is True
+
+
+def test_wants_not_interactive_for_export_only():
+    assert wants_interactive_window(_args(files=["scan.xy"], out="plot.png")) is False
 
 
 def test_ensure_gui_respects_agg_under_pytest():
@@ -87,10 +98,21 @@ def test_ensure_gui_overrides_env_agg_when_not_headless(monkeypatch):
     monkeypatch.setattr(mb, "_USER_SET_MPLBACKEND", True)
     mb._mpl.use("Agg", force=True)
 
+    current_backend = ["Agg"]
+
+    def fake_use(name, force=False):
+        current_backend[0] = name
+
+    monkeypatch.setattr(mb._mpl, "use", fake_use)
+    monkeypatch.setattr(mb._mpl, "get_backend", lambda: current_backend[0])
+    monkeypatch.setattr(mb, "_gui_backend_order", lambda: ["TkAgg"])
+    monkeypatch.setattr(mb, "_backend_can_be_tried", lambda _name: True)
+
     args = _args(gc=True, interactive=True)
     assert mb.wants_interactive_window(args) is True
     ok = mb.ensure_gui_backend(args)
     assert ok is True
+    assert current_backend[0] == "TkAgg"
     assert mb.is_interactive_backend()
 
 
@@ -102,3 +124,20 @@ def test_ensure_gui_does_not_switch_for_headless_export(monkeypatch):
     ok = mb.ensure_gui_backend(_args(gc=True, out="plot.png"))
     assert ok is False
     assert not is_interactive_backend()
+
+
+def test_show_figure_if_possible_blocks_by_default(monkeypatch):
+    """View-only mode must block so the window stays open until the user closes it."""
+    import batplot._mpl_backend as mb
+
+    shown = []
+
+    def fake_show(block=True):
+        shown.append(block)
+
+    monkeypatch.setattr(mb, "ensure_gui_backend", lambda _args=None: True)
+    monkeypatch.setattr(mb, "is_interactive_backend", lambda: True)
+    monkeypatch.setattr("matplotlib.pyplot.show", fake_show)
+
+    assert show_figure_if_possible(_args(operando=True)) is True
+    assert shown == [True]

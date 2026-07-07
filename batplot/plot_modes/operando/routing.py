@@ -13,7 +13,13 @@ import os
 
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
-from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
+from ..._mpl_backend import (
+    ensure_gui_backend,
+    hold_figure_open,
+    prime_interactive_figure,
+    require_interactive_display,
+    show_figure_if_possible,
+)
 from .plot import plot_operando_folder
 
 try:
@@ -100,16 +106,39 @@ def handle_operando_mode(args) -> int:
             print(f"Operando plot saved to {outname}")
 
         # Interactive or show
+        from ...cli_save import run_cli_save_if_requested, should_show_plot
+        from ...session import dump_operando_session
+
+        def _do_operando_cli_save(target: str) -> None:
+            dump_operando_session(
+                target,
+                fig=fig,
+                ax=ax,
+                im=im,
+                cbar=cbar,
+                ec_ax=ec_ax,
+                skip_confirm=True,
+            )
+            fig._last_session_save_path = os.path.abspath(target)
+
+        op_sources = [folder] + [os.path.abspath(f) for f in (args.files or []) if f]
+        if run_cli_save_if_requested(
+            args,
+            op_sources,
+            purpose="operando session save",
+            default_stem=None,
+            combined_plot=True,
+            save_fn=_do_operando_cli_save,
+        ):
+            try:
+                plt.close(fig)
+            except Exception:
+                pass
+            exit()
+
         if args.interactive:
             if require_interactive_display(args, context="operando interactive menu"):
-                try:
-                    plt.ion()
-                except Exception:
-                    pass
-                try:
-                    plt.show(block=False)
-                except Exception:
-                    pass
+                prime_interactive_figure(fig)
                 try:
                     if operando_ec_interactive_menu is not None:
                         operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=args.files)
@@ -117,9 +146,9 @@ def handle_operando_mode(args) -> int:
                         print("Interactive menu not available.")
                 except Exception as _ie:
                     print(f"Interactive menu failed: {_ie}")
-                plt.show()
+                hold_figure_open()
         else:
-            if not (args.savefig or args.out):
+            if should_show_plot(args):
                 show_figure_if_possible(args)
         exit()
     except Exception as _e:

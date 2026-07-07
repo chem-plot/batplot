@@ -27,7 +27,13 @@ from ...ec_common import (
     _default_ec_figsize,
     _apply_default_ec_layout,
 )
-from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
+from ..._mpl_backend import (
+    ensure_gui_backend,
+    hold_figure_open,
+    prime_interactive_figure,
+    require_interactive_display,
+    show_figure_if_possible,
+)
 from ...batch import _apply_ec_style
 from ...readers import (
     read_mpt_file,
@@ -473,24 +479,57 @@ def handle_cpc_mode(args) -> int:
         else:
             print(f"Warning: Style file not found: {style_file_path}")
 
+    from ...cli_save import run_cli_save_if_requested, should_show_plot
+    from ...session import dump_cpc_session
+
+    sc0 = file_data[0]
+    sc_charge = sc0.get("sc_charge")
+    sc_discharge = sc0.get("sc_discharge")
+    sc_eff = sc0.get("sc_eff")
+    cpc_paths = [os.path.abspath(f.get("filepath", "")) for f in file_data if f.get("filepath")]
+
+    def _do_cpc_cli_save(target: str) -> None:
+        dump_cpc_session(
+            target,
+            fig=fig,
+            ax=ax,
+            ax2=ax2,
+            sc_charge=sc_charge,
+            sc_discharge=sc_discharge,
+            sc_eff=sc_eff,
+            file_data=file_data if len(file_data) > 1 else None,
+            skip_confirm=True,
+        )
+        fig._last_session_save_path = os.path.abspath(target)
+
+    if run_cli_save_if_requested(
+        args,
+        cpc_paths,
+        purpose="CPC session save",
+        default_stem=os.path.splitext(os.path.basename(cpc_paths[0]))[0] if len(file_data) == 1 else None,
+        combined_plot=len(file_data) > 1,
+        save_fn=_do_cpc_cli_save,
+    ):
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+        exit(0)
+
     if args.interactive and cpc_interactive_menu is not None:
         if require_interactive_display(args, context="CPC interactive menu"):
-            try:
-                plt.ion()
-            except Exception:
-                pass
-            plt.show(block=False)
+            prime_interactive_figure(fig)
             try:
                 # Always pass file_data so filename is available
-                    cpc_interactive_menu(fig, ax, ax2, 
-                                       file_data[0]['sc_charge'], 
-                                       file_data[0]['sc_discharge'], 
+                    cpc_interactive_menu(fig, ax, ax2,
+                                       file_data[0]['sc_charge'],
+                                       file_data[0]['sc_discharge'],
                                        file_data[0]['sc_eff'],
                                        file_data=file_data)
             except Exception as _ie:
                 print(f"CPC interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
     else:
-        if not (args.savefig or args.out):
+        if should_show_plot(args):
             show_figure_if_possible(args)
     exit(0)

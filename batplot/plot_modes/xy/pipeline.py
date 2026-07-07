@@ -23,7 +23,13 @@ import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
 from ...batch import _apply_xy_style
-from ..._mpl_backend import ensure_gui_backend, require_interactive_display, show_figure_if_possible
+from ..._mpl_backend import (
+    ensure_gui_backend,
+    hold_figure_open,
+    prime_interactive_figure,
+    require_interactive_display,
+    show_figure_if_possible,
+)
 from ...color_utils import get_colormap
 from ...utils import (
     _confirm_overwrite,
@@ -1313,23 +1319,47 @@ def run_xy_pipeline(args) -> int:
             print(f"Saved figure object to {target}")
 
     # ---------------- Show and interactive menu ----------------
+    from ...cli_save import run_cli_save_if_requested, save_xy_session, should_show_plot
+
+    def _do_xy_cli_save(target: str) -> None:
+        save_xy_session(
+            target,
+            fig=fig,
+            ax=ax,
+            x_data_list=x_data_list,
+            y_data_list=y_data_list,
+            orig_y=orig_y,
+            x_full_list=x_full_list,
+            raw_y_full_list=raw_y_full_list,
+            offsets_list=offsets_list,
+            labels=labels_list,
+            delta=args.delta,
+            args=args,
+            cif_tick_series=cif_tick_series if cif_tick_series else None,
+            cif_hkl_map=cif_hkl_map,
+            cif_hkl_label_map=cif_hkl_label_map,
+            show_cif_hkl=bool(show_cif_hkl),
+            show_cif_titles=bool(show_cif_titles),
+        )
+
+    if run_cli_save_if_requested(
+        args,
+        [os.path.abspath(f) for f in data_files],
+        purpose="project save",
+        default_stem=os.path.splitext(os.path.basename(data_files[0]))[0] if len(data_files) == 1 else None,
+        combined_plot=len(data_files) > 1,
+        save_fn=_do_xy_cli_save,
+    ):
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+        return 0
+
     if args.interactive:
         if not require_interactive_display(args, context="XY interactive menu"):
             return 0
-        # Show the current figure once (non-blocking) so interactive menu updates reuse this window
-        try:
-            plt.ion()
-        except Exception:
-            pass
-        try:
-            # Using canvas draw without show first avoids new-window creation on some backends
-            fig.canvas.draw_idle(); fig.canvas.flush_events()
-        except Exception:
-            pass
-        try:
-            plt.show(block=False)
-        except Exception:
-            pass
+        prime_interactive_figure(fig)
         # Increase default upper margin (more space): reduce 'top' value once and lock
         try:
             sp = fig.subplotpars
@@ -1375,6 +1405,7 @@ def run_xy_pipeline(args) -> int:
             use_Q, use_r, use_E, use_k, use_rft,
             cif_globals=cif_globals,
         )
+        hold_figure_open()
     elif args.out:
         out_file = args.out
         if not os.path.splitext(out_file)[1]:
@@ -1463,8 +1494,7 @@ def run_xy_pipeline(args) -> int:
                 else:
                     fig.savefig(export_target, dpi=300)
             print(f"Saved plot to {export_target}")
-    else:
-        # Default: show the plot in non-interactive, non-save mode
+    elif should_show_plot(args):
         show_figure_if_possible(args)
     
     # Success

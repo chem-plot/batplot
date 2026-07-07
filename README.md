@@ -10,9 +10,10 @@ With a single line of command to easily plot publication-ready plots with custom
 - **Electrochemistry Plot**: Galvanostatic cycling (GC), cyclic voltammetry (CV), differential capacity (dQdV), capacity per cycle (CPC) with multi-file support
 - **1D XY plot**: Designed for XRD, PDF, XAS (XANES/EXAFS) but also support other types
 - **Operando Contour plot**: Correlate in-situ characterizations (XRD/PDF/XAS) with electrochemical data
+- **Histogram mode**: Column histograms from tabular `.csv`/`.txt` data (e.g. particle-size lists)
 - **Interactive plotting**: Real-time editing customized for each type of plottings
 - **Session Persistence**: Save and reload complete plot states with `.pkl` files
-- **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files
+- **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files (histogram: `.bpsh`)
 - **Batch Processing**: Export each file separately with `--all`
 - **Column preview**: `--showcol` prints numbered columns, header names when found, and the first 10 values per column (CSV, Excel, text, .mpt, .brml, Bruker .raw, etc.)
 
@@ -136,6 +137,21 @@ batplot file1.xy file2.xy --stack --i
 batplot allfiles --xaxis 2theta --xrange 15 75 --i
 ```
 
+### Session save without interactive menu (`--save`)
+
+```bash
+# Single file: default .pkl name = data file stem; choose save folder when prompted
+batplot pattern.xye --xaxis 2theta --save
+
+# Batch: one session per file (default names), folder chosen once
+batplot --all --xaxis 2theta --xrange 10 80 --save
+
+# Combined plot (allfiles, operando, multi-file GC/CPC): you must name the session
+batplot allfiles --xaxis q --save
+batplot --operando --wl 0.25 --save
+batplot file1.csv file2.csv --gc --save
+```
+
 ---
 
 ## Electrochemistry Mode
@@ -242,16 +258,80 @@ Operando column selection:
 
 ---
 
+## Histogram Mode
+
+Histogram mode plots a single numeric column from tabular `.csv` or `.txt` files. It is designed for particle-size distributions and similar column data exported from spreadsheets or image-analysis tools.
+
+### Basic usage
+
+```bash
+# Interactive wizard + styling menu
+batplot sizes.csv --histo --i
+
+# Non-interactive: column, range, bins, save figure
+batplot data.txt --histo --histocol Length --xrange 0 16 --binwidth 1 --out hist.png
+
+# Preview columns before choosing
+batplot --showcol sizes.csv
+```
+
+### Startup wizard (`--i`)
+
+1. Choose the column to histogram (numbered list with preview)
+2. Set histogram range (`xmin xmax` or `auto`)
+3. Set bin width or `bins=N`
+
+### Batch export
+
+Export each CSV/TXT file in the folder as a separate figure under `Figures/`:
+
+```bash
+batplot --all --histo --histocol Length
+batplot allfiles --histo --histocol 7 --binwidth 1
+batplot histo_folder/ --histo --histocol Length
+
+# Apply a shared histogram style (.bpsh)
+batplot --all mystyle.bpsh --histo --histocol Length
+```
+
+`--histocol` is required for batch export (column number or header name).
+
+### Batch interactive editing
+
+Edit two or more histograms together (sync colors, fonts, export):
+
+```bash
+batplot allfiles --histo --i
+```
+
+If `--histocol` is omitted, the wizard runs on the first file and the same column/bin layout is reused for the rest.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--histo` | Launch histogram mode |
+| `--histocol N` | Column to histogram (1-indexed or header name) |
+| `--xrange A B` | Histogram display range |
+| `--binwidth W` | Width of each bin |
+| `--bins N` | Number of equal-width bins |
+| `--all` | Batch export each CSV/TXT file (requires `--histocol`) |
+| `allfiles` | Expand all CSV/TXT in folder (batch export or `--i` batch edit) |
+
+Style files: `.bpsh` (export with `p` in the interactive menu).
+
+---
+
 ## Plotting multiple files
 
 ```bash
 # All XY files in current directory on same figure
-batplot allfiles
-batplot allfiles --stack --i
+batplot allfiles --xaxis 2theta --i
+batplot allfiles --stack --gc --i
 
 # Only specific extension (natural-sorted)
 batplot allxyfiles
-batplot "/path/to/data" allnorfiles --i
+batplot "/path/to/data" allnorfiles --xaxis energy --i
 
 # Explicit file list
 batplot file1.xye file2.qye structure.cif:1.54 --stack --i
@@ -297,6 +377,7 @@ With `--interactive`:
 - **Styling**: Line widths, markers, fonts
 - **Axes**: Labels, limits, ticks, spine styles
 - **Export**: Sessions (`.pkl`), styles (`.bps`/`.bpsg`), high-res images. Colors persist via `p` (print style), `i` (import), `s` (save session), `b` (undo)
+- **Non-interactive session save**: `--save` (without `--i`) prompts for folder and filename—the same `.pkl` sessions as interactive `s`, with default names for single-file and `--all` batch runs
 - **Live Preview**: All changes update in real-time
 
 ---
@@ -308,6 +389,7 @@ batplot --h              # General help
 batplot --h xy           # XY mode guide
 batplot --h ec           # Electrochemistry guide
 batplot --h op           # Operando guide
+batplot --h histo        # Histogram mode guide
 batplot --v           # Version and release notes
 batplot --m            # Open illustrated manual
 ```

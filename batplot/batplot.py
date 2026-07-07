@@ -371,18 +371,19 @@ def batplot_main() -> int:  # type: ignore
             msg = UPDATE_INFO.get('custom_message') or (UPDATE_INFO.get('update_notes') or [None])[0]
             if msg:
                 print(msg)
-            try:
-                choice = input("\nShow full release notes? [y/N]: ").strip().lower()
-                if choice in ('y', 'yes'):
-                    changelog = _read_changelog_from_package()
-                    if changelog:
-                        print("\n--- Full release notes (CHANGELOG) ---\n")
-                        print(changelog)
-                        print("\n--- End of release notes ---\n")
-                    else:
-                        print("  Release notes not included in this build.")
-            except (KeyboardInterrupt, EOFError):
-                print()
+            if sys.stdin.isatty():
+                try:
+                    choice = input("\nShow full release notes? [y/N]: ").strip().lower()
+                    if choice in ('y', 'yes'):
+                        changelog = _read_changelog_from_package()
+                        if changelog:
+                            print("\n--- Full release notes (CHANGELOG) ---\n")
+                            print(changelog)
+                            print("\n--- End of release notes ---\n")
+                        else:
+                            print("  Release notes not included in this build.")
+                except (KeyboardInterrupt, EOFError):
+                    print()
         except Exception:
             print(f"batplot v{__version__}")
         return 0
@@ -411,6 +412,7 @@ def batplot_main() -> int:  # type: ignore
         getattr(args, 'dqdv', False),    # Differential capacity mode
         getattr(args, 'cpc', False),     # Capacity per cycle mode
         getattr(args, 'operando', False), # Operando contour mode
+        getattr(args, 'histo', False),  # Histogram mode
         getattr(args, 'all', None) is not None,  # Batch mode flag
         getattr(args, 'convert', None) is not None,  # Conversion mode
     ])
@@ -424,6 +426,11 @@ def batplot_main() -> int:  # type: ignore
     from ._mpl_backend import ensure_gui_backend
 
     ensure_gui_backend(args)
+
+    # Histogram mode (tabular CSV/TXT)
+    if getattr(args, 'histo', False):
+        from .plot_modes.histo.routing import handle_histo_mode
+        return handle_histo_mode(args)
 
     # ====================================================================
     # STEP 3: ROUTE TO APPROPRIATE MODE HANDLER
@@ -563,6 +570,16 @@ def batplot_main() -> int:  # type: ignore
     canvas_status = _run_canvas_route(args)
     if canvas_status is not None:
         return canvas_status
+
+    # ---------------- Batch session mode: multiple same-mode .pkl files ----------------
+    if (
+        args.files
+        and len(args.files) >= 2
+        and all(str(f).lower().endswith(".pkl") for f in args.files)
+        and len(args.files) == len([f for f in args.files if f])
+    ):
+        from .plot_modes.batch_session.routing import handle_batch_session_reload
+        return handle_batch_session_reload(args)
     
     # ---------------- Normal (multi-file) path continues below ----------------
     # Apply conditional default for delta (normal mode only)

@@ -122,3 +122,6 @@
 
 ## 1.8.45
 - Bug fixes with backend setting
+
+## 1.8.46
+- Added Histogram mode, use batplot -h to learn more

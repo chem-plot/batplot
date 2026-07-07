@@ -429,8 +429,22 @@ Before changing release behavior:
 
 1. Read `batplot/dev_upgrade.py`.
 2. Add or update tests in `tests/test_dev_upgrade.py`.
-3. Confirm future files are included through package discovery or manifest rules.
+3. Confirm future files are included automatically:
+   - Python modules: `packages.find include = ["batplot*"]` plus
+     `validate_distribution_contents()` (every `batplot/**/*.py` must be in the wheel).
+   - Package data: drop files into `batplot/data/` (except `USER_MANUAL.md`);
+     `--dev-upgrade` runs `sync_pyproject_package_data()` to refresh
+     `[tool.setuptools.package-data]`.
+   - Git: `_git_stage_release_snapshot()` stages tracked updates and all untracked
+     non-ignored paths (no hand-maintained file list).
 4. Keep GitHub/PyPI conflict handling explicit and testable.
+
+Canonical version files checked on every release:
+
+- `batplot/__init__.py` (`__version__`)
+- `pyproject.toml` (`[project] version`)
+- `CITATION.cff` (`version: v…`)
+- `batplot/data/latest_release_notes.json` (`version` field)
 
 ## Cross-Platform Checklist
 

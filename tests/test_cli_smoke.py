@@ -173,6 +173,48 @@ def test_cv_route_runs_clean(workdir):
     assert rc in (0, None)
 
 
+def test_histo_route_saves_figure(workdir):
+    csv_path = workdir / "sizes.csv"
+    _write(
+        csv_path,
+        " ,Area,Mean,Min,Max,Angle,Length\n"
+        "1,0.753,180.930,148.000,242.064,-41.186,11.289\n"
+        "2,0.952,178.378,161.353,196.542,-38.577,14.263\n"
+        "3,0.590,181.395,160.493,241.022,-40.414,8.804\n",
+    )
+    rc = _run(
+        [
+            str(csv_path),
+            "--histo",
+            "--histocol",
+            "7",
+            "--xrange",
+            "0",
+            "16",
+            "--binwidth",
+            "1",
+            "--out",
+            "hist.png",
+        ]
+    )
+    assert rc in (0, None)
+    assert (workdir / "hist.png").is_file()
+
+
+def test_histo_batch_all_flag(workdir):
+    csv_a = workdir / "a.csv"
+    csv_b = workdir / "b.csv"
+    for path, lengths in ((csv_a, [11.0, 12.0]), (csv_b, [8.0, 9.5])):
+        rows = [" ,Area,Mean,Min,Max,Angle,Length"]
+        for i, length in enumerate(lengths, start=1):
+            rows.append(f"{i},0.75,180.0,148.0,242.0,-41.0,{length}")
+        _write(path, "\n".join(rows) + "\n")
+    rc = _run(["--all", "--histo", "--histocol", "7", "--binwidth", "1"])
+    assert rc in (0, None)
+    exports = list((workdir / "Figures").glob("*_histo.svg"))
+    assert len(exports) == 2
+
+
 def test_operando_route_saves_figure(workdir):
     folder = workdir / "scans"
     folder.mkdir()

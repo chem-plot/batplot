@@ -63,6 +63,8 @@ def _detect_session_kind(path: str) -> Optional[str]:
             return 'operando_ec'
         if kind == 'cpc':
             return 'cpc'  # CPC, EPC
+        if kind == 'histo':
+            return 'histo'
         if 'version' in sess and 'x_data' in sess:
             return 'xy'  # XY/1D (XRD, diffraction, EXAFS, etc.)
         return None

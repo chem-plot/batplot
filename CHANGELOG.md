@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.46] - 2026-07-07
+- Added Histogram mode, use batplot -h to learn more
+
+
 ## [1.8.45] - 2026-06-30
 - Bug fixes with backend setting
 

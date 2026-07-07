@@ -1,3 +1,4 @@
 include README.md LICENSE DEVELOPING.md
-recursive-include batplot/data CHANGELOG.md
 exclude batplot/data/USER_MANUAL.md
+include batplot/data/CHANGELOG.md
+include batplot/data/latest_release_notes.json

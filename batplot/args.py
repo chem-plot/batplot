@@ -139,14 +139,17 @@ def _print_general_help() -> None:
         "  • XY: XRD/PDF/XAS/User defined curves\n"
         "  • EC: Galvanostatic cycling(GC)/Capacity per cycle(CPC)/Diffrential capacity(dQdV)/Cyclic Voltammetry(CV) from Neware (.csv) or Biologic (.mpt)\n"
         "  • Operando: contour from .xy/.xye/.dat/.brml; Bruker .brml (cyc1/cyc2/cyc3) with optional .mpt or DataLogger CSV side panel\n"
+        "  • Histogram: column histograms from .csv/.txt tabular data (--histo)\n"
         "  • Batch: export vector plots for all files in a directory\n"
-        "  • Interactive mode: --i flag opens a menu for styling, ranges, export, and save\n\n"
+        "  • Interactive mode: --i flag opens a menu for styling, ranges, export, and save\n"
+        "  • Session save (no menu): --save prompts for path/name and writes a .pkl session\n\n"
         "How to run (basics):\n"
         "  [1D (XY) — XRD, PDF, XAS]\n"
         "    batplot file.xy file2.qye --i              # Plot with interactive menu\n"
         "    batplot pattern.xye --xaxis 2theta --xrange 10 80    # XRD: 2θ axis, zoom 10–80°\n"
         "    batplot data.xye:1.5406 --wl 1.54 --i     # Wavelength for Q conversion\n"
         "    batplot file.xy --out figure.svg                     # Save to file (default .svg)\n"
+        "    batplot file.xy --xaxis 2theta --save                # Save .pkl session (no --i)\n"
         "    batplot file1.xy file2.xy --stack --i      # Stack curves\n"
         "    batplot file1.xy:1.54 file2.qye structure.cif --stack --i  # Stack + CIF\n"
         "    batplot file1.xy --ry file2.xy --ry --i    # Dual y-axis\n"
@@ -161,13 +164,19 @@ def _print_general_help() -> None:
         "  [Operando]\n"
         "    batplot --operando --i [FOLDER]  # Contour from folder\n"
         "    batplot Path/to/file --operando --wl 0.709 --i  # Bruker .brml, Q conversion\n\n"
+        "  [Histogram]\n"
+        "    batplot sizes.csv --histo --i              # Interactive wizard + menu\n"
+        "    batplot data.csv --histo --histocol Length --xrange 0 16 --binwidth 1 --out hist.png\n"
+        "    batplot --all --histo --histocol Length      # Batch export each CSV/TXT → Figures/\n"
+        "    batplot allfiles --histo --i                 # Batch interactive edit (2+ files)\n\n"
         "Features:\n"
         "  • Interactive (--i): styling, ranges, fonts, export, sessions\n"
         "  • XRD wavelength: --wl 1.54 or file.xye:1.5406 for Q conversion\n"
         "  • X-axis range: --xrange min max\n"
-        "  • Save: --out filename (default .svg)\n"
+        "  • Save figure: --out filename (default .svg)\n"
+        "  • Save session: --save (choose folder + name; default stem for single file / --all batch)\n"
         "  • Batch: --all exports each file to Figures/\n"
-        "  • More: --help xy / --help ec / --help op\n\n"
+        "  • More: --help xy / --help ec / --help op / --help histo\n\n"
         
         "More help:\n"
         "  batplot --v       # Version and release info (with option to show full release notes)\n"
@@ -176,6 +185,7 @@ def _print_general_help() -> None:
         "  batplot --h xy       # XY file plotting guide\n"
         "  batplot --h ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
         "  batplot --h op       # Operando contour guide (also: batplot --help contour)\n"
+        "  batplot --h histo    # Histogram mode guide (.csv/.txt column data)\n"
         "  batplot --m        # Open the illustrated PDF manual\n\n"
 
         "Contact & Updates:\n"
@@ -203,6 +213,8 @@ def _print_xy_help() -> None:
         "  batplot file1.xye:1.5406 file2.txt:0.709 --i         # Plot XRD data in different wavelengths in q space\n"
         "  batplot data1.xye data2.xye --wl 1.54 --i            # Same Wavelength for Q conversion\n"
         "  batplot file.xy --out figure.svg                     # Save to file\n"
+        "  batplot file.xy --xaxis 2theta --save                # Save .pkl session (prompt path/name)\n"
+        "  batplot allfiles --xaxis q --save                    # Combined plot: you name the session\n"
         "  batplot a.xye:1.5406 b.qye --stack --i               # Stack in q space\n"
         "  batplot pattern.qye ticks.cif --xaxis q --i          # XRD + CIF ticks\n"
         "  batplot file1.xy file2.xy --1d --stack --i           # First derivative\n"
@@ -223,6 +235,7 @@ def _print_xy_help() -> None:
         "  --2d                      : plot the first derivative (dy/dx) of the datasets (alias for --1d)\n"
         "  --xrange <min> <max>      : set x-axis range, e.g. --xrange 0 10\n"
         "  --out <filename>          : save figure to file, e.g. --out file.svg\n"
+        "  --save                    : save .pkl session (prompt folder + name; no --i menu)\n"
         "  --xaxis <type>            : set x-axis type (Q, 2theta, r, k, energy, rft, time, or user defined)\n"
         "                              Q and q are equivalent (case-insensitive). e.g. --xaxis 2theta, --xaxis Q, --xaxis time\n"
         "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
@@ -287,6 +300,7 @@ def _print_ec_help() -> None:
         "Use --i for styling, colors, line widths, axis scales, etc.\n"
         "GC from .mpt or .npt: requires active mass to compute mAh g⁻¹ (default unit: mg; use a ``g`` suffix for grams, e.g. --mass 0.0065g).\n"
         "  batplot --gc file.mpt --mass 6.5 --i\n"
+        "  batplot --gc file.csv --save                       # Save .pkl session (no --i)\n"
         "  batplot --gc file.npt --mass 10g --i\n\n"
         "GC from supported .csv: specific capacity read directly when available; use --mass for\n"
         "  Neware absolute-capacity files (Cycle Index / Step Index / DataPoint format).\n"
@@ -317,6 +331,7 @@ def _print_ec_help() -> None:
         "  Expected structure: Row 1=filename, Row 2=headers, Row 3+=data\n\n"
         "Batch mode: --all exports each file to Figures/ (default .svg). Use --format png for raster.\n"
         "  batplot --gc --all --mass 7.0          # All GC files\n"
+        "  batplot --gc --all --mass 7.0 --save   # Batch: one .pkl per file (default names)\n"
         "  batplot --cv --all                     # All CV files\n"
         "  batplot --all style.bps --gc --mass 7   # Batch with style\n"
         "  batplot --all ./Style/geom.bpsg --cpc --mass 6  # Apply style+geom from relative path\n\n"
@@ -333,6 +348,8 @@ def _print_ec_help() -> None:
         "CPC (ly/ry): Type 1-5 viridis or 1 3 5 4 for file range. Exported via p, restored via i/s/b.\n\n"
         "Interactive (--i): choose cycles, colors/palettes, line widths, axis scales (linear/log/symlog),\n"
         "rename axes, toggle ticks/titles/spines, print/export/import style (.bps/.bpsg), save session (.pkl).\n"
+        "Session save without menu: --save (prompt folder + name; default stem for one file or --all batch).\n"
+        "Multi-file on one figure (e.g. file1.csv file2.csv --gc): --save requires a session name.\n"
         "Multi-file: In c (cycles/colors), type fall viridis (all files), f1-5 viridis (files 1–5), or f1 f3 f5 4 (files 1,3,5).\n"
         "Note: Batch mode (--all) exports SVG files automatically; --i is for single-file plotting only.\n\n"
         "Axis swapping:\n"
@@ -343,11 +360,44 @@ def _print_ec_help() -> None:
     _print_help(msg)
 
 
+def _print_histo_help() -> None:
+    msg = (
+        "Histogram mode (--histo) for tabular CSV/TXT data\n\n"
+        "Example usage:\n"
+        "  batplot sizes.csv --histo --i\n"
+        "  batplot data.txt --histo --histocol Length --xrange 0 16 --binwidth 1 --out hist.png\n"
+        "  batplot sizes.csv --histo --histocol Length --save   # Save .pkl session\n"
+        "  batplot --all --histo --histocol Length          # Batch export each file → Figures/\n"
+        "  batplot allfiles --histo --histocol Length       # Same as --all for CSV/TXT in folder\n"
+        "  batplot allfiles --histo --i                     # Batch interactive edit (2+ files)\n"
+        "  batplot --all mystyle.bpsh --histo --histocol 7  # Batch with shared style\n\n"
+        "Startup wizard (--i):\n"
+        "  1. Choose column (numbered list with preview — no automatic default)\n"
+        "  2. Set histogram range (xmin xmax or auto)\n"
+        "  3. Set bin width or bins=N\n\n"
+        "Flags:\n"
+        "  --histocol N   : column to histogram (1-indexed, or use --i)\n"
+        "  --xrange A B   : histogram range\n"
+        "  --binwidth W   : width of each bin/segment\n"
+        "  --bins N       : number of equal-width bins (alternative to --binwidth)\n"
+        "  --i            : interactive menu (colors, range, export, save)\n"
+        "  --save           : save .pkl session (prompt folder + name)\n"
+        "  --out FILE     : save figure without opening the menu\n"
+        "  --all          : batch export each CSV/TXT file (requires --histocol)\n\n"
+        "Interactive menu (--i): colors (c), fonts (f), density curve (a), spines (t),\n"
+        "  geometry (g), bar width (w), labels (r), range/bins (x), export figure (e),\n"
+        "  export/import style .bpsh (p/i), save session .pkl (s), undo (b).\n"
+        "  Batch interactive (allfiles --histo --i): edit 2+ histograms together.\n"
+    )
+    _print_help(msg)
+
+
 def _print_op_help() -> None:
     msg = (
         "Operando contour plots (--operando or --contour, same behavior)\n\n"
         "Example usage:\n"
         "  batplot --operando --i --wl 0.25995  # Interactive mode with Q conversion\n"
+        "  batplot --operando --wl 0.25 --save  # Save .pkl session (you name it)\n"
         "  batplot --contour --i [FOLDER]      # Same as --operando\n"
         "  batplot --operando --xaxis 2theta              # Using 2theta axis\n"
         "  batplot --operando --1d --i           # Plot derivatives as contour with interactive menu\n"
@@ -376,6 +426,7 @@ def _print_op_help() -> None:
         "Interactive (--i): menu has (Styles), (Operando), (Side Panel), (Options) columns.\n"
         "Resize axes/canvas, change colormap, set intensity range (oz), side-panel options,\n"
         "geometry tweaks, toggle spines/ticks/labels, print/export/import style, save session.\n"
+        "Session save without menu: --save (combined operando plot — session name required).\n"
     )
     _print_help(msg)
 
@@ -421,6 +472,12 @@ def _add_xy_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_interactive_export_arguments(parser: argparse.ArgumentParser) -> None:
     """Register interactive, export, and batch-output arguments."""
     parser.add_argument("--i", "--interactive", action="store_true", dest="interactive", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        dest="save",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--savefig", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--stack", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ry", action="store_true", help=argparse.SUPPRESS)
@@ -457,6 +514,14 @@ def _add_operando_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--operando", "--contour", action="store_true", dest="operando", help=argparse.SUPPRESS)
     parser.add_argument("--average", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--sum", dest="scan_sum", type=int, help=argparse.SUPPRESS)
+
+
+def _add_histo_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register histogram mode arguments."""
+    parser.add_argument("--histo", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--histocol", type=int, metavar="COL", help=argparse.SUPPRESS)
+    parser.add_argument("--binwidth", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--bins", type=int, help=argparse.SUPPRESS)
 
 
 def _add_read_column_arguments(parser: argparse.ArgumentParser) -> None:
@@ -522,6 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_xy_arguments(parser)
     _add_interactive_export_arguments(parser)
     _add_operando_arguments(parser)
+    _add_histo_arguments(parser)
     _add_electrochem_arguments(parser)
     _add_read_column_arguments(parser)
     return parser
@@ -753,13 +819,15 @@ def parse_args(argv=None):
             _print_ec_help()  # EC mode help (GC, dQ/dV, CV, CPC)
         elif t in ("op", "operando", "contour"):
             _print_op_help()  # Operando mode help
+        elif t in ("histo", "histogram", "hist"):
+            _print_histo_help()
         else:
             # Unknown topic, show general help with warning
             _print_general_help()
             if _HAS_RICH and _console:
-                _console.print("\n[yellow]Unknown help topic. Use: xy, ec, op[/yellow]")
+                _console.print("\n[yellow]Unknown help topic. Use: xy, ec, op, histo[/yellow]")
             else:
-                print("\nUnknown help topic. Use: xy, ec, op")
+                print("\nUnknown help topic. Use: xy, ec, op, histo")
         sys.exit(0)  # Exit after showing help (don't continue to actual plotting)
     
     # ====================================================================

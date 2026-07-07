@@ -23,7 +23,9 @@ from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[im
 from ..ec_common import _run_saved_dqdv_2d_companion
 from .._mpl_backend import (
     ensure_gui_backend,
+    hold_figure_open,
     is_interactive_backend,
+    prime_interactive_figure,
     running_headless,
     warn_if_noninteractive,
 )
@@ -64,12 +66,26 @@ except ImportError:
     operando_ec_interactive_menu = None
 
 
+_VALID_SESSION_KINDS = frozenset({"histo", "ec_gc", "cpc", "operando_ec", "xy"})
+
+
+def _is_valid_session_header(sess: object) -> bool:
+    """Return True for legacy XY sessions and kind-tagged mode sessions."""
+    if not isinstance(sess, dict):
+        return False
+    kind = sess.get("kind")
+    if kind in _VALID_SESSION_KINDS:
+        return True
+    # Legacy XY / batplot sessions without an explicit kind field.
+    return "version" in sess
+
+
 def _load_session_dict_with_diagnostics(sess_path: str) -> tuple[dict | None, int | None]:
     """Load a session header dict, preserving the existing NumPy mismatch diagnostics."""
     try:
         with open(sess_path, 'rb') as f:
             sess = pickle.load(f)
-        if not isinstance(sess, dict) or 'version' not in sess:
+        if not _is_valid_session_header(sess):
             print("Not a valid batplot session file.")
             return None, 1
         return sess, None
@@ -135,14 +151,7 @@ def handle_session_reload(args) -> int:
             # Multi-file session returns (fig, ax, None, file_data); single-file returns (fig, ax, cycle_lines)
             if len(res) == 4 and res[2] is None:
                 fig, ax, _ignored, file_data = res
-                try:
-                    plt.ion()
-                except Exception:
-                    pass
-                try:
-                    plt.show(block=False)
-                except Exception:
-                    pass
+                prime_interactive_figure(fig)
                 try:
                     fig._last_session_save_path = os.path.abspath(sess_path)
                 except Exception:
@@ -161,14 +170,7 @@ def handle_session_reload(args) -> int:
                     print(f"Interactive menu failed: {_ie}")
             else:
                 fig, ax, cycle_lines = cast(Tuple[Any, Any, Any], res)
-                try:
-                    plt.ion()
-                except Exception:
-                    pass
-                try:
-                    plt.show(block=False)
-                except Exception:
-                    pass
+                prime_interactive_figure(fig)
                 try:
                     fig._last_session_save_path = os.path.abspath(sess_path)
                 except Exception:
@@ -189,7 +191,7 @@ def handle_session_reload(args) -> int:
                 _run_saved_dqdv_2d_companion(fig, sess_path)
             except Exception as _c2d:
                 print(f"Saved dQ/dV 2D companion: {_c2d}")
-            plt.show()
+            hold_figure_open()
             exit()
         except Exception as e:
             print(f"EC session load failed: {e}")
@@ -202,15 +204,7 @@ def handle_session_reload(args) -> int:
                 print("Failed to load operando+EC session.")
                 exit(1)
             fig2, ax2, im2, cbar2, ec_ax2 = res
-            # Always open interactive menu for session files
-            try:
-                plt.ion()
-            except Exception:
-                pass
-            try:
-                plt.show(block=False)
-            except Exception:
-                pass
+            prime_interactive_figure(fig2)
             # Seed last-session path so 'os' overwrite command is available immediately
             try:
                 fig2._last_session_save_path = os.path.abspath(sess_path)
@@ -221,7 +215,7 @@ def handle_session_reload(args) -> int:
                     operando_ec_interactive_menu(fig2, ax2, im2, cbar2, ec_ax2)
             except Exception as _ie:
                 print(f"Interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
             exit()
         except Exception as e:
             print(f"Operando+EC session load failed: {e}")
@@ -235,14 +229,7 @@ def handle_session_reload(args) -> int:
                 print("Failed to load CPC session.")
                 exit(1)
             fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data = res
-            try:
-                plt.ion()
-            except Exception:
-                pass
-            try:
-                plt.show(block=False)
-            except Exception:
-                pass
+            prime_interactive_figure(fig_c)
             # Seed last-session path so 'os' overwrite command is available immediately
             try:
                 fig_c._last_session_save_path = os.path.abspath(sess_path)
@@ -253,10 +240,41 @@ def handle_session_reload(args) -> int:
                     cpc_interactive_menu(fig_c, ax_c, ax2_c, sc_c, sc_d, sc_e, file_data=file_data)
             except Exception as _ie:
                 print(f"CPC interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
             exit()
         except Exception as e:
             print(f"CPC session load failed: {e}")
+            exit(1)
+
+    # If it's a histogram session, load and open histogram interactive menu
+    if isinstance(sess, dict) and sess.get('kind') == 'histo':
+        try:
+            from .histo.session import load_histo_session
+            from .histo.interactive import histo_interactive_menu
+            from .histo.load import load_table
+
+            res = load_histo_session(sess_path)
+            if not res:
+                print("Failed to load histogram session.")
+                exit(1)
+            fig_h, ax_h, state_h = res
+            prime_interactive_figure(fig_h)
+            try:
+                fig_h._last_session_save_path = os.path.abspath(sess_path)
+            except Exception:
+                pass
+            table_loader = None
+            source = getattr(state_h, "source_path", "") or ""
+            if source and os.path.isfile(source):
+                table_loader = lambda src=source: load_table(src)
+            try:
+                histo_interactive_menu(fig_h, ax_h, state_h, table_loader=table_loader)
+            except Exception as _ie:
+                print(f"Histogram interactive menu failed: {_ie}")
+            hold_figure_open()
+            exit()
+        except Exception as e:
+            print(f"Histogram session load failed: {e}")
             exit(1)
 
     # XY sessions include legacy files without a kind plus current kind='xy'.
@@ -268,14 +286,7 @@ def handle_session_reload(args) -> int:
                 print("Failed to load XY session.")
                 exit(1)
             fig_xy, ax_xy, menu_kwargs = res
-            try:
-                plt.ion()
-            except Exception:
-                pass
-            try:
-                plt.show(block=False)
-            except Exception:
-                pass
+            prime_interactive_figure(fig_xy)
             try:
                 fig_xy._last_session_save_path = os.path.abspath(sess_path)
             except Exception:
@@ -284,7 +295,7 @@ def handle_session_reload(args) -> int:
                 interactive_menu(fig_xy, ax_xy, **normalize_xy_menu_kwargs(menu_kwargs))
             except Exception as _ie:
                 print(f"Interactive menu failed: {_ie}")
-            plt.show()
+            hold_figure_open()
             exit()
         except Exception as e:
             print(f"XY session load failed: {e}")
@@ -1040,14 +1051,7 @@ def handle_session_reload(args) -> int:
             args.norm = bool(args_subset['norm'])
     except Exception:
         pass
-    try:
-        plt.ion()
-    except Exception:
-        pass
-    try:
-        plt.show(block=False)
-    except Exception:
-        pass
+    prime_interactive_figure(fig)
 
     # CRITICAL: Disable automatic layout adjustments to ensure parameter independence
     # This prevents matplotlib from moving axes when labels are changed
@@ -1078,5 +1082,5 @@ def handle_session_reload(args) -> int:
                      x_full_list, raw_y_full_list, offsets_list,
                      use_Q, use_r, use_E, use_k, use_rft,
                      cif_globals=cif_globals_dict)
-    plt.show()
+    hold_figure_open()
     exit()

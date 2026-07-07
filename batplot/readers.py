@@ -501,6 +501,25 @@ def is_bruker_raw(fname: str) -> bool:
         return False
 
 
+# Bruker RAW/BRML use these values for missing or invalid detector counts.
+_BRUKER_INVALID_INTENSITIES = (-9999.0, -999.0)
+
+
+def sanitize_xrd_intensity(y: np.ndarray) -> np.ndarray:
+    """Replace Bruker missing-value sentinels with NaN so plots mask them."""
+    arr = np.asarray(y, dtype=float)
+    if arr.size == 0:
+        return arr
+    bad = np.zeros(arr.shape, dtype=bool)
+    for sentinel in _BRUKER_INVALID_INTENSITIES:
+        bad |= arr == sentinel
+    if not np.any(bad):
+        return arr
+    out = arr.copy()
+    out[bad] = np.nan
+    return out
+
+
 def read_bruker_raw(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
     """Read Bruker/Siemens RAW v4 binary: extract 2θ (degrees) and intensity as x, y.
 
@@ -573,7 +592,7 @@ def read_bruker_raw(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nda
             if wavelength is not None:
                 break
 
-    return x_arr, y_arr, None, wavelength
+    return x_arr, sanitize_xrd_intensity(y_arr), None, wavelength
 
 
 def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
@@ -648,7 +667,7 @@ def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
         else:
             return None, None, None, None
         x_arr = np.asarray(arr[:, x_col], dtype=float)
-        y_arr = np.asarray(arr[:, y_col], dtype=float)
+        y_arr = sanitize_xrd_intensity(np.asarray(arr[:, y_col], dtype=float))
         return x_arr, y_arr, start_deg, step_deg
 
     try:
@@ -689,7 +708,7 @@ def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
     except Exception:
         pass
 
-    return x_arr, y_arr, None, wavelength
+    return x_arr, sanitize_xrd_intensity(y_arr), None, wavelength
 
 
 def _parse_brml_raw_xml(zip_f, raw_path):
@@ -739,7 +758,7 @@ def _parse_brml_raw_xml(zip_f, raw_path):
             y_arr = np.asarray(arr[0, 2 : 2 + n_counts], dtype=float)
         n_pts = len(y_arr)
         x_arr = start_deg + np.arange(n_pts, dtype=float) * step_deg
-        return x_arr, y_arr, start_deg, step_deg
+        return x_arr, sanitize_xrd_intensity(y_arr), start_deg, step_deg
     if ncols >= 5:
         x_col, y_col = 2, 4
     elif ncols >= 3:
@@ -747,7 +766,7 @@ def _parse_brml_raw_xml(zip_f, raw_path):
     else:
         return None, None, None, None
     x_arr = np.asarray(arr[:, x_col], dtype=float)
-    y_arr = np.asarray(arr[:, y_col], dtype=float)
+    y_arr = sanitize_xrd_intensity(np.asarray(arr[:, y_col], dtype=float))
     return x_arr, y_arr, start_deg, step_deg
 
 

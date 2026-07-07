@@ -6,6 +6,428 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+## 2026-07-07: Batch session interactive mode — save/overwrite/quit parity
+
+### Summary
+Multi-``.pkl`` batch interactive mode (``batplot a.pkl b.pkl --i``) had several
+I/O bugs and missing menu parity across plot kinds.
+
+### Root Cause
+- XY batch ``s`` / ``os`` called ``dump_session()`` with wrong positional arguments.
+- ``os`` (overwrite session), ``s all``, and quit-time save were only wired in XY.
+- Quit prompt advertised save but ``batch_quit_confirm(allow_export=False)`` blocked it.
+- ``ops`` / ``opsg`` always used panel [1] as the style source.
+- Histogram batch menu lacked ``x: range/bins`` and consistent session path seeding.
+
+### Fix
+- Added shared helpers in ``batch_commands.py`` and ``xy_batch_helpers.py``.
+- All batch menus (XY, EC, CPC, operando, histo) now support ``s all``, ``os``,
+  quit save (``s`` / ``s all``), and user-selected source for ``ops`` / ``opsg``.
+- XY: full spine/tick submenu and x/y range sync; fixed ``dump_xy_panel``.
+- EC: tick state read from loaded ``fig._ec_wasd_state`` instead of hardcoded defaults.
+- Histo: ``x: range/bins`` on reference panel, sync range/bins to all panels.
+- Batch menus no longer advertise ``oe`` (figure overwrite) until that command is implemented.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/batch_commands.py` (new)
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py` (new)
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/load.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_batch_session.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: pure Python menu dispatch and session save; no OS-specific APIs
+
+---
+
+## 2026-07-07: Non-interactive session save flag (`--save`)
+
+### Summary
+Added ``--save`` for all major plot modes (without ``--i``) to write ``.pkl``
+session files using the same path/name prompts as interactive session save.
+
+### Behavior
+- Single file or ``--all`` batch: default filename = data file stem (batch asks
+  folder once, then saves one ``.pkl`` per file).
+- Combined plots (``allfiles``, operando, multi-file GC/CPC on one figure):
+  user must enter a session name.
+- Does not open the interactive menu or display a figure window unless
+  ``--out`` is also given.
+
+### Files
+- ``batplot/cli_save.py`` (new)
+- ``batplot/args.py``, ``batplot/_mpl_backend.py``, ``batplot/batch.py``
+- Mode routing: ``xy/pipeline.py``, ``electrochem/routing.py``, ``cpc/routing.py``,
+  ``operando/routing.py``, ``histo/routing.py``
+- ``README.md``, ``tests/test_cli_save.py``
+
+---
+
+## 2026-07-07: Histogram mode missing batch processing (`--all` / `allfiles`)
+
+### Summary
+Histogram mode did not support batch export or batch interactive editing via
+``batplot --all --histo`` or ``batplot allfiles --histo``, unlike XY and EC modes.
+
+### Root Cause
+``handle_histo_mode`` always treated the first data file only and returned before
+any batch routing logic. No ``batch_process_histo`` existed.
+
+### Fix
+- Add ``batch_process_histo`` in ``batch.py`` (CSV/TXT scan, ``--histocol``,
+  optional ``.bpsh`` style, export to ``Figures/``).
+- Extend ``handle_histo_mode`` to route ``--all``, folder paths, ``allfiles`` tokens,
+  and multi-file ``--i`` to batch export or batch interactive menu (same pattern as EC).
+
+### Affected Files
+- `batplot/batch.py`
+- `batplot/plot_modes/histo/routing.py`
+- `batplot/args.py`
+
+---
+
+## 2026-07-06: Histogram `.pkl` reload plot frame width mismatched live session
+
+### Summary
+Reloading a histogram ``.pkl`` could show the same ``g`` menu plot-frame inches as a
+fresh ``--histo --i`` session while the on-screen axes looked narrower or wider.
+
+### Root Cause
+- ``draw_histogram`` always ran ``tight_layout()`` before reapplying saved
+  ``axes_fraction``, so matplotlib could shift layout between redraws.
+- Session save did not call ``sync_histo_geometry`` first, so stored fractions
+  could lag the live axes position (same class of bug as EC/GC sessions).
+- ``load_histo_session`` redrew the figure twice (create + refresh), amplifying
+  layout drift when spine state differed between passes.
+
+### Fix
+- Skip ``tight_layout`` when ``axes_fraction`` is set; disable the figure layout
+  engine once manual geometry is stored (XY/CPC pattern).
+- Sync live geometry before session/style export save.
+- Load path: single draw + spine reapply (no redundant ``refresh_histo_figure``).
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/histo/session.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-06: Histogram rename labels moved to Geometries (XY-style)
+
+### Summary
+``r: rename labels`` lived under Styles and prompted x/y/title in one step without
+XY-style submenu or separate top-axis label support.
+
+### Fix
+- ``r`` moved to Geometries; XY-style rename submenu (``x``/``y``/``t``/``o``/``s``).
+- ``top_xlabel`` stored in style snapshots for duplicate top x-axis text.
+- Spine layout calls ``position_top_xlabel`` when top axis title is enabled.
+
+### Affected Files
+- `batplot/plot_modes/histo/labels.py` (new)
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-06: Histogram ``.pkl`` reload rejected as invalid session
+
+### Summary
+``batplot histo_p.pkl`` printed ``Not a valid batplot session file`` after saving
+from histogram interactive mode. Sessions were saved with ``kind: histo`` but the
+shared session loader required a top-level ``version`` key (XY legacy format).
+
+### Fix
+- ``session_routing._is_valid_session_header`` accepts known ``kind`` values
+  (``histo``, ``ec_gc``, ``cpc``, ``operando_ec``, ``xy``) without ``version``.
+- Histogram saves now include ``version: 1``.
+- Reload seeds ``_last_session_save_path`` and restores ``table_loader`` when
+  ``source_path`` CSV still exists.
+
+### Affected Files
+- `batplot/plot_modes/session_routing.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-04: Histogram bar width control
+
+### Summary
+Bar width was fixed at 95% of each bin with no interactive control and no
+snapshot field for ``p``/``i``/``s``/``b``.
+
+### Fix
+- New ``w: bar width (current)`` under Geometries; fraction of bin width (0–1).
+- ``bar_width_frac`` stored in style snapshots, sessions, and batch menu.
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-04: Histogram KDE density curve overlay
+
+### Summary
+Histogram mode had mean/median lines but no smooth density curve overlay on the
+bar distribution.
+
+### Fix
+- New ``a: density curve`` submenu (toggle, color, width, linestyle).
+- Gaussian KDE drawn over bars, scaled for count or density y-axis mode.
+- Numpy-only KDE (no scipy required); state stored in ``p``/``i``/``s``/``b``
+  snapshots and batch histogram menu.
+- Fixed ``load_histo_session`` typo (``pickle.load(f)`` → ``pickle.load(fh)``)
+  that broke ``s`` session reload.
+
+### Affected Files
+- `batplot/plot_modes/histo/density_curve.py` (new)
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-03: Batch session ``p``/``i``/``s`` panel selection for all modes
+
+### Summary
+Batch interactive editing (multiple same-mode ``.pkl`` files) only saved or exported
+from all plots or plot [1]. Users could not choose one, several, or all panels for
+``p`` (export style), ``i`` (import style), or ``s`` (save session). Histogram batch
+``i`` also applied style fields only, dropping spine/tick snapshot state.
+
+### Fix
+- New ``batplot/plot_modes/batch_session/batch_io.py`` with shared plot selection
+  (``1``, ``1 3``, ``1-4``, ``all``) and runners for save / export / import.
+- ``SyncUndoStacks.push_indices`` records undo only for panels that change on import.
+- All batch menus (XY, EC, CPC, operando, histogram) use shared I/O; menu label
+  ``s: save sessions`` (not save-all only).
+- Multi-panel style export writes one file per plot (basename from ``.pkl``) in a
+  chosen folder; single-panel export keeps one path prompt.
+- Histogram batch ``i`` uses ``apply_histo_snapshot`` for full style + spine restore.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/batch_io.py` (new)
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_batch_session.py`
+
+---
+
+## 2026-07-03: Histogram ``t`` toggle spines menu matched XY (WASD + display)
+
+### Summary
+Histogram ``t`` used a simple g/d/n/m list unlike XY's spine/tick submenu with
+WASD keys, tick spacing, direction, title offsets, and ``list`` state display.
+Spine settings were also lost on redraw because ``draw_histogram`` calls ``ax.cla()``.
+
+### Fix
+- ``t`` opens shared ``Toggle spines>`` menu (``run_spine_tick_menu``) with
+  ``w/a/s/d``+``1-5`` spine/tick/label/title toggles, ``i/l/n/m`` tick controls,
+  ``p`` title offsets, and ``list`` for current state.
+- Histogram-specific display options (grid, density, bar labels, mean/median)
+  moved under ``h`` submenu inside ``t``.
+- Spine/tick state stored on fig/ax, reapplied after every redraw, and included
+  in ``p``/``i``/``s``/``b`` snapshots (``wasd_state``, ``tick_state``, etc.).
+
+### Affected Files
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/histo/spines.py` (new)
+- `batplot/plot_modes/histo/toggles.py`
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/histo/session.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-03: Histogram save/export/import matched XY path picker workflow
+
+### Summary
+Histogram ``s``, ``e``, ``p``, and ``i`` only accepted a single raw path string with
+no folder picker, existing-file list, numbered overwrite, or ``o`` overwrite-last.
+
+### Fix
+- New ``batplot/plot_modes/histo/actions.py`` mirrors XY/CPC I/O handlers.
+- ``s``: ``choose_save_path`` → list existing ``.pkl`` → filename / number / ``o``.
+- ``e``: folder picker → ``Figures/`` listing → SVG default, overwrite options.
+- ``p``: style submenu (``e``/``o``/number/r/q) with ``Styles/*.bpsh`` listing.
+- ``i``: ``choose_style_file`` for ``.bpsh`` with confirm prompt.
+- ``os``/``oe``/``ops`` shortcuts use the same overwrite helpers.
+
+### Affected Files
+- `batplot/plot_modes/histo/actions.py` (new)
+- `batplot/plot_modes/histo/interactive.py`
+
+---
+
+## 2026-07-03: Histogram ``f``/``t`` menus and layout aligned with XY
+
+### Summary
+Histogram ``f`` used bare fontsize prompts; ``t`` only toggled grid/density without
+status display; ``m``/``n`` were separate keys; ``e`` sat in Geometry; the third
+column was labeled ``I/O``.
+
+### Fix
+- ``f`` opens shared ``Font (f/s/q)`` submenu (family list + size), stores
+  ``font_family`` with ``label_fontsize``/``title_fontsize`` in style snapshots.
+- ``t`` opens ``Toggle>`` submenu with current ON/off state for grid, density/count,
+  bar labels, and mean/median lines (replaces top-level ``m``/``n``).
+- Menu columns: **Styles** ``c f t g r`` | **Geometries** ``x`` | **Options**
+  ``e p i s b q`` (matches XY naming).
+- Batch histogram menu updated the same way; ``p``/``i``/``s``/``b`` round-trip
+  all toggle and font fields.
+
+### Affected Files
+- `batplot/plot_modes/histo/fonts.py` (new)
+- `batplot/plot_modes/histo/toggles.py` (new)
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-03: Histogram ``c`` colors submenu matched XY (palettes, previews, bar/edge)
+
+### Summary
+Histogram ``c`` only accepted a single bar-color text prompt with no palette
+previews, saved-color references, edge-color control, or spine colors. Style
+export/import already stored ``bar_color``/``edge_color`` but the UI did not
+match other modes.
+
+### Fix
+- New ``Colors>`` submenu (``batplot/plot_modes/histo/colors.py``) showing
+  current bar/edge swatches, saved user colors, numbered palettes with
+  ``palette_preview`` bars and descriptions, and usage examples.
+- Supports ``bar:red``, ``edge:#333``, palette number/name for bar fill,
+  ``w/a/s/d`` spine colors, and ``u`` to manage saved colors.
+- Wired in single-panel and batch histogram menus; undo pushes on each change;
+  ``p``/``i``/``s``/``b`` continue to round-trip ``bar_color`` and ``edge_color``.
+
+### Affected Files
+- `batplot/plot_modes/histo/colors.py` (new)
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-03: Histogram ``g`` size menu matched XY/CPC (canvas vs plot frame)
+
+### Summary
+Histogram ``g`` only asked for width/height with plain prompts and did not
+distinguish canvas size from plot frame size. Geometry was not fully stored in
+style/session snapshots, so ``p``/``i``/``s``/``b`` could lose layout changes.
+
+### Fix
+- ``g`` opens ``Geom (p/c/q)`` submenu like other modes: **p** = plot frame,
+  **c** = canvas (supports ``6 4``, ``6x4``, ``w=6 h=4``, ``scale=1.2``, etc.).
+- Store ``axes_fraction`` with ``figsize`` in ``HistoStyle``; reapply after
+  ``tight_layout`` on redraw; include in style export, import, session save, undo.
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-03: ``--dev-upgrade`` version bump and package-data sync hardened
+
+### Summary
+Version bumps could miss files (fragile string replace in ``__init__.py``), new
+``batplot/data/*`` assets were not always listed in ``pyproject.toml``, and
+hardcoded version strings (e.g. in ``_mpl_backend.py``) could drift from the
+release.
+
+### Fix
+- Centralized version readers/updaters for ``__init__.py``, ``pyproject.toml``,
+  ``CITATION.cff``, and ``latest_release_notes.json``.
+- ``verify_release_versions()`` fails the release when canonical files disagree.
+- ``sync_pyproject_package_data()`` auto-rewrites package-data from
+  ``batplot/data/`` (excluding ``USER_MANUAL.md``) so future data files ship on PyPI.
+- ``find_stale_hardcoded_versions()`` warns about leftover pre-bump version strings.
+- Distribution validation still requires every ``batplot/**/*.py`` file in wheels;
+  package-data validation now unions pyproject + disk.
+- ``MANIFEST.in`` includes ``batplot/data/*.json``; ``latest_release_notes.json``
+  added to package-data.
+
+### Affected Files
+- `batplot/dev_upgrade.py`
+- `batplot/_mpl_backend.py`
+- `pyproject.toml`
+- `MANIFEST.in`
+- `tests/test_dev_upgrade.py`
+
+---
+
+## 2026-07-03: Batch session editing for multiple same-mode .pkl files
+
+### Summary
+Dragging multiple session files (e.g. ``batplot a.pkl b.pkl c.pkl``) previously loaded
+only a single file or fell through to XY mode. Users could not apply one style/geometry
+edit across several saved plots at once.
+
+### Fix
+- New **batch session mode**: all files must be ``.pkl`` and the same mode (XY, EC, CPC,
+  operando, histogram); mixed modes print a clear error and show nothing.
+- Opens all plot windows and runs a **batch interactive menu** per mode with style/geometry
+  keys (font, colors, figure size, labels, toggles, etc.) applied to **every** plot.
+- ``p`` / ``i`` / ``s`` / ``b`` enabled (export/import style, save all sessions, undo).
+- Single histogram ``.pkl`` reload supported via ``session_routing``.
+- Use ``--canvas`` for combining *different* modes in one layout (unchanged).
+
+### Affected Files
+- `batplot/plot_modes/batch_session/` (new)
+- `batplot/plot_modes/histo/session.py` (new)
+- `batplot/batplot.py`
+- `batplot/plot_modes/session_routing.py`
+- `batplot/canvas_interactive.py`
+- `tests/test_batch_session.py`
+
+---
+
+## 2026-07-03: Histogram interactive quit had no confirmation; menu keys incomplete
+
+### Summary
+Pressing ``q`` in ``--histo --i`` exited immediately without the save reminder used in
+XY, operando, and CPC. Overwrite shortcuts (``oe``, ``os``, ``ops``) were shown in the
+menu but not handled. Style export (``p``) could fail because numpy arrays in the
+snapshot are not JSON-serializable. Font size changes (``f``) did not survive redraw.
+
+### Fix
+- Quit confirmation with ``(y/n)`` and redirect to ``e``/``s`` on decline, matching other modes.
+- Wire ``oe``, ``os``, ``ops``/``opsg`` via ``confirm_previous_path``.
+- JSON-safe style export; restore lists back to numpy on import.
+- Store ``label_fontsize`` / ``title_fontsize`` in ``HistoStyle``; cancel paths pop undo stack.
+
+### Affected Files
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/histo/plot.py`
+
+---
+
 ## 2026-06-30: `--dev-upgrade` GitHub push failed with staged index; add `--dev-git`
 
 ### Summary
@@ -26,6 +448,94 @@ installs showed generic "Bug fixes" in update notifications.
 - `batplot/cli.py`
 - `batplot/version_check.py`
 - `tests/test_dev_upgrade.py`
+
+---
+
+---
+
+---
+
+## 2026-07-03: Operando contour showed Bruker -9999 missing data as intensity
+
+### Summary
+Bruker ``.brml`` / ``.raw`` files store ``-9999`` (and sometimes ``-999``) for failed or
+missing detector counts. Batplot plotted these as real intensity, producing dark bands
+at ~-9999 in operando contours (e.g. scans 24–167 and 607–767 in MM_O_SnS_31).
+
+### Fix
+- ``sanitize_xrd_intensity()`` in ``readers.py`` converts Bruker sentinels to NaN.
+- Applied when reading ``.brml`` / ``.raw`` and when loading operando curves.
+- Operando reports how many scans are entirely blank after sanitization.
+
+### Affected Files
+- `batplot/readers.py`
+- `batplot/plot_modes/operando/plot.py`
+- `tests/test_bruker_intensity.py`
+
+---
+
+## 2026-07-03: Unified figure display — view-only plots and plain XY routes
+
+### Summary
+Several routes could build a figure but not keep the window open: ``show_figure_if_possible``
+defaulted to ``block=False``, plain ``batplot file.xy`` never switched off Agg because
+``wants_interactive_window`` only checked mode flags, and XY ``--i`` exited without a
+blocking show after the menu. Display logic was duplicated across operando, EC, CPC,
+XY, and session reload paths.
+
+### Fix
+- ``show_figure_if_possible`` defaults to ``block=True``.
+- ``wants_interactive_window`` returns True for any file-list view (not only ``--gc``/``--operando``).
+- Added ``prime_interactive_figure()`` and ``hold_figure_open()`` in ``_mpl_backend.py``.
+- All mode routers and session reload now use these helpers consistently.
+
+### Affected Files
+- `batplot/_mpl_backend.py`
+- `batplot/plot_modes/xy/pipeline.py`
+- `batplot/plot_modes/operando/routing.py`
+- `batplot/plot_modes/electrochem/routing.py`
+- `batplot/plot_modes/cpc/routing.py`
+- `batplot/plot_modes/session_routing.py`
+- `tests/test_mpl_backend.py`
+
+---
+
+## 2026-07-03: Operando (and other modes) showed no window without ``--i``
+
+### Summary
+``batplot folder --operando`` built the plot but the window vanished instantly
+(or never appeared). With ``--i`` it worked. View-only display called
+``show_figure_if_possible()`` with ``plt.show(block=False)``, then the route
+called ``exit()`` immediately, so the process quit before the GUI could stay open.
+
+### Fix
+Default ``show_figure_if_possible(..., block=True)`` so non-interactive view mode
+keeps the figure window open until the user closes it (same as GC ``plt.show(block=True)``).
+
+### Affected Files
+- `batplot/_mpl_backend.py`
+- `tests/test_mpl_backend.py`
+
+---
+
+## 2026-06-30: CI failed on Python 3.9 and Ubuntu after dev-git changes
+
+### Summary
+GitHub Actions failed on every Python 3.9 job with
+``TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`` when
+importing ``dev_upgrade.py`` (``str | None`` without ``from __future__ import
+annotations``). Ubuntu jobs on Python 3.10–3.13 also failed because
+``test_ensure_gui_overrides_env_agg_when_not_headless`` tried to open a real GUI
+backend on headless Linux runners (no Tk/Qt/display), not because the override
+logic was wrong.
+
+### Fix
+- Added ``from __future__ import annotations`` to ``dev_upgrade.py`` (matches the rest of batplot).
+- Mock Matplotlib backend switching in the mpl_backend test so CI verifies logic, not display hardware.
+
+### Affected Files
+- `batplot/dev_upgrade.py`
+- `tests/test_mpl_backend.py`
 
 ---
 
