@@ -34,7 +34,6 @@ from ..._mpl_backend import (
     require_interactive_display,
     show_figure_if_possible,
 )
-from ...batch import _apply_ec_style
 from ...readers import (
     read_mpt_file,
     read_ec_csv_file,
@@ -468,9 +467,19 @@ def handle_cpc_mode(args) -> int:
                 with open(style_file_path, 'r', encoding='utf-8') as f:
                     style_cfg = json.load(f)
                 print(f"Using style file: {os.path.basename(style_file_path)}")
-                _apply_ec_style(fig, ax, style_cfg)
-                # Also apply to twin axis
-                _apply_ec_style(fig, ax2, style_cfg)
+                from .interactive import _apply_style
+
+                sc0 = file_data[0]
+                _apply_style(
+                    fig,
+                    ax,
+                    ax2,
+                    sc0.get('sc_charge'),
+                    sc0.get('sc_discharge'),
+                    sc0.get('sc_eff'),
+                    style_cfg,
+                    file_data,
+                )
                 # Redraw after applying style
                 if hasattr(fig, 'canvas'):
                     fig.canvas.draw()

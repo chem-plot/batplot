@@ -6,6 +6,7 @@ from typing import Callable, Tuple
 
 import numpy as np  # type: ignore[import]
 
+from ..common.menus import run_repeat_input_loop
 from .plot import HistoState
 
 
@@ -105,42 +106,66 @@ def run_histo_density_curve_menu(
             print(f"Density curve {_flag(st.show_density_curve)}.")
             continue
         if choice == "c":
-            spec = safe_input(colorize_prompt("Curve color (name/#hex, q=cancel): "), cancel_on_interrupt=True).strip()
-            if not spec or spec.lower() == "q":
-                continue
-            push_state()
-            st.density_curve_color = spec
-            refresh()
-            print(f"Density curve color set to {spec}.")
+
+            def _apply_curve_color(spec: str) -> bool:
+                push_state()
+                st.density_curve_color = spec
+                refresh()
+                print(f"Density curve color set to {spec}.")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: f"Curve color (current: {st.density_curve_color}, q=back): ",
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_curve_color,
+            )
             continue
         if choice == "w":
-            raw = safe_input(colorize_prompt("Line width (blank=keep): "), cancel_on_interrupt=True).strip()
-            if not raw:
-                continue
-            try:
-                lw = float(raw)
-            except ValueError:
-                print("Invalid line width.")
-                continue
-            if lw <= 0:
-                print("Line width must be positive.")
-                continue
-            push_state()
-            st.density_curve_lw = lw
-            refresh()
-            print(f"Density curve width set to {lw:g}.")
+
+            def _apply_curve_width(raw: str) -> bool:
+                try:
+                    lw = float(raw)
+                except ValueError:
+                    print("Invalid line width.")
+                    return False
+                if lw <= 0:
+                    print("Line width must be positive.")
+                    return False
+                push_state()
+                st.density_curve_lw = lw
+                refresh()
+                print(f"Density curve width set to {lw:g}.")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: f"Line width (current: {st.density_curve_lw:g}, q=back): ",
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_curve_width,
+            )
             continue
         if choice == "l":
-            sub = safe_input(colorize_prompt("Linestyle s=solid, d=dashed, t=dotted (q=cancel): "), cancel_on_interrupt=True).strip().lower()
-            if not sub or sub == "q":
-                continue
-            if sub not in linestyle_keys:
-                print("Unknown linestyle.")
-                continue
-            push_state()
-            st.density_curve_ls = linestyle_keys[sub]
-            refresh()
-            print(f"Density curve linestyle set to {linestyle_labels[st.density_curve_ls]}.")
+
+            def _apply_curve_linestyle(sub: str) -> bool:
+                if sub not in linestyle_keys:
+                    print("Unknown linestyle (use s, d, or t).")
+                    return False
+                push_state()
+                st.density_curve_ls = linestyle_keys[sub]
+                refresh()
+                print(f"Density curve linestyle set to {linestyle_labels[st.density_curve_ls]}.")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: (
+                    f"Linestyle s=solid, d=dashed, t=dotted "
+                    f"(current: {linestyle_labels.get(st.density_curve_ls, st.density_curve_ls)}, q=back): "
+                ),
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_curve_linestyle,
+            )
             continue
         print("Unknown option.")
 

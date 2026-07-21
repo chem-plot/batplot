@@ -59,16 +59,16 @@ def run_line_style_menu(
 
         def _prompt_dash_pattern(kind='dash'):
             if kind == 'dashdot':
-                raw = safe_input("Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=cancel): ").strip().lower()
+                prompt = "Dash-dot pattern 'dash gap dot gap' (blank=6 3 1 3, q=back): "
                 default = (6.0, 3.0, 1.0, 3.0)
             else:
-                raw = safe_input("Dash pattern 'length gap' (blank=6 3, q=cancel): ").strip().lower()
+                prompt = "Dash pattern 'length gap' (blank=6 3, q=back): "
                 default = (6.0, 3.0)
+            raw = safe_input(prompt).strip().lower()
+            if raw == 'q':
+                return None
             if not raw:
                 return default
-            if raw == 'q':
-                print("Canceled.")
-                return None
             tokens = [tok for tok in re.split(r'[,\s]+', raw) if tok]
             try:
                 if kind == 'dashdot':
@@ -107,10 +107,10 @@ def run_line_style_menu(
             if sub == '':
                 continue
             if sub == 'c':
-                spec = safe_input("Curve widths (single value OR mappings like '1:1.2 3:2', q=cancel): ").strip()
-                if not spec or spec.lower() == 'q':
-                    print("Canceled.")
-                else:
+                while True:
+                    spec = safe_input("Curve widths (single value OR mappings like '1:1.2 3:2', q=back): ").strip()
+                    if not spec or spec.lower() == 'q':
+                        break
                     push_state("linewidth")
                     if ":" in spec:
                         parts = spec.split()
@@ -137,10 +137,10 @@ def run_line_style_menu(
                             print("Invalid width value.")
                     fig.canvas.draw()
             elif sub == 'f':
-                fw_in = safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
-                if not fw_in or fw_in.lower() == 'q':
-                    print("Canceled.")
-                else:
+                while True:
+                    fw_in = safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q=back: ").strip()
+                    if not fw_in or fw_in.lower() == 'q':
+                        break
                     push_state("framewidth")
                     try:
                         frame_w, tick_major, tick_minor = parse_frame_tick_widths(fw_in)
@@ -191,63 +191,85 @@ def run_line_style_menu(
                 targets = _select_lines(ax, "line+dots targets (numbers or 'all'):")
                 if not targets:
                     continue
-                push_state("line+dots")
-                custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
-                for idx in targets:
-                    ln = line_getter(idx)
-                    lw = ln.get_linewidth() or 1.0
-                    ln.set_linestyle('-')
-                    ln.set_marker('o')
-                    msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
-                    ln.set_markersize(msize)
-                    apply_curve_color(ln, ln.get_color())
-                fig.canvas.draw()
-                print(f"Applied line+dots style to curves: {', '.join(str(i+1) for i in targets)}")
+                while True:
+                    raw = safe_input("Marker size (blank=auto ~3*lw, q=back): ").strip().lower()
+                    if raw == 'q':
+                        break
+                    custom_msize = None
+                    if raw:
+                        try:
+                            custom_msize = float(raw)
+                        except ValueError:
+                            print("Invalid marker size.")
+                            continue
+                    push_state("line+dots")
+                    for idx in targets:
+                        ln = line_getter(idx)
+                        lw = ln.get_linewidth() or 1.0
+                        ln.set_linestyle('-')
+                        ln.set_marker('o')
+                        msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
+                        ln.set_markersize(msize)
+                        apply_curve_color(ln, ln.get_color())
+                    fig.canvas.draw()
+                    print(f"Applied line+dots style to curves: {', '.join(str(i+1) for i in targets)}")
             elif sub == 'd':
                 targets = _select_lines(ax, "dots-only targets (numbers or 'all'):")
                 if not targets:
                     continue
-                push_state("dots-only")
-                custom_msize = _prompt_float("Marker size (blank=auto ~3*lw): ")
-                for idx in targets:
-                    ln = line_getter(idx)
-                    lw = ln.get_linewidth() or 1.0
-                    ln.set_linestyle('None')
-                    ln.set_marker('o')
-                    msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
-                    ln.set_markersize(msize)
-                    apply_curve_color(ln, ln.get_color())
-                fig.canvas.draw()
-                print(f"Applied dots-only style to curves: {', '.join(str(i+1) for i in targets)}")
+                while True:
+                    raw = safe_input("Marker size (blank=auto ~3*lw, q=back): ").strip().lower()
+                    if raw == 'q':
+                        break
+                    custom_msize = None
+                    if raw:
+                        try:
+                            custom_msize = float(raw)
+                        except ValueError:
+                            print("Invalid marker size.")
+                            continue
+                    push_state("dots-only")
+                    for idx in targets:
+                        ln = line_getter(idx)
+                        lw = ln.get_linewidth() or 1.0
+                        ln.set_linestyle('None')
+                        ln.set_marker('o')
+                        msize = custom_msize if custom_msize is not None else max(3.0, lw * 3.0)
+                        ln.set_markersize(msize)
+                        apply_curve_color(ln, ln.get_color())
+                    fig.canvas.draw()
+                    print(f"Applied dots-only style to curves: {', '.join(str(i+1) for i in targets)}")
             elif sub == 'da':
                 targets = _select_lines(ax, "dashed-line targets (numbers or 'all'):")
                 if not targets:
                     continue
-                dash_vals = _prompt_dash_pattern()
-                if dash_vals is None:
-                    continue
-                dash_len, gap_len = dash_vals[0], dash_vals[1]
-                push_state("dashed-line")
-                for idx in targets:
-                    ln = line_getter(idx)
-                    ln.set_marker('None')
-                    ln.set_linestyle((0, (dash_len, gap_len)))
-                fig.canvas.draw()
-                print(f"Applied dashed lines to curves: {', '.join(str(i+1) for i in targets)}")
+                while True:
+                    dash_vals = _prompt_dash_pattern()
+                    if dash_vals is None:
+                        break
+                    dash_len, gap_len = dash_vals[0], dash_vals[1]
+                    push_state("dashed-line")
+                    for idx in targets:
+                        ln = line_getter(idx)
+                        ln.set_marker('None')
+                        ln.set_linestyle((0, (dash_len, gap_len)))
+                    fig.canvas.draw()
+                    print(f"Applied dashed lines to curves: {', '.join(str(i+1) for i in targets)}")
             elif sub == 'dd':
                 targets = _select_lines(ax, "dash-dot targets (numbers or 'all'):")
                 if not targets:
                     continue
-                dash_vals = _prompt_dash_pattern(kind='dashdot')
-                if dash_vals is None:
-                    continue
-                push_state("dash-dot")
-                for idx in targets:
-                    ln = line_getter(idx)
-                    ln.set_marker('None')
-                    ln.set_linestyle((0, dash_vals))
-                fig.canvas.draw()
-                print(f"Applied dash-dot style to curves: {', '.join(str(i+1) for i in targets)}")
+                while True:
+                    dash_vals = _prompt_dash_pattern(kind='dashdot')
+                    if dash_vals is None:
+                        break
+                    push_state("dash-dot")
+                    for idx in targets:
+                        ln = line_getter(idx)
+                        ln.set_marker('None')
+                        ln.set_linestyle((0, dash_vals))
+                    fig.canvas.draw()
+                    print(f"Applied dash-dot style to curves: {', '.join(str(i+1) for i in targets)}")
             else:
                 print("Unknown submenu option.")
     except Exception as e:

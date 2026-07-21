@@ -50,6 +50,8 @@ def print_menu_columns(
     trailing_blank: bool = False,
 ) -> None:
     """Print aligned menu columns with yellow headings and cyan commands."""
+    import sys
+
     min_widths = min_widths or ()
     widths = []
     for idx, (heading, items) in enumerate(columns):
@@ -74,6 +76,10 @@ def print_menu_columns(
         print("  " + " ".join(rendered))
     if trailing_blank:
         print()
+    sys.stdout.flush()
+
+
+from .terminal import prompt_menu_key
 
 
 __all__ = [
@@ -81,4 +87,5 @@ __all__ = [
     "command_keys_from_columns",
     "colorize_menu_item",
     "print_menu_columns",
+    "prompt_menu_key",
 ]

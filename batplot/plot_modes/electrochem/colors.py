@@ -13,6 +13,7 @@ from ...color_utils import (
     color_bar,
     color_block,
     ensure_colormap,
+    format_color_listing,
     get_colormap,
     get_user_color_list,
     manage_user_colors,
@@ -41,6 +42,107 @@ def _iter_cycle_lines(cycle_lines: Dict[int, Dict[str, Optional[Any]]]):
                 if ln is not None:
                     yield (cyc, role, ln)
 
+
+
+def _cycle_sort_key(key):
+    try:
+        return int(key)
+    except Exception:
+        return key
+
+
+def _cycle_is_visible(cycle_lines: dict, cyc) -> bool:
+    """True if at least one charge/discharge/CV line for this cycle is visible."""
+    if cyc not in cycle_lines:
+        return False
+    parts = cycle_lines[cyc]
+    if isinstance(parts, dict):
+        for role in ("charge", "discharge"):
+            ln = parts.get(role)
+            if ln is None:
+                continue
+            try:
+                if ln.get_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+    try:
+        return bool(parts.get_visible())
+    except Exception:
+        return False
+
+
+def _visible_cycle_keys(cycle_lines: dict, keys=None):
+    """Sorted cycle keys that currently have a visible line."""
+    if keys is None:
+        keys = cycle_lines.keys()
+    return [c for c in sorted(keys, key=_cycle_sort_key) if _cycle_is_visible(cycle_lines, c)]
+
+
+def _cycle_color_listing(cycle_lines: dict, cyc) -> str:
+    if cyc not in cycle_lines:
+        return format_color_listing(None)
+    parts = cycle_lines[cyc]
+    ln = None
+    if isinstance(parts, dict):
+        # Prefer a currently visible role so listing matches what is on screen
+        for role in ("charge", "discharge"):
+            cand = parts.get(role)
+            if cand is None:
+                continue
+            try:
+                if cand.get_visible():
+                    ln = cand
+                    break
+            except Exception:
+                continue
+        if ln is None:
+            ln = parts.get("charge") or parts.get("discharge")
+    else:
+        ln = parts
+    try:
+        return format_color_listing(ln.get_color() if ln is not None else None)
+    except Exception:
+        return format_color_listing(None)
+
+
+# In multi-file mode, expand per-cycle listing only up to this many visible cycles
+# per file; beyond that, one row per file (avoids dumping 100+ identical file names).
+_MULTI_FILE_EXPAND_MAX = 20
+
+
+def _print_ec_current_curves(
+    *,
+    target_cycle_lines_list,
+    is_multi_file: bool,
+    file_data: list[dict],
+) -> None:
+    print("Current curves (visible only):")
+    any_printed = False
+    if is_multi_file:
+        for fi, f in enumerate(file_data, 1):
+            if not f.get("visible", True):
+                continue
+            cl = f.get("cycle_lines") or {}
+            fname = f.get("display_name") or f.get("filename") or f"file {fi}"
+            vis = _visible_cycle_keys(cl)
+            if not vis:
+                continue
+            any_printed = True
+            if len(vis) > _MULTI_FILE_EXPAND_MAX:
+                # Compact: one colour sample + count (file-oriented workflows)
+                print(f"  f{fi}: {_cycle_color_listing(cl, vis[0])}  {fname}  ({len(vis)} visible cycles)")
+            else:
+                for cyc in vis:
+                    print(f"  f{fi}/{cyc}: {_cycle_color_listing(cl, cyc)}  {fname}")
+    else:
+        cl, acyc = target_cycle_lines_list[0]
+        for cyc in _visible_cycle_keys(cl, acyc):
+            any_printed = True
+            print(f"  {cyc}: {_cycle_color_listing(cl, cyc)}")
+    if not any_printed:
+        print("  (none visible)")
 
 
 def _apply_curve_linewidth(fig, cycle_lines: Dict[int, Dict[str, Optional[Any]]]):
@@ -413,6 +515,7 @@ def run_ec_cycles_menu(
     apply_display_mode: Callable[[str], Any],
     rebuild_legend: Callable[[Any], Any],
     apply_nice_ticks: Callable[[], Any],
+    curves_status_fn: Callable[[], None] | None = None,
 ) -> None:
     # Cycles/colors: multi-file defaults to all visible files; type fall viridis etc. directly
     while True:
@@ -424,9 +527,36 @@ def run_ec_cycles_menu(
                 break
         else:
             target_cycle_lines_list = [(cycle_lines, all_cycles)]
-        if is_multi_file:
+        if curves_status_fn is not None:
+            curves_status_fn()
+        elif is_multi_file:
             print_file_list(file_data, current_file_idx)
-        print(f"Total cycles: {len(all_cycles)}")
+            n_visible_cycles = 0
+            for f in file_data:
+                if not f.get("visible", True):
+                    continue
+                n_visible_cycles += len(_visible_cycle_keys(f.get("cycle_lines") or {}))
+            if n_visible_cycles == len(all_cycles):
+                print(f"Visible cycles: {n_visible_cycles}")
+            else:
+                print(f"Visible cycles: {n_visible_cycles} (of {len(all_cycles)} total)")
+            _print_ec_current_curves(
+                target_cycle_lines_list=target_cycle_lines_list,
+                is_multi_file=is_multi_file,
+                file_data=file_data,
+            )
+        else:
+            cl0, acyc0 = target_cycle_lines_list[0]
+            n_visible_cycles = len(_visible_cycle_keys(cl0, acyc0))
+            if n_visible_cycles == len(all_cycles):
+                print(f"Visible cycles: {n_visible_cycles}")
+            else:
+                print(f"Visible cycles: {n_visible_cycles} (of {len(all_cycles)} total)")
+            _print_ec_current_curves(
+                target_cycle_lines_list=target_cycle_lines_list,
+                is_multi_file=is_multi_file,
+                file_data=file_data,
+            )
         _C, _R = "\033[96m", "\033[0m"
         if is_multi_file:
             print(f"  {_C}fall viridis{_R}  = palette to all files (one color per file)")
@@ -449,7 +579,7 @@ def run_ec_cycles_menu(
         if user_colors:
             print("\nSaved colors (use number or u# in mappings):")
             for idx, color in enumerate(user_colors, 1):
-                print("  " + colorize_menu(f"{idx}: {color_block(color)} {color}"))
+                print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
             print("  " + colorize_menu("u: edit saved colors before assigning"))
         print("  " + colorize_menu("q: back"))
         line = safe_input(colorize_prompt("Selection: ")).strip()
@@ -652,7 +782,7 @@ def run_ec_cycles_menu(
                             if mapping2 and cl is target_cycle_lines_list[0][0]:
                                 print("Applied manual colors:")
                                 for cyc, col in mapping2.items():
-                                    print(f"  Cycle {cyc}: {color_block(col)} {col}")
+                                    print(f"  Cycle {cyc}: {format_color_listing(col)}")
                         elif mode == 'palette' and existing:
                             # ====================================================================
                             # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES

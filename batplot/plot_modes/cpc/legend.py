@@ -9,6 +9,8 @@ import matplotlib.patches as mpatches  # type: ignore[import]
 from matplotlib.colors import to_hex  # type: ignore[import]
 from matplotlib.legend_handler import HandlerPatch  # type: ignore[import]
 
+from ..common.fonts import sync_legend_title_fontsize
+
 
 class _HandlerSquarePatch(HandlerPatch):
     """Legend handler that forces Patch objects to render as squares."""
@@ -73,6 +75,7 @@ def _legend_no_frame(ax, *args, **kwargs):
             leg.set_clip_on(False)
             for text in leg.get_texts():
                 text.set_verticalalignment("center")
+            sync_legend_title_fontsize(leg)
         except Exception:
             pass
     return leg

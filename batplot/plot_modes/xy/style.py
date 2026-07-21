@@ -17,8 +17,9 @@ import matplotlib.colors as mcolors  # type: ignore[import]
 from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, NullFormatter  # type: ignore[import]
 
 from ...utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename, _colorize_option_keys
-from ...color_utils import color_block, get_colormap
 from ...plotting import apply_curve_color
+from ...color_utils import color_block, get_colormap
+from .spines import apply_xy_spine_specs
 from ...ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -26,11 +27,13 @@ from ...ui import (
     position_right_ylabel as _ui_position_right_ylabel,
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
-    set_spine_side_color as _ui_set_spine_side_color,
     capture_axes_tick_locators,
     restore_axes_tick_locators,
+    finalize_spine_colors,
 )
 from ..common.axis_state import capture_axis_wasd_state
+from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
+from ..common.terminal import safe_input
 
 
 def _capture_tick_locator_state(ax):
@@ -147,6 +150,81 @@ def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
         except Exception:
             pass
     return fallback or ''
+
+
+def _apply_xy_dual_y_layout(fig, ax, right_indices: frozenset, use_top_x: bool) -> None:
+    """Rebuild twin axes so --ry/--txaxis metadata matches curve line placement."""
+    lines_by_curve = getattr(fig, '_xy_lines_by_curve', None)
+    n_curves = len(lines_by_curve) if lines_by_curve else len(ax.lines)
+    if n_curves <= 0:
+        return
+
+    current_right = frozenset(getattr(fig, '_xy_right_y_curve_indices', frozenset()))
+    current_top_x = bool(getattr(fig, '_xy_use_top_x', False))
+    if right_indices == current_right and use_top_x == current_top_x:
+        return
+
+    if lines_by_curve is None or len(lines_by_curve) != n_curves:
+        lines_by_curve = list(ax.lines[:n_curves])
+        old_ax2 = getattr(fig, '_xy_ax2', None)
+        if old_ax2 is not None:
+            for ln in list(old_ax2.lines):
+                if ln not in lines_by_curve:
+                    lines_by_curve.append(ln)
+            while len(lines_by_curve) < n_curves:
+                lines_by_curve.append(None)
+
+    old_ax2 = getattr(fig, '_xy_ax2', None)
+    if old_ax2 is not None:
+        for ln in list(old_ax2.lines):
+            try:
+                ln.remove()
+                ax.add_line(ln)
+            except Exception:
+                pass
+        try:
+            old_ax2.remove()
+        except Exception:
+            pass
+        fig._xy_ax2 = None
+
+    if not right_indices:
+        fig._xy_right_y_curve_indices = frozenset()
+        fig._xy_use_top_x = False
+        fig._xy_lines_by_curve = None
+        return
+
+    ax2 = ax.twinx()
+    if use_top_x:
+        ax2 = ax2.twiny()
+
+    for i in range(n_curves):
+        if i not in right_indices:
+            continue
+        ln = lines_by_curve[i] if i < len(lines_by_curve) else None
+        if ln is None:
+            continue
+        try:
+            ln.remove()
+            ax2.add_line(ln)
+        except Exception:
+            pass
+
+    fig._xy_ax2 = ax2
+    fig._xy_use_top_x = use_top_x
+    fig._xy_right_y_curve_indices = right_indices
+
+    _left_idx = sorted(i for i in range(n_curves) if i not in right_indices)
+    _right_sorted = sorted(right_indices)
+    rebuilt: list = []
+    for i in range(n_curves):
+        if i in right_indices:
+            k = _right_sorted.index(i)
+            rebuilt.append(ax2.lines[k] if k < len(ax2.lines) else None)
+        else:
+            k = _left_idx.index(i)
+            rebuilt.append(ax.lines[k] if k < len(ax.lines) else None)
+    fig._xy_lines_by_curve = rebuilt
 
 
 def capture_xy_axis_style(ax) -> Dict[str, Any]:
@@ -615,6 +693,7 @@ def export_style_config(
                 "size": plt.rcParams.get("font.size"),
                 "family_chain": plt.rcParams.get("font.sans-serif"),
                 "mathtext_fontset": plt.rcParams.get("mathtext.fontset"),
+                **font_extras_export_dict(fig),
             },
             "ticks": {
                 "x_major_width": axis_tick_width(ax.xaxis, "major"),
@@ -783,7 +862,7 @@ def export_style_config(
             print(f"  \033[96mps\033[0m  = style only (.bps)")
             print(f"  \033[96mpsg\033[0m = style + geometry (.bpsg)")
             exp_prompt = _colorize_option_keys("ps: style only, psg: style+geometry, q: cancel")
-            exp_choice = input(f"Export choice ({exp_prompt}): ").strip().lower()
+            exp_choice = safe_input(f"Export choice ({exp_prompt}): ", cancel_on_interrupt=True).strip().lower()
             if not exp_choice or exp_choice == 'q':
                 print("Style export canceled.")
                 return None
@@ -839,7 +918,7 @@ def export_style_config(
                     exp_file_prompt = _colorize_option_keys(f"filename, 1-{n_files}: overwrite, q: cancel")
                 else:
                     exp_file_prompt = _colorize_option_keys("filename, q: cancel")
-            choice = input(f"Export to file? ({exp_file_prompt}): ").strip()
+            choice = safe_input(f"Export to file? ({exp_file_prompt}): ", cancel_on_interrupt=True).strip()
             if not choice or choice.lower() == 'q':
                 print("Style export canceled.")
                 return None
@@ -871,7 +950,7 @@ def export_style_config(
 
                 # Only prompt ONCE for overwrite if the file exists
                 if os.path.exists(target_path):
-                    yn = input(f"Overwrite '{os.path.basename(target_path)}'? (y/n): ").strip().lower()
+                    yn = safe_input(f"Overwrite '{os.path.basename(target_path)}'? (y/n): ", cancel_on_interrupt=True).strip().lower()
                     if yn != 'y':
                         print("Style export canceled.")
                         return None
@@ -923,6 +1002,15 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             print("Warning: Style/geometry file was saved without --ro; current plot was created with --ro.")
         print("Not applying style/geometry to avoid corrupting axis orientation.")
         return
+
+    try:
+        right_raw = cfg.get("right_y_curve_indices")
+        if right_raw is not None:
+            right_indices = frozenset(int(i) for i in right_raw)
+            use_top_x = bool(cfg.get("txaxis", False))
+            _apply_xy_dual_y_layout(fig, ax, right_indices, use_top_x)
+    except Exception as e:
+        print(f"Warning: Could not restore dual y-axis layout: {e}")
 
     # --- Style-import check messages (to debug y-axis / curve visibility after import)
     # Disabled by default; set BATPLOT_STYLE_DEBUG=1 to enable. ---
@@ -997,8 +1085,18 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 left = (1 - w_frac) / 2
                 bottom = (1 - h_frac) / 2
                 ax.set_position([left, bottom, w_frac, h_frac])
+            else:
+                margins = cfg.get("margins")
+                if isinstance(margins, dict) and margins:
+                    adjust_kwargs = {}
+                    for key in ("left", "right", "bottom", "top"):
+                        if key in margins and margins[key] is not None:
+                            adjust_kwargs[key] = float(margins[key])
+                    if adjust_kwargs:
+                        fig.subplots_adjust(**adjust_kwargs)
         except Exception as e:
-            print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
+            if _style_debug:
+                print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
         if _style_debug:
             try:
                 ylim0, ylim1 = ax.get_ylim()
@@ -1026,7 +1124,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 numeric_size = float(size_val)
                 plt.rcParams["font.size"] = numeric_size
             except Exception as e:
-                print(f"[DEBUG] Exception parsing font size: {e}")
+                if _style_debug:
+                    print(f"[DEBUG] Exception parsing font size: {e}")
                 numeric_size = None
         if font_cfg.get("mathtext_fontset"):
             try:
@@ -1088,6 +1187,19 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                         art.set_fontfamily(fam_chain[0])
             except Exception:
                 pass
+
+        try:
+            refresh_artists = list(label_text_objects or []) + [
+                ax.xaxis.label,
+                ax.yaxis.label,
+                getattr(ax, '_top_xlabel_artist', None),
+                getattr(ax, '_right_ylabel_artist', None),
+            ]
+            refresh_artists.extend(ax.get_xticklabels())
+            refresh_artists.extend(ax.get_yticklabels())
+            apply_font_extras_from_cfg(fig, [a for a in refresh_artists if a is not None], font_cfg)
+        except Exception:
+            pass
 
         # Tick visibility + widths
         ticks_cfg = cfg.get("ticks", {})
@@ -1169,7 +1281,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 try:
                     _ui_update_tick_visibility(ax, tick_state)
                 except Exception as e:
-                    print(f"[DEBUG] Exception updating tick visibility: {e}")
+                    if _style_debug:
+                        print(f"[DEBUG] Exception updating tick visibility: {e}")
 
 
         xmaj = ticks_cfg.get("x_major_width")
@@ -1187,7 +1300,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 if yminr is not None:
                     ax.tick_params(axis="y", which="minor", width=yminr)
             except Exception as e:
-                print(f"[DEBUG] Exception setting tick widths: {e}")
+                if _style_debug:
+                    print(f"[DEBUG] Exception setting tick widths: {e}")
         # Tick lengths (t submenu)
         tick_lengths = ticks_cfg.get("lengths") or {}
         if isinstance(tick_lengths, dict):
@@ -1235,18 +1349,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             spines_cfg=cfg.get("spines", {}),
         )
 
-    # Spines (per-side color via set_spine_side_color for p/i/s/b consistency; applied after legacy tick/label colors)
-        for name, sp_dict in cfg.get("spines", {}).items():
-            if name in ax.spines:
-                if "linewidth" in sp_dict:
-                    ax.spines[name].set_linewidth(sp_dict["linewidth"])
-                if "color" in sp_dict:
-                    try:
-                        _ui_set_spine_side_color(ax, name, sp_dict["color"], fig=fig)
-                    except Exception:
-                        pass
-                if "visible" in sp_dict:
-                    ax.spines[name].set_visible(sp_dict["visible"])
+    # Spines (per-side color via EC-style apply; tick_params above must not be last word on colors)
+        apply_xy_spine_specs(fig, ax, tick_state, cfg.get("spines", {}))
 
     # Lines (support dual y-axis: fig._xy_lines_by_curve when --ry)
         _lines_src = getattr(fig, '_xy_lines_by_curve', None) or ax.lines
@@ -1436,12 +1540,18 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 if "derivative_reversed" in cfg:
                     fig._derivative_reversed = bool(cfg["derivative_reversed"])
                 # Update y-axis label based on derivative order
-                from .plot_modes.xy.interactive import _update_ylabel_for_derivative
+                from .derivative import update_ylabel_for_derivative
                 current_ylabel = ax.get_ylabel() or ""
-                new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
+                new_ylabel = update_ylabel_for_derivative(
+                    order,
+                    current_ylabel,
+                    is_reversed=is_reversed,
+                    x_label=(ax.get_xlabel() or None),
+                    fallback_ylabel=current_ylabel or "Y",
+                )
                 ax.set_ylabel(new_ylabel)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: could not update derivative ylabel: {e}")
         elif hasattr(fig, '_derivative_order'):
             delattr(fig, '_derivative_order')
         # Note: We don't restore original_x_data_list/original_y_data_list or pre_derivative data from style files
@@ -1531,11 +1641,13 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             try:
                 adjust_margins_cb()
             except Exception as e:
-                print(f"[DEBUG] Exception in adjust_margins callback: {e}")
+                if _style_debug:
+                    print(f"[DEBUG] Exception in adjust_margins callback: {e}")
             try:
                 _ui_ensure_text_visibility(fig, ax, label_text_objects)
             except Exception as e:
-                print(f"[DEBUG] Exception in ensure_text_visibility: {e}")
+                if _style_debug:
+                    print(f"[DEBUG] Exception in ensure_text_visibility: {e}")
 
         # Apply geometry if present (for .bpsg files)
         kind = cfg.get('kind', '')
@@ -1571,9 +1683,14 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             except Exception as e:
                 print(f"[style-import check] FINAL get_ylim failed: {e}")
         try:
+            finalize_spine_colors(fig, ax, tick_state=tick_state)
+        except Exception:
+            pass
+        try:
             fig.canvas.draw_idle()
         except Exception as e:
-            print(f"[DEBUG] Exception in fig.canvas.draw_idle: {e}")
+            if _style_debug:
+                print(f"[DEBUG] Exception in fig.canvas.draw_idle: {e}")
         print(f"Applied style from {filename}")
 
     # Axis title toggle state
@@ -1691,9 +1808,44 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 )
             except Exception:
                 pass
+            try:
+                apply_xy_spine_specs(fig, ax, tick_state, cfg.get("spines", {}))
+            except Exception:
+                pass
+            try:
+                finalize_spine_colors(fig, ax, tick_state=tick_state)
+            except Exception:
+                pass
+            try:
+                cfg_labelpads = cfg.get("labelpads") or {}
+                if cfg_labelpads.get("x") is not None:
+                    ax._pending_xlabelpad = float(cfg_labelpads["x"])
+                if cfg_labelpads.get("y") is not None:
+                    ax._pending_ylabelpad = float(cfg_labelpads["y"])
+                if getattr(ax, "_pending_xlabelpad", None) is not None:
+                    _ui_position_bottom_xlabel(ax, fig, tick_state)
+                if getattr(ax, "_pending_ylabelpad", None) is not None:
+                    _ui_position_left_ylabel(ax, fig, tick_state)
+                label_style = {}
+                if cfg.get("axis_label_colors"):
+                    label_style["axis_label_colors"] = cfg["axis_label_colors"]
+                if label_style:
+                    apply_xy_axis_style(ax, label_style, fig=fig, spines_cfg={})
+            except Exception:
+                pass
+            try:
+                apply_session_font_cfg(
+                    fig,
+                    cfg.get("font", {}),
+                    ax,
+                    extra_artists=label_text_objects,
+                )
+            except Exception:
+                pass
             fig.canvas.draw_idle()
         except Exception as e:
-            print(f"[DEBUG] Exception in axis title toggle: {e}")
+            if _style_debug:
+                print(f"[DEBUG] Exception in axis title toggle: {e}")
     except Exception as e:
         print(f"Error applying config: {e}")
 

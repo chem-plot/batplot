@@ -284,6 +284,7 @@ def test_operando_style_import_applies_ec_tick_state(session_path, monkeypatch):
         print_menu=lambda: None,
         snapshot=lambda _note="": None,
         restore=lambda: None,
+        pop_undo=lambda: None,
         run_save_operando_session=lambda: None,
         set_fonts=lambda **_kwargs: None,
         axis_tick_width=OS._axis_tick_width,
@@ -345,6 +346,7 @@ def test_operando_style_roundtrip_preserves_cif_labels(session_path, monkeypatch
         print_menu=lambda: None,
         snapshot=lambda _note="": None,
         restore=lambda: None,
+        pop_undo=lambda: None,
         run_save_operando_session=lambda: None,
         set_fonts=lambda **_kwargs: None,
         axis_tick_width=OS._axis_tick_width,
@@ -378,7 +380,7 @@ def test_operando_colormap_helpers_apply_numeric_and_reverse_choice():
 def test_operando_rename_helpers_store_custom_labels():
     fig, ax, im, cbar, ec_ax = _build_operando_figure()
     states = []
-    inputs = iter(["x", "New X", "y", "New Y", "q"])
+    inputs = iter(["x", "New X", "q", "y", "New Y", "q", "q"])
 
     OL.run_operando_rename_menu(
         fig=fig,
@@ -418,7 +420,7 @@ def test_operando_ec_rename_helper_tracks_y_mode():
 def test_operando_ec_grid_helper_updates_persisted_state():
     fig, ax, im, cbar, ec_ax = _build_operando_figure()
     states = []
-    inputs = iter(["t", "a", "0.75", "s", "3", "w", "both", "q"])
+    inputs = iter(["t", "a", "0.75", "q", "s", "3", "q", "w", "both", "q", "q"])
 
     OG.run_ec_grid_menu(
         fig=fig,
@@ -444,7 +446,7 @@ def test_operando_ec_line_style_helper_updates_line():
     line = ec_ax.lines[0]
     ec_ax._ec_line = line
     states = []
-    inputs = iter(["c", "red", "l", "2.5", "q"])
+    inputs = iter(["c", "red", "q", "l", "2.5", "q", "q"])
 
     OE.run_ec_line_style_menu(
         fig=fig,
@@ -560,6 +562,7 @@ def test_operando_h_offset_pixel_nudge_persists_in_style(session_path, monkeypat
         print_menu=lambda: None,
         snapshot=lambda _note="": None,
         restore=lambda: None,
+        pop_undo=lambda: None,
         run_save_operando_session=lambda: None,
         set_fonts=lambda **_kwargs: None,
         axis_tick_width=OS._axis_tick_width,
@@ -603,6 +606,7 @@ def test_operando_colorbar_h_offset_pixel_nudge():
 def test_operando_visibility_helper_toggles_dual_panel_colorbar():
     fig, ax, im, cbar, ec_ax = _build_operando_figure()
     states = []
+    inputs = iter(["1", "q"])
 
     OV.run_visibility_menu(
         fig=fig,
@@ -611,7 +615,7 @@ def test_operando_visibility_helper_toggles_dual_panel_colorbar():
         cbar=cbar,
         ec_ax=ec_ax,
         snapshot=states.append,
-        safe_input=lambda _prompt: "1",
+        safe_input=lambda _prompt: next(inputs),
         colorize_menu=lambda text: text,
         colorize_prompt=lambda text: text,
         colorize_inline_commands=lambda text: text,

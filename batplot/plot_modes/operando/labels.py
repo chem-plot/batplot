@@ -99,73 +99,81 @@ def run_operando_ec_rename_menu(
 
 
 def _rename_operando_x(*, fig, ax, snapshot, safe_input) -> None:
-    current = ax.get_xlabel() or ""
-    label = safe_input(f"New operando X label (blank=cancel, current='{current}'): ")
-    if not label:
-        return
-    label = normalize_label_text(convert_label_shortcuts(label))
-    remember_axis_name(label)
-    snapshot("rename-op-x")
-    try:
-        ax.set_xlabel(label)
-        ax._custom_labels["x"] = label
-        _ui_position_top_xlabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
-    except Exception:
-        pass
+    while True:
+        current = ax.get_xlabel() or ""
+        label = safe_input(f"New operando X label (q=back, current='{current}'): ")
+        if not label or label.lower() == "q":
+            break
+        label = normalize_label_text(convert_label_shortcuts(label))
+        remember_axis_name(label)
+        snapshot("rename-op-x")
+        try:
+            ax.set_xlabel(label)
+            ax._custom_labels["x"] = label
+            _ui_position_top_xlabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
+            print(f"Operando X label updated to: '{label}'")
+        except Exception:
+            pass
 
 
 def _rename_operando_y(*, fig, ax, snapshot, safe_input) -> None:
-    current = ax.get_ylabel() or ""
-    label = safe_input(f"New operando Y label (blank=cancel, current='{current}'): ")
-    if not label:
-        return
-    label = normalize_label_text(convert_label_shortcuts(label))
-    remember_axis_name(label)
-    snapshot("rename-op-y")
-    try:
-        ax.set_ylabel(label)
-        ax._custom_labels["y"] = label
-        _ui_position_left_ylabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
-    except Exception:
-        pass
+    while True:
+        current = ax.get_ylabel() or ""
+        label = safe_input(f"New operando Y label (q=back, current='{current}'): ")
+        if not label or label.lower() == "q":
+            break
+        label = normalize_label_text(convert_label_shortcuts(label))
+        remember_axis_name(label)
+        snapshot("rename-op-y")
+        try:
+            ax.set_ylabel(label)
+            ax._custom_labels["y"] = label
+            _ui_position_left_ylabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
+            print(f"Operando Y label updated to: '{label}'")
+        except Exception:
+            pass
 
 
 def _rename_ec_x(*, fig, ec_ax, snapshot, safe_input) -> None:
-    current = ec_ax.get_xlabel() or ""
-    label = safe_input(f"New EC X label (blank=cancel, current='{current}'): ")
-    if not label:
-        return
-    label = normalize_label_text(convert_label_shortcuts(label))
-    remember_axis_name(label)
-    snapshot("rename-ec-x")
-    try:
-        ec_ax.set_xlabel(label)
-        ec_ax._custom_labels["x"] = label
-        _ui_position_top_xlabel(ec_ax, fig, getattr(ec_ax, "_saved_tick_state", {}))
-    except Exception:
-        pass
+    while True:
+        current = ec_ax.get_xlabel() or ""
+        label = safe_input(f"New EC X label (q=back, current='{current}'): ")
+        if not label or label.lower() == "q":
+            break
+        label = normalize_label_text(convert_label_shortcuts(label))
+        remember_axis_name(label)
+        snapshot("rename-ec-x")
+        try:
+            ec_ax.set_xlabel(label)
+            ec_ax._custom_labels["x"] = label
+            _ui_position_top_xlabel(ec_ax, fig, getattr(ec_ax, "_saved_tick_state", {}))
+            print(f"EC X label updated to: '{label}'")
+        except Exception:
+            pass
 
 
 def _rename_ec_y(*, fig, ec_ax, snapshot, safe_input) -> None:
-    current = ec_ax.get_ylabel() or ""
-    label = safe_input(f"New EC Y label (blank=cancel, current='{current}'): ")
-    if not label:
-        return
-    label = normalize_label_text(convert_label_shortcuts(label))
-    remember_axis_name(label)
-    snapshot("rename-ec-y")
-    try:
-        ec_ax.set_ylabel(label)
-        mode = getattr(ec_ax, "_ec_y_mode", "time")
-        if mode == "ions":
-            ec_ax._custom_labels["y_ions"] = label
-        else:
-            ec_ax._custom_labels["y_time"] = label
-        keep_yaxis_label_on_side(ec_ax, "right", visible=True)
-        if hasattr(ec_ax, "_right_ylabel_artist") and ec_ax._right_ylabel_artist is not None:
-            ec_ax._right_ylabel_artist.set_visible(False)
-    except Exception:
-        pass
+    while True:
+        current = ec_ax.get_ylabel() or ""
+        label = safe_input(f"New EC Y label (q=back, current='{current}'): ")
+        if not label or label.lower() == "q":
+            break
+        label = normalize_label_text(convert_label_shortcuts(label))
+        remember_axis_name(label)
+        snapshot("rename-ec-y")
+        try:
+            ec_ax.set_ylabel(label)
+            mode = getattr(ec_ax, "_ec_y_mode", "time")
+            if mode == "ions":
+                ec_ax._custom_labels["y_ions"] = label
+            else:
+                ec_ax._custom_labels["y_time"] = label
+            keep_yaxis_label_on_side(ec_ax, "right", visible=True)
+            if hasattr(ec_ax, "_right_ylabel_artist") and ec_ax._right_ylabel_artist is not None:
+                ec_ax._right_ylabel_artist.set_visible(False)
+            print(f"EC Y label updated to: '{label}'")
+        except Exception:
+            pass
 
 
 __all__ = [

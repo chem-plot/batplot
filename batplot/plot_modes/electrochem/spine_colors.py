@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ...color_utils import color_block, get_user_color_list, manage_user_colors, resolve_color_token
+from ...color_utils import color_block, format_color_listing, get_user_color_list, manage_user_colors, resolve_color_token
+from ...ui import set_spine_side_color
 from ..common.terminal import colorize_inline_commands
 
 
@@ -35,7 +36,7 @@ def run_ec_spine_color_menu(
             if user_colors:
                 print("\nSaved colors (enter number or u# to reuse):")
                 for idx, color in enumerate(user_colors, 1):
-                    print("  " + colorize_menu(f"{idx}: {color_block(color)} {color}"))
+                    print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
                 print("  " + colorize_menu("u: edit saved colors"))
             print("  " + colorize_menu("q: back to main menu"))
             line = safe_input(colorize_prompt("Enter mappings (e.g., a:red d:blue, q=back): ")).strip()
@@ -64,7 +65,7 @@ def run_ec_spine_color_menu(
                     else:
                         apply_spine_color(ax, fig, tick_state, spine_name, resolved)
                         descriptor = "bottom x-spine" if is_dual_xaxis and spine_name == "bottom" else spine_name
-                        print(f"Set {descriptor} spine to {color_block(resolved)} {resolved}")
+                        print(f"Set {descriptor} spine to {format_color_listing(resolved)}")
                 except Exception as exc:
                     print(f"Error setting {spine_name} color: {exc}")
             fig.canvas.draw()
@@ -95,12 +96,11 @@ def _parse_spine_color_pairs(line: str) -> list[tuple[str, str]]:
 def _apply_secondary_top_spine_color(fig: Any, resolved, original_color: str) -> None:
     secax = fig._xaxis_secondary
     if secax is not None:
-        spine = secax.spines.get("top")
-        if spine is not None:
-            spine.set_edgecolor(resolved)
-        secax.tick_params(axis="x", which="both", colors=resolved)
-        secax.xaxis.label.set_color(resolved)
-        print(f"Set top x-spine (secondary) to {color_block(resolved)} {resolved}")
+        try:
+            set_spine_side_color(secax, "top", resolved, fig=fig)
+            print(f"Set top x-spine (secondary) to {format_color_listing(resolved)}")
+        except Exception as exc:
+            print(f"Error setting secondary top spine color: {exc}")
     else:
         print("Secondary axis not found.")
 

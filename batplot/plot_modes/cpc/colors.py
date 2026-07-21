@@ -7,6 +7,7 @@ from matplotlib.colors import hsv_to_rgb, rgb_to_hsv, to_rgb  # type: ignore[imp
 from ...color_utils import (
     color_block,
     ensure_colormap,
+    format_color_listing,
     get_colormap,
     get_user_color_list,
     manage_user_colors,
@@ -117,17 +118,27 @@ def resolve_cpc_color(spec: str, fig, palette_opts: list[str], idx: int = 0, tot
 def _print_color_targets(*, fig, file_data, series_key: str, colorize_menu) -> None:
     title = "capacity curves" if series_key == "capacity" else "efficiency curves"
     artist_key = "sc_charge" if series_key == "capacity" else "sc_eff"
-    print(f"\nCurrent {title}:")
+    print(f"\nCurrent {title} (visible only):")
+    any_printed = False
     for idx, file_info in enumerate(file_data, 1):
-        current = _color_of(file_info[artist_key])
-        preview_color = current if isinstance(current, str) else None
-        visible_mark = "●" if file_info.get("visible", True) else "○"
-        print("  " + colorize_menu(f"{idx}: {visible_mark} {file_info['filename']}  {color_block(preview_color)} {current}"))
+        if not file_info.get("visible", True):
+            continue
+        artist = file_info.get(artist_key)
+        try:
+            if artist is not None and not artist.get_visible():
+                continue
+        except Exception:
+            pass
+        current = _color_of(artist)
+        any_printed = True
+        print("  " + colorize_menu(f"{idx}: {format_color_listing(current)} {file_info['filename']}"))
+    if not any_printed:
+        print("  (none visible)")
     saved_colors = get_user_color_list(fig)
     if saved_colors:
         print("\nSaved colors (refer as number or u#):")
         for idx, color in enumerate(saved_colors, 1):
-            print("  " + colorize_menu(f"{idx}: {color_block(color)} {color}"))
+            print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
 
 
 def _print_palette_help(palette_opts: list[str], colorize_menu) -> None:
@@ -277,53 +288,114 @@ def run_cpc_color_menu(
         print("  " + colorize_menu("q: back to main menu"))
         sub = safe_input(colorize_prompt("Colors (ly/ry/u/s/q): ")).strip().lower()
         if not sub:
-            continue
+            break
         if sub == "q":
             break
         if sub == "u":
             manage_user_colors(fig)
             continue
         if sub == "ly":
-            push_state("colors-ly")
-            _print_color_targets(fig=fig, file_data=file_data, series_key="capacity", colorize_menu=colorize_menu)
-            _print_palette_help(palette_opts, colorize_menu)
-            color_input = safe_input(colorize_prompt("Colors (ly) (file:color or palette, q=back): ")).strip()
-            if not color_input or color_input.lower() == "q":
-                continue
-            apply_capacity_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
-            if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+            while True:
+                _print_color_targets(fig=fig, file_data=file_data, series_key="capacity", colorize_menu=colorize_menu)
+                _print_palette_help(palette_opts, colorize_menu)
+                color_input = safe_input(colorize_prompt("Colors (ly) (file:color or palette, q=back): ")).strip()
+                if not color_input or color_input.lower() == "q":
+                    break
+                push_state("colors-ly")
+                apply_capacity_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
+                if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+                    try:
+                        current = _color_of(sc_charge)
+                        if current:
+                            set_spine_color("left", current)
+                    except Exception:
+                        pass
                 try:
-                    current = _color_of(sc_charge)
-                    if current:
-                        set_spine_color("left", current)
+                    rebuild_legend(ax, ax2, file_data)
+                    fig.canvas.draw()
                 except Exception:
                     pass
-            try:
-                rebuild_legend(ax, ax2, file_data)
-                fig.canvas.draw()
-            except Exception:
-                pass
             continue
         if sub == "ry":
-            push_state("colors-ry")
-            _print_color_targets(fig=fig, file_data=file_data, series_key="efficiency", colorize_menu=colorize_menu)
-            _print_palette_help(palette_opts, colorize_menu)
-            color_input = safe_input(colorize_prompt("Colors (ry) (file:color or palette, q=back): ")).strip()
-            if not color_input or color_input.lower() == "q":
-                continue
-            apply_efficiency_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
-            if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+            while True:
+                _print_color_targets(fig=fig, file_data=file_data, series_key="efficiency", colorize_menu=colorize_menu)
+                _print_palette_help(palette_opts, colorize_menu)
+                color_input = safe_input(colorize_prompt("Colors (ry) (file:color or palette, q=back): ")).strip()
+                if not color_input or color_input.lower() == "q":
+                    break
+                push_state("colors-ry")
+                apply_efficiency_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
+                if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+                    try:
+                        current = _color_of(sc_eff)
+                        if current:
+                            set_spine_color("right", current)
+                    except Exception:
+                        pass
                 try:
-                    current = _color_of(sc_eff)
-                    if current:
-                        set_spine_color("right", current)
+                    rebuild_legend(ax, ax2, file_data)
+                    fig.canvas.draw()
                 except Exception:
                     pass
-            try:
-                rebuild_legend(ax, ax2, file_data)
-                fig.canvas.draw()
-            except Exception:
-                pass
+            continue
+        if sub == "s":
+            key_to_spine = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
+            while True:
+                print("\nSet spine colors (w=top, a=left, s=bottom, d=right):")
+                print("  " + colorize_menu("Example: w:red a:#4561F7 s:blue d:green"))
+                if not is_multi_file:
+                    auto_enabled = getattr(fig, "_cpc_spine_auto", False)
+                    auto_status = "ON" if auto_enabled else "OFF"
+                    print("  " + colorize_menu(f"auto: auto-apply capacity/efficiency colors [{auto_status}]"))
+                print("  " + colorize_menu("q: back"))
+                line = safe_input(colorize_prompt("Spine colors (e.g. w:red a:#4561F7, q=back): ")).strip()
+                if not line or line.lower() == "q":
+                    break
+                if not is_multi_file and line.lower() in ("a", "auto"):
+                    auto_enabled = getattr(fig, "_cpc_spine_auto", False)
+                    if auto_enabled:
+                        push_state("color-spine-auto")
+                    fig._cpc_spine_auto = not auto_enabled
+                    print(f"Auto mode: {'ON' if fig._cpc_spine_auto else 'OFF'}")
+                    if fig._cpc_spine_auto:
+                        push_state("color-spine-auto")
+                        try:
+                            fig.canvas.draw_idle()
+                            charge_col = _color_of(sc_charge)
+                            eff_col = _color_of(sc_eff)
+                            if charge_col and eff_col:
+                                set_spine_color("left", charge_col)
+                                set_spine_color("right", eff_col)
+                                print("Applied auto spine colors.")
+                        except Exception as exc:
+                            print(f"Error applying auto colors: {exc}")
+                    continue
+                push_state("color-spine")
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+                manual_change = False
+                for token in line.split():
+                    if ":" not in token:
+                        print(f"Skip malformed token: {token}")
+                        continue
+                    key_part, color = token.split(":", 1)
+                    key_part = key_part.lower()
+                    if key_part not in key_to_spine:
+                        print(f"Unknown key: {key_part} (use w/a/s/d)")
+                        continue
+                    resolved = resolve_color_token(color, fig)
+                    set_spine_color(key_to_spine[key_part], resolved)
+                    print(f"Set {key_to_spine[key_part]} spine to {resolved}")
+                    manual_change = True
+                if manual_change and not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+                    fig._cpc_spine_auto = False
+                    print("Auto mode disabled (manual spine color set)")
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    pass
             continue
         print("Unknown option.")
 

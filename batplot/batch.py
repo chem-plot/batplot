@@ -10,7 +10,9 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 import numpy as np  # type: ignore[import]
 
 from .color_utils import get_colormap
+from .plot_modes.common.fonts import sync_legend_title_fontsize
 
+from .ec_common import _resolve_mass
 from .readers import (
     read_gr_file,
     read_xrd_vendor_file,
@@ -37,19 +39,7 @@ def _is_mpt_like_ext(ext: str) -> bool:
     return (ext or '').lower() in _MPT_LIKE_EXTS
 
 
-def _resolve_mass(mass_arg, file_idx: int = 0):
-    """Return mass (mg) for file at file_idx from a --mass list or single value."""
-    if mass_arg is None:
-        return None
-    if isinstance(mass_arg, (int, float)):
-        return float(mass_arg)
-    if isinstance(mass_arg, list):
-        if len(mass_arg) == 1:
-            return float(mass_arg[0])
-        if file_idx < len(mass_arg):
-            return float(mass_arg[file_idx])
-        return float(mass_arg[-1])
-    return None
+from .ec_common import _resolve_mass
 from .utils import _confirm_overwrite, natural_sort_key, ensure_subdirectory
 
 
@@ -72,364 +62,24 @@ def _load_style_file(style_path: str) -> dict | None:
 
 
 def _apply_xy_style(fig, ax, cfg: dict):
-    """Apply style configuration to an XY batch plot.
-    
-    Applies formatting from .bps/.bpsg files including fonts, colors,
-    tick parameters, and geometry (if present in .bpsg files).
-    
-    Args:
-        fig: Matplotlib figure object
-        ax: Matplotlib axes object
-        cfg: Style configuration dictionary
-    """
-    try:
-        # Apply fonts
-        font_cfg = cfg.get('font', {})
-        if font_cfg:
-            family = font_cfg.get('family')
-            size = font_cfg.get('size')
-            if family:
-                plt.rcParams['font.sans-serif'] = [family] if isinstance(family, str) else family
-            if size is not None:
-                plt.rcParams['font.size'] = size
-        
-        # Apply figure size if present
-        fig_cfg = cfg.get('figure', {})
-        if fig_cfg:
-            canvas_size = fig_cfg.get('canvas_size')
-            if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
-                try:
-                    fig.set_size_inches(canvas_size[0], canvas_size[1])
-                except Exception:
-                    pass
-        
-        # Apply tick parameters
-        ticks_cfg = cfg.get('ticks', {})
-        if ticks_cfg:
-            # Tick widths
-            widths = ticks_cfg.get('widths', {})
-            if widths.get('x_major') is not None:
-                ax.tick_params(axis='x', which='major', width=widths['x_major'])
-            if widths.get('x_minor') is not None:
-                ax.tick_params(axis='x', which='minor', width=widths['x_minor'])
-            if widths.get('y_major') is not None:
-                ax.tick_params(axis='y', which='major', width=widths['y_major'])
-            if widths.get('y_minor') is not None:
-                ax.tick_params(axis='y', which='minor', width=widths['y_minor'])
-            
-            # Tick lengths
-            lengths = ticks_cfg.get('lengths', {})
-            if lengths.get('major') is not None:
-                ax.tick_params(axis='both', which='major', length=lengths['major'])
-            if lengths.get('minor') is not None:
-                ax.tick_params(axis='both', which='minor', length=lengths['minor'])
-            
-            # Tick direction
-            direction = ticks_cfg.get('direction')
-            if direction:
-                ax.tick_params(axis='both', which='both', direction=direction)
-        
-        # Apply geometry if present (for .bpsg files)
-        kind = cfg.get('kind', '')
-        if 'geom' in kind.lower() and 'geometry' in cfg:
-            geom = cfg.get('geometry', {})
-            if geom.get('xlabel'):
-                ax.set_xlabel(geom['xlabel'])
-            if geom.get('ylabel'):
-                ax.set_ylabel(geom['ylabel'])
-            if 'xlim' in geom and isinstance(geom['xlim'], (list, tuple)) and len(geom['xlim']) == 2:
-                try:
-                    ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
-                except Exception:
-                    pass
-            if 'ylim' in geom and isinstance(geom['ylim'], (list, tuple)) and len(geom['ylim']) == 2:
-                try:
-                    ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
-                except Exception:
-                    pass
-        
-        # Apply line colors if available
-        lines_cfg = cfg.get('lines', [])
-        if lines_cfg and len(ax.lines) > 0:
-            for entry in lines_cfg:
-                idx = entry.get('index')
-                if idx is not None and 0 <= idx < len(ax.lines):
-                    ln = ax.lines[idx]
-                    if 'color' in entry:
-                        try:
-                            ln.set_color(entry['color'])
-                        except Exception:
-                            pass
-                    if 'linewidth' in entry:
-                        try:
-                            ln.set_linewidth(entry['linewidth'])
-                        except Exception:
-                            pass
-                    if 'linestyle' in entry:
-                        try:
-                            ln.set_linestyle(entry['linestyle'])
-                        except Exception:
-                            pass
-        
-        # Apply spine configuration
-        spines_cfg = cfg.get('spines', {})
-        for spine_name, spine_props in spines_cfg.items():
-            if spine_name in ax.spines:
-                sp = ax.spines[spine_name]
-                if 'lw' in spine_props or 'linewidth' in spine_props:
-                    try:
-                        lw = spine_props.get('lw') or spine_props.get('linewidth')
-                        sp.set_linewidth(lw)
-                    except Exception:
-                        pass
-                if 'color' in spine_props:
-                    try:
-                        sp.set_edgecolor(spine_props['color'])
-                    except Exception:
-                        pass
-                if 'visible' in spine_props:
-                    try:
-                        sp.set_visible(spine_props['visible'])
-                    except Exception:
-                        pass
-        
-        # Enforce compatibility between style/geom ro state and current figure ro state.
-        # Styles saved from a plot using --ro (swapped x/y) must not be applied to a non-ro plot, and vice versa.
-        file_ro = bool(cfg.get('ro_active', False))
-        current_ro = bool(getattr(fig, '_ro_active', False))
-        if file_ro != current_ro:
-            if file_ro:
-                print("Warning: XY style/geometry file was saved with --ro (swapped x/y axes); batch plot is not using --ro.")
-            else:
-                print("Warning: XY style/geometry file was saved without --ro; batch plot is treated as non-ro.")
-            print("Skipping style/geometry in batch mode to avoid corrupting axis orientation.")
-            return
+    """Apply XY style/geometry via the canonical style module (batch/CLI path)."""
+    from .plot_modes.common.style_routing import apply_xy_style_dict
 
-        # Apply WASD state (tick visibility)
-        wasd_cfg = cfg.get('wasd_state', {})
-        if wasd_cfg:
-            # Top ticks (W)
-            if 'top' in wasd_cfg:
-                top_cfg = wasd_cfg['top']
-                if isinstance(top_cfg, dict):
-                    ticks_on = top_cfg.get('ticks', False)
-                    labels_on = top_cfg.get('labels', False)
-                    ax.tick_params(axis='x', top=ticks_on, labeltop=labels_on)
-            # Left ticks (A)
-            if 'left' in wasd_cfg:
-                left_cfg = wasd_cfg['left']
-                if isinstance(left_cfg, dict):
-                    ticks_on = left_cfg.get('ticks', False)
-                    labels_on = left_cfg.get('labels', False)
-                    ax.tick_params(axis='y', left=ticks_on, labelleft=labels_on)
-            # Bottom ticks (S)
-            if 'bottom' in wasd_cfg:
-                bottom_cfg = wasd_cfg['bottom']
-                if isinstance(bottom_cfg, dict):
-                    ticks_on = bottom_cfg.get('ticks', True)
-                    labels_on = bottom_cfg.get('labels', True)
-                    ax.tick_params(axis='x', bottom=ticks_on, labelbottom=labels_on)
-            # Right ticks (D)
-            if 'right' in wasd_cfg:
-                right_cfg = wasd_cfg['right']
-                if isinstance(right_cfg, dict):
-                    ticks_on = right_cfg.get('ticks', False)
-                    labels_on = right_cfg.get('labels', False)
-                    ax.tick_params(axis='y', right=ticks_on, labelright=labels_on)
-        
-        # Apply rotation
-        rotation_cfg = cfg.get('rotation', {})
-        if rotation_cfg:
-            x_rotation = rotation_cfg.get('x')
-            y_rotation = rotation_cfg.get('y')
-            if x_rotation is not None:
-                try:
-                    for label in ax.get_xticklabels():
-                        label.set_rotation(x_rotation)
-                except Exception:
-                    pass
-            if y_rotation is not None:
-                try:
-                    for label in ax.get_yticklabels():
-                        label.set_rotation(y_rotation)
-                except Exception:
-                    pass
-        
-    except Exception as e:
-        print(f"Warning: Error applying style: {e}")
+    apply_xy_style_dict(cfg, fig, ax)
 
 
-def _apply_ec_style(fig, ax, cfg: dict):
-    """Apply style configuration to an EC batch plot.
-    
-    Applies formatting from .bps/.bpsg files including fonts, colors,
-    tick parameters, and geometry (if present in .bpsg files).
-    
-    Args:
-        fig: Matplotlib figure object
-        ax: Matplotlib axes object
-        cfg: Style configuration dictionary
-    """
-    try:
-        # Enforce compatibility between style/geom ro state and current figure ro state.
-        file_ro = bool(cfg.get('ro_active', False))
-        current_ro = bool(getattr(fig, '_ro_active', False))
-        if file_ro != current_ro:
-            if file_ro:
-                print("Warning: EC style/geometry file was saved with --ro (swapped x/y axes); batch EC plot is not using --ro.")
-            else:
-                print("Warning: EC style/geometry file was saved without --ro; batch EC plot is treated as non-ro.")
-            print("Skipping EC style/geometry in batch mode to avoid corrupting axis orientation.")
-            return
+def _apply_ec_style(fig, ax, cfg: dict, *, cycle_lines=None, file_data=None, is_multi_file: bool = False):
+    """Apply EC style/geometry via the canonical style module (batch/CLI path)."""
+    from .plot_modes.common.style_routing import apply_ec_style_dict
 
-        # Apply fonts
-        font_cfg = cfg.get('font', {})
-        if font_cfg:
-            family = font_cfg.get('family')
-            size = font_cfg.get('size')
-            if family:
-                plt.rcParams['font.sans-serif'] = [family] if isinstance(family, str) else family
-            if size is not None:
-                plt.rcParams['font.size'] = size
-        
-        # Apply figure size if present
-        fig_cfg = cfg.get('figure', {})
-        if fig_cfg:
-            canvas_size = fig_cfg.get('canvas_size')
-            if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
-                try:
-                    fig.set_size_inches(canvas_size[0], canvas_size[1])
-                except Exception:
-                    pass
-        
-        # Apply tick parameters
-        ticks_cfg = cfg.get('ticks', {})
-        if ticks_cfg:
-            # Tick widths
-            widths = ticks_cfg.get('widths', {})
-            if widths.get('x_major') is not None:
-                ax.tick_params(axis='x', which='major', width=widths['x_major'])
-            if widths.get('x_minor') is not None:
-                ax.tick_params(axis='x', which='minor', width=widths['x_minor'])
-            if widths.get('y_major') is not None or widths.get('ly_major') is not None:
-                w = widths.get('y_major') or widths.get('ly_major')
-                ax.tick_params(axis='y', which='major', width=w)
-            if widths.get('y_minor') is not None or widths.get('ly_minor') is not None:
-                w = widths.get('y_minor') or widths.get('ly_minor')
-                ax.tick_params(axis='y', which='minor', width=w)
-            
-            # Tick lengths
-            lengths = ticks_cfg.get('lengths', {})
-            if lengths.get('major') is not None:
-                ax.tick_params(axis='both', which='major', length=lengths['major'])
-            if lengths.get('minor') is not None:
-                ax.tick_params(axis='both', which='minor', length=lengths['minor'])
-            
-            # Tick direction
-            direction = ticks_cfg.get('direction')
-            if direction:
-                ax.tick_params(axis='both', which='both', direction=direction)
-        
-        # Apply geometry if present (for .bpsg files)
-        kind = cfg.get('kind', '')
-        if 'geom' in kind.lower() and 'geometry' in cfg:
-            geom = cfg.get('geometry', {})
-            if geom.get('xlabel'):
-                ax.set_xlabel(geom['xlabel'])
-            if geom.get('ylabel'):
-                ax.set_ylabel(geom['ylabel'])
-            if 'xlim' in geom and isinstance(geom['xlim'], (list, tuple)) and len(geom['xlim']) == 2:
-                try:
-                    ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
-                except Exception:
-                    pass
-            if 'ylim' in geom and isinstance(geom['ylim'], (list, tuple)) and len(geom['ylim']) == 2:
-                try:
-                    ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
-                except Exception:
-                    pass
-        
-        # Apply line colors if available (for GC/CV/dQdV modes)
-        lines_cfg = cfg.get('lines', [])
-        if lines_cfg and len(ax.lines) > 0:
-            for entry in lines_cfg:
-                idx = entry.get('index')
-                if idx is not None and 0 <= idx < len(ax.lines):
-                    ln = ax.lines[idx]
-                    if 'color' in entry:
-                        try:
-                            ln.set_color(entry['color'])
-                        except Exception:
-                            pass
-                    if 'linewidth' in entry:
-                        try:
-                            ln.set_linewidth(entry['linewidth'])
-                        except Exception:
-                            pass
-                    if 'linestyle' in entry:
-                        try:
-                            ln.set_linestyle(entry['linestyle'])
-                        except Exception:
-                            pass
-        
-        # Apply spine configuration
-        spines_cfg = cfg.get('spines', {})
-        for spine_name, spine_props in spines_cfg.items():
-            if spine_name in ax.spines:
-                sp = ax.spines[spine_name]
-                if 'lw' in spine_props or 'linewidth' in spine_props:
-                    try:
-                        lw = spine_props.get('lw') or spine_props.get('linewidth')
-                        sp.set_linewidth(lw)
-                    except Exception:
-                        pass
-                if 'color' in spine_props:
-                    try:
-                        sp.set_edgecolor(spine_props['color'])
-                    except Exception:
-                        pass
-                if 'visible' in spine_props:
-                    try:
-                        sp.set_visible(spine_props['visible'])
-                    except Exception:
-                        pass
-        
-        # Apply WASD state (tick visibility)
-        wasd_cfg = cfg.get('wasd_state', {})
-        if wasd_cfg:
-            # Top ticks (W)
-            if 'top' in wasd_cfg:
-                ax.tick_params(top=wasd_cfg['top'], labeltop=wasd_cfg['top'])
-            # Left ticks (A)
-            if 'left' in wasd_cfg:
-                ax.tick_params(left=wasd_cfg['left'], labelleft=wasd_cfg['left'])
-            # Bottom ticks (S)
-            if 'bottom' in wasd_cfg:
-                ax.tick_params(bottom=wasd_cfg['bottom'], labelbottom=wasd_cfg['bottom'])
-            # Right ticks (D)
-            if 'right' in wasd_cfg:
-                ax.tick_params(right=wasd_cfg['right'], labelright=wasd_cfg['right'])
-        
-        # Apply rotation
-        rotation_cfg = cfg.get('rotation', {})
-        if rotation_cfg:
-            x_rotation = rotation_cfg.get('x')
-            y_rotation = rotation_cfg.get('y')
-            if x_rotation is not None:
-                try:
-                    for label in ax.get_xticklabels():
-                        label.set_rotation(x_rotation)
-                except Exception:
-                    pass
-            if y_rotation is not None:
-                try:
-                    for label in ax.get_yticklabels():
-                        label.set_rotation(y_rotation)
-                except Exception:
-                    pass
-        
-    except Exception as e:
-        print(f"Warning: Error applying style: {e}")
+    apply_ec_style_dict(
+        cfg,
+        fig,
+        ax,
+        cycle_lines=cycle_lines,
+        file_data=file_data,
+        is_multi_file=is_multi_file,
+    )
 
 
 def batch_process(directory: str, args):
@@ -1105,7 +755,7 @@ def batch_process_ec(directory: str, args):
                 ax_b.set_ylabel('Potential (V)')
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
-                legend.get_title().set_fontsize('small')
+                sync_legend_title_fontsize(legend)
             
             # ---- CV Mode ----
             elif mode == 'cv':
@@ -1143,7 +793,7 @@ def batch_process_ec(directory: str, args):
                 ax_b.set_ylabel('Current (mA)')
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
-                legend.get_title().set_fontsize('small')
+                sync_legend_title_fontsize(legend)
             
             # ---- dQdV Mode ----
             elif mode == 'dqdv':
@@ -1251,7 +901,7 @@ def batch_process_ec(directory: str, args):
                 ax_b.set_ylabel(y_label)
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
-                legend.get_title().set_fontsize('small')
+                sync_legend_title_fontsize(legend)
             
             # ---- CPC / EPC Mode ----
             elif mode in ('cpc', 'epc'):
@@ -1458,21 +1108,9 @@ def _load_histo_style_file(style_path: str) -> dict | None:
 
 def _apply_histo_batch_style(fig, ax, state, cfg: dict) -> None:
     """Apply visual settings from a .bpsh file without replacing histogram data."""
-    from .plot_modes.histo.interactive import _restore_snapshot
-    from .plot_modes.histo.spines import apply_histo_spine_snapshot
-    from .plot_modes.histo.fonts import sync_histo_font_rcparams
-    from .plot_modes.histo.plot import apply_histo_geometry, refresh_histo_figure
+    from .plot_modes.histo.session import apply_histo_style_snapshot
 
-    saved_setup = state.setup
-    saved_source = state.source_path
-    restored = _restore_snapshot(cfg)
-    state.style = restored.style
-    state.setup = saved_setup
-    state.source_path = saved_source
-    sync_histo_font_rcparams(state)
-    apply_histo_spine_snapshot(fig, ax, cfg)
-    apply_histo_geometry(fig, ax, state)
-    refresh_histo_figure(fig, ax, state)
+    apply_histo_style_snapshot(fig, ax, state, cfg)
 
 
 def _save_histo_batch_figure(fig, ax, out_path: str) -> None:
@@ -1626,9 +1264,6 @@ def batch_process_histo(directory: str, args, *, only_files: list[str] | None = 
                     if file_style_cfg:
                         print(f"  Applying style from {base_name}.bpsh")
                         _apply_histo_batch_style(fig_b, ax_b, state, file_style_cfg)
-
-            if not state.style.title:
-                ax_b.set_title(fname)
 
             out_name = os.path.splitext(fname)[0] + f"_histo.{output_format}"
             out_path = os.path.join(out_dir, out_name)

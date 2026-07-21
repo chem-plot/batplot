@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..common.fonts import sync_legend_title_fontsize
+
 
 def _visible_legend_entries(ax):
     """Return handles/labels for visible, user-facing lines only."""
@@ -219,6 +221,7 @@ def _legend_no_frame(ax, *args, title: Optional[str] = None, ncol: int = 1, **kw
                 leg.set_title(title)
             except Exception:
                 pass
+        sync_legend_title_fontsize(leg)
     return leg
 
 

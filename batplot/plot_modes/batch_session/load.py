@@ -109,6 +109,12 @@ def load_batch_panels(paths: List[str]) -> BatchLoadResult | int:
     if err is not None:
         return err
     assert kind is not None
+    if kind == "dqdv_2d_contour":
+        print(
+            "Batch session mode does not support dQ/dV 2D contour (.pkl kind=dqdv_2d_contour).\n"
+            "Open a single contour session instead, or use the 2d command from --dqdv interactive mode."
+        )
+        return 1
     panels: list = []
     for path in paths:
         abspath = os.path.abspath(path)

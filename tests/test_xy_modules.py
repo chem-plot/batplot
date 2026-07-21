@@ -240,6 +240,121 @@ def test_xy_axis_style_roundtrip_session_and_style(session_path, fake_args):
     assert mcolors.to_hex(ax2.xaxis.label.get_color()) == expected["axis_label_colors"]["x"]
 
 
+def test_xy_spine_color_applies_tick_lines_and_pisb(tmp_path, session_path, fake_args):
+    """Left spine color (a:red) must color ticks/labels like EC; survives p/i/s/b."""
+    from matplotlib import colors as mcolors
+
+    from batplot import session as S
+    from batplot import style as ST
+    from batplot.plot_modes.xy.spines import apply_xy_spine_color, get_xy_spine_colors
+    from conftest import loaded
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1, 2], [1, 2, 3])
+    tick_state = {"l_ticks": True, "l_labels": True, "ly": True, "b_ticks": True, "b_labels": True, "bx": True}
+    ax._saved_tick_state = dict(tick_state)
+
+    def _left_tick_red(target_ax) -> None:
+        for tick in target_ax.yaxis.get_major_ticks():
+            ln = getattr(tick, "tick1line", None)
+            if ln is not None and ln.get_visible():
+                assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#ff0000"
+                break
+            lab = getattr(tick, "label1", None)
+            if lab is not None and lab.get_visible():
+                assert mcolors.to_hex(mcolors.to_rgb(lab.get_color())) == "#ff0000"
+
+    apply_xy_spine_color(fig, ax, tick_state, "left", "red")
+    _left_tick_red(ax)
+    assert get_xy_spine_colors(fig).get("left") == "#ff0000"
+    fig.canvas.draw()
+    apply_xy_spine_color(fig, ax, tick_state, "left", "red")
+    _left_tick_red(ax)
+
+    pkl = session_path("xy_spine_color.pkl")
+    S.dump_session(
+        pkl, fig=fig, ax=ax,
+        x_data_list=[[0, 1, 2]], y_data_list=[[1, 2, 3]], orig_y=[[1, 2, 3]],
+        x_full_list=[[0, 1, 2]], raw_y_full_list=[[1, 2, 3]],
+        offsets_list=[0.0], labels=["c1"], delta=0.0, args=fake_args,
+        tick_state=tick_state, skip_confirm=True,
+    )
+    fig_s, ax_s, _ = loaded(S.load_xy_session(pkl))
+    _left_tick_red(ax_s)
+
+    style_file = tmp_path / "xy_spine.bpsg"
+    ST.export_style_config(
+        str(style_file), fig, ax, [np.array([1, 2, 3])], ["c1"], 0.0, fake_args, tick_state,
+        [0.0], overwrite_path=str(style_file), force_kind="psg",
+    )
+    fig2, ax2 = plt.subplots()
+    ax2.plot([0, 1, 2], [1, 2, 3])
+    ax2._saved_tick_state = dict(tick_state)
+    ST.apply_style_config(
+        str(style_file), fig2, ax2, [np.array([0, 1, 2])], [np.array([1, 2, 3])],
+        [np.array([1, 2, 3])], [0.0], [ax2.text(0, 0, "c1")], fake_args, tick_state,
+        ["c1"], update_labels_func=lambda *a, **k: None,
+    )
+    _left_tick_red(ax2)
+    plt.close(fig)
+    plt.close(fig_s)
+    plt.close(fig2)
+
+
+def test_batch_xy_sync_preserves_spine_tick_colors():
+    """Batch XY WASD sync must not reset colored tick marks after tick_params."""
+    from matplotlib import colors as mcolors
+
+    from batplot.plot_modes.batch_session.load import XyPanel
+    from batplot.plot_modes.batch_session.xy_batch_helpers import sync_ref_wasd_to_panels
+    from batplot.plot_modes.common.spines import build_wasd_state
+    from batplot.plot_modes.xy.spines import apply_xy_spine_color
+
+    tick_state = {
+        "b_ticks": True, "b_labels": True, "bx": True,
+        "l_ticks": True, "l_labels": True, "ly": True,
+        "t_ticks": False, "t_labels": False, "tx": False,
+        "r_ticks": False, "r_labels": False, "ry": False,
+    }
+
+    fig1, ax1 = plt.subplots()
+    ax1.plot([0, 1, 2], [1, 2, 3])
+    fig1._bp_wasd_state = build_wasd_state(  # type: ignore[attr-defined]
+        get_spine_visible=lambda s: ax1.spines[s].get_visible(),
+        tick_state=tick_state,
+        tick_defaults={"top": False, "bottom": True, "left": True, "right": False},
+        label_defaults={"top": False, "bottom": True, "left": True, "right": False},
+    )
+    ax1._saved_tick_state = dict(tick_state)
+    apply_xy_spine_color(fig1, ax1, tick_state, "left", "red")
+
+    fig2, ax2 = plt.subplots()
+    ax2.plot([0, 1, 2], [1, 2, 3])
+    fig2._bp_wasd_state = build_wasd_state(  # type: ignore[attr-defined]
+        get_spine_visible=lambda s: ax2.spines[s].get_visible(),
+        tick_state=tick_state,
+        tick_defaults={"top": False, "bottom": True, "left": True, "right": False},
+        label_defaults={"top": False, "bottom": True, "left": True, "right": False},
+    )
+    ax2._saved_tick_state = dict(tick_state)
+
+    ref = XyPanel("ref.pkl", fig1, ax1, {})
+    other = XyPanel("other.pkl", fig2, ax2, {})
+    sync_ref_wasd_to_panels(ref, [ref, other])
+
+    fig2.canvas.draw()
+    for tick in ax2.yaxis.get_major_ticks():
+        ln = getattr(tick, "tick1line", None)
+        if ln is not None and ln.get_visible():
+            assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#ff0000"
+            break
+    else:
+        raise AssertionError("no visible left tick line on synced panel")
+
+    plt.close(fig1)
+    plt.close(fig2)
+
+
 def test_apply_curve_color_syncs_dots_only_markers():
     """Dots-only curves must update marker colors when line color changes."""
     from matplotlib import colors as mcolors

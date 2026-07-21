@@ -85,6 +85,52 @@ def test_column_stats():
     assert stats["mean"] == pytest.approx(2.0)
 
 
+def test_histo_legacy_auto_title_stripped_on_restore():
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    snap = _snapshot_for_json(build_histo_state(setup, source_path="Length.csv"))
+    snap["style"]["title"] = "Histogram Length"
+    restored = _restore_snapshot(snap)
+    assert restored.style.title == ""
+
+    fig, ax, _meta = create_histo_figure(restored)
+    assert ax.get_title() == ""
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_custom_title_preserved_on_restore():
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    snap = _snapshot_for_json(build_histo_state(setup, source_path="Length.csv"))
+    snap["style"]["title"] = "Particle sizes"
+    restored = _restore_snapshot(snap)
+    assert restored.style.title == "Particle sizes"
+
+    fig, ax, _meta = create_histo_figure(restored)
+    assert ax.get_title() == "Particle sizes"
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
 def test_histo_default_title_empty():
     values = np.array([1.0, 2.0, 3.0])
     edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
@@ -435,6 +481,96 @@ def test_histo_bar_width_frac_snapshot_roundtrip():
     plt.close(fig)
 
 
+def test_histo_ylim_snapshot_roundtrip():
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.ylim = (0.0, 42.0)
+    snap = _snapshot_for_json(state)
+    restored = _restore_snapshot(snap)
+    assert restored.style.ylim == pytest.approx((0.0, 42.0))
+
+    fig, ax, _meta = create_histo_figure(restored)
+    assert ax.get_ylim()[0] == pytest.approx(0.0)
+    assert ax.get_ylim()[1] == pytest.approx(42.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_ylim_style_export_import(tmp_path):
+    from batplot.plot_modes.histo.interactive import _apply_style_file, _export_style
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.ylim = (0.0, 25.0)
+    fig, ax, _meta = create_histo_figure(state)
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+
+    state.style.ylim = None
+    refresh_histo_figure(fig, ax, state)
+    assert ax.get_ylim()[1] != pytest.approx(25.0)
+
+    _apply_style_file(fig, ax, state, str(style_path))
+    assert state.style.ylim == pytest.approx((0.0, 25.0))
+    assert ax.get_ylim()[1] == pytest.approx(25.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_ylim_undo_snapshot():
+    from batplot.plot_modes.histo.session import apply_histo_snapshot, capture_histo_snapshot
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    snap_auto = capture_histo_snapshot(state, fig, ax)
+    state.style.ylim = (0.0, 50.0)
+    snap_fixed = capture_histo_snapshot(state, fig, ax)
+
+    apply_histo_snapshot(fig, ax, state, snap_auto)
+    assert state.style.ylim is None
+
+    apply_histo_snapshot(fig, ax, state, snap_fixed)
+    assert state.style.ylim == pytest.approx((0.0, 50.0))
+    assert ax.get_ylim()[1] == pytest.approx(50.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
 def test_histo_label_snapshot_roundtrip():
     values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
     edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
@@ -498,6 +634,112 @@ def test_histo_session_header_accepted_by_session_routing(tmp_path):
     plt.close(fig)
 
 
+def test_histo_tick_spacing_survives_refresh():
+    from matplotlib.ticker import MultipleLocator
+
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.spines import capture_histo_spine_snapshot
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    ax.yaxis.set_major_locator(MultipleLocator(20))
+    snap = capture_histo_spine_snapshot(fig, ax)
+    assert snap["tick_spacing"]["y_major_step"] == pytest.approx(20.0)
+
+    refresh_histo_figure(fig, ax, state)
+    loc = ax.yaxis.get_major_locator()
+    assert isinstance(loc, MultipleLocator)
+    assert float(loc._edge.step) == pytest.approx(20.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_tick_spacing_batch_sync():
+    from matplotlib.ticker import MultipleLocator
+
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.spines import persist_histo_spine_before_redraw
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state1 = build_histo_state(setup, source_path="test.csv")
+    state2 = build_histo_state(setup, source_path="test.csv")
+    fig1, ax1, _meta1 = create_histo_figure(state1)
+    fig2, ax2, _meta2 = create_histo_figure(state2)
+    ax1.yaxis.set_major_locator(MultipleLocator(20))
+    persist_histo_spine_before_redraw(fig1, ax1, sync_targets=[(fig2, ax2)])
+    refresh_histo_figure(fig1, ax1, state1)
+    refresh_histo_figure(fig2, ax2, state2)
+
+    for ax in (ax1, ax2):
+        loc = ax.yaxis.get_major_locator()
+        assert isinstance(loc, MultipleLocator)
+        assert float(loc._edge.step) == pytest.approx(20.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig1)
+    plt.close(fig2)
+
+
+def test_histo_tick_spacing_style_export_import(tmp_path):
+    from matplotlib.ticker import MultipleLocator
+
+    from batplot.plot_modes.histo.interactive import _apply_style_file, _export_style
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.spines import capture_histo_spine_snapshot
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    ax.xaxis.set_major_locator(MultipleLocator(2))
+    capture_histo_spine_snapshot(fig, ax)
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+
+    ax.xaxis.set_major_locator(MultipleLocator(5))
+    capture_histo_spine_snapshot(fig, ax)
+    refresh_histo_figure(fig, ax, state)
+    assert float(ax.xaxis.get_major_locator()._edge.step) == pytest.approx(5.0)
+
+    _apply_style_file(fig, ax, state, str(style_path))
+    refresh_histo_figure(fig, ax, state)
+    assert float(ax.xaxis.get_major_locator()._edge.step) == pytest.approx(2.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
 def test_histo_spine_snapshot_roundtrip():
     values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
     edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
@@ -552,6 +794,278 @@ def test_histo_spine_snapshot_roundtrip():
     plt.close(fig2)
 
 
+def test_histo_spine_color_persists_through_refresh_and_pisb():
+    from matplotlib import colors as mcolors
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.session import apply_histo_style_snapshot
+    from batplot.plot_modes.histo.spines import (
+        capture_histo_spine_snapshot,
+        get_histo_spine_colors,
+        set_histo_spine_color,
+    )
+
+    def _assert_left_white(target_ax) -> None:
+        assert mcolors.to_hex(mcolors.to_rgb(target_ax.spines["left"].get_edgecolor())) == "#ffffff"
+        assert mcolors.to_hex(mcolors.to_rgb(target_ax.yaxis.label.get_color())) == "#ffffff"
+        for tick in target_ax.yaxis.get_major_ticks():
+            lab = getattr(tick, "label1", None)
+            if lab is not None and lab.get_visible():
+                assert mcolors.to_hex(mcolors.to_rgb(lab.get_color())) == "#ffffff"
+                break
+            ln = getattr(tick, "tick1line", None)
+            if ln is not None and ln.get_visible():
+                assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#ffffff"
+
+    set_histo_spine_color(fig, ax, "left", "white")
+    _assert_left_white(ax)
+    fig.canvas.draw()
+    from batplot.plot_modes.histo.spines import apply_histo_spine_colors
+
+    apply_histo_spine_colors(fig, ax, get_histo_spine_colors(fig), only_sides={"left"})
+    _assert_left_white(ax)
+    refresh_histo_figure(fig, ax, state)
+    assert get_histo_spine_colors(fig).get("left") == "#ffffff"
+    _assert_left_white(ax)
+
+    snap = capture_histo_spine_snapshot(fig, ax)
+    assert snap.get("spine_colors", {}).get("left") == "#ffffff"
+
+    state.style.bar_color = "#123456"
+    style_payload = _snapshot_for_json(state, fig, ax)
+    state2 = build_histo_state(setup, source_path="test.csv")
+    fig2, ax2, _meta = create_histo_figure(state2)
+    apply_histo_style_snapshot(fig2, ax2, state2, style_payload)
+    assert get_histo_spine_colors(fig2).get("left") == "#ffffff"
+    _assert_left_white(ax2)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def _histo_y_grid_visible(ax) -> bool:
+    return any(gl.get_visible() for gl in ax.get_ygridlines())
+
+
+def test_histo_default_grid_off():
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup)
+    assert state.style.show_grid is False
+    fig, ax, _meta = create_histo_figure(state)
+    assert _histo_y_grid_visible(ax) is False
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_grid_off_survives_refresh_spine_colors_and_batch_load(tmp_path):
+    from batplot.plot_modes.histo.interactive import _save_session
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.session import load_histo_session
+    from batplot.plot_modes.histo.spines import apply_histo_spine_colors, get_histo_spine_colors, set_histo_spine_color
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.show_grid = False
+    fig, ax, _meta = create_histo_figure(state)
+    assert _histo_y_grid_visible(ax) is False
+
+    set_histo_spine_color(fig, ax, "left", "red")
+    apply_histo_spine_colors(fig, ax, get_histo_spine_colors(fig))
+    fig.canvas.draw()
+    assert _histo_y_grid_visible(ax) is False
+
+    refresh_histo_figure(fig, ax, state)
+    assert _histo_y_grid_visible(ax) is False
+
+    pkl_path = tmp_path / "histo_no_grid.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    fig2, ax2, state2 = loaded
+    assert state2.style.show_grid is False
+    assert _histo_y_grid_visible(ax2) is False
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_histo_grid_pisb_roundtrip(tmp_path):
+    from batplot.plot_modes.histo.interactive import _export_style, _save_session
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.session import (
+        apply_histo_snapshot,
+        apply_histo_style_snapshot,
+        capture_histo_snapshot,
+        load_histo_session,
+    )
+
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.show_grid = True
+    fig, ax, _meta = create_histo_figure(state)
+    assert _histo_y_grid_visible(ax) is True
+
+    snap_on = capture_histo_snapshot(state, fig, ax)
+    state.style.show_grid = False
+    refresh_histo_figure(fig, ax, state)
+    snap_off = capture_histo_snapshot(state, fig, ax)
+    assert _histo_y_grid_visible(ax) is False
+
+    apply_histo_snapshot(fig, ax, state, snap_on)
+    assert state.style.show_grid is True
+    assert _histo_y_grid_visible(ax) is True
+
+    apply_histo_snapshot(fig, ax, state, snap_off)
+    assert state.style.show_grid is False
+    assert _histo_y_grid_visible(ax) is False
+
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+    state2 = build_histo_state(setup, source_path="test.csv")
+    state2.style.show_grid = True
+    fig2, ax2, _meta = create_histo_figure(state2)
+    apply_histo_style_snapshot(fig2, ax2, state2, json.loads(style_path.read_text(encoding="utf-8")))
+    assert state2.style.show_grid is False
+    assert _histo_y_grid_visible(ax2) is False
+
+    pkl_path = tmp_path / "histo_grid.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    _fig3, ax3, state3 = loaded
+    assert state3.style.show_grid is False
+    assert _histo_y_grid_visible(ax3) is False
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+    plt.close(_fig3)
+
+
+def test_histo_line_menu_grid_and_widths_pisb(tmp_path):
+    from batplot.plot_modes.histo.interactive import _export_style, _save_session
+    from batplot.plot_modes.histo.line_style import run_histo_line_style_menu
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+    from batplot.plot_modes.histo.session import (
+        apply_histo_snapshot,
+        apply_histo_style_snapshot,
+        capture_histo_snapshot,
+        load_histo_session,
+    )
+
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    history: list = []
+
+    def _push() -> None:
+        history.append(capture_histo_snapshot(state, fig, ax))
+
+    def _refresh() -> None:
+        refresh_histo_figure(fig, ax, state)
+
+    _push()
+    state.style.show_grid = True
+    state.style.grid_linewidth = 1.2
+    _refresh()
+    assert _histo_y_grid_visible(ax) is True
+
+    snap_on = capture_histo_snapshot(state, fig, ax)
+    assert snap_on["style"]["show_grid"] is True
+    assert snap_on["style"]["grid_linewidth"] == pytest.approx(1.2)
+    assert snap_on.get("tick_widths", {}).get("y_major") is not None
+
+    state.style.show_grid = False
+    _refresh()
+    snap_off = capture_histo_snapshot(state, fig, ax)
+
+    apply_histo_snapshot(fig, ax, state, snap_on)
+    assert state.style.show_grid is True
+    assert _histo_y_grid_visible(ax) is True
+
+    apply_histo_snapshot(fig, ax, state, snap_off)
+    assert state.style.show_grid is False
+    assert _histo_y_grid_visible(ax) is False
+
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+    state2 = build_histo_state(setup, source_path="test.csv")
+    state2.style.show_grid = True
+    fig2, ax2, _meta2 = create_histo_figure(state2)
+    apply_histo_style_snapshot(fig2, ax2, state2, json.loads(style_path.read_text(encoding="utf-8")))
+    assert state2.style.show_grid is False
+    assert state2.style.grid_linewidth == pytest.approx(1.2)
+
+    pkl_path = tmp_path / "histo_line.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    _fig3, ax3, state3 = loaded
+    assert state3.style.show_grid is False
+    assert state3.style.grid_linewidth == pytest.approx(1.2)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+    plt.close(_fig3)
+
+
 def _write_size_csv(path, length_values):
     rows = [" ,Area,Mean,Min,Max,Angle,Length"]
     for i, length in enumerate(length_values, start=1):
@@ -596,3 +1110,405 @@ def test_histo_allfiles_routing_batch_export(tmp_path, monkeypatch):
     assert rc in (0, None)
     exports = list((tmp_path / "Figures").glob("*_histo.svg"))
     assert len(exports) == 2
+
+
+def test_histo_style_import_preserves_histogram_data(tmp_path):
+    """Style import (i) must not replace each panel's values/setup."""
+    from batplot.plot_modes.histo.interactive import _export_style
+    from batplot.plot_modes.histo.session import apply_histo_style_snapshot
+
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    values_a = np.array([1.0, 2.0, 3.0])
+    values_b = np.array([8.0, 9.0, 9.5])
+    setup_a = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values_a,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    setup_b = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values_b,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state_a = build_histo_state(setup_a, source_path="a.csv")
+    state_b = build_histo_state(setup_b, source_path="b.csv")
+    state_a.style.bar_color = "#ff0000"
+    fig_a, ax_a, _meta_a = create_histo_figure(state_a)
+    fig_b, ax_b, _meta_b = create_histo_figure(state_b)
+
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig_a, ax_a, state_a, str(style_path))
+
+    apply_histo_style_snapshot(fig_b, ax_b, state_b, json.loads(style_path.read_text(encoding="utf-8")))
+    assert state_b.style.bar_color == "#ff0000"
+    assert np.array_equal(state_b.setup.values, values_b)
+    assert state_b.source_path == "b.csv"
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig_a)
+    plt.close(fig_b)
+
+
+def test_histo_ylim_session_roundtrip(tmp_path):
+    from batplot.plot_modes.histo.interactive import _save_session
+    from batplot.plot_modes.histo.session import load_histo_session
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.ylim = (0.0, 33.0)
+    fig, ax, _meta = create_histo_figure(state)
+    pkl_path = tmp_path / "histo.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    fig2, ax2, state2 = loaded
+    assert state2.style.ylim == pytest.approx((0.0, 33.0))
+    assert ax2.get_ylim()[1] == pytest.approx(33.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_histo_tick_spacing_session_roundtrip(tmp_path):
+    from matplotlib.ticker import MultipleLocator
+
+    from batplot.plot_modes.histo.interactive import _save_session
+    from batplot.plot_modes.histo.session import load_histo_session
+    from batplot.plot_modes.histo.spines import capture_histo_spine_snapshot
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    ax.yaxis.set_major_locator(MultipleLocator(20))
+    capture_histo_spine_snapshot(fig, ax)
+    pkl_path = tmp_path / "histo.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    fig2, ax2, _state2 = loaded
+    loc = ax2.yaxis.get_major_locator()
+    assert isinstance(loc, MultipleLocator)
+    assert float(loc._edge.step) == pytest.approx(20.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_histo_tick_spacing_undo_snapshot():
+    from matplotlib.ticker import MultipleLocator
+
+    from batplot.plot_modes.histo.session import apply_histo_snapshot, capture_histo_snapshot
+
+    values = np.array([1.0, 2.0, 2.5, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    fig, ax, _meta = create_histo_figure(state)
+    snap_before = capture_histo_snapshot(state, fig, ax)
+    step_before = snap_before["tick_spacing"].get("y_major_step")
+
+    ax.yaxis.set_major_locator(MultipleLocator(20))
+    snap_after = capture_histo_snapshot(state, fig, ax)
+    assert snap_after["tick_spacing"]["y_major_step"] == pytest.approx(20.0)
+
+    apply_histo_snapshot(fig, ax, state, snap_before)
+    loc = ax.yaxis.get_major_locator()
+    if step_before is not None:
+        assert isinstance(loc, MultipleLocator)
+        assert float(loc._edge.step) == pytest.approx(step_before)
+    else:
+        assert not isinstance(loc, MultipleLocator)
+
+    apply_histo_snapshot(fig, ax, state, snap_after)
+    loc2 = ax.yaxis.get_major_locator()
+    assert isinstance(loc2, MultipleLocator)
+    assert float(loc2._edge.step) == pytest.approx(20.0)
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_legacy_title_stripped_with_empty_column_name():
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="Length.csv")
+    state.style.title = "Histogram Length"
+    fig, ax, _meta = create_histo_figure(state)
+    assert state.style.title == ""
+    assert ax.get_title() == ""
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_legacy_title_stripped_on_pkl_batch_load(tmp_path):
+    import pickle
+
+    from batplot.plot_modes.histo.session import load_histo_session
+
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="Length.csv")
+    state.style.title = "Histogram Length"
+    fig, ax, _meta = create_histo_figure(state)
+    snap = _snapshot_for_json(state, fig, ax)
+    snap["style"]["title"] = "Histogram Length"
+    pkl_path = tmp_path / "Length_histo.pkl"
+    with open(pkl_path, "wb") as fh:
+        pickle.dump({"kind": "histo", "version": 1, "state": snap}, fh)
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+    loaded = load_histo_session(str(pkl_path))
+    assert loaded is not None
+    fig2, ax2, state2 = loaded
+    assert state2.style.title == ""
+    assert ax2.get_title() == ""
+    plt.close(fig2)
+
+
+def test_new_pkl_save_never_stores_legacy_title(tmp_path):
+    import pickle
+
+    from batplot.plot_modes.histo.interactive import _save_session
+
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="Length.csv")
+    state.style.title = "Histogram Length"
+    fig, ax, _meta = create_histo_figure(state)
+    pkl_path = tmp_path / "new_histo.pkl"
+    _save_session(fig, ax, state, str(pkl_path))
+
+    with open(pkl_path, "rb") as fh:
+        payload = pickle.load(fh)
+    assert payload["state"]["style"]["title"] == ""
+    assert state.style.title == ""
+    assert ax.get_title() == ""
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_old_pkl_resave_cleans_title_in_file(tmp_path):
+    import pickle
+
+    from batplot.plot_modes.histo.interactive import _save_session
+    from batplot.plot_modes.histo.session import load_histo_session
+
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    legacy_snap = _snapshot_for_json(build_histo_state(setup, source_path="Length.csv"))
+    legacy_snap["style"]["title"] = "Histogram Length"
+    old_path = tmp_path / "old.pkl"
+    with open(old_path, "wb") as fh:
+        pickle.dump({"kind": "histo", "version": 1, "state": legacy_snap}, fh)
+
+    loaded = load_histo_session(str(old_path))
+    assert loaded is not None
+    fig, ax, state = loaded
+    assert ax.get_title() == ""
+    assert state.style.title == ""
+
+    clean_path = tmp_path / "clean.pkl"
+    _save_session(fig, ax, state, str(clean_path))
+    with open(clean_path, "rb") as fh:
+        payload = pickle.load(fh)
+    assert payload["state"]["style"]["title"] == ""
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_legacy_title_stripped_on_style_export(tmp_path):
+    from batplot.plot_modes.histo.interactive import _export_style, _snapshot_state
+
+    values = np.array([1.0, 2.0, 3.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="Length.csv")
+    state.style.title = "Histogram Length"
+    fig, ax, _meta = create_histo_figure(state)
+    style_path = tmp_path / "style.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+    payload = json.loads(style_path.read_text(encoding="utf-8"))
+    assert payload["style"]["title"] == ""
+
+    snap = _snapshot_state(state, fig, ax)
+    assert snap["style"]["title"] == ""
+
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_histo_bold_and_highlight_apply_to_bar_labels_and_legend():
+    """f→b/h must survive redraw for bar numbers and mean/median legend (p/i/s/b artists)."""
+    import matplotlib.pyplot as plt
+
+    from batplot.plot_modes.histo.plot import draw_histogram
+
+    values = np.array([1.0, 2.0, 2.0, 3.0, 8.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.font_weight = "bold"
+    state.style.text_highlight = True
+    state.style.show_bar_labels = True
+    state.style.show_mean_line = True
+    fig, ax = plt.subplots()
+    draw_histogram(fig, ax, state)
+
+    assert ax.xaxis.label.get_fontweight() == "bold"
+    assert ax.xaxis.label.get_bbox_patch() is not None
+    bar_texts = [t for t in ax.texts if t.get_text()]
+    assert bar_texts
+    assert all(t.get_fontweight() == "bold" for t in bar_texts)
+    leg = ax.get_legend()
+    assert leg is not None
+    assert all(t.get_fontweight() == "bold" for t in leg.get_texts())
+    plt.close(fig)
+
+
+def test_histo_style_p_i_roundtrip_font_weight_highlight(tmp_path):
+    """Old sessions without weight keys stay safe; export/import round-trips bold+highlight."""
+    import matplotlib.pyplot as plt
+
+    from batplot.plot_modes.histo.interactive import _export_style
+    from batplot.plot_modes.histo.session import apply_histo_style_snapshot
+    from batplot.plot_modes.histo.plot import refresh_histo_figure
+
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    edges = build_bin_edges(0.0, 10.0, bin_width=2.0, n_bins=None)
+    setup = HistoSetup(
+        column_index=1,
+        column_name="Length",
+        values=values,
+        xmin=float(edges[0]),
+        xmax=float(edges[-1]),
+        bin_edges=edges,
+    )
+    state = build_histo_state(setup, source_path="test.csv")
+    state.style.font_weight = "bold"
+    state.style.text_highlight = True
+    state.style.text_highlight_fc = "yellow"
+    fig, ax, _meta = create_histo_figure(state)
+    style_path = tmp_path / "font.bpsh"
+    _export_style(fig, ax, state, str(style_path))
+    payload = json.loads(style_path.read_text(encoding="utf-8"))
+    assert payload["style"]["font_weight"] == "bold"
+    assert payload["style"]["text_highlight"] is True
+
+    # Old-style payload without weight/highlight keys must not crash
+    from batplot.plot_modes.histo.interactive import _snapshot_state
+
+    state2 = build_histo_state(setup, source_path="test.csv")
+    fig2, ax2, _ = create_histo_figure(state2)
+    old = _snapshot_state(state2, fig2, ax2)
+    old["style"].pop("font_weight", None)
+    old["style"].pop("text_highlight", None)
+    old["style"].pop("text_highlight_fc", None)
+    old["style"].pop("text_highlight_alpha", None)
+    old["style"].pop("text_highlight_pad", None)
+    apply_histo_style_snapshot(fig2, ax2, state2, old)
+    refresh_histo_figure(fig2, ax2, state2)
+    assert state2.style.font_weight == "normal"
+    assert state2.style.text_highlight is False
+
+    # Import exported bold style
+    apply_histo_style_snapshot(fig2, ax2, state2, payload)
+    refresh_histo_figure(fig2, ax2, state2)
+    assert state2.style.font_weight == "bold"
+    assert state2.style.text_highlight is True
+    assert ax2.xaxis.label.get_fontweight() == "bold"
+    plt.close(fig)
+    plt.close(fig2)

@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable
 
 from .session import dump_session as _bp_dump_session
+from ..common.crosshair_export import savefig_without_crosshair
 from ..common.files import confirm_previous_path
 from ...utils import (
     _confirm_overwrite,
@@ -50,6 +51,7 @@ class XyActionContext:
     apply_style_config: Callable[[str], Any]
     push_state: Callable[[str], Any]
     restore_state: Callable[[], Any]
+    pop_undo: Callable[[], Any]
 
 
 def _dump_session(ctx: XyActionContext, target_path: str, *, skip_confirm: bool) -> None:
@@ -104,7 +106,8 @@ def _save_figure_to_target(ctx: XyActionContext, export_target: str) -> None:
         except Exception:
             pass
         try:
-            ctx.fig.savefig(
+            savefig_without_crosshair(
+                ctx.fig,
                 export_target,
                 dpi=300,
                 transparent=True,
@@ -125,7 +128,7 @@ def _save_figure_to_target(ctx: XyActionContext, export_target: str) -> None:
             except Exception:
                 pass
     else:
-        ctx.fig.savefig(export_target, dpi=300)
+        savefig_without_crosshair(ctx.fig, export_target, dpi=300)
 
     print(f"Figure saved to {export_target}")
     ctx.fig._last_figure_export_path = export_target
@@ -395,7 +398,11 @@ def handle_style_import(ctx: XyActionContext) -> None:
             print("Style import canceled.")
             return
         ctx.push_state("style-import")
-        ctx.apply_style_config(fname)
+        try:
+            ctx.apply_style_config(fname)
+        except Exception:
+            ctx.pop_undo()
+            raise
     except Exception as exc:
         print(f"Error importing style: {exc}")
 

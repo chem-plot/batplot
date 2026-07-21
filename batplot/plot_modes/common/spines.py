@@ -540,18 +540,16 @@ def run_spine_tick_menu(
         for line in extra_help_lines:
             print(line)
     print(f"  Other           : {cyan}list{reset}=show state   {cyan}q{reset}=back to {back_label}")
-    print(colorize_inline_commands("Tip: q backs out of submenus. Blank line repeats this prompt."))
+    print(colorize_inline_commands("Tip: q or blank backs out of submenus."))
 
     while True:
         cmd = safe_input(colorize_prompt("Enter spine/tick commands (w/a/s/d+1-5, i/l/n/m/p/list; q=back): ")).strip().lower()
-        if not cmd:
-            continue
-        if extra_command_handler is not None and extra_command_handler(cmd):
-            continue
-        if cmd == "q":
+        if not cmd or cmd == "q":
             if on_quit is not None:
                 on_quit()
             break
+        if extra_command_handler is not None and extra_command_handler(cmd):
+            continue
         if cmd == "list":
             if print_state is not None:
                 print_state()
@@ -575,35 +573,36 @@ def run_spine_tick_menu(
             _draw()
             continue
         if cmd == "l":
-            try:
-                sample_owner = length_axes[0] if length_axes else None
-                current_major = (
-                    sample_owner.xaxis.get_major_ticks()[0].tick1line.get_markersize()
-                    if sample_owner is not None and sample_owner.xaxis.get_major_ticks()
-                    else 4.0
-                )
-                print(f"Current major tick length: {current_major}")
-                raw = safe_input("Enter new major tick length (e.g., 6.0): ").strip()
-                if not raw:
-                    continue
-                new_major = float(raw)
-                if new_major <= 0:
-                    print("Length must be positive.")
-                    continue
-                new_minor = new_major * 0.7
-                push_state("tick-length")
-                for axis_owner in length_axes:
-                    axis_owner.tick_params(axis="both", which="major", length=new_major)
-                    axis_owner.tick_params(axis="both", which="minor", length=new_minor)
-                if not hasattr(fig, "_tick_lengths"):
-                    fig._tick_lengths = {}
-                fig._tick_lengths.update({"major": new_major, "minor": new_minor})
-                print(f"Set major tick length: {new_major}, minor: {new_minor:.2f}")
-                _draw()
-            except ValueError:
-                print("Invalid number.")
-            except Exception as exc:
-                print(f"Error setting tick length: {exc}")
+            while True:
+                try:
+                    sample_owner = length_axes[0] if length_axes else None
+                    current_major = (
+                        sample_owner.xaxis.get_major_ticks()[0].tick1line.get_markersize()
+                        if sample_owner is not None and sample_owner.xaxis.get_major_ticks()
+                        else 4.0
+                    )
+                    print(f"Current major tick length: {current_major}")
+                    raw = safe_input("Enter new major tick length (e.g., 6.0, q=back): ").strip()
+                    if not raw or raw.lower() == "q":
+                        break
+                    new_major = float(raw)
+                    if new_major <= 0:
+                        print("Length must be positive.")
+                        continue
+                    new_minor = new_major * 0.7
+                    push_state("tick-length")
+                    for axis_owner in length_axes:
+                        axis_owner.tick_params(axis="both", which="major", length=new_major)
+                        axis_owner.tick_params(axis="both", which="minor", length=new_minor)
+                    if not hasattr(fig, "_tick_lengths"):
+                        fig._tick_lengths = {}
+                    fig._tick_lengths.update({"major": new_major, "minor": new_minor})
+                    print(f"Set major tick length: {new_major}, minor: {new_minor:.2f}")
+                    _draw()
+                except ValueError:
+                    print("Invalid number.")
+                except Exception as exc:
+                    print(f"Error setting tick length: {exc}")
             continue
         if cmd in ("n", "m"):
             is_minor = cmd == "m"

@@ -252,20 +252,23 @@ def prime_interactive_figure(fig=None) -> None:
     """Prepare a matplotlib window before an interactive menu (non-blocking)."""
     import matplotlib.pyplot as plt
 
+    from .plot_modes.common.terminal import imk_stderr_guard
+
     try:
         plt.ion()
     except Exception:
         pass
-    if fig is not None:
+    with imk_stderr_guard():
+        if fig is not None:
+            try:
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+            except Exception:
+                pass
         try:
-            fig.canvas.draw_idle()
-            fig.canvas.flush_events()
+            plt.show(block=False)
         except Exception:
             pass
-    try:
-        plt.show(block=False)
-    except Exception:
-        pass
 
 
 def hold_figure_open() -> None:

@@ -21,7 +21,9 @@ from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
     capture_axes_tick_locators,
     restore_axes_tick_locators,
+    finalize_spine_colors,
 )
+from ..common.menu_rendering import prompt_menu_key
 from .menu import _colorize_menu, print_electrochem_menu as _print_menu
 from matplotlib.ticker import (  # type: ignore[import-untyped]
     MaxNLocator,
@@ -37,6 +39,7 @@ import matplotlib as mpl  # type: ignore[import-untyped]
 from ...color_utils import (
     color_block,
 )
+from ..common.crosshair_export import register_crosshair
 from ..common.terminal import (
     colorize_inline_commands as _colorize_inline_commands,
     colorize_prompt as _colorize_prompt,
@@ -57,10 +60,21 @@ from ..common.fonts import (
     apply_font_family_to_artists,
     apply_font_size_to_artists,
     axis_text_artists,
+    collect_fig_font_artists,
     legend_text_artists,
     secondary_xaxis_text_artists,
     set_font_family_defaults,
     set_font_size_default,
+)
+from ..common.font_extras import (
+    apply_fig_font_weight,
+    apply_fig_text_highlight,
+    apply_font_extras_from_cfg,
+    font_extras_export_dict,
+    get_fig_font_weight,
+    get_fig_text_highlight,
+    get_fig_text_highlight_style,
+    refresh_font_extras_on_artists,
 )
 from ..common.menus import run_axis_limit_menu, run_font_menu, run_legend_position_menu, run_option_menu
 from ..common.files import format_file_timestamp as _format_file_timestamp
@@ -132,6 +146,10 @@ from .style import (
     _get_geometry_snapshot,
     _get_style_snapshot,
     _print_style_snapshot,
+    apply_dual_top_axis_style,
+    capture_cycle_styles_snapshot,
+    capture_dual_top_axis,
+    capture_ec_curve_marker_defaults,
 )
 
 def _apply_stored_axis_colors(ax):
@@ -352,25 +370,16 @@ def _apply_stored_smooth_settings(cycle_lines: Dict[int, Dict[str, Optional[Any]
                     ln._smooth_applied = True
 
 
+def _ec_font_artists(ax):
+    fig = ax.get_figure()
+    return collect_fig_font_artists(ax, fig, include_title=True, include_axes_texts=True)
+
+
 def _apply_font_family(ax, family: str):
     try:
         set_font_family_defaults(family, update_mathtext=True)
-        artists = axis_text_artists(ax, include_title=True, include_axes_texts=True)
-        artists.extend([
-            getattr(ax, '_top_xlabel_artist', None),
-            getattr(ax, '_right_ylabel_artist', None),
-        ])
-        try:
-            artists.extend(legend_text_artists(ax.get_legend()))
-        except Exception:
-            pass
-        try:
-            fig = ax.get_figure()
-            if getattr(fig, '_xaxis_mode', 'capacity') == 'dual':
-                artists.extend(secondary_xaxis_text_artists(getattr(fig, '_xaxis_secondary', None)))
-        except Exception:
-            pass
-        apply_font_family_to_artists(artists, family)
+        apply_font_family_to_artists(_ec_font_artists(ax), family)
+        refresh_font_extras_on_artists(ax.get_figure(), _ec_font_artists(ax))
     except Exception:
         pass
 
@@ -379,18 +388,8 @@ def _apply_font_size(ax, size: float):
     """Apply font size to all text elements on the axes."""
     try:
         set_font_size_default(size)
-        artists = axis_text_artists(ax, include_title=True)
-        artists.extend([
-            getattr(ax, '_top_xlabel_artist', None),
-            getattr(ax, '_right_ylabel_artist', None),
-        ])
-        try:
-            fig = ax.get_figure()
-            if getattr(fig, '_xaxis_mode', 'capacity') == 'dual':
-                artists.extend(secondary_xaxis_text_artists(getattr(fig, '_xaxis_secondary', None)))
-        except Exception:
-            pass
-        apply_font_size_to_artists(artists, size)
+        apply_font_size_to_artists(_ec_font_artists(ax), size)
+        refresh_font_extras_on_artists(ax.get_figure(), _ec_font_artists(ax))
     except Exception:
         pass
 
@@ -968,6 +967,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     'mode': getattr(fig, '_xaxis_mode', 'capacity'),
                     'c_theoretical': getattr(fig, '_xaxis_c_theoretical', None),
                     'swapped': getattr(fig, '_xaxis_swapped', False),
+                    'top_axis': capture_dual_top_axis(fig, ax),
                 },
                 '_dqdv_smooth_settings': dict(getattr(fig, '_dqdv_smooth_settings', {})),
                 'tick_widths': {
@@ -983,6 +983,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 'font_family': plt.rcParams.get('font.family'),
                 'font_sans_serif': list(plt.rcParams.get('font.sans-serif', [])),
                 'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
+                'font_extras': font_extras_export_dict(fig),
                 'axis_label_colors': {
                     'x': getattr(ax, '_stored_xlabel_color', None) or ax.xaxis.label.get_color(),
                     'y': getattr(ax, '_stored_ylabel_color', None) or ax.yaxis.label.get_color(),
@@ -1031,6 +1032,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     snap['legend']['position_inches'] = (float(legend_xy[0]), float(legend_xy[1]))
             except Exception:
                 snap['legend']['position_inches'] = None
+            try:
+                snap['legend_user_visible'] = getattr(fig, '_ec_legend_user_visible', None)
+            except Exception:
+                pass
             for i, ln in enumerate(ax.lines):
                 try:
                     snap['lines'].append({
@@ -1053,6 +1058,20 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 snap['file_visibility'] = [f.get('visible', True) for f in file_data]
                 snap['file_display_names'] = [f.get('display_name', f.get('filename', str(i))) for i, f in enumerate(file_data)]
                 snap['legend_file_order'] = list(getattr(fig, '_ec_legend_file_order', None) or range(len(file_data)))
+            try:
+                cs, cs_pf = capture_cycle_styles_snapshot(cycle_lines, file_data if is_multi_file else None)
+                snap['cycle_styles'] = cs
+                if cs_pf is not None:
+                    snap['cycle_styles_per_file'] = cs_pf
+            except Exception:
+                pass
+            try:
+                clw, cms = capture_ec_curve_marker_defaults(cycle_lines)
+                snap['curve_linewidth'] = clw
+                if cms:
+                    snap['curve_markers'] = cms
+            except Exception:
+                pass
             state_history.append(snap)
             if len(state_history) > 40:
                 state_history.pop(0)
@@ -1089,12 +1108,22 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             except Exception:
                 pass
 
+    def pop_undo():
+        if state_history:
+            state_history.pop()
+
     def restore_state():
         if not state_history:
             print("No undo history.")
             return
         snap = state_history.pop()
         try:
+            try:
+                fs = snap.get('fig_size')
+                if fs and isinstance(fs, (list, tuple)) and len(fs) == 2:
+                    fig.set_size_inches(float(fs[0]), float(fs[1]), forward=True)
+            except Exception:
+                pass
             # Scales, limits, labels
             try:
                 ax.set_xscale(snap.get('xscale','linear'))
@@ -1190,6 +1219,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 restore_axes_tick_locators(ax, snap.get('tick_spacing'), ('x', 'y'))
             except Exception:
                 pass
+            try:
+                tick_state_snap = getattr(ax, '_saved_tick_state', None) or snap.get('tick_state', {})
+                finalize_spine_colors(fig, ax, tick_state=tick_state_snap)
+            except Exception:
+                pass
             # Font size and family
             try:
                 font_size = snap.get('font_size')
@@ -1220,6 +1254,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 mathtext_fontset = snap.get('mathtext_fontset')
                 if mathtext_fontset:
                     mpl.rcParams['mathtext.fontset'] = mathtext_fontset
+            except Exception:
+                pass
+            try:
+                apply_font_extras_from_cfg(fig, _ec_font_artists(ax), snap.get('font_extras'))
             except Exception:
                 pass
             try:
@@ -1378,11 +1416,58 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                             else:
                                 ax.set_xlabel(cap_lbl)
                                 secax.set_xlabel(ion_lbl)
+                            apply_dual_top_axis_style(secax, xd.get('top_axis'))
                         except Exception:
                             pass
                     elif mode == 'ions' and c_th is not None:
                         # Lines already restored from snap (x=ions); just set label
                         ax.set_xlabel(f"Number of ions (C / {float(c_th):g} mAh g$^{{-1}}$)")
+            except Exception:
+                pass
+            # Per-cycle styles (c command) and global marker template
+            try:
+                curve_markers = snap.get('curve_markers', {})
+                if curve_markers:
+                    for cyc, role, ln in _iter_cycle_lines(cycle_lines):
+                        try:
+                            if 'linestyle' in curve_markers:
+                                ln.set_linestyle(curve_markers['linestyle'])
+                            if 'marker' in curve_markers:
+                                ln.set_marker(curve_markers['marker'])
+                            if 'markersize' in curve_markers:
+                                ln.set_markersize(curve_markers['markersize'])
+                            if 'markerfacecolor' in curve_markers:
+                                ln.set_markerfacecolor(curve_markers['markerfacecolor'])
+                            if 'markeredgecolor' in curve_markers:
+                                ln.set_markeredgecolor(curve_markers['markeredgecolor'])
+                        except Exception:
+                            pass
+                curve_linewidth = snap.get('curve_linewidth')
+                if curve_linewidth is not None:
+                    try:
+                        fig._ec_curve_linewidth = float(curve_linewidth)
+                    except Exception:
+                        pass
+                    for cyc, role, ln in _iter_cycle_lines(cycle_lines):
+                        try:
+                            ln.set_linewidth(float(curve_linewidth))
+                        except Exception:
+                            pass
+                cycle_styles_per_file_cfg = snap.get('cycle_styles_per_file')
+                cycle_styles_cfg = snap.get('cycle_styles')
+                if cycle_styles_per_file_cfg and is_multi_file and file_data and len(cycle_styles_per_file_cfg) == len(file_data):
+                    for i, f in enumerate(file_data):
+                        cl = f.get('cycle_lines')
+                        if cl and i < len(cycle_styles_per_file_cfg):
+                            _apply_cycle_styles(cl, cycle_styles_per_file_cfg[i])
+                elif cycle_styles_cfg:
+                    if is_multi_file and file_data:
+                        for f in file_data:
+                            cl = f.get('cycle_lines')
+                            if cl:
+                                _apply_cycle_styles(cl, cycle_styles_cfg)
+                    else:
+                        _apply_cycle_styles(cycle_lines, cycle_styles_cfg)
             except Exception:
                 pass
             # Restore dQ/dV smooth settings (sm command)
@@ -1432,6 +1517,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     fig._ec_legend_xy_in = _sanitize_legend_offset(fig, xy) if xy is not None else None
                 except Exception:
                     pass
+            if 'legend_user_visible' in snap:
+                try:
+                    fig._ec_legend_user_visible = bool(snap['legend_user_visible'])
+                except Exception:
+                    pass
             _rebuild_legend(ax)
             if legend_snap:
                 try:
@@ -1442,6 +1532,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         leg_obj.set_visible(bool(legend_snap.get('visible', False)))
                 except Exception:
                     pass
+            try:
+                tick_state_snap = getattr(ax, '_saved_tick_state', None) or snap.get('tick_state', {})
+                finalize_spine_colors(fig, ax, tick_state=tick_state_snap)
+            except Exception:
+                pass
             try:
                 fig.canvas.draw()
             except Exception:
@@ -1475,6 +1570,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         canvas_mode=canvas_mode,
         print_menu=_print_menu,
         push_state=push_state,
+        pop_undo=pop_undo,
         restore_state=restore_state,
         format_file_timestamp=_format_file_timestamp,
         savefig_plot_window=_ec_savefig_plot_window,
@@ -1502,6 +1598,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
 
     # Crosshair state
     crosshair = {'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None}
+    register_crosshair(fig, crosshair)
 
     def _toggle_crosshair_ec():
         if not crosshair['active']:
@@ -2079,8 +2176,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         )
                         if snap is not None:
                             fig._dqdv_2d_snapshot = snap
-                except Exception:
-                    pass
+                        else:
+                            print("Warning: dQ/dV 2D snapshot could not be built (map may not persist on EC save).")
+                except Exception as e:
+                    print(f"Warning: could not capture dQ/dV 2D snapshot: {e}")
                 try:
                     if cfig is not None and plt.fignum_exists(cfig.number):
                         plt.close(cfig)
@@ -2146,19 +2245,24 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 if sub == 'n':
                     # Get theoretical capacity
                     c_th_input = getattr(fig, '_xaxis_c_theoretical', None)
+                    c_th = c_th_input
                     if not c_th_input:
                         print("Input the theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
-                        val = _safe_input("C_theoretical_per_ion: ").strip()
-                        try:
-                            c_th = float(val)
-                            if c_th <= 0:
-                                print("Theoretical capacity must be positive.")
-                                continue
-                        except Exception:
-                            print("Invalid number.")
+                        c_th = None
+                        while c_th is None:
+                            val = _safe_input("C_theoretical_per_ion (q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                parsed = float(val)
+                                if parsed <= 0:
+                                    print("Theoretical capacity must be positive.")
+                                    continue
+                                c_th = parsed
+                            except Exception:
+                                print("Invalid number.")
+                        if c_th is None:
                             continue
-                    else:
-                        c_th = c_th_input
                     
                     # Remove any existing secondary axis
                     if hasattr(fig, '_xaxis_secondary') and fig._xaxis_secondary is not None:
@@ -2303,19 +2407,24 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                     # Dual mode: capacity on bottom, ions on top (or swapped)
                     # Get theoretical capacity
                     c_th_input = getattr(fig, '_xaxis_c_theoretical', None)
+                    c_th = c_th_input
                     if not c_th_input:
                         print("Input the theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
-                        val = _safe_input("C_theoretical_per_ion: ").strip()
-                        try:
-                            c_th = float(val)
-                            if c_th <= 0:
-                                print("Theoretical capacity must be positive.")
-                                continue
-                        except Exception:
-                            print("Invalid number.")
+                        c_th = None
+                        while c_th is None:
+                            val = _safe_input("C_theoretical_per_ion (q=back): ").strip()
+                            if not val or val.lower() == 'q':
+                                break
+                            try:
+                                parsed = float(val)
+                                if parsed <= 0:
+                                    print("Theoretical capacity must be positive.")
+                                    continue
+                                c_th = parsed
+                            except Exception:
+                                print("Invalid number.")
+                        if c_th is None:
                             continue
-                    else:
-                        c_th = c_th_input
                     
                     push_state("x=dual")
                     
@@ -2531,124 +2640,41 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         print(f"Error swapping axes: {e}")
                 elif sub == 'u':
                     # Update theoretical capacity
-                    current_c_th = getattr(fig, '_xaxis_c_theoretical', None)
-                    if current_c_th:
-                        print(f"Current theoretical capacity: {current_c_th} mAh g⁻¹")
-                    print("Input new theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
-                    val = _safe_input("C_theoretical_per_ion: ").strip()
-                    if not val:
-                        print("Cancelled.")
-                        continue
-                    try:
-                        new_c_th = float(val)
-                        if new_c_th <= 0:
-                            print("Theoretical capacity must be positive.")
+                    while True:
+                        current_c_th = getattr(fig, '_xaxis_c_theoretical', None)
+                        if current_c_th:
+                            print(f"Current theoretical capacity: {current_c_th} mAh g⁻¹")
+                        print("Input new theoretical capacity per 1 active ion (mAh g^-1), e.g., 125")
+                        val = _safe_input("C_theoretical_per_ion (q=back): ").strip()
+                        if not val or val.lower() == 'q':
+                            break
+                        try:
+                            new_c_th = float(val)
+                            if new_c_th <= 0:
+                                print("Theoretical capacity must be positive.")
+                                continue
+                        except Exception:
+                            print("Invalid number.")
                             continue
-                    except Exception:
-                        print("Invalid number.")
-                        continue
-                    
-                    # Update stored value
-                    old_c_th = fig._xaxis_c_theoretical
-                    fig._xaxis_c_theoretical = new_c_th
-                    print(f"Updated theoretical capacity: {old_c_th} → {new_c_th} mAh g⁻¹")
-                    
-                    # If in ions or dual mode, update the display
-                    current_mode = getattr(fig, '_xaxis_mode', 'capacity')
-                    if current_mode == 'ions':
-                        # Recalculate ion values
-                        push_state("update-c-theoretical")
-                        for ln in ax.lines:
-                            try:
-                                if hasattr(ln, "_orig_xdata_gc"):
-                                    x_orig = getattr(ln, "_orig_xdata_gc")
-                                    ln.set_xdata(x_orig / new_c_th)
-                            except Exception:
-                                continue
-                        # Update label
-                        label_text = f"Number of ions (C / {new_c_th:g} mAh g$^{{-1}}$)"
-                        ax.set_xlabel(label_text)
-                        _apply_nice_ticks()
-                        try:
-                            ax.relim(); ax.autoscale_view()
-                        except Exception:
-                            pass
-                        try:
-                            fig.canvas.draw()
-                        except Exception:
-                            fig.canvas.draw_idle()
-                    elif current_mode == 'dual':
-                        # Recreate dual axis with new capacity
-                        push_state("update-c-theoretical-dual")
-                        swapped = getattr(fig, '_xaxis_swapped', False)
-                        
-                        # Remove existing secondary axis
-                        if hasattr(fig, '_xaxis_secondary') and fig._xaxis_secondary is not None:
-                            try:
-                                fig._xaxis_secondary.remove()
-                            except Exception:
-                                pass
-                        
-                        # Update data based on swap state
-                        for ln in ax.lines:
-                            try:
-                                if hasattr(ln, "_orig_xdata_gc"):
-                                    x_orig = getattr(ln, "_orig_xdata_gc")
-                                    if swapped:
+
+                        # Update stored value
+                        old_c_th = getattr(fig, '_xaxis_c_theoretical', None)
+                        fig._xaxis_c_theoretical = new_c_th
+                        print(f"Updated theoretical capacity: {old_c_th} → {new_c_th} mAh g⁻¹")
+
+                        # If in ions or dual mode, update the display
+                        current_mode = getattr(fig, '_xaxis_mode', 'capacity')
+                        if current_mode == 'ions':
+                            push_state("update-c-theoretical")
+                            for ln in ax.lines:
+                                try:
+                                    if hasattr(ln, "_orig_xdata_gc"):
+                                        x_orig = getattr(ln, "_orig_xdata_gc")
                                         ln.set_xdata(x_orig / new_c_th)
-                                    else:
-                                        ln.set_xdata(x_orig)
-                            except Exception:
-                                continue
-                        
-                        # Define conversion functions with new capacity
-                        if swapped:
-                            def _bottom_to_top_ions_new(ions):
-                                return ions * new_c_th
-
-                            def _top_to_bottom_capacity_new(capacity):
-                                return capacity / new_c_th
-
-                            bottom_to_top = _bottom_to_top_ions_new
-                            top_to_bottom = _top_to_bottom_capacity_new
-                        else:
-                            def _bottom_to_top_capacity_new(capacity):
-                                return capacity / new_c_th
-
-                            def _top_to_bottom_ions_new(ions):
-                                return ions * new_c_th
-
-                            bottom_to_top = _bottom_to_top_capacity_new
-                            top_to_bottom = _top_to_bottom_ions_new
-                        
-                        # Create new secondary axis
-                        try:
-                            secax = ax.secondary_xaxis('top', functions=(bottom_to_top, top_to_bottom))
-                            fig._xaxis_secondary = secax
-                            
-                            # Set labels with new capacity
-                            capacity_label = "Specific Capacity (mAh g$^{{-1}}$)"
-                            ions_label = f"Number of ions (C / {new_c_th:g} mAh g$^{{-1}}$)"
-                            
-                            if swapped:
-                                ax.set_xlabel(ions_label)
-                                secax.set_xlabel(capacity_label)
-                            else:
-                                ax.set_xlabel(capacity_label)
-                                secax.set_xlabel(ions_label)
-                            
-                            # Apply font settings
-                            try:
-                                font_fam = plt.rcParams.get('font.sans-serif', [''])
-                                font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
-                                font_size = plt.rcParams.get('font.size', None)
-                                if font_fam_str:
-                                    secax.xaxis.label.set_family(font_fam_str)
-                                if font_size is not None:
-                                    secax.xaxis.label.set_size(font_size)
-                            except Exception:
-                                pass
-                            
+                                except Exception:
+                                    continue
+                            label_text = f"Number of ions (C / {new_c_th:g} mAh g$^{{-1}}$)"
+                            ax.set_xlabel(label_text)
                             _apply_nice_ticks()
                             try:
                                 ax.relim(); ax.autoscale_view()
@@ -2658,11 +2684,72 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                                 fig.canvas.draw()
                             except Exception:
                                 fig.canvas.draw_idle()
-                        except Exception as e:
-                            print(f"Error updating dual axis: {e}")
-                    else:
-                        # Capacity mode: just store the new value for future use
-                        print("Theoretical capacity updated (will be used if you switch to ions/dual mode)")
+                        elif current_mode == 'dual':
+                            push_state("update-c-theoretical-dual")
+                            swapped = getattr(fig, '_xaxis_swapped', False)
+                            if hasattr(fig, '_xaxis_secondary') and fig._xaxis_secondary is not None:
+                                try:
+                                    fig._xaxis_secondary.remove()
+                                except Exception:
+                                    pass
+                            for ln in ax.lines:
+                                try:
+                                    if hasattr(ln, "_orig_xdata_gc"):
+                                        x_orig = getattr(ln, "_orig_xdata_gc")
+                                        if swapped:
+                                            ln.set_xdata(x_orig / new_c_th)
+                                        else:
+                                            ln.set_xdata(x_orig)
+                                except Exception:
+                                    continue
+                            if swapped:
+                                def _bottom_to_top_ions_new(ions):
+                                    return ions * new_c_th
+                                def _top_to_bottom_capacity_new(capacity):
+                                    return capacity / new_c_th
+                                bottom_to_top = _bottom_to_top_ions_new
+                                top_to_bottom = _top_to_bottom_capacity_new
+                            else:
+                                def _bottom_to_top_capacity_new(capacity):
+                                    return capacity / new_c_th
+                                def _top_to_bottom_ions_new(ions):
+                                    return ions * new_c_th
+                                bottom_to_top = _bottom_to_top_capacity_new
+                                top_to_bottom = _top_to_bottom_ions_new
+                            try:
+                                secax = ax.secondary_xaxis('top', functions=(bottom_to_top, top_to_bottom))
+                                fig._xaxis_secondary = secax
+                                capacity_label = "Specific Capacity (mAh g$^{{-1}}$)"
+                                ions_label = f"Number of ions (C / {new_c_th:g} mAh g$^{{-1}}$)"
+                                if swapped:
+                                    ax.set_xlabel(ions_label)
+                                    secax.set_xlabel(capacity_label)
+                                else:
+                                    ax.set_xlabel(capacity_label)
+                                    secax.set_xlabel(ions_label)
+                                try:
+                                    font_fam = plt.rcParams.get('font.sans-serif', [''])
+                                    font_fam_str = font_fam[0] if isinstance(font_fam, list) and font_fam else ''
+                                    font_size = plt.rcParams.get('font.size', None)
+                                    if font_fam_str:
+                                        secax.xaxis.label.set_family(font_fam_str)
+                                    if font_size is not None:
+                                        secax.xaxis.label.set_size(font_size)
+                                except Exception:
+                                    pass
+                                _apply_nice_ticks()
+                                try:
+                                    ax.relim(); ax.autoscale_view()
+                                except Exception:
+                                    pass
+                                try:
+                                    fig.canvas.draw()
+                                except Exception:
+                                    fig.canvas.draw_idle()
+                            except Exception as e:
+                                print(f"Error updating dual axis: {e}")
+                        else:
+                            print("Theoretical capacity updated (will be used if you switch to ions/dual mode)")
                 else:
                     print(f"Unknown option: {sub}")
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
@@ -2674,7 +2761,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 key = pending_key
                 pending_key = None
             else:
-                key = _safe_input(_colorize_prompt("Press a key: ")).strip().lower()
+                key = prompt_menu_key()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -2691,34 +2778,38 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
             # Show/hide files (multi-file only)
             try:
                 if is_multi_file:
-                    _print_file_list(file_data, current_file_idx)
-                    choice = _safe_input(_colorize_prompt(f"Toggle visibility (1-{len(file_data)}, a=all, q=back): ")).strip()
-                    if choice.lower() == 'q':
-                        _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+                    while True:
                         _print_file_list(file_data, current_file_idx)
-                        continue
-                    push_state("visibility")
-                    if choice.lower() in ('a', 'all'):
-                        any_visible = any(f.get("visible", True) for f in file_data)
-                        new_state = not any_visible
-                        for f in file_data:
-                            _set_file_visibility(f, new_state)
-                    else:
+                        choice = _safe_input(
+                            _colorize_prompt(f"Toggle visibility (1-{len(file_data)}, a=all, q=back): ")
+                        ).strip()
+                        if not choice or choice.lower() == 'q':
+                            break
+                        if choice.lower() in ('a', 'all'):
+                            push_state("visibility")
+                            any_visible = any(f.get("visible", True) for f in file_data)
+                            new_state = not any_visible
+                            for f in file_data:
+                                _set_file_visibility(f, new_state)
+                        else:
+                            try:
+                                idx = int(choice) - 1
+                                if 0 <= idx < len(file_data):
+                                    push_state("visibility")
+                                    f = file_data[idx]
+                                    new_vis = not f.get("visible", True)
+                                    _set_file_visibility(f, new_vis)
+                                else:
+                                    print("Invalid file number.")
+                                    continue
+                            except ValueError:
+                                print("Invalid input.")
+                                continue
                         try:
-                            idx = int(choice) - 1
-                            if 0 <= idx < len(file_data):
-                                f = file_data[idx]
-                                new_vis = not f.get("visible", True)
-                                _set_file_visibility(f, new_vis)
-                            else:
-                                print("Invalid file number.")
-                        except ValueError:
-                            print("Invalid input.")
-                    try:
-                        _rebuild_legend(ax)
-                        fig.canvas.draw()  # pyright: ignore[reportOptionalMemberAccess]
-                    except Exception:
-                        fig.canvas.draw_idle()  # pyright: ignore[reportOptionalMemberAccess]
+                            _rebuild_legend(ax)
+                            fig.canvas.draw()  # pyright: ignore[reportOptionalMemberAccess]
+                        except Exception:
+                            fig.canvas.draw_idle()  # pyright: ignore[reportOptionalMemberAccess]
                 else:
                     print("File visibility (v) is only available with multiple files.")
             except Exception as e:
@@ -3021,6 +3112,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         left=lambda: _ui_position_left_ylabel(ax, fig, tick_state),
                         right=_position_right,
                     )
+                    try:
+                        finalize_spine_colors(fig, ax, tick_state=tick_state)
+                    except Exception:
+                        pass
                 def _sync_tick_state():
                     assert wasd is not None  # always a dict once this runs
                     sync_tick_state_from_wasd(
@@ -3030,6 +3125,10 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                         label_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
                     )
                 def _draw_spine_menu():
+                    try:
+                        finalize_spine_colors(fig, ax, tick_state=tick_state)
+                    except Exception:
+                        pass
                     try:
                         fig.canvas.draw()
                     except Exception:
@@ -3113,6 +3212,27 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 _apply_font_size(ax, size)
                 _rebuild_legend(ax)
                 _draw_font_change()
+            def _apply_ec_font_weight(weight):
+                push_state("font-weight")
+                apply_fig_font_weight(fig, _ec_font_artists(ax), weight)
+                _rebuild_legend(ax)
+                _draw_font_change()
+            def _toggle_ec_highlight():
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _ec_font_artists(ax), not get_fig_text_highlight(fig))
+                _draw_font_change()
+            def _set_ec_hl_fc(fc):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _ec_font_artists(ax), get_fig_text_highlight(fig), fc=fc)
+                _draw_font_change()
+            def _set_ec_hl_alpha(alpha):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _ec_font_artists(ax), get_fig_text_highlight(fig), alpha=alpha)
+                _draw_font_change()
+            def _set_ec_hl_pad(pad):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _ec_font_artists(ax), get_fig_text_highlight(fig), pad=pad)
+                _draw_font_change()
             run_font_menu(
                 safe_input=_safe_input,
                 colorize_menu=_colorize_menu,
@@ -3121,6 +3241,14 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
                 get_current_size=lambda: mpl.rcParams.get('font.size', None),
                 apply_family=_apply_ec_font_family,
                 apply_size=_apply_ec_font_size,
+                get_current_weight=lambda: get_fig_font_weight(fig),
+                apply_weight=_apply_ec_font_weight,
+                get_current_highlight=lambda: get_fig_text_highlight(fig),
+                get_highlight_style=lambda: get_fig_text_highlight_style(fig),
+                apply_highlight_toggle=_toggle_ec_highlight,
+                apply_highlight_facecolor=_set_ec_hl_fc,
+                apply_highlight_alpha=_set_ec_hl_alpha,
+                apply_highlight_pad=_set_ec_hl_pad,
             )
             _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
             continue

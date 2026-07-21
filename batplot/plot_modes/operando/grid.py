@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...color_utils import color_block, resolve_color_token
+from ...color_utils import color_block, format_color_listing, resolve_color_token
 
 
 def get_ec_grid_state(ec_ax) -> dict:
@@ -62,8 +62,10 @@ def run_ec_grid_menu(
                 apply_ec_grid_state(ec_ax, grid_state)
                 print(f"Grid: {'on' if grid_state['visible'] else 'off'}")
             elif sub == "a":
-                val = safe_input(f"Alpha (0-1, current={grid_state['alpha']}): ").strip()
-                if val:
+                while True:
+                    val = safe_input(f"Alpha (0-1, current={grid_state['alpha']}, q=back): ").strip()
+                    if not val or val.lower() == "q":
+                        break
                     try:
                         alpha = max(0.0, min(1.0, float(val)))
                         snapshot("ec-grid")
@@ -74,9 +76,11 @@ def run_ec_grid_menu(
                         print("Invalid value.")
             elif sub == "s":
                 styles = [("-", "solid"), ("--", "dashed"), (":", "dotted"), ("-.", "dashdot")]
-                print(colorize_inline_commands("Linestyle: 1=solid, 2=dashed, 3=dotted, 4=dashdot"))
-                val = safe_input(f"Choice (current={grid_state['linestyle']}): ").strip()
-                if val:
+                while True:
+                    print(colorize_inline_commands("Linestyle: 1=solid, 2=dashed, 3=dotted, 4=dashdot"))
+                    val = safe_input(f"Choice (current={grid_state['linestyle']}, q=back): ").strip()
+                    if not val or val.lower() == "q":
+                        break
                     if val.isdigit() and 1 <= int(val) <= 4:
                         linestyle = styles[int(val) - 1][0]
                         snapshot("ec-grid")
@@ -91,10 +95,12 @@ def run_ec_grid_menu(
                     else:
                         print("Invalid choice.")
             elif sub == "c":
-                current = grid_state["color"]
-                print(f"Current color: {color_block(current)} {current}")
-                val = safe_input("Color (blank=cancel): ").strip()
-                if val:
+                while True:
+                    current = grid_state["color"]
+                    print(f"Current color: {format_color_listing(current)}")
+                    val = safe_input("Color (q=back): ").strip()
+                    if not val or val.lower() == "q":
+                        break
                     resolved = resolve_color_token(val, fig)
                     if resolved:
                         snapshot("ec-grid")
@@ -104,14 +110,17 @@ def run_ec_grid_menu(
                     else:
                         print("Could not resolve color.")
             elif sub == "w":
-                val = safe_input(f"Which: major | both (current={grid_state['which']}): ").strip().lower()
-                if val in ("major", "both"):
-                    snapshot("ec-grid")
-                    grid_state["which"] = val
-                    apply_ec_grid_state(ec_ax, grid_state)
-                    print(f"Which: {val}")
-                elif val:
-                    print("Use 'major' or 'both'.")
+                while True:
+                    val = safe_input(f"Which: major | both (current={grid_state['which']}, q=back): ").strip().lower()
+                    if not val or val == "q":
+                        break
+                    if val in ("major", "both"):
+                        snapshot("ec-grid")
+                        grid_state["which"] = val
+                        apply_ec_grid_state(ec_ax, grid_state)
+                        print(f"Which: {val}")
+                    else:
+                        print("Use 'major' or 'both'.")
             try:
                 fig.canvas.draw_idle()
             except Exception:

@@ -197,6 +197,7 @@ def _resolve_histo_batch_directory(args) -> str | None:
 
 def _handle_histo_batch_interactive(args, data_files: list[str]) -> int:
     from ...plot_modes.batch_session.load import HistoPanel
+    from ...plot_modes.batch_session.common import set_all_panel_figure_titles
     from ...plot_modes.batch_session.menu_histo import run_histo_batch_menu
 
     if not require_interactive_display(args, context="histogram batch interactive menu"):
@@ -238,6 +239,7 @@ def _handle_histo_batch_interactive(args, data_files: list[str]) -> int:
 
     for panel in panels:
         prime_interactive_figure(panel.fig)
+    set_all_panel_figure_titles(panels)
     try:
         run_histo_batch_menu(panels)
     except Exception as exc:

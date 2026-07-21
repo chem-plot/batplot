@@ -18,21 +18,19 @@ def append_batch_io_shortcuts(options: List[str], panels: Sequence[Any]) -> None
     """Append overwrite shortcuts when any panel has a prior save/export path."""
     figs = [panel_fig(p) for p in panels]
     if any(getattr(f, "_last_session_save_path", None) for f in figs):
-        options.append("os: overwrite session(s)")
+        options.append("os: overwrite sessions")
+    if any(getattr(f, "_last_figure_export_path", None) for f in figs):
+        options.append("oe: overwrite figures")
     if any(getattr(f, "_last_style_export_path", None) for f in figs):
         options.append("ops: overwrite style")
         options.append("opsg: overwrite style+geom")
-    # Figure overwrite (oe) is not wired in batch menus yet — omit from shortcuts.
 
 
 def batch_quit_confirm(*, allow_export: bool = True) -> str | None:
-    """Return ``y`` to quit, ``s`` / ``s all`` to save first, or ``None`` to stay."""
+    """Return ``y`` to quit, ``s`` to save all sessions first, or ``None`` to stay."""
     try:
         if allow_export:
-            prompt = (
-                "Quit batch interactive? "
-                "(s=save selected, s all=save every plot, y/n): "
-            )
+            prompt = "Quit batch interactive? (s=save all sessions, y/n): "
         else:
             prompt = "Quit batch interactive? Quit now? (y/n): "
         confirm = safe_input(colorize_prompt(prompt), cancel_on_interrupt=True).strip().lower()
@@ -40,22 +38,17 @@ def batch_quit_confirm(*, allow_export: bool = True) -> str | None:
         return "y"
     if confirm == "y":
         return "y"
-    if allow_export and confirm in ("s all", "all"):
-        return "s all"
     if allow_export and confirm == "s":
         return "s"
     return None
 
 
-def run_batch_save_all(panels: Sequence[Any], save_panel: Callable[[Any], None]) -> None:
-    """Save every panel without a selection prompt."""
-    for i, panel in enumerate(panels):
-        path = getattr(panel, "path", "") or "?"
-        try:
-            save_panel(panel)
-            print(f"Saved [{i + 1}] {os.path.basename(path)}")
-        except Exception as exc:
-            print(f"Save failed for [{i + 1}] {path}: {exc}")
+def run_batch_save_all(panels: Sequence[Any], save_panel: Callable[[Any, str], None]) -> None:
+    """Save every panel to its loaded path (used from quit shortcut after confirm)."""
+    indices = list(range(len(panels)))
+    from .batch_io import _save_sessions_to_original_paths
+
+    _save_sessions_to_original_paths(panels, indices, save_panel)
 
 
 def run_batch_overwrite_sessions(

@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ...ui import capture_axes_tick_locators
+from ..common.font_extras import apply_font_extras_from_cfg, font_extras_export_dict
+from ..common.fonts import collect_fig_font_artists
 from .layout import _ensure_fixed_params, _get_fig_size, _get_geometry_snapshot
 
 
@@ -261,6 +263,12 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             "x": getattr(ec_ax.xaxis, "labelpad", None),
             "y": getattr(ec_ax.yaxis, "labelpad", None),
         }
+        ec_custom_labels = dict(getattr(ec_ax, '_custom_labels', {'x': None, 'y_time': None, 'y_ions': None}))
+        saved_time_ylim = getattr(ec_ax, '_saved_time_ylim', None)
+        if isinstance(saved_time_ylim, (list, tuple)) and len(saved_time_ylim) == 2:
+            saved_time_ylim = [float(saved_time_ylim[0]), float(saved_time_ylim[1])]
+        else:
+            saved_time_ylim = None
         ec_title_offsets = {
             "top_y": float(getattr(ec_ax, "_top_xlabel_manual_offset_y_pts", 0.0) or 0.0),
             "top_x": float(getattr(ec_ax, "_top_xlabel_manual_offset_x_pts", 0.0) or 0.0),
@@ -278,6 +286,8 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         ion_guides = []
         ion_annots = []
         ec_labelpads = {}
+        ec_custom_labels = {'x': None, 'y_time': None, 'y_ions': None}
+        saved_time_ylim = None
         ec_title_offsets = {}
         ec_grid = {}
 
@@ -299,6 +309,19 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
 
     cb_h_offset = getattr(cbar.ax, "_cb_h_offset_in", 0.0)
     ec_h_offset = getattr(ec_ax, "_ec_h_offset_in", 0.0) if ec_ax is not None else None
+
+    cb_ticks_left = True
+    cb_label_left = True
+    try:
+        cb_ticks_left = any(
+            getattr(tick, 'tick1line', None) and tick.tick1line.get_visible()
+            for tick in cbar.ax.yaxis.get_major_ticks()
+        )
+        cb_label_left = (cbar.ax.yaxis.get_label_position() == 'left')
+    except Exception:
+        pass
+
+    op_custom_labels = dict(getattr(ax, '_custom_labels', {'x': None, 'y': None}))
 
     cif_cfg = None
     if getattr(ax, "_operando_cif_tick_series", None):
@@ -338,6 +361,8 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         "visible": ec_vis,
         "labelpads": ec_labelpads,
         "title_offsets": ec_title_offsets,
+        "custom_labels": ec_custom_labels,
+        "saved_time_ylim": saved_time_ylim,
     }
 
     cfg = {
@@ -348,6 +373,9 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             "op_w_in": ax_w_in,
             "op_h_in": ax_h_in,
             "ec_w_in": ec_w_in,
+            "cb_w_in": cb_w_in,
+            "cb_gap_in": cb_gap_in,
+            "ec_gap_in": ec_gap_in,
             "cb_h_offset": float(cb_h_offset),
             "ec_h_offset": float(ec_h_offset) if ec_h_offset is not None else None,
         },
@@ -365,10 +393,17 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             "intensity_range": intensity_range,
             "labelpads": op_labelpads,
             "title_offsets": op_title_offsets,
+            "custom_labels": op_custom_labels,
         },
         "ec": ec_payload,
-        "font": {"family": fam, "size": fsize, "mathtext_fontset": plt.rcParams.get("mathtext.fontset")},
-        "colorbar": {"label": cb_label_text, "mode": cb_label_mode, "visible": cb_vis},
+        "font": {"family": fam, "size": fsize, "mathtext_fontset": plt.rcParams.get("mathtext.fontset"), **font_extras_export_dict(fig)},
+        "colorbar": {
+            "label": cb_label_text,
+            "mode": cb_label_mode,
+            "visible": cb_vis,
+            "ticks_left": cb_ticks_left,
+            "label_left": cb_label_left,
+        },
     }
     default_ext = ".bps" if exp_choice == "ps" else ".bpsg"
     if exp_choice == "psg":

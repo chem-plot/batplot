@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...color_utils import color_block, get_user_color_list, manage_user_colors, resolve_color_token
+from ...color_utils import color_block, format_color_listing, get_user_color_list, manage_user_colors, resolve_color_token
 
 
 def run_ec_line_style_menu(
@@ -57,47 +57,50 @@ def run_ec_line_style_menu(
 
 
 def _set_ec_line_color(*, fig, line, snapshot, safe_input, colorize_menu, colorize_prompt) -> None:
-    current = line.get_color()
-    print(f"EC line color: {color_block(current)} {current}")
-    user_colors = get_user_color_list(fig)
-    if user_colors:
-        print("\nSaved colors (refer as number or u#):")
-        for idx, color in enumerate(user_colors, 1):
-            print("  " + colorize_menu(f"{idx}: {color_block(color)} {color}"))
-    else:
-        print("\nNo saved colors.")
-        print("  " + colorize_menu("u: manage saved colors"))
-    print("  (Enter color name/hex, saved color number, or 'u' to manage)")
-    val = safe_input(colorize_prompt(f"Color (current={current}, blank=cancel): ")).strip()
-    if not val:
-        return
-    if val.lower() == "u":
-        manage_user_colors(fig)
-        return
-    snapshot("ec-line-color")
-    try:
-        resolved = resolve_color_token(val, fig)
-        line.set_color(resolved)
-        fig.canvas.draw_idle()
-        print(f"EC line color set to: {resolved}")
-    except Exception as exc:
-        print(f"Invalid color: {exc}")
+    while True:
+        current = line.get_color()
+        print(f"EC line color: {format_color_listing(current)}")
+        user_colors = get_user_color_list(fig)
+        if user_colors:
+            print("\nSaved colors (refer as number or u#):")
+            for idx, color in enumerate(user_colors, 1):
+                print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
+        else:
+            print("\nNo saved colors.")
+            print("  " + colorize_menu("u: manage saved colors"))
+        print("  (Enter color name/hex, saved color number, or 'u' to manage)")
+        val = safe_input(colorize_prompt(f"Color (current={current}, q=back): ")).strip()
+        if not val or val.lower() == "q":
+            break
+        if val.lower() == "u":
+            manage_user_colors(fig)
+            continue
+        snapshot("ec-line-color")
+        try:
+            resolved = resolve_color_token(val, fig)
+            line.set_color(resolved)
+            fig.canvas.draw_idle()
+            print(f"EC line color set to: {resolved}")
+        except Exception as exc:
+            print(f"Invalid color: {exc}")
 
 
 def _set_ec_line_width(*, line, snapshot, safe_input, colorize_prompt) -> None:
-    current = line.get_linewidth()
-    val = safe_input(colorize_prompt(f"Line width (current={current}, blank=cancel): ")).strip()
-    if not val:
-        return
-    snapshot("ec-line-width")
-    try:
-        linewidth = float(val)
-        if linewidth > 0:
-            line.set_linewidth(linewidth)
-        else:
-            print("Width must be > 0.")
-    except Exception as exc:
-        print(f"Invalid width: {exc}")
+    while True:
+        current = line.get_linewidth()
+        val = safe_input(colorize_prompt(f"Line width (current={current}, q=back): ")).strip()
+        if not val or val.lower() == "q":
+            break
+        snapshot("ec-line-width")
+        try:
+            linewidth = float(val)
+            if linewidth > 0:
+                line.set_linewidth(linewidth)
+                print(f"EC line width set to {linewidth:g}.")
+            else:
+                print("Width must be > 0.")
+        except Exception as exc:
+            print(f"Invalid width: {exc}")
 
 
 __all__ = ["run_ec_line_style_menu"]

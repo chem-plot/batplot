@@ -19,13 +19,10 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
     if ec_ax is not None:
         col1 = [
             "oc: op colormap",
-            "ow: op width",
             "el: ec curve",
-            "ew: ec width",
             " v: toggle colorbar/ec",
             " t: toggle spines",
             " l: line",
-            " h: height",
             " f: fonts",
             " g: size",
             " r: reverse plot",
@@ -64,11 +61,9 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
     else:
         col1 = [
             "oc: op colormap",
-            "ow: op width",
             " v: toggle colorbar",
             " t: toggle spines",
             " l: line",
-            " h: height",
             " f: fonts",
             " g: size",
             " r: reverse plot",

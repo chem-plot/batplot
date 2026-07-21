@@ -125,8 +125,10 @@ def _run_file_rename(*, fig, ax, file_data, push_state, rebuild_legend, print_fi
             if 0 <= idx < len(file_data):
                 file_entry = file_data[idx]
                 current = file_entry.get("display_name", file_entry.get("filename", str(idx + 1)))
-                new_name = safe_input(f"New name for this file (current: {current!r}, blank=cancel): ").strip()
-                if new_name:
+                while True:
+                    new_name = safe_input(f"New name for this file (current: {current!r}, q=back): ").strip()
+                    if not new_name or new_name.lower() == "q":
+                        break
                     push_state("rename-file")
                     apply_file_display_name(file_entry, new_name)
                     rebuild_legend(ax)
@@ -135,6 +137,7 @@ def _run_file_rename(*, fig, ax, file_data, push_state, rebuild_legend, print_fi
                     except Exception:
                         fig.canvas.draw_idle()
                     print(f"File {idx + 1} display name set to {new_name!r}.")
+                    current = new_name
             else:
                 print("Invalid file number.")
         except ValueError:
@@ -142,66 +145,77 @@ def _run_file_rename(*, fig, ax, file_data, push_state, rebuild_legend, print_fi
 
 
 def _rename_bottom_x(*, fig, ax, tick_state, push_state, safe_input, ui_position_top_xlabel, ui_position_bottom_xlabel) -> None:
-    text = safe_input("New X-axis label (blank=cancel): ")
-    if not text:
-        return
-    text = normalize_label_text(convert_label_shortcuts(text))
-    remember_axis_name(text)
-    push_state("rename-x")
-    try:
-        _freeze_layout(fig)
+    while True:
+        current = ax.get_xlabel()
+        text = safe_input(f"New X-axis label [{current}] (q=back): ")
+        if not text or text.lower() == "q":
+            break
+        text = normalize_label_text(convert_label_shortcuts(text))
+        remember_axis_name(text)
+        push_state("rename-x")
         try:
-            ax._pending_xlabelpad = getattr(ax.xaxis, "labelpad", None)
+            _freeze_layout(fig)
+            try:
+                ax._pending_xlabelpad = getattr(ax.xaxis, "labelpad", None)
+            except Exception:
+                pass
+            ax.set_xlabel(text)
+            ax._stored_xlabel = text
+            ax._stored_xlabel_color = ax.xaxis.label.get_color()
+            ui_position_top_xlabel(ax, fig, tick_state)
+            ui_position_bottom_xlabel(ax, fig, tick_state)
+            print(f"X-axis label updated to: '{text}'")
         except Exception:
             pass
-        ax.set_xlabel(text)
-        ax._stored_xlabel = text
-        ax._stored_xlabel_color = ax.xaxis.label.get_color()
-        ui_position_top_xlabel(ax, fig, tick_state)
-        ui_position_bottom_xlabel(ax, fig, tick_state)
-    except Exception:
-        pass
 
 
 def _rename_top_x(*, fig, secax, is_dual_xaxis: bool, push_state, safe_input) -> None:
     if not (is_dual_xaxis and secax is not None):
         print("Top x-axis is only available in dual mode. Use 'a' menu → 'd' to enable.")
         return
-    text = safe_input("New top X-axis label (blank=cancel): ")
-    if not text:
-        return
-    text = normalize_label_text(convert_label_shortcuts(text))
-    remember_axis_name(text)
-    push_state("rename-tx")
-    try:
-        secax.set_xlabel(text)
-        if not hasattr(secax, "_stored_xlabel"):
-            secax._stored_xlabel = text
-    except Exception as exc:
-        print(f"Error setting top x-axis label: {exc}")
+    while True:
+        current = secax.get_xlabel()
+        text = safe_input(f"New top X-axis label [{current}] (q=back): ")
+        if not text or text.lower() == "q":
+            break
+        text = normalize_label_text(convert_label_shortcuts(text))
+        remember_axis_name(text)
+        push_state("rename-tx")
+        try:
+            secax.set_xlabel(text)
+            if not hasattr(secax, "_stored_xlabel"):
+                secax._stored_xlabel = text
+            print(f"Top X-axis label updated to: '{text}'")
+        except Exception as exc:
+            print(f"Error setting top x-axis label: {exc}")
 
 
 def _rename_y(*, fig, ax, tick_state, push_state, safe_input, ui_position_left_ylabel, ui_position_right_ylabel) -> str | None:
-    text = safe_input("New Y-axis label (blank=cancel): ")
-    if not text:
-        return None
-    text = normalize_label_text(convert_label_shortcuts(text))
-    remember_axis_name(text)
-    push_state("rename-y")
-    try:
-        _freeze_layout(fig)
+    updated = None
+    while True:
+        current = ax.get_ylabel()
+        text = safe_input(f"New Y-axis label [{current}] (q=back): ")
+        if not text or text.lower() == "q":
+            break
+        text = normalize_label_text(convert_label_shortcuts(text))
+        remember_axis_name(text)
+        push_state("rename-y")
         try:
-            ax._pending_ylabelpad = getattr(ax.yaxis, "labelpad", None)
+            _freeze_layout(fig)
+            try:
+                ax._pending_ylabelpad = getattr(ax.yaxis, "labelpad", None)
+            except Exception:
+                pass
+            ax.set_ylabel(text)
+            ax._stored_ylabel = text
+            ax._stored_ylabel_color = ax.yaxis.label.get_color()
+            ui_position_right_ylabel(ax, fig, tick_state)
+            ui_position_left_ylabel(ax, fig, tick_state)
+            print(f"Y-axis label updated to: '{text}'")
+            updated = text
         except Exception:
             pass
-        ax.set_ylabel(text)
-        ax._stored_ylabel = text
-        ax._stored_ylabel_color = ax.yaxis.label.get_color()
-        ui_position_right_ylabel(ax, fig, tick_state)
-        ui_position_left_ylabel(ax, fig, tick_state)
-    except Exception:
-        pass
-    return text
+    return updated
 
 
 def _freeze_layout(fig) -> None:

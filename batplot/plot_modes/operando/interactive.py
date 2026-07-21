@@ -34,14 +34,18 @@ from ...ui import (
     capture_axis_tick_locators,
     restore_axis_tick_locators,
     apply_wasd_minor_ticks,
+    set_spine_side_color as _ui_set_spine_side_color,
+    finalize_spine_colors_for_axes,
 )
+from ..common.crosshair_export import register_crosshair
 from ..common.interactive_state import right_y_major_visibility
 from ..common.files import format_file_timestamp as _format_file_timestamp
 from ..common.sources import normalize_source_paths
+from ..common.menu_rendering import prompt_menu_key
 from ..common.terminal import (
-    FilterIMKWarning as _FilterIMKWarning,
     colorize_prompt as _colorize_prompt,
     colorize_single_key_inline_commands as _colorize_inline_commands,
+    imk_stderr_guard as _imk_stderr_guard,
     safe_input as _safe_input,
 )
 from ..common.spines import (
@@ -55,6 +59,18 @@ from ..common.spines import (
     wasd_to_tick_state,
 )
 from ..common.menus import run_font_menu
+from ..common.font_extras import (
+    apply_fig_font_weight,
+    apply_fig_text_highlight,
+    apply_font_extras_from_cfg,
+    font_extras_export_dict,
+    get_fig_font_weight,
+    get_fig_text_highlight,
+    get_fig_text_highlight_style,
+    refresh_font_extras_on_artists,
+    set_fig_font_weight,
+)
+from ..common.fonts import collect_operando_font_artists
 from ..common.palettes import TAB10_HEX, palette_items
 from ..common.title_offsets import capture_title_offsets, restore_title_offsets
 from .layout import (
@@ -68,6 +84,7 @@ from .layout import (
     _safe_set_clim,
     _update_custom_colorbar,
 )
+from .layout_menu import run_operando_size_menu
 from .menu import print_operando_ec_menu
 from .actions import (
     OperandoActionContext,
@@ -181,7 +198,7 @@ def _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar=None) -> None:
     if not getattr(fig, "_is_dqdv_2d_contour", False):
         return
     try:
-        from ..electrochem.interactive import reapply_dqdv_2d_contour_axes
+        from ..electrochem.dqdv_2d import reapply_dqdv_2d_contour_axes
         reapply_dqdv_2d_contour_axes(fig, ax, im, cbar, style_mode="minimal")
     except Exception:
         pass
@@ -222,7 +239,9 @@ def _dqdv_2d_print_potential_window(fig) -> None:
 
 def _dqdv_2d_potential_window_menu(fig, ax, im, cbar, snapshot_fn) -> None:
     """ox submenu for 2D dQ/dV contour: set V_lo/V_hi and rebuild butterfly map."""
-    from ..electrochem.interactive import update_dqdv_2d_potential_window
+    from ..electrochem.dqdv_2d import update_dqdv_2d_potential_window
+    from ..common.font_extras import refresh_font_extras_on_artists
+    from ..common.fonts import collect_operando_font_artists
 
     def _apply(v_lo: float, v_hi: float, note: str) -> None:
         snapshot_fn(note)
@@ -236,6 +255,12 @@ def _dqdv_2d_potential_window_menu(fig, ax, im, cbar, snapshot_fn) -> None:
                     )
                 except Exception:
                     pass
+            try:
+                refresh_font_extras_on_artists(
+                    fig, collect_operando_font_artists(fig, ax, cbar=cbar)
+                )
+            except Exception:
+                pass
             try:
                 fig.canvas.draw_idle()
             except Exception:
@@ -262,46 +287,48 @@ def _dqdv_2d_potential_window_menu(fig, ax, im, cbar, snapshot_fn) -> None:
             _apply(v_lo, v_hi, "dqdv2d-potential-auto")
             continue
         if line.lower() == "w":
-            try:
-                v_lo = float(fig._dqdv_2d_v_lo)
-                v_hi = float(fig._dqdv_2d_v_hi)
-            except Exception:
-                continue
-            val = _safe_input(_colorize_inline_commands(
-                f"New upper voltage V_hi (current V_lo={v_lo:.4g}, q=back): "
-            )).strip()
-            if not val or val.lower() == "q":
-                continue
-            try:
-                new_hi = float(val)
-            except ValueError:
-                print("Invalid value.")
-                continue
-            if new_hi <= v_lo:
-                print(f"V_hi must be greater than V_lo ({v_lo:.4g}).")
-                continue
-            _apply(v_lo, new_hi, "dqdv2d-potential-w")
+            while True:
+                try:
+                    v_lo = float(fig._dqdv_2d_v_lo)
+                    v_hi = float(fig._dqdv_2d_v_hi)
+                except Exception:
+                    break
+                val = _safe_input(_colorize_inline_commands(
+                    f"New upper voltage V_hi (current V_lo={v_lo:.4g}, q=back): "
+                )).strip()
+                if not val or val.lower() == "q":
+                    break
+                try:
+                    new_hi = float(val)
+                except ValueError:
+                    print("Invalid value.")
+                    continue
+                if new_hi <= v_lo:
+                    print(f"V_hi must be greater than V_lo ({v_lo:.4g}).")
+                    continue
+                _apply(v_lo, new_hi, "dqdv2d-potential-w")
             continue
         if line.lower() == "s":
-            try:
-                v_lo = float(fig._dqdv_2d_v_lo)
-                v_hi = float(fig._dqdv_2d_v_hi)
-            except Exception:
-                continue
-            val = _safe_input(_colorize_inline_commands(
-                f"New lower voltage V_lo (current V_hi={v_hi:.4g}, q=back): "
-            )).strip()
-            if not val or val.lower() == "q":
-                continue
-            try:
-                new_lo = float(val)
-            except ValueError:
-                print("Invalid value.")
-                continue
-            if new_lo >= v_hi:
-                print(f"V_lo must be less than V_hi ({v_hi:.4g}).")
-                continue
-            _apply(new_lo, v_hi, "dqdv2d-potential-s")
+            while True:
+                try:
+                    v_lo = float(fig._dqdv_2d_v_lo)
+                    v_hi = float(fig._dqdv_2d_v_hi)
+                except Exception:
+                    break
+                val = _safe_input(_colorize_inline_commands(
+                    f"New lower voltage V_lo (current V_hi={v_hi:.4g}, q=back): "
+                )).strip()
+                if not val or val.lower() == "q":
+                    break
+                try:
+                    new_lo = float(val)
+                except ValueError:
+                    print("Invalid value.")
+                    continue
+                if new_lo >= v_hi:
+                    print(f"V_lo must be less than V_hi ({v_hi:.4g}).")
+                    continue
+                _apply(new_lo, v_hi, "dqdv2d-potential-s")
             continue
         try:
             parts = line.replace(",", " ").split()
@@ -440,7 +467,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
     def print_menu():
         print_operando_ec_menu(fig, ec_ax)
 
-    def set_fonts(family=None, size=None):
+    def _operando_font_artists():
+        return collect_operando_font_artists(fig, ax, ec_ax, cbar)
+
+    def set_fonts(family=None, size=None, weight=None):
         if family:
             mpl.rcParams['font.family'] = 'sans-serif'
             mpl.rcParams['font.sans-serif'] = [family, 'DejaVu Sans', 'Arial', 'Liberation Sans']
@@ -452,6 +482,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 mpl.rcParams['mathtext.fontset'] = 'dejavusans'
         if size is not None:
             mpl.rcParams['font.size'] = size
+        if weight is not None:
+            set_fig_font_weight(fig, weight)
         axes = [ax, ec_ax]
         for a in axes:
             if a is None:
@@ -522,13 +554,25 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     if right_artist is not None:
                         right_artist.set_size(size)
                 except Exception: pass
-        # colorbar - redraw with new font settings
+                if weight is not None:
+                    w = get_fig_font_weight(fig)
+                    for t in a.get_xticklabels() + a.get_yticklabels():
+                        try: t.set_weight(w)
+                        except Exception: pass
+                    try: a.xaxis.label.set_weight(w)
+                    except Exception: pass
+                    try: a.yaxis.label.set_weight(w)
+                    except Exception: pass
+        # colorbar - redraw with new font settings, then re-apply weight/highlight
         if cbar is not None:
-            # Redraw the colorbar to apply font changes
             try:
                 _update_custom_colorbar(cbar.ax, im)
             except Exception:
                 pass
+        try:
+            refresh_font_extras_on_artists(fig, _operando_font_artists())
+        except Exception:
+            pass
         
         # Update title distances after font size changes (unified UI positioning functions)
         for a in axes:
@@ -691,6 +735,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 prev_xlim = getattr(ec_ax, '_prev_ec_xlim', None)
                 ions_expanded = getattr(ec_ax, '_ions_xlim_expanded', False)
                 saved_time_ylim = getattr(ec_ax, '_saved_time_ylim', None)
+                ion_params = dict(getattr(ec_ax, '_ion_params', {})) if getattr(ec_ax, '_ion_params', None) else None
                 ec_labels = getattr(ec_ax, '_custom_labels', {'x': ec_ax.get_xlabel(), 'y_time': None, 'y_ions': None})
                 ion_guides = []
                 for gl in getattr(ec_ax, '_ion_guides', []) or []:
@@ -715,6 +760,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 prev_xlim = None
                 ions_expanded = False
                 saved_time_ylim = None
+                ion_params = None
                 ec_labels = None
                 ion_guides = []
                 ion_annots = []
@@ -872,11 +918,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 'prev_ec_xlim': prev_xlim,
                 'ions_expanded': bool(ions_expanded),
                 'saved_time_ylim': saved_time_ylim,
+                'ion_params': ion_params,
                 'ion_guides': ion_guides,
                 'ion_annots': ion_annots,
                 'op_labels': dict(op_labels) if isinstance(op_labels, dict) else {'x': ax.get_xlabel(), 'y': ax.get_ylabel()},
                 'ec_labels': dict(ec_labels) if ec_labels is not None and isinstance(ec_labels, dict) else None,
-                'font': {'family': list(fam), 'size': fsize, 'mathtext_fontset': mathtext_fs},
+                'font': {'family': list(fam), 'size': fsize, 'mathtext_fontset': mathtext_fs, **font_extras_export_dict(fig)},
                 'op_wasd': dict(op_wasd),
                 'ec_wasd': dict(ec_wasd) if ec_wasd is not None else None,
                 'tick_lengths': getattr(fig, '_tick_lengths', None),
@@ -924,6 +971,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 state_history.pop(0)
         except Exception as e:
             print(f"Warning: snapshot failed: {e}")
+    def _pop_undo():
+        if state_history:
+            state_history.pop()
     def _restore():
         if not state_history:
             print("No undo history."); return
@@ -996,6 +1046,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     if isinstance(fam, list) and fam:
                         fam = fam[0]
                     set_fonts(family=fam if fam else None, size=size if size is not None else None)
+                try:
+                    apply_font_extras_from_cfg(fig, _operando_font_artists(), font)
+                except Exception:
+                    pass
             except Exception:
                 pass
             # Operando axes and image
@@ -1067,6 +1121,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         setattr(ec_ax, '_ions_xlim_expanded', bool(snap.get('ions_expanded', False)))
                         if snap.get('saved_time_ylim') is not None:
                             setattr(ec_ax, '_saved_time_ylim', tuple(snap.get('saved_time_ylim')))
+                        if snap.get('ion_params'):
+                            setattr(ec_ax, '_ion_params', dict(snap.get('ion_params')))
                         # Re-install ions formatter and high-precision status bar
                         t = np.asarray(getattr(ec_ax, "_ec_time_h", []), float)
                         arr = getattr(ec_ax, "_ions_abs", None)
@@ -1310,7 +1366,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                 if spec.get('linewidth') is not None:
                                     sp.set_linewidth(float(spec['linewidth']))
                                 if spec.get('color') is not None:
-                                    sp.set_edgecolor(spec['color'])
+                                    _ui_set_spine_side_color(ax, name, spec['color'], fig=fig)
                                 if spec.get('visible') is not None:
                                     sp.set_visible(bool(spec['visible']))
                             else:
@@ -1338,7 +1394,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                     if spec.get('linewidth') is not None:
                                         sp.set_linewidth(float(spec['linewidth']))
                                     if spec.get('color') is not None:
-                                        sp.set_edgecolor(spec['color'])
+                                        _ui_set_spine_side_color(ec_ax, name, spec['color'], fig=fig)
                                     if spec.get('visible') is not None:
                                         sp.set_visible(bool(spec['visible']))
                                 else:
@@ -1469,7 +1525,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     except Exception:
                         pass
                     try:
-                        from ..electrochem.interactive import update_dqdv_2d_potential_window
+                        from ..electrochem.dqdv_2d import update_dqdv_2d_potential_window
                         update_dqdv_2d_potential_window(
                             fig, ax, im,
                             float(fig._dqdv_2d_v_lo), float(fig._dqdv_2d_v_hi),
@@ -1479,6 +1535,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 _maybe_reapply_dqdv_2d_contour(fig, ax, im, cbar)
                 if getattr(fig, '_is_dqdv_2d_contour', False):
                     _restore_dqdv_2d_operando_labels(ax, snap.get('op_labels', {}))
+            except Exception:
+                pass
+            try:
+                refresh_font_extras_on_artists(fig, _operando_font_artists())
+            except Exception:
+                pass
+            try:
+                axis_entries = [(ax, getattr(ax, "_saved_tick_state", None))]
+                if ec_ax is not None:
+                    axis_entries.append((ec_ax, getattr(ec_ax, "_saved_tick_state", None)))
+                finalize_spine_colors_for_axes(fig, axis_entries)
             except Exception:
                 pass
             try:
@@ -1492,7 +1559,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
     def _run_save_dqdv_2d_contour_session():
         """Save dQ/dV 2D contour state (.pkl) with butterfly axis metadata."""
         import pickle
-        from ..electrochem.interactive import build_dqdv_2d_snapshot
+        from ..electrochem.dqdv_2d import build_dqdv_2d_snapshot
         folder = choose_save_path(file_paths, purpose="dQ/dV 2D session save")
         if not folder:
             return
@@ -1661,6 +1728,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
         'vline': None, 'hline': None,
         'cid': None,
     }
+    register_crosshair(fig, cross)
     def _intensity_at(x: float, y: float):
         try:
             arr = np.asarray(im.get_array(), dtype=float)
@@ -1830,6 +1898,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
             file_paths=file_paths,
             print_menu=print_menu,
             snapshot=_snapshot,
+            pop_undo=_pop_undo,
             restore=_restore,
             run_save_operando_session=_run_save_operando_session,
             set_fonts=set_fonts,
@@ -1846,7 +1915,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
         )
 
     def _handle_op_c():
-            nonlocal ax_pos, cur, sub, v, val
             cif_series = getattr(ax, '_operando_cif_tick_series', None)
             if not cif_series:
                 print("No CIF tick labels. Add CIF files when launching: batplot folder phase.cif:1.54 --operando --interactive")
@@ -1984,8 +2052,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         try:
                             idx = int(idx_s) - 1
                             if 0 <= idx < len(cif_series):
-                                new_col = _safe_input(f"New color for set {idx+1}: ").strip()
-                                if new_col:
+                                while True:
+                                    new_col = _safe_input(f"New color for set {idx+1} (q=back): ").strip()
+                                    if not new_col or new_col.lower() == 'q':
+                                        break
                                     _snapshot("cif-color")
                                     try:
                                         resolved = resolve_color_token(new_col) if resolve_color_token else new_col
@@ -1994,7 +2064,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                     lab, fname, peaksQ, wl_e, qmax, _ = cif_series[idx]
                                     cif_series = list(cif_series)
                                     cif_series[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
-                                    fig._operando_cif_colormap = None  # custom per-set colors
+                                    fig._operando_cif_colormap = None
                                     ax._operando_cif_tick_series = cif_series
                                     _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
                                     fig.canvas.draw_idle()
@@ -2022,8 +2092,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             break
                         if font_sub == 'f':
                             print(_colorize_inline_commands("Common: Arial, DejaVu Sans, Times New Roman, Courier New"))
-                            new_fam = _safe_input(_colorize_prompt(f"Font family (current: {fam_display}, Enter=keep, q=back): ")).strip()
-                            if new_fam and new_fam.lower() != 'q':
+                            while True:
+                                new_fam = _safe_input(_colorize_prompt(f"Font family (current: {fam_display}, q=back): ")).strip()
+                                if not new_fam or new_fam.lower() == 'q':
+                                    break
                                 font_dict = dict(cur)
                                 font_dict['family'] = new_fam
                                 fig._operando_cif_title_font = font_dict
@@ -2033,8 +2105,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                                 fig.canvas.draw_idle()
                                 print(f"CIF title font family: {fam_display}")
                         elif font_sub == 's':
-                            new_sz = _safe_input(_colorize_prompt(f"Font size (current: {sz_display}, Enter=keep, q=back): ")).strip()
-                            if new_sz and new_sz.lower() != 'q':
+                            while True:
+                                new_sz = _safe_input(_colorize_prompt(f"Font size (current: {sz_display}, q=back): ")).strip()
+                                if not new_sz or new_sz.lower() == 'q':
+                                    break
                                 try:
                                     val = max(6, int(float(new_sz)))
                                     font_dict = dict(cur)
@@ -2060,8 +2134,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             idx = int(idx_s) - 1
                             if 0 <= idx < len(cif_series):
                                 lab, fname, peaksQ, wl_e, qmax, col = cif_series[idx]
-                                new_lab = _safe_input(f"New label for set {idx+1} (current: {lab}, blank=cancel): ").strip()
-                                if new_lab:
+                                while True:
+                                    new_lab = _safe_input(f"New label for set {idx+1} (current: {lab}, q=back): ").strip()
+                                    if not new_lab or new_lab.lower() == 'q':
+                                        break
                                     new_lab = convert_label_shortcuts(new_lab)
                                     _snapshot("cif-rename")
                                     cif_series = list(cif_series)
@@ -2145,40 +2221,41 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     except Exception:
                         pass
                     rec_palettes = palette_items(["tab10", "viridis", "plasma", "Set2", "Dark2", "rainbow"])
-                    print("Apply colormap to all CIF sets:")
-                    for idx, (name, desc) in enumerate(rec_palettes, 1):
-                        bar = palette_preview(name, steps=max(1, min(8, len(cif_series)))) if palette_preview else ""
-                        print(f"  {idx}. {name} - {desc}" + (f"  {bar}" if bar else ""))
-                    choice = _safe_input(_colorize_inline_commands("Palette name or number (1-6), q=back: ")).strip().lower()
-                    if not choice or choice == 'q':
-                        continue
-                    palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
-                    pal_name = palette_map.get(choice, choice)
-                    if not ensure_colormap(pal_name.split('_r')[0] if pal_name.lower().endswith('_r') else pal_name):
-                        print(f"Unknown colormap '{pal_name}'.")
-                        continue
-                    _snapshot("cif-colormap")
-                    n = len(cif_series)
-                    try:
-                        base = pal_name[:-2] if pal_name.lower().endswith('_r') else pal_name
-                        if base.lower() == 'tab10':
-                            colors = [TAB10_HEX[i % len(TAB10_HEX)] for i in range(n)]
-                        else:
-                            cmap = get_colormap(pal_name)
-                            if cmap is None:
-                                raise ValueError(f"Unknown colormap '{pal_name}'")
-                            colors = [mcolors.to_hex(cmap(i / max(n - 1, 1))) for i in range(n)]
-                    except Exception as e:
-                        print(f"Could not apply colormap: {e}")
-                        continue
-                    cif_series = list(cif_series)
-                    for i, (lab, fname, peaksQ, wl_e, qmax, _) in enumerate(cif_series):
-                        cif_series[i] = (lab, fname, peaksQ, wl_e, qmax, colors[i] if i < len(colors) else 'k')
-                    ax._operando_cif_tick_series = cif_series
-                    fig._operando_cif_colormap = pal_name
-                    _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
-                    fig.canvas.draw_idle()
-                    print(f"Applied '{pal_name}' to all {n} CIF sets.")
+                    while True:
+                        print("Apply colormap to all CIF sets:")
+                        for idx, (name, desc) in enumerate(rec_palettes, 1):
+                            bar = palette_preview(name, steps=max(1, min(8, len(cif_series)))) if palette_preview else ""
+                            print(f"  {idx}. {name} - {desc}" + (f"  {bar}" if bar else ""))
+                        choice = _safe_input(_colorize_inline_commands("Palette name or number (1-6), q=back: ")).strip().lower()
+                        if not choice or choice == 'q':
+                            break
+                        palette_map = {str(i): name for i, (name, _) in enumerate(rec_palettes, 1)}
+                        pal_name = palette_map.get(choice, choice)
+                        if not ensure_colormap(pal_name.split('_r')[0] if pal_name.lower().endswith('_r') else pal_name):
+                            print(f"Unknown colormap '{pal_name}'.")
+                            continue
+                        _snapshot("cif-colormap")
+                        n = len(cif_series)
+                        try:
+                            base = pal_name[:-2] if pal_name.lower().endswith('_r') else pal_name
+                            if base.lower() == 'tab10':
+                                colors = [TAB10_HEX[i % len(TAB10_HEX)] for i in range(n)]
+                            else:
+                                cmap = get_colormap(pal_name)
+                                if cmap is None:
+                                    raise ValueError(f"Unknown colormap '{pal_name}'")
+                                colors = [mcolors.to_hex(cmap(i / max(n - 1, 1))) for i in range(n)]
+                        except Exception as e:
+                            print(f"Could not apply colormap: {e}")
+                            continue
+                        cif_series = list(cif_series)
+                        for i, (lab, fname, peaksQ, wl_e, qmax, _) in enumerate(cif_series):
+                            cif_series[i] = (lab, fname, peaksQ, wl_e, qmax, colors[i] if i < len(colors) else 'k')
+                        ax._operando_cif_tick_series = cif_series
+                        fig._operando_cif_colormap = pal_name
+                        _draw_operando_cif_ticks(ax, fig, cif_series, cif_hkl_map, axis_mode=axis_mode, wl=wl, show_hkl=show_hkl, show_titles=show_titles, placement=placement, y_positions=y_positions)
+                        fig.canvas.draw_idle()
+                        print(f"Applied '{pal_name}' to all {n} CIF sets.")
                 elif sub == 'b':
                     _restore()
                     show_hkl = getattr(fig, '_operando_cif_show_hkl', False)
@@ -2471,6 +2548,10 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         # EC axes use actual ylabel on right, not duplicate artists.
                         right=None if is_ec else lambda: _ui_position_right_ylabel(axis, fig, current_tick_state),
                     )
+                    try:
+                        finalize_spine_colors_for_axes(fig, [(axis, current_tick_state)])
+                    except Exception:
+                        pass
                 
                 def _sync_operando_pane_tick_state():
                     ts_current = wasd_to_tick_state(
@@ -2496,6 +2577,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 def _apply_operando_pane_wasd(changed_sides=None):
                     _apply_wasd_axis(target, wasd, changed_sides)
                 def _draw_operando_spine_menu():
+                    try:
+                        ts = getattr(target, "_saved_tick_state", None)
+                        finalize_spine_colors_for_axes(fig, [(target, ts)])
+                    except Exception:
+                        pass
                     try:
                         fig.canvas.draw()
                     except Exception:
@@ -2554,6 +2640,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         ec_ax._saved_time_ylim = (cur[0], new_upper)
                         fig.canvas.draw_idle()
                         print(f"EC time range updated: {ec_ax.get_ylim()[0]:.4g} {ec_ax.get_ylim()[1]:.4g}")
+                    continue
                 if line.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
@@ -2572,6 +2659,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         ec_ax._saved_time_ylim = (new_lower, cur[1])
                         fig.canvas.draw_idle()
                         print(f"EC time range updated: {ec_ax.get_ylim()[0]:.4g} {ec_ax.get_ylim()[1]:.4g}")
+                    continue
                 if line.lower() == 'a':
                     # Auto: restore original range from EC lines
                     _snapshot("ec-time-range-auto")
@@ -2655,6 +2743,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         ec_ax._ions_xlim_expanded = False
                         fig.canvas.draw_idle()
                         print(f"EC X range updated: {ec_ax.get_xlim()[0]:.4g} {ec_ax.get_xlim()[1]:.4g}")
+                    continue
                 if line.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
@@ -2674,6 +2763,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         ec_ax._ions_xlim_expanded = False
                         fig.canvas.draw_idle()
                         print(f"EC X range updated: {ec_ax.get_xlim()[0]:.4g} {ec_ax.get_xlim()[1]:.4g}")
+                    continue
                 if line.lower() == 'a':
                     # Auto: restore original range from EC lines
                     _snapshot("ec-x-range-auto")
@@ -2811,7 +2901,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
 
     while True:
         try:
-            cmd = _safe_input(_colorize_prompt("Press a key: ")).strip().lower()
+            cmd = prompt_menu_key()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -2878,22 +2968,30 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 colorize_prompt=_colorize_prompt,
             )
             continue
-        if cmd == 'h':
-            # Always read fresh value from attribute to avoid stale cached value
-            ax_h_in = getattr(ax, '_fixed_ax_h_in', ax_h_in)
-            print(f"Current height: {ax_h_in:.2f} in")
-            print("  " + _colorize_menu("inches: new height (inches)"))
-            print("  " + _colorize_menu("q: back"))
-            val = _safe_input(_colorize_prompt("Height (inches, q=back): ")).strip()
-            if val:
-                _snapshot("height")
-                try:
-                    new_h = max(0.25, float(val))
-                    ax_h_in = new_h
-                    _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)  # pyright: ignore[reportOptionalMemberAccess]
-                except Exception as e:
-                    print(f"Invalid height: {e}")
+        if cmd in ('h', 'ow', 'ew', 'g'):
+            focus = cmd if cmd != 'g' else None
+            layout = run_operando_size_menu(
+                fig,
+                ax,
+                cbar,
+                ec_ax,
+                on_before_change=lambda: _snapshot(f"size-{cmd}"),
+                on_after_change=lambda: fig.canvas.draw_idle(),
+                safe_input_fn=_safe_input,
+                colorize_menu_fn=_colorize_menu,
+                colorize_prompt_fn=_colorize_prompt,
+                initial_focus=focus,
+            )
+            cb_w_in, cb_gap_in, ec_gap_in, ec_w_in, ax_w_in, ax_h_in = (
+                layout.cb_w_in,
+                layout.cb_gap_in,
+                layout.ec_gap_in,
+                layout.ec_w_in,
+                layout.op_w_in,
+                layout.op_h_in,
+            )
             print_menu()
+            continue
         elif cmd == 'r':
             _snapshot("reverse")
             # Reverse vertical orientation for both operando and EC plots
@@ -2924,6 +3022,41 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
             def _apply_operando_font_size(size):
                 _snapshot("font-size")
                 set_fonts(size=size)
+            def _apply_operando_font_weight(weight):
+                _snapshot("font-weight")
+                apply_fig_font_weight(fig, _operando_font_artists(), weight)
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+            def _toggle_operando_highlight():
+                _snapshot("font-highlight")
+                apply_fig_text_highlight(fig, _operando_font_artists(), not get_fig_text_highlight(fig))
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+            def _set_operando_hl_fc(fc):
+                _snapshot("font-highlight")
+                apply_fig_text_highlight(fig, _operando_font_artists(), get_fig_text_highlight(fig), fc=fc)
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+            def _set_operando_hl_alpha(alpha):
+                _snapshot("font-highlight")
+                apply_fig_text_highlight(fig, _operando_font_artists(), get_fig_text_highlight(fig), alpha=alpha)
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+            def _set_operando_hl_pad(pad):
+                _snapshot("font-highlight")
+                apply_fig_text_highlight(fig, _operando_font_artists(), get_fig_text_highlight(fig), pad=pad)
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
             run_font_menu(
                 safe_input=_safe_input,
                 colorize_menu=_colorize_menu,
@@ -2932,6 +3065,14 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 get_current_size=lambda: plt.rcParams.get('font.size', None),
                 apply_family=_apply_operando_font_family,
                 apply_size=_apply_operando_font_size,
+                get_current_weight=lambda: get_fig_font_weight(fig),
+                apply_weight=_apply_operando_font_weight,
+                get_current_highlight=lambda: get_fig_text_highlight(fig),
+                get_highlight_style=lambda: get_fig_text_highlight_style(fig),
+                apply_highlight_toggle=_toggle_operando_highlight,
+                apply_highlight_facecolor=_set_operando_hl_fc,
+                apply_highlight_alpha=_set_operando_hl_alpha,
+                apply_highlight_pad=_set_operando_hl_pad,
             )
             print_menu()
         elif cmd == 'l':
@@ -2969,6 +3110,13 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         major_width=tick_w,
                         minor_width=tick_minor,
                     )
+                    try:
+                        axis_entries = [(ax, getattr(ax, "_saved_tick_state", None))]
+                        if ec_ax is not None:
+                            axis_entries.append((ec_ax, getattr(ec_ax, "_saved_tick_state", None)))
+                        finalize_spine_colors_for_axes(fig, axis_entries)
+                    except Exception:
+                        pass
                     
                     try:
                         fig.canvas.draw()
@@ -3155,85 +3303,79 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         print("Intensity bar requires matplotlib 3.4+ (RangeSlider). Use limit1 limit2 or w/s instead.")
                         continue
                     _snapshot("operando-intensity-range")
-                    # Suppress macOS IMKCFRunLoopWakeUpReliable warning during slider (closing window triggers it)
-                    _orig_stderr = sys.stderr
-                    try:
-                        sys.stderr = _FilterIMKWarning(_orig_stderr)
-                    except Exception:
-                        pass
-                    try:
-                        cur = im.get_clim()
-                        vmin_cur, vmax_cur = float(cur[0]), float(cur[1])
-                        # Get full data range for slider bounds
-                        arr = np.asarray(im.get_array(), dtype=float)
-                        if arr.ndim == 2 and arr.size > 0:
-                            finite = arr[np.isfinite(arr)]
-                            vmin_data = float(np.min(finite)) if finite.size else vmin_cur
-                            vmax_data = float(np.max(finite)) if finite.size else vmax_cur
-                        else:
-                            vmin_data = vmin_cur
-                            vmax_data = vmax_cur
-                        # Ensure slider range spans current values
-                        vmin_slider = min(vmin_data, vmin_cur)
-                        vmax_slider = max(vmax_data, vmax_cur)
-                        if vmax_slider <= vmin_slider:
-                            vmax_slider = vmin_slider + 1.0
-                        # Create slider figure
-                        fig_slider = plt.figure(figsize=(8, 1.8), facecolor='0.95')
+                    with _imk_stderr_guard():
                         try:
-                            fig_slider.canvas.manager.set_window_title("Intensity range")
-                        except Exception:
-                            pass
-                        ax_slider = fig_slider.add_axes((0.15, 0.35, 0.7, 0.25))
-                        slider = RangeSlider(ax_slider, "Intensity", vmin_slider, vmax_slider, valinit=(vmin_cur, vmax_cur))
-                        ax_btn = fig_slider.add_axes((0.8, 0.05, 0.15, 0.2))
-                        btn_done = Button(ax_btn, "Done", color="0.85", hovercolor="0.95")
-                        def _on_slider_change(val):
-                            lo, hi = val
-                            _safe_set_clim(im, lo, hi)
+                            cur = im.get_clim()
+                            vmin_cur, vmax_cur = float(cur[0]), float(cur[1])
+                            # Get full data range for slider bounds
+                            arr = np.asarray(im.get_array(), dtype=float)
+                            if arr.ndim == 2 and arr.size > 0:
+                                finite = arr[np.isfinite(arr)]
+                                vmin_data = float(np.min(finite)) if finite.size else vmin_cur
+                                vmax_data = float(np.max(finite)) if finite.size else vmax_cur
+                            else:
+                                vmin_data = vmin_cur
+                                vmax_data = vmax_cur
+                            # Ensure slider range spans current values
+                            vmin_slider = min(vmin_data, vmin_cur)
+                            vmax_slider = max(vmax_data, vmax_cur)
+                            if vmax_slider <= vmin_slider:
+                                vmax_slider = vmin_slider + 1.0
+                            # Create slider figure
+                            fig_slider = plt.figure(figsize=(8, 1.8), facecolor='0.95')
                             try:
+                                fig_slider.canvas.manager.set_window_title("Intensity range")
+                            except Exception:
+                                pass
+                            ax_slider = fig_slider.add_axes((0.15, 0.35, 0.7, 0.25))
+                            slider = RangeSlider(ax_slider, "Intensity", vmin_slider, vmax_slider, valinit=(vmin_cur, vmax_cur))
+                            ax_btn = fig_slider.add_axes((0.8, 0.05, 0.15, 0.2))
+                            btn_done = Button(ax_btn, "Done", color="0.85", hovercolor="0.95")
+
+                            def _on_slider_change(val):
+                                lo, hi = val
+                                _safe_set_clim(im, lo, hi)
+                                try:
+                                    if cbar is not None:
+                                        _update_custom_colorbar(cbar.ax, im)
+                                except Exception:
+                                    pass
+                                fig.canvas.draw_idle()
+
+                            def _on_done_clicked(event):
+                                fig_slider.canvas.stop_event_loop()
+
+                            def _on_slider_closed(event):
+                                try:
+                                    fig_slider.canvas.stop_event_loop()
+                                except Exception:
+                                    pass
+
+                            slider.on_changed(_on_slider_change)
+                            btn_done.on_clicked(_on_done_clicked)
+                            fig_slider.canvas.mpl_connect("close_event", _on_slider_closed)
+                            fig_slider.canvas.draw_idle()
+                            plt.show(block=False)
+                            try:
+                                fig_slider.canvas.start_event_loop(timeout=-1)
+                            except Exception:
+                                pass
+                            # Capture final values from slider before closing (callback already updated im)
+                            try:
+                                final_lo, final_hi = slider.val
+                            except Exception:
+                                final_lo, final_hi = im.get_clim()
+                            plt.close(fig_slider)
+                            try:
+                                _safe_set_clim(im, final_lo, final_hi)
                                 if cbar is not None:
                                     _update_custom_colorbar(cbar.ax, im)
+                                fig.canvas.draw_idle()
+                                print(f"Intensity range: {final_lo:.4g} to {final_hi:.4g}")
                             except Exception:
                                 pass
-                            fig.canvas.draw_idle()
-                        def _on_done_clicked(event):
-                            fig_slider.canvas.stop_event_loop()
-                        def _on_slider_closed(event):
-                            try:
-                                fig_slider.canvas.stop_event_loop()
-                            except Exception:
-                                pass
-                        slider.on_changed(_on_slider_change)
-                        btn_done.on_clicked(_on_done_clicked)
-                        fig_slider.canvas.mpl_connect("close_event", _on_slider_closed)
-                        fig_slider.canvas.draw_idle()
-                        plt.show(block=False)
-                        try:
-                            fig_slider.canvas.start_event_loop(timeout=-1)
-                        except Exception:
-                            pass
-                        # Capture final values from slider before closing (callback already updated im)
-                        try:
-                            final_lo, final_hi = slider.val
-                        except Exception:
-                            final_lo, final_hi = im.get_clim()
-                        plt.close(fig_slider)
-                        try:
-                            _safe_set_clim(im, final_lo, final_hi)
-                            if cbar is not None:
-                                _update_custom_colorbar(cbar.ax, im)
-                            fig.canvas.draw_idle()
-                            print(f"Intensity range: {final_lo:.4g} to {final_hi:.4g}")
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        print(f"Slider failed: {e}")
-                    finally:
-                        try:
-                            sys.stderr = _orig_stderr
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"Slider failed: {e}")
                     continue
                 
                 if line.lower() == 'w':
@@ -3262,6 +3404,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             pass
                         fig.canvas.draw_idle()
                         print(f"Intensity range updated: {im.get_clim()[0]:.4g} to {im.get_clim()[1]:.4g}")
+                    continue
                 if line.lower() == 's':
                     # Lower only: change lower limit, fix upper - stay in loop
                     while True:
@@ -3288,7 +3431,8 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                             pass
                         fig.canvas.draw_idle()
                         print(f"Intensity range updated: {im.get_clim()[0]:.4g} to {im.get_clim()[1]:.4g}")
-                
+                    continue
+
                 _snapshot("operando-intensity-range")
                 try:
                     if line.lower() == 'a':
@@ -3316,46 +3460,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         print(f"Applied intensity range: {lo:.4g} to {hi:.4g}")
                 except Exception as e:
                     print(f"Invalid range: {e}")
-            print_menu()
-        elif cmd in ('ow'):
-            # Always read fresh value from attribute to avoid stale cached value
-            while True:
-                ax_w_in = getattr(ax, '_fixed_ax_w_in', ax_w_in)
-                print(f"Current operando width: {ax_w_in:.2f} in")
-                print("  " + _colorize_menu("inches: new width (inches)"))
-                print("  " + _colorize_menu("q: back"))
-                val = _safe_input(_colorize_prompt("Operando width (inches, q=back): ")).strip()
-                if not val or val.lower() == 'q':
-                    break
-                _snapshot("operando-width")
-                try:
-                    new_w = max(0.25, float(val))
-                    ax_w_in = new_w
-                    _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)  # pyright: ignore[reportOptionalMemberAccess]
-                except Exception as e:
-                    print(f"Invalid width: {e}")
-            print_menu()
-        elif cmd == 'ew':
-            # Always read fresh value from attribute to avoid stale cached value
-            if ec_ax is None:
-                print("EC panel not available (no .mpt file in folder).")
-                print_menu()
-                continue
-            while True:
-                ec_w_in = getattr(ec_ax, '_fixed_ec_w_in', ec_w_in)
-                print(f"Current EC width: {ec_w_in:.2f} in")
-                print("  " + _colorize_menu("inches: new width (inches)"))
-                print("  " + _colorize_menu("q: back"))
-                val = _safe_input(_colorize_prompt("EC width (inches, q=back): ")).strip()
-                if not val or val.lower() == 'q':
-                    break
-                _snapshot("ec-width")
-                try:
-                    new_w = max(0.25, float(val))
-                    ec_w_in = new_w
-                    _apply_group_layout_inches(fig, ax, cbar.ax, ec_ax, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)  # pyright: ignore[reportOptionalMemberAccess]
-                except Exception as e:
-                    print(f"Invalid EC width: {e}")
             print_menu()
         elif cmd == 'oc':
             run_operando_colormap_menu(
@@ -3449,176 +3553,175 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     if sub == 'q':
                         break
                     if sub == 'n':
-                        # Get or update parameters; allow reuse of previous values
                         params = getattr(ec_ax, '_ion_params', {"mass_mg": None, "cap_per_ion_mAh_g": None, "start_ions": None, "material": "cathode"})
-                        mass_mg = params.get('mass_mg')
-                        cap_per_ion = params.get('cap_per_ion_mAh_g')
-                        start_ions = params.get('start_ions')
-                        material = params.get('material', 'cathode')
-                        need_input = (mass_mg is None or cap_per_ion is None or start_ions is None)
-                        if need_input:
-                            prompt = _colorize_inline_commands("Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=cancel: ")
-                        else:
-                            prompt = _colorize_inline_commands(f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=cancel): ")
-                        s = _safe_input(prompt).strip()
-                        if not s:
+                        while True:
+                            mass_mg = params.get('mass_mg')
+                            cap_per_ion = params.get('cap_per_ion_mAh_g')
+                            start_ions = params.get('start_ions')
+                            material = params.get('material', 'cathode')
+                            need_input = (mass_mg is None or cap_per_ion is None or start_ions is None)
                             if need_input:
-                                continue
-                            # reuse previous values
-                        elif s.lower() == 'q':
-                            continue
-                        else:
-                            try:
-                                vals = list(map(float, s.split()))
-                                if len(vals) != 3:
-                                    raise ValueError()
-                                mass_mg, cap_per_ion, start_ions = vals
-                            except Exception:
+                                prompt = _colorize_inline_commands("Enter mass(mg), capacity-per-ion(mAh g^-1), start-ions (e.g. 4.5 26.8 0), q=back: ")
+                            else:
+                                prompt = _colorize_inline_commands(f"Enter mass,cap-per-ion,start-ions (blank=reuse {mass_mg} {cap_per_ion} {start_ions}; q=back): ")
+                            s = _safe_input(prompt).strip()
+                            if s.lower() == 'q':
+                                break
+                            if not s:
+                                if need_input:
+                                    continue
+                            else:
+                                try:
+                                    vals = list(map(float, s.split()))
+                                    if len(vals) != 3:
+                                        raise ValueError()
+                                    mass_mg, cap_per_ion, start_ions = vals
+                                except Exception:
+                                    print("Bad input. Expect three numbers: mass, capacity-per-ion, start-ions.")
+                                    continue
+                                if material is None:
+                                    material = 'cathode'
+                                ec_ax._ion_params = {"mass_mg": mass_mg, "cap_per_ion_mAh_g": cap_per_ion, "start_ions": start_ions, "material": material}
+                            if mass_mg is None or cap_per_ion is None or start_ions is None:
                                 print("Bad input. Expect three numbers: mass, capacity-per-ion, start-ions.")
                                 continue
-                            if material is None:
-                                material = 'cathode'
-                            ec_ax._ion_params = {"mass_mg": mass_mg, "cap_per_ion_mAh_g": cap_per_ion, "start_ions": start_ions, "material": material}
-                        if mass_mg is None or cap_per_ion is None or start_ions is None:
-                            print("Bad input. Expect three numbers: mass, capacity-per-ion, start-ions.")
-                            continue
-                        _snapshot("ey->ions")
-                        t = np.asarray(time_h, float)
-                        i_mA = np.asarray(current_mA, float)
-                        v = np.asarray(voltage_v, float)
-                        # Cumulative trapezoidal integration for capacity (mAh)
-                        dt = np.diff(t)
-                        cap_increments = np.empty_like(t)
-                        cap_increments[0] = 0.0
-                        if t.size > 1:
-                            cap_increments[1:] = 0.5 * (i_mA[:-1] + i_mA[1:]) * dt
-                        cap_mAh = np.cumsum(cap_increments)
-                        mass_g = float(mass_mg) / 1000.0
-                        with np.errstate(divide='ignore', invalid='ignore'):
-                            cap_mAh_g = np.where(mass_g>0, cap_mAh / mass_g, np.nan)
-                            ions_delta = np.where(cap_per_ion>0, cap_mAh_g / float(cap_per_ion), np.nan)
-                        ions_abs = float(start_ions) + ions_delta
-                        # Segment by charge/discharge: boundaries where sign changes (ignore tiny currents)
-                        sgn = np.sign(i_mA)
-                        eps = 1e-9
-                        sgn[np.isclose(i_mA, 0.0, atol=eps)] = 0.0
-                        # propagate zeros to last nonzero for segmentation logic
-                        last = 0.0
-                        seg_bounds = [0]
-                        for k in range(1, len(sgn)):
-                            cur = sgn[k] if sgn[k] != 0 else last
-                            prev = sgn[k-1] if sgn[k-1] != 0 else last
-                            if k == 1:
-                                last = prev
-                            if cur != prev:
-                                seg_bounds.append(k)
-                            last = cur
-                        seg_bounds.append(len(sgn)-1)
-                        # For cathode materials, ions should decrease during charge (voltage rising)
-                        try:
-                            if material and str(material).lower().startswith('cat') and len(seg_bounds) > 1:
-                                a0 = seg_bounds[0]
-                                b0 = seg_bounds[1]
-                                if b0 > a0:
-                                    dv = float(v[b0]) - float(v[a0])
-                                    dt_seg = float(t[b0]) - float(t[a0])
-                                    if dt_seg > 0 and np.isfinite(dv):
-                                        slope = dv / dt_seg  # dV/dt
-                                        # Expected ions change sign for cathode: -sign(dV/dt)
-                                        expected = -np.sign(slope) if slope != 0 else 0.0
-                                        actual = np.sign(float(ions_abs[b0]) - float(ions_abs[a0]))
-                                        if expected != 0 and actual != 0 and actual != expected:
-                                            # Flip ions direction globally
-                                            ions_abs = float(start_ions) - ions_delta
-                                            setattr(ec_ax, '_ion_inverted', True)
-                                            # Quietly invert without verbose console output
-                                        else:
-                                            setattr(ec_ax, '_ion_inverted', False)
-                        except Exception:
-                            pass
-                        # Keep curve unchanged; only change y-axis labeling to ions(t)
-                        # Clear previous annotations and guides
-                        for a in getattr(ec_ax, '_ion_annots', []):
-                            try: a.remove()
-                            except Exception: pass
-                        ec_ax._ion_annots = []
-                        for gl in getattr(ec_ax, '_ion_guides', []):
-                            try: gl.remove()
-                            except Exception: pass
-                        ec_ax._ion_guides = []
-                        # Persist ions for later reuse (e.g., when Y-range changes)
-                        try:
-                            setattr(ec_ax, '_ions_abs', np.asarray(ions_abs, float))
-                        except Exception:
-                            pass
-                        # Save current time-mode ylim once, to restore on exit
-                        try:
-                            if getattr(ec_ax, '_ec_y_mode', 'time') != 'ions' and not hasattr(ec_ax, '_saved_time_ylim'):
-                                ec_ax._saved_time_ylim = ec_ax.get_ylim()
-                        except Exception:
-                            pass
-                        # Install ions formatter + high-precision status bar (time -> ions)
-                        install_ec_ions_y_display(ec_ax, t, ions_abs)
-                        # Set default ions label or custom override
-                        try:
-                            label = 'Number of ions'
-                            if hasattr(ec_ax, '_custom_labels') and ec_ax._custom_labels.get('y_ions'):
-                                label = ec_ax._custom_labels['y_ions']
-                            ec_ax.set_ylabel(label)
-                        except Exception:
-                            pass
-                        try:
-                            keep_yaxis_label_on_side(ec_ax, 'right')
-                        except Exception:
-                            pass
-                        # Annotate and mark end of each non-empty segment
-                        def _fmt2(x: float) -> str:
-                            s = ("%0.2f" % float(x)).rstrip('0').rstrip('.')
-                            return s if s else "0"
-                        # Expand EC x-range to the right to make room for right-side labels
-                        try:
-                            x0, x1 = ec_ax.get_xlim()
-                            xr = (x1 - x0) if x1 > x0 else 0.0
-                            if xr > 0 and not getattr(ec_ax, '_ions_xlim_expanded', False):
-                                # Save previous once per ions session and expand once
-                                setattr(ec_ax, '_prev_ec_xlim', (x0, x1))
-                                ec_ax.set_xlim(x0, x1 + 0.08 * xr)
-                                setattr(ec_ax, '_ions_xlim_expanded', True)
-                        except Exception:
-                            pass
-                        # Recompute after potential xlim expansion
-                        try:
-                            x0, x1 = ec_ax.get_xlim()
-                            xr = (x1 - x0) if x1 > x0 else 0.0
-                            x_right_inset = x1 - 0.02 * xr if xr > 0 else x1
-                        except Exception:
-                            x_right_inset = None
-                        for si in range(len(seg_bounds)-1):
-                            a = seg_bounds[si]
-                            b = seg_bounds[si+1]
-                            if b >= a:
-                                end_i = float(ions_abs[b])
-                                end_t = float(t[b])
-                                end_v = float(v[b])
-                                # Light dashed guide line at segment end (horizontal at time coordinate)
-                                try:
-                                    guide = ec_ax.axhline(y=end_t, color='0.7', linestyle='--', linewidth=0.8, alpha=0.5, zorder=0)
-                                    ec_ax._ion_guides.append(guide)
-                                except Exception:
-                                    pass
-                                # Text annotation slightly offset from the curve, with at most 2 decimals
-                                try:
-                                    # Place all tags at the right edge inside the frame and above the dashed line
-                                    xi = x_right_inset if x_right_inset is not None else end_v
-                                    txt = ec_ax.annotate(_fmt2(end_i), xy=(xi, end_t), xytext=(0, 4), textcoords='offset points',
-                                                         ha='right', va='bottom', fontsize=9,
-                                                         bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='0.7', alpha=0.8))
-                                    ec_ax._ion_annots.append(txt)
-                                except Exception:
-                                    pass
-                                # No marker plotted to avoid creating new line artists
-                        # Do not alter existing EC Y-limits here; keep user choice intact
-                        ec_ax._ec_y_mode = 'ions'
+                            _snapshot("ey->ions")
+                            t = np.asarray(time_h, float)
+                            i_mA = np.asarray(current_mA, float)
+                            v = np.asarray(voltage_v, float)
+                            # Cumulative trapezoidal integration for capacity (mAh)
+                            dt = np.diff(t)
+                            cap_increments = np.empty_like(t)
+                            cap_increments[0] = 0.0
+                            if t.size > 1:
+                                cap_increments[1:] = 0.5 * (i_mA[:-1] + i_mA[1:]) * dt
+                            cap_mAh = np.cumsum(cap_increments)
+                            mass_g = float(mass_mg) / 1000.0
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                cap_mAh_g = np.where(mass_g>0, cap_mAh / mass_g, np.nan)
+                                ions_delta = np.where(cap_per_ion>0, cap_mAh_g / float(cap_per_ion), np.nan)
+                            ions_abs = float(start_ions) + ions_delta
+                            # Segment by charge/discharge: boundaries where sign changes (ignore tiny currents)
+                            sgn = np.sign(i_mA)
+                            eps = 1e-9
+                            sgn[np.isclose(i_mA, 0.0, atol=eps)] = 0.0
+                            # propagate zeros to last nonzero for segmentation logic
+                            last = 0.0
+                            seg_bounds = [0]
+                            for k in range(1, len(sgn)):
+                                cur = sgn[k] if sgn[k] != 0 else last
+                                prev = sgn[k-1] if sgn[k-1] != 0 else last
+                                if k == 1:
+                                    last = prev
+                                if cur != prev:
+                                    seg_bounds.append(k)
+                                last = cur
+                            seg_bounds.append(len(sgn)-1)
+                            # For cathode materials, ions should decrease during charge (voltage rising)
+                            try:
+                                if material and str(material).lower().startswith('cat') and len(seg_bounds) > 1:
+                                    a0 = seg_bounds[0]
+                                    b0 = seg_bounds[1]
+                                    if b0 > a0:
+                                        dv = float(v[b0]) - float(v[a0])
+                                        dt_seg = float(t[b0]) - float(t[a0])
+                                        if dt_seg > 0 and np.isfinite(dv):
+                                            slope = dv / dt_seg  # dV/dt
+                                            # Expected ions change sign for cathode: -sign(dV/dt)
+                                            expected = -np.sign(slope) if slope != 0 else 0.0
+                                            actual = np.sign(float(ions_abs[b0]) - float(ions_abs[a0]))
+                                            if expected != 0 and actual != 0 and actual != expected:
+                                                # Flip ions direction globally
+                                                ions_abs = float(start_ions) - ions_delta
+                                                setattr(ec_ax, '_ion_inverted', True)
+                                                # Quietly invert without verbose console output
+                                            else:
+                                                setattr(ec_ax, '_ion_inverted', False)
+                            except Exception:
+                                pass
+                            # Keep curve unchanged; only change y-axis labeling to ions(t)
+                            # Clear previous annotations and guides
+                            for a in getattr(ec_ax, '_ion_annots', []):
+                                try: a.remove()
+                                except Exception: pass
+                            ec_ax._ion_annots = []
+                            for gl in getattr(ec_ax, '_ion_guides', []):
+                                try: gl.remove()
+                                except Exception: pass
+                            ec_ax._ion_guides = []
+                            # Persist ions for later reuse (e.g., when Y-range changes)
+                            try:
+                                setattr(ec_ax, '_ions_abs', np.asarray(ions_abs, float))
+                            except Exception:
+                                pass
+                            # Save current time-mode ylim once, to restore on exit
+                            try:
+                                if getattr(ec_ax, '_ec_y_mode', 'time') != 'ions' and not hasattr(ec_ax, '_saved_time_ylim'):
+                                    ec_ax._saved_time_ylim = ec_ax.get_ylim()
+                            except Exception:
+                                pass
+                            # Install ions formatter + high-precision status bar (time -> ions)
+                            install_ec_ions_y_display(ec_ax, t, ions_abs)
+                            # Set default ions label or custom override
+                            try:
+                                label = 'Number of ions'
+                                if hasattr(ec_ax, '_custom_labels') and ec_ax._custom_labels.get('y_ions'):
+                                    label = ec_ax._custom_labels['y_ions']
+                                ec_ax.set_ylabel(label)
+                            except Exception:
+                                pass
+                            try:
+                                keep_yaxis_label_on_side(ec_ax, 'right')
+                            except Exception:
+                                pass
+                            # Annotate and mark end of each non-empty segment
+                            def _fmt2(x: float) -> str:
+                                s = ("%0.2f" % float(x)).rstrip('0').rstrip('.')
+                                return s if s else "0"
+                            # Expand EC x-range to the right to make room for right-side labels
+                            try:
+                                x0, x1 = ec_ax.get_xlim()
+                                xr = (x1 - x0) if x1 > x0 else 0.0
+                                if xr > 0 and not getattr(ec_ax, '_ions_xlim_expanded', False):
+                                    # Save previous once per ions session and expand once
+                                    setattr(ec_ax, '_prev_ec_xlim', (x0, x1))
+                                    ec_ax.set_xlim(x0, x1 + 0.08 * xr)
+                                    setattr(ec_ax, '_ions_xlim_expanded', True)
+                            except Exception:
+                                pass
+                            # Recompute after potential xlim expansion
+                            try:
+                                x0, x1 = ec_ax.get_xlim()
+                                xr = (x1 - x0) if x1 > x0 else 0.0
+                                x_right_inset = x1 - 0.02 * xr if xr > 0 else x1
+                            except Exception:
+                                x_right_inset = None
+                            for si in range(len(seg_bounds)-1):
+                                a = seg_bounds[si]
+                                b = seg_bounds[si+1]
+                                if b >= a:
+                                    end_i = float(ions_abs[b])
+                                    end_t = float(t[b])
+                                    end_v = float(v[b])
+                                    # Light dashed guide line at segment end (horizontal at time coordinate)
+                                    try:
+                                        guide = ec_ax.axhline(y=end_t, color='0.7', linestyle='--', linewidth=0.8, alpha=0.5, zorder=0)
+                                        ec_ax._ion_guides.append(guide)
+                                    except Exception:
+                                        pass
+                                    # Text annotation slightly offset from the curve, with at most 2 decimals
+                                    try:
+                                        # Place all tags at the right edge inside the frame and above the dashed line
+                                        xi = x_right_inset if x_right_inset is not None else end_v
+                                        txt = ec_ax.annotate(_fmt2(end_i), xy=(xi, end_t), xytext=(0, 4), textcoords='offset points',
+                                                             ha='right', va='bottom', fontsize=9,
+                                                             bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='0.7', alpha=0.8))
+                                        ec_ax._ion_annots.append(txt)
+                                    except Exception:
+                                        pass
+                                    # No marker plotted to avoid creating new line artists
+                            # Do not alter existing EC Y-limits here; keep user choice intact
+                            ec_ax._ec_y_mode = 'ions'
                     elif sub == 't':
                         _snapshot("ey->time")
                         # Revert to time view
@@ -3681,72 +3784,6 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
         elif cmd == 'ex':
             _handle_op_ex()
             continue
-        elif cmd == 'g':
-            # Preserve legacy size submenu
-            while True:
-                cur_w, cur_h = _get_fig_size(fig)
-                print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (W x H)")
-                print("  " + _colorize_menu("W H: new width and height (inches)"))
-                print("  " + _colorize_menu("q: back"))
-                print("(Panel widths/gaps are not altered)")
-                line = _safe_input(_colorize_prompt("Canvas (W H, q=back): ")).strip()
-                if not line or line.lower() == 'q':
-                    break
-                if line:
-                    _snapshot("canvas-size")
-                    try:
-                        parts = line.split()
-                        if len(parts) == 2:
-                            W = max(1.0, float(parts[0])); H = max(1.0, float(parts[1]))
-                            
-                            # Capture current panel dimensions in inches before resize
-                            old_w, old_h = cur_w, cur_h
-                            cb_pos = cbar.ax.get_position()  # pyright: ignore[reportOptionalMemberAccess]
-                            ax_pos = ax.get_position()
-                            ec_pos = ec_ax.get_position() if ec_ax else None
-                            
-                            cb_w_in = cb_pos.width * old_w
-                            cb_h_in = cb_pos.height * old_h
-                            cb_gap_in = (ax_pos.x0 - (cb_pos.x0 + cb_pos.width)) * old_w
-                            ax_w_in = ax_pos.width * old_w
-                            ax_h_in = ax_pos.height * old_h
-                            if ec_pos is not None:
-                                ec_gap_in = (ec_pos.x0 - (ax_pos.x0 + ax_pos.width)) * old_w
-                                ec_w_in = ec_pos.width * old_w
-                            
-                            # Resize figure
-                            fig.set_size_inches(W, H, forward=True)
-                            
-                            # Recalculate fractional positions to maintain inch-based dimensions
-                            total_w_in = cb_w_in + cb_gap_in + ax_w_in
-                            if ec_ax:
-                                total_w_in += ec_gap_in + ec_w_in
-                            
-                            # Center the group horizontally
-                            group_left = max(0.0, (W - total_w_in) / (2.0 * W))
-                            y0 = max(0.0, (H - ax_h_in) / (2.0 * H))
-                            
-                            # Set new fractional positions
-                            cb_x0 = group_left
-                            cb_wf = cb_w_in / W
-                            cb_hf = ax_h_in / H
-                            cbar.ax.set_position([cb_x0, y0, cb_wf, cb_hf])  # pyright: ignore[reportOptionalMemberAccess]
-                            
-                            ax_x0 = cb_x0 + cb_wf + (cb_gap_in / W)
-                            ax_wf = ax_w_in / W
-                            ax_hf = ax_h_in / H
-                            ax.set_position([ax_x0, y0, ax_wf, ax_hf])
-                            
-                            if ec_ax:
-                                ec_x0 = ax_x0 + ax_wf + (ec_gap_in / W)
-                                ec_wf = ec_w_in / W
-                                ec_hf = ax_h_in / H
-                                ec_ax.set_position([ec_x0, y0, ec_wf, ec_hf])
-                            
-                            fig.canvas.draw_idle()
-                    except Exception as e:
-                        print(f"Canvas resize failed: {e}")
-            print_menu()
         elif cmd == 'oe':
             handle_quick_overwrite_figure(_make_action_context())
             continue

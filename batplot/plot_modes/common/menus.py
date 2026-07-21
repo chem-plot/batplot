@@ -23,6 +23,41 @@ DEFAULT_FONT_FAMILIES = [
 ]
 
 
+def run_repeat_input_loop(
+    *,
+    prompt: str | Callable[[], str],
+    safe_input: Callable[..., str],
+    colorize_prompt: Callable[[str], str],
+    process: Callable[[str], bool | None],
+    cancel_on_blank: bool = True,
+) -> None:
+    """Repeatedly prompt until the user enters blank/q.
+
+    ``process(raw)`` should apply one edit and return ``True`` to continue looping,
+    ``False`` to stay on the same prompt after a validation error, or ``None``/implicit
+    success to continue. Blank/q always exits.
+    """
+    while True:
+        text = prompt() if callable(prompt) else prompt
+        try:
+            try:
+                raw = safe_input(colorize_prompt(text), cancel_on_interrupt=True).strip()
+            except TypeError:
+                raw = safe_input(colorize_prompt(text)).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("Canceled.")
+            break
+        if raw.lower() == "q" or (cancel_on_blank and not raw):
+            break
+        try:
+            result = process(raw)
+        except Exception as exc:
+            print(f"Error: {exc}")
+            continue
+        if result is False:
+            continue
+
+
 def run_font_menu(
     *,
     safe_input: Callable[[str], str],
@@ -33,7 +68,15 @@ def run_font_menu(
     apply_family: Callable[[str], None],
     apply_size: Callable[[float], None],
     fonts: Optional[list[str]] = None,
-    blank_exits: bool = False,
+    blank_exits: bool = True,
+    get_current_weight: Callable[[], object] | None = None,
+    apply_weight: Callable[[str], None] | None = None,
+    get_current_highlight: Callable[[], bool] | None = None,
+    get_highlight_style: Callable[[], dict] | None = None,
+    apply_highlight_toggle: Callable[[], None] | None = None,
+    apply_highlight_facecolor: Callable[[str], None] | None = None,
+    apply_highlight_alpha: Callable[[float], None] | None = None,
+    apply_highlight_pad: Callable[[float], None] | None = None,
 ) -> None:
     """Run the shared ``f`` font submenu.
 
@@ -41,12 +84,34 @@ def run_font_menu(
     different artists to update (legends, duplicate titles, secondary axes).
     """
     fonts = fonts or DEFAULT_FONT_FAMILIES
+    has_weight = apply_weight is not None and get_current_weight is not None
+    has_highlight = (
+        apply_highlight_toggle is not None
+        and get_current_highlight is not None
+        and get_highlight_style is not None
+    )
     while True:
-        print(f"\nFont (current: family='{get_current_family()}', size={get_current_size()})")
+        status = f"family='{get_current_family()}', size={get_current_size()}"
+        if has_weight:
+            status += f", weight={get_current_weight()}"
+        if has_highlight:
+            on = "on" if get_current_highlight() else "off"
+            status += f", highlight={on}"
+        print(f"\nFont (current: {status})")
         print("  " + colorize_menu("f: family"))
         print("  " + colorize_menu("s: size"))
+        if has_weight:
+            print("  " + colorize_menu("b: bold / weight"))
+        if has_highlight:
+            print("  " + colorize_menu("h: text highlight (bbox behind labels)"))
         print("  " + colorize_menu("q: back"))
-        sub = safe_input(colorize_prompt("Font (f/s/q): ")).strip().lower()
+        keys = "f/s"
+        if has_weight:
+            keys += "/b"
+        if has_highlight:
+            keys += "/h"
+        keys += "/q"
+        sub = safe_input(colorize_prompt(f"Font ({keys}): ")).strip().lower()
         if not sub:
             if blank_exits:
                 break
@@ -58,42 +123,173 @@ def run_font_menu(
             for idx, font in enumerate(fonts, 1):
                 print("  " + colorize_menu(f"{idx}: {font}"))
             print("  " + colorize_menu("Or enter custom font name directly"))
-            choice = safe_input(
-                colorize_prompt(f"Font family (current: '{get_current_family()}', number or name, q=cancel): ")
-            ).strip()
-            if not choice or choice.lower() == "q":
-                print("Canceled.")
-                continue
-            if choice.isdigit():
-                index = int(choice)
-                if not (1 <= index <= len(fonts)):
-                    print("Invalid number.")
-                    continue
-                family = fonts[index - 1]
-            else:
-                family = choice
-            try:
-                apply_family(family)
-                print(f"Applied font family: {family}")
-            except Exception as exc:
-                print(f"Error changing font family: {exc}")
+
+            def _apply_family_choice(choice: str) -> bool:
+                if choice.isdigit():
+                    index = int(choice)
+                    if not (1 <= index <= len(fonts)):
+                        print("Invalid number.")
+                        return False
+                    family = fonts[index - 1]
+                else:
+                    family = choice
+                try:
+                    apply_family(family)
+                    print(f"Applied font family: {family}")
+                except Exception as exc:
+                    print(f"Error changing font family: {exc}")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: (
+                    f"Font family (current: '{get_current_family()}', number or name, q=back): "
+                ),
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_family_choice,
+            )
             continue
         if sub == "s":
-            choice = safe_input(colorize_prompt(f"Font size (current: {get_current_size()}, q=cancel): ")).strip()
-            if not choice or choice.lower() == "q":
-                print("Canceled.")
-                continue
-            try:
-                size = float(choice)
+
+            def _apply_size_choice(choice: str) -> bool:
+                try:
+                    size = float(choice)
+                except ValueError:
+                    print("Invalid size.")
+                    return False
                 if size <= 0:
                     print("Size must be positive.")
+                    return False
+                try:
+                    apply_size(size)
+                    print(f"Applied font size: {size}")
+                except Exception as exc:
+                    print(f"Error changing font size: {exc}")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: f"Font size (current: {get_current_size()}, q=back): ",
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_size_choice,
+            )
+            continue
+        if sub == "b" and has_weight:
+
+            def _apply_weight_choice(choice: str) -> bool:
+                raw = choice.strip().lower()
+                if not raw:
+                    new_w = "normal" if str(get_current_weight()).lower() == "bold" else "bold"
+                elif raw in ("bold", "b"):
+                    new_w = "bold"
+                elif raw in ("normal", "n", "regular", "r"):
+                    new_w = "normal"
+                else:
+                    print("Use bold, normal, or blank to toggle.")
+                    return False
+                try:
+                    apply_weight(new_w)
+                    print(f"Applied font weight: {new_w}")
+                except Exception as exc:
+                    print(f"Error changing font weight: {exc}")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: f"Font weight (current: {get_current_weight()}, bold/normal/blank=toggle, q=back): ",
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_weight_choice,
+                cancel_on_blank=False,
+            )
+            continue
+        if sub == "h" and has_highlight:
+            while True:
+                st = get_highlight_style()
+                on = "on" if get_current_highlight() else "off"
+                print(f"\nText highlight (current: {on}, face={st.get('fc', 'white')}, alpha={st.get('alpha', 0.85):g}, pad={st.get('pad', 0.2):g})")
+                print("  " + colorize_menu("t: toggle on/off"))
+                print("  " + colorize_menu("c: face color (e.g. white, #f8f8f8)"))
+                print("  " + colorize_menu("a: alpha (0-1)"))
+                print("  " + colorize_menu("p: pad (bbox padding)"))
+                print("  " + colorize_menu("q: back"))
+                hsub = safe_input(colorize_prompt("Highlight (t/c/a/p/q): ")).strip().lower()
+                if not hsub or hsub == "q":
+                    break
+                if hsub == "t":
+                    try:
+                        apply_highlight_toggle()
+                        print(f"Text highlight {'on' if get_current_highlight() else 'off'}.")
+                    except Exception as exc:
+                        print(f"Error toggling highlight: {exc}")
                     continue
-                apply_size(size)
-                print(f"Applied font size: {size}")
-            except ValueError:
-                print("Invalid size.")
-            except Exception as exc:
-                print(f"Error changing font size: {exc}")
+                if hsub == "c" and apply_highlight_facecolor is not None:
+
+                    def _apply_hl_color(spec: str) -> bool:
+                        try:
+                            apply_highlight_facecolor(spec)
+                            print(f"Highlight face color set to {spec}.")
+                        except Exception as exc:
+                            print(f"Error: {exc}")
+                        return True
+
+                    run_repeat_input_loop(
+                        prompt=lambda: f"Highlight face color (current: {get_highlight_style().get('fc', 'white')}, q=back): ",
+                        safe_input=safe_input,
+                        colorize_prompt=colorize_prompt,
+                        process=_apply_hl_color,
+                    )
+                    continue
+                if hsub == "a" and apply_highlight_alpha is not None:
+
+                    def _apply_hl_alpha(raw: str) -> bool:
+                        try:
+                            val = float(raw)
+                        except ValueError:
+                            print("Invalid alpha.")
+                            return False
+                        if not (0.0 <= val <= 1.0):
+                            print("Alpha must be between 0 and 1.")
+                            return False
+                        try:
+                            apply_highlight_alpha(val)
+                            print(f"Highlight alpha set to {val:g}.")
+                        except Exception as exc:
+                            print(f"Error: {exc}")
+                        return True
+
+                    run_repeat_input_loop(
+                        prompt=lambda: f"Highlight alpha (current: {get_highlight_style().get('alpha', 0.85):g}, q=back): ",
+                        safe_input=safe_input,
+                        colorize_prompt=colorize_prompt,
+                        process=_apply_hl_alpha,
+                    )
+                    continue
+                if hsub == "p" and apply_highlight_pad is not None:
+
+                    def _apply_hl_pad(raw: str) -> bool:
+                        try:
+                            val = float(raw)
+                        except ValueError:
+                            print("Invalid pad.")
+                            return False
+                        if val < 0:
+                            print("Pad must be non-negative.")
+                            return False
+                        try:
+                            apply_highlight_pad(val)
+                            print(f"Highlight pad set to {val:g}.")
+                        except Exception as exc:
+                            print(f"Error: {exc}")
+                        return True
+
+                    run_repeat_input_loop(
+                        prompt=lambda: f"Highlight pad (current: {get_highlight_style().get('pad', 0.2):g}, q=back): ",
+                        safe_input=safe_input,
+                        colorize_prompt=colorize_prompt,
+                        process=_apply_hl_pad,
+                    )
+                    continue
+                print("Unknown highlight option.")
             continue
         print("Invalid font submenu option.")
 
@@ -106,7 +302,7 @@ def run_option_menu(
     safe_input: Callable[[str], str],
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
-    blank_exits: bool = False,
+    blank_exits: bool = True,
 ) -> None:
     """Run a simple key-to-callback submenu while preserving local callbacks."""
     while True:
@@ -138,7 +334,7 @@ def run_dispatch_menu(
     safe_input: Callable[[str], str],
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
-    blank_exits: bool = False,
+    blank_exits: bool = True,
 ) -> None:
     """Run a submenu loop where the caller owns mode-specific dispatch."""
     while True:
@@ -434,4 +630,5 @@ __all__ = [
     "run_font_menu",
     "run_legend_position_menu",
     "run_option_menu",
+    "run_repeat_input_loop",
 ]

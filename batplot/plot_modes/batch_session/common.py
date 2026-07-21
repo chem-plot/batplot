@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
 
-from ..common.terminal import colorize_prompt, safe_input
+from ..common.terminal import imk_stderr_guard
 from .kinds import kind_label
 
 
@@ -31,7 +31,8 @@ class SyncUndoStacks:
                     self._stacks[i].pop(0)
 
     def can_undo(self) -> bool:
-        return any(self._stacks)
+        """True when at least one panel has more than the baseline snapshot (index 0)."""
+        return any(len(s) > 1 for s in self._stacks)
 
     def undo_all(self, restore_fn: Callable[[int, Any], None]) -> bool:
         if not self.can_undo():
@@ -39,7 +40,7 @@ class SyncUndoStacks:
             return False
         restored = 0
         for i, stack in enumerate(self._stacks):
-            if not stack:
+            if len(stack) <= 1:
                 continue
             snap = stack.pop()
             try:
@@ -54,16 +55,30 @@ class SyncUndoStacks:
         return False
 
 
-def draw_panels(panels: List[Any], draw_attr: str = "fig") -> None:
+def set_all_panel_figure_titles(panels: Sequence[Any]) -> None:
     for panel in panels:
-        try:
-            fig = getattr(panel, draw_attr, panel)
-            fig.canvas.draw_idle()
-        except Exception:
-            pass
+        set_panel_figure_title(panel)
 
 
-def panel_basenames(panels: List[Any]) -> List[str]:
+def draw_panels(panels: Sequence[Any], draw_attr: str = "fig", *, full_draw: bool = False) -> None:
+    with imk_stderr_guard():
+        for panel in panels:
+            try:
+                fig = getattr(panel, draw_attr, panel)
+                if full_draw:
+                    fig.canvas.draw()
+                    try:
+                        fig.canvas.flush_events()
+                    except Exception:
+                        pass
+                else:
+                    fig.canvas.draw_idle()
+            except Exception:
+                pass
+    set_all_panel_figure_titles(panels)
+
+
+def panel_basenames(panels: Sequence[Any]) -> List[str]:
     names = []
     for p in panels:
         path = getattr(p, "path", "")
@@ -71,12 +86,38 @@ def panel_basenames(panels: List[Any]) -> List[str]:
     return names
 
 
-def print_batch_header(kind: str, panels: List[Any]) -> None:
+def session_figure_title(path: str) -> str:
+    """Window title for a batch panel loaded from a session ``.pkl`` path."""
+    return os.path.basename(path) if path else "?"
+
+
+def set_panel_figure_title(panel: Any) -> None:
+    """Set the matplotlib window title to the session ``.pkl`` filename (not Figure N)."""
+    path = getattr(panel, "path", "")
+    fig = getattr(panel, "fig", panel)
+    title = session_figure_title(path)
+    try:
+        manager = getattr(getattr(fig, "canvas", None), "manager", None)
+        if manager is not None and hasattr(manager, "set_window_title"):
+            manager.set_window_title(title)
+            return
+    except Exception:
+        pass
+    try:
+        fig.canvas.manager.set_window_title(title)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def print_batch_header(kind: str, panels: Sequence[Any]) -> None:
+    import sys
+
     label = kind_label(kind)
     names = panel_basenames(panels)
     print(f"\nBatch session mode: {label} ({len(panels)} plots)")
     for i, name in enumerate(names, 1):
         print(f"  [{i}] {name}")
+    sys.stdout.flush()
 
 
 def batch_quit_confirm(*, allow_export: bool = True) -> str | None:
@@ -86,7 +127,7 @@ def batch_quit_confirm(*, allow_export: bool = True) -> str | None:
 
 
 def apply_style_json_to_all(
-    panels: List[Any],
+    panels: Sequence[Any],
     cfg: dict,
     apply_fn: Callable[[Any, dict], None],
 ) -> None:
@@ -107,23 +148,15 @@ def load_style_json(path: str) -> dict | None:
 
 
 def write_temp_style_json(cfg: dict) -> str:
-    fh = tempfile.NamedTemporaryFile(mode="w", suffix=".bpsg", delete=False, encoding="utf-8")
-    try:
-        json.dump(cfg, fh, indent=2)
-        fh.close()
-        return fh.name
-    except Exception:
-        fh.close()
-        raise
+    from ..common.state_capture import write_temp_json_snapshot
+
+    return write_temp_json_snapshot(cfg, suffix=".bpsg")
 
 
 def remove_temp_file(path: str | None) -> None:
-    if not path:
-        return
-    try:
-        os.unlink(path)
-    except Exception:
-        pass
+    from ..common.state_capture import remove_temp_snapshot
+
+    remove_temp_snapshot(path)
 
 
 __all__ = [
@@ -135,5 +168,8 @@ __all__ = [
     "panel_basenames",
     "print_batch_header",
     "remove_temp_file",
+    "session_figure_title",
+    "set_all_panel_figure_titles",
+    "set_panel_figure_title",
     "write_temp_style_json",
 ]

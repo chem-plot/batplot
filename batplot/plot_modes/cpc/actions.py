@@ -6,6 +6,7 @@ from typing import Any, Callable
 import json
 import os
 
+from ..common.crosshair_export import savefig_without_crosshair
 from ..common.files import confirm_previous_path
 
 
@@ -40,6 +41,7 @@ class CpcActionContext:
     apply_style: Callable[..., Any]
     get_geometry_snapshot: Callable[..., dict]
     push_state: Callable[[str], Any]
+    pop_undo: Callable[[], Any]
     restore_state: Callable[[], Any]
 
 
@@ -212,7 +214,7 @@ def handle_figure_export(ctx: CpcActionContext) -> None:
                 except Exception:
                     pass
                 try:
-                    fig.savefig(target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none', dpi=fig.dpi)
+                    savefig_without_crosshair(fig, target, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none', dpi=fig.dpi)
                 finally:
                     try:
                         if _fig_fc is not None and getattr(fig, 'patch', None) is not None:
@@ -252,7 +254,7 @@ def handle_figure_export(ctx: CpcActionContext) -> None:
                     except Exception:
                         pass
             else:
-                fig.savefig(target, bbox_inches='tight', dpi=fig.dpi)
+                savefig_without_crosshair(fig, target, bbox_inches='tight', dpi=fig.dpi)
                 print(f"Exported figure to {target}")
                 fig._last_figure_export_path = target
 
@@ -769,7 +771,6 @@ def handle_style_import(ctx: CpcActionContext) -> None:
         if not path:
             _print_menu(fig)
             return
-        ctx.push_state("import-style")
         with open(path, 'r', encoding='utf-8') as f:
             cfg = json.load(f)
 
@@ -791,6 +792,8 @@ def handle_style_import(ctx: CpcActionContext) -> None:
             print("Not applying CPC style/geometry to avoid corrupting axis orientation.")
             _print_menu(fig)
             return
+
+        ctx.push_state("import-style")
 
         geometry_cfg = cfg.get('geometry')
         if geometry_cfg is None:
@@ -822,6 +825,10 @@ def handle_style_import(ctx: CpcActionContext) -> None:
                 print(f"Warning: Could not apply geometry: {e}")
 
     except Exception as e:
+        try:
+            ctx.pop_undo()
+        except Exception:
+            pass
         print(f"Error importing style: {e}")
     _print_menu(fig)
 
@@ -865,7 +872,7 @@ def handle_quick_overwrite_figure(ctx: CpcActionContext) -> None:
             except Exception:
                 pass
             try:
-                fig.savefig(last_figure_path, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none', dpi=fig.dpi)
+                savefig_without_crosshair(fig, last_figure_path, bbox_inches='tight', transparent=True, facecolor='none', edgecolor='none', dpi=fig.dpi)
             finally:
                 try:
                     if fig_fc is not None and getattr(fig, 'patch', None) is not None:
@@ -880,7 +887,7 @@ def handle_quick_overwrite_figure(ctx: CpcActionContext) -> None:
                 except Exception:
                     pass
         else:
-            fig.savefig(last_figure_path, bbox_inches='tight', dpi=fig.dpi)
+            savefig_without_crosshair(fig, last_figure_path, bbox_inches='tight', dpi=fig.dpi)
         print(f"Overwritten figure to {last_figure_path}")
     except Exception as e:
         print(f"Overwrite failed: {e}")

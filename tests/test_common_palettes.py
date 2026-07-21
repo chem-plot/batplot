@@ -184,6 +184,13 @@ def test_cif_present_handles_colon_label_syntax():
     assert cif_present(["phase.cif:1.5406"]) is True
 
 
+def test_cif_present_windows_drive_letter_path():
+    """Drive colon must not strip the path before ``.cif`` (Windows)."""
+    assert cif_present([r"C:\data\phase.cif"]) is True
+    assert cif_present([r"C:\data\phase.cif:1.5406"]) is True
+    assert cif_present([r"D:\work\scan.xy"]) is False
+
+
 def test_cif_present_series_getter():
     assert cif_present([], lambda: ["series"]) is True
     assert cif_present([], lambda: None) is False
@@ -207,3 +214,16 @@ def test_prompt_float_invalid_prints_and_returns_none(capsys):
     assert "Invalid number" in capsys.readouterr().out
     assert prompt_float(lambda p: "abc", "x", on_error="") is None
     assert capsys.readouterr().out == ""
+
+
+def test_format_color_listing_includes_normalized_hex():
+    from batplot.color_utils import format_color_listing
+
+    listing = format_color_listing("#ff0000")
+    assert "#ff0000" in listing.lower()
+    assert "[--]" not in listing
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], color="C0")
+    listing_c0 = format_color_listing(ax.lines[0].get_color())
+    assert "#" in listing_c0

@@ -10,18 +10,25 @@ from matplotlib import colors as mcolors  # type: ignore[import]
 from ...color_utils import (
     color_block,
     ensure_colormap,
+    format_color_listing,
     get_colormap,
     get_user_color_list,
     manage_user_colors,
     palette_preview,
     resolve_color_token,
 )
-from ...ui import set_spine_side_color
 from ..common.palettes import (
     PALETTE_DESCRIPTIONS,
     build_palette_options,
     resolve_palette_token,
     sample_palette_colors,
+)
+from ...ui import format_spine_side_tick_report
+from .spines import (
+    set_histo_spine_color,
+    get_histo_spine_colors,
+    capture_histo_spine_colors_from_ax,
+    format_histo_spine_extra_report,
 )
 
 _SPINE_KEYS = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
@@ -70,23 +77,68 @@ def run_histo_color_menu(
     refresh: Callable[[], None],
     safe_input: Callable[..., str],
     colorize_prompt: Callable[[str], str],
+    apply_spine_color: Callable[[str, str], None] | None = None,
+    finish_spine_change: Callable[[list[tuple[str, str]]], None] | None = None,
 ) -> None:
     """Run the histogram colors submenu (bar, edge, spines, palettes, saved colors)."""
     palette_opts = histo_palette_options()
     palette_index = {str(i): name for i, name in enumerate(palette_opts, 1)}
 
+    def _apply_spine(spine_name: str, resolved: str) -> None:
+        if apply_spine_color is not None:
+            apply_spine_color(spine_name, resolved)
+        else:
+            set_histo_spine_color(fig, ax, spine_name, resolved)
+
+    def _finish_spine_change(changed: list[tuple[str, str]]) -> None:
+        if finish_spine_change is not None:
+            finish_spine_change(changed)
+        try:
+            fig.canvas.draw()
+        except Exception:
+            fig.canvas.draw_idle()
+        wasd = getattr(fig, "_histo_wasd_state", None)
+        if not isinstance(wasd, dict):
+            wasd = None
+        for side, resolved in changed:
+            print(
+                format_spine_side_tick_report(
+                    ax,
+                    side,
+                    expected_color=resolved,
+                    wasd_state=wasd,
+                )
+            )
+            print(
+                format_histo_spine_extra_report(
+                    ax,
+                    side,
+                    expected_color=resolved,
+                )
+            )
+
     while True:
         bar_cur = get_bar_color()
         edge_cur = get_edge_color()
         print("\n\033[1mColors>\033[0m  Current:")
-        print(f"  bar:  {color_block(bar_cur)} {bar_cur}")
-        print(f"  edge: {color_block(edge_cur)} {edge_cur}")
+        print(f"  bar:  {format_color_listing(bar_cur)}")
+        print(f"  edge: {format_color_listing(edge_cur)}")
+        spine_cols = get_histo_spine_colors(fig) or capture_histo_spine_colors_from_ax(ax)
+        if spine_cols:
+            key_map = {"top": "w", "left": "a", "bottom": "s", "right": "d"}
+            parts = [
+                f"{key_map[side]}:{spine_cols[side]}"
+                for side in ("top", "left", "bottom", "right")
+                if side in spine_cols
+            ]
+            if parts:
+                print(f"  spines: {' '.join(parts)}")
 
         user_colors = get_user_color_list(fig)
         if user_colors:
             print("Saved colors (refer as number or u#):")
             for idx, col in enumerate(user_colors, 1):
-                print(f"  {idx}: {color_block(col)} {col}")
+                print(f"  {idx}: {format_color_listing(col)}")
 
         print("Palettes:")
         for idx, name in enumerate(palette_opts, 1):
@@ -118,6 +170,7 @@ def run_histo_color_menu(
         is_spine = all(":" in t and t.split(":", 1)[0].lower() in _SPINE_KEYS for t in tokens if t)
         if is_spine and tokens:
             push_state()
+            changed: list[tuple[str, str]] = []
             for tok in tokens:
                 key_part, color_spec = tok.split(":", 1)
                 spine_name = _SPINE_KEYS[key_part.lower()]
@@ -126,11 +179,13 @@ def run_histo_color_menu(
                     print(f"Invalid color for {spine_name}: {color_spec}")
                     continue
                 try:
-                    set_spine_side_color(ax, spine_name, resolved, fig=fig)
+                    _apply_spine(spine_name, resolved)
+                    changed.append((spine_name, resolved))
                     print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
                 except Exception as exc:
                     print(f"Error setting {spine_name} color: {exc}")
-            fig.canvas.draw_idle()
+            if changed:
+                _finish_spine_change(changed)
             continue
 
         has_colon = any(":" in t for t in tokens)
@@ -184,14 +239,22 @@ def run_histo_color_menu(
             if edge_val is not None:
                 set_edge_color(edge_val)
                 print(f"Edge: {color_block(edge_val)} {edge_val}")
+            changed_spines: list[tuple[str, str]] = []
             for spine_name, resolved in spines:
                 try:
-                    set_spine_side_color(ax, spine_name, resolved, fig=fig)
+                    _apply_spine(spine_name, resolved)
+                    changed_spines.append((spine_name, resolved))
                     print(f"{spine_name} spine: {color_block(resolved)} {resolved}")
                 except Exception as exc:
                     print(f"Error setting {spine_name} color: {exc}")
-            refresh()
-            fig.canvas.draw_idle()
+            if changed_spines:
+                _finish_spine_change(changed_spines)
+            elif bar_val is not None or edge_val is not None:
+                refresh()
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
             continue
 
         print("Unknown input. Use bar:color, edge:color, palette name, or spine keys.")

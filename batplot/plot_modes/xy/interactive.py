@@ -53,6 +53,7 @@ from ..common.terminal import (
 )
 from ..common.menu_rendering import (
     colorize_menu_item,
+    prompt_menu_key,
 )
 from ..common.sources import normalize_source_paths
 from ..common.title_offsets import (
@@ -1071,80 +1072,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             pass
 
     def _update_ylabel_for_derivative(order: int, current_label: Optional[str] = None, is_reversed: bool = False) -> str:
-        """Generate appropriate y-axis label for derivative.
-        
-        Args:
-            order: 1 for first derivative, 2 for second derivative
-            current_label: Current y-axis label (optional)
-            is_reversed: True for reversed derivative (dx/dy), False for normal (dy/dx)
-        
-        Returns:
-            New y-axis label string
-        """
-        if current_label is None:
-            current_label = ax.get_ylabel() or "Y"
-        
-        # Try to detect common patterns and update accordingly
-        current_lower = current_label.lower()
-        
-        if is_reversed:
-            # Reversed derivative: dx/dy or d²x/dy²
-            y_label = current_label if current_label and current_label != "Y" else (ax.get_ylabel() or "Y")
-            if order == 1:
-                # First reversed derivative: dx/dy
-                if x_label:
-                    return f"d({x_label})/d({y_label})"
-                else:
-                    return f"dx/d({y_label})"
-            else:  # order == 2
-                # Second reversed derivative: d²x/dy²
-                if x_label:
-                    return f"d²({x_label})/d({y_label})²"
-                else:
-                    return f"d²x/d({y_label})²"
-        
-        # Normal derivative: dy/dx or d²y/dx²
-        if order == 1:
-            # First derivative: dy/dx or dY/dX
-            if "/" in current_label:
-                # If already has derivative notation, try to increment
-                if "d²" in current_label or "d2" in current_lower:
-                    # Change from 2nd to 1st (shouldn't normally happen, but handle it)
-                    new_label = current_label.replace("d²", "d").replace("d2", "d")
-                    return new_label
-                elif "d" in current_label.lower() and "/" in current_label:
-                    # Already has derivative, keep as is but update order if needed
-                    return current_label
-            # Add d/dx prefix or suffix
-            if x_label:
-                if any(op in current_label for op in ["/", "(", "["]):
-                    # Complex label, prepend d/dx
-                    return f"d({current_label})/d({x_label})"
-                else:
-                    # Simple label, use d/dx notation
-                    return f"d({current_label})/d({x_label})"
-            else:
-                return f"d({current_label})/dx"
-        else:  # order == 2
-            # Second derivative: d²y/dx² or d2Y/dX2
-            if "/" in current_label:
-                if "d²" in current_label or "d2" in current_lower:
-                    # Already 2nd derivative, keep as is
-                    return current_label
-                elif "d" in current_label.lower() and "/" in current_label:
-                    # First derivative, convert to second
-                    new_label = current_label.replace("d(", "d²(").replace("d2(", "d²(").replace("d/", "d²/").replace("/d(", "²/d(")
-                    return new_label
-            # Add d²/dx² prefix
-            if x_label:
-                if any(op in current_label for op in ["/", "(", "["]):
-                    return f"d²({current_label})/d({x_label})²"
-                else:
-                    return f"d²({current_label})/d({x_label})²"
-            else:
-                return f"d²({current_label})/dx²"
-        
-        return current_label
+        """Delegate to shared helper; keeps interactive callers unchanged."""
+        from .derivative import update_ylabel_for_derivative
+        return update_ylabel_for_derivative(
+            order,
+            current_label,
+            is_reversed=is_reversed,
+            x_label=x_label,
+            fallback_ylabel=(ax.get_ylabel() or "Y"),
+        )
 
     def _ensure_pre_derivative_data():
         """Ensure pre-derivative data is stored for reset."""
@@ -1736,6 +1672,16 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         except Exception as e:
             print(f"Error restoring state: {e}")
 
+    def pop_undo():
+        """Drop the most recently pushed undo snapshot.
+
+        Used by style/session/export handlers when an operation fails after
+        ``push_state`` succeeds; keeps the undo stack consistent.
+        """
+        nonlocal state_history
+        if state_history:
+            state_history.pop()
+
 
     def _xy_action_context():
         return XyActionContext(
@@ -1763,6 +1709,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             apply_style_config=apply_style_config,
             push_state=push_state,
             restore_state=restore_state,
+            pop_undo=pop_undo,
         )
 
     pending_key = None
@@ -1773,7 +1720,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 key = pending_key
                 pending_key = None
             else:
-                key = _safe_input(colorize_prompt("Press a key: ")).strip().lower()
+                key = prompt_menu_key()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -2280,64 +2227,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 )
             except Exception as e:
                 print(f"Error in resize submenu: {e}")
-        elif key == 'h':
-            # Legend submenu
-            try:
-                while True:
-                    print("\n\033[1mLegend submenu:\033[0m")
-                    print("  " + colorize_menu("v: show/hide curve names"))
-                    current_pos = "bottom-right" if getattr(fig, '_stack_label_at_bottom', False) else "top-right"
-                    print("  " + colorize_menu(f"s: legend position (current: {current_pos})"))
-                    print("  " + colorize_menu("q: back to main menu"))
-                    sub_key = _safe_input(colorize_prompt("Choose (v/s/q): ")).strip().lower()
-                    
-                    if sub_key == 'q':
-                        break
-                    elif sub_key == 'v':
-                        push_state("curve-names")
-                        # Check current visibility from first label
-                        current_visible = True
-                        if label_text_objects and len(label_text_objects) > 0:
-                            try:
-                                current_visible = label_text_objects[0].get_visible()
-                            except Exception:
-                                current_visible = True
-                        
-                        # Toggle all labels
-                        new_visible = not current_visible
-                        for txt in label_text_objects:
-                            try:
-                                txt.set_visible(new_visible)
-                            except Exception:
-                                pass
-                        
-                        # Store state on figure for persistence
-                        fig._curve_names_visible = new_visible
-                        
-                        status = "shown" if new_visible else "hidden"
-                        print(f"Curve names {status}")
-                        stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
-                        try:
-                            fig.canvas.draw()
-                        except Exception:
-                            fig.canvas.draw_idle()
-                    elif sub_key == 's':
-                        push_state("label-position")
-                        # Toggle label position between top-right and bottom-right
-                        current_bottom = getattr(fig, '_stack_label_at_bottom', False)
-                        fig._stack_label_at_bottom = not current_bottom
-                        new_pos = "bottom-right" if fig._stack_label_at_bottom else "top-right"
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, fig._stack_label_at_bottom)
-                        print(f"Legend position changed to {new_pos}.")
-                        try:
-                            fig.canvas.draw()
-                        except Exception:
-                            fig.canvas.draw_idle()
-                    else:
-                        print("Unknown option.")
-            except Exception as e:
-                print(f"Error in legend submenu: {e}")
+        # Note: duplicate unreachable legend ``h`` branch removed (2026-07-14).
+        # Legend submenu is handled by the first ``key == 'h'`` branch above.
         elif key == 't':
             try:
                 wasd = build_wasd_state(

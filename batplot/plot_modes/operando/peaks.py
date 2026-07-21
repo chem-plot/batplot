@@ -122,114 +122,113 @@ def run_peak_search_menu(
     try:
         if find_peaks is None:
             print("Error: scipy is required for peak finding. Install with: pip install scipy")
-            print_menu()
             return
-
         try:
             data_array, x_axis, x_min, x_max = extract_operando_peak_data(im)
         except ValueError as exc:
             print(f"Error: {exc}")
-            print_menu()
             return
 
-        print("\nPeak Search:")
-        print("  " + colorize_menu("1: find peaks in X range"))
-        print("  " + colorize_menu("e: explanation"))
-        print("  " + colorize_menu("q: back"))
-        sub = safe_input(colorize_prompt("Peak (1/e/q): ")).strip().lower()
+        while True:
+            print("\nPeak Search:")
+            print("  " + colorize_menu("1: find peaks in X range"))
+            print("  " + colorize_menu("e: explanation"))
+            print("  " + colorize_menu("q: back"))
+            sub = safe_input(colorize_prompt("Peak (1/e/q): ")).strip().lower()
+            if not sub or sub == "q":
+                break
+            if sub == "e":
+                print_peak_search_explanation()
+                continue
+            if sub not in ("1",):
+                print("Invalid option.")
+                continue
 
-        if sub == "e":
-            print_peak_search_explanation()
-            print_menu()
-            return
-        if sub == "q":
-            print_menu()
-            return
-        if sub not in ("1", ""):
-            print("Invalid option.")
-            print_menu()
-            return
+            print(f"\nCurrent X range: {x_min:.6g} to {x_max:.6g}")
+            print("  " + colorize_menu("min max: set both limits"))
+            print("  " + colorize_menu("Enter: use full range"))
+            print("  " + colorize_menu("q: back"))
+            x_range_input = safe_input(colorize_prompt("Peak X (min max/enter/q): ")).strip()
+            if not x_range_input or x_range_input.lower() == "q":
+                continue
+            if x_range_input:
+                try:
+                    parts = x_range_input.split()
+                    if len(parts) < 2:
+                        print("Invalid format. Use: min max")
+                        continue
+                    x_range_min = float(parts[0])
+                    x_range_max = float(parts[1])
+                except ValueError:
+                    print("Invalid number format.")
+                    continue
+            else:
+                x_range_min = x_min
+                x_range_max = x_max
 
-        print(f"\nCurrent X range: {x_min:.6g} to {x_max:.6g}")
-        print("  " + colorize_menu("min max: set both limits"))
-        print("  " + colorize_menu("Enter: use full range"))
-        print("  " + colorize_menu("q: back"))
-        x_range_input = safe_input(colorize_prompt("Peak X (min max/enter/q): ")).strip()
-        if x_range_input.lower() == "q":
-            print_menu()
-            return
-        if x_range_input:
-            try:
-                parts = x_range_input.split()
-                if len(parts) < 2:
-                    print("Invalid format. Use: min max")
-                    print_menu()
-                    return
-                x_range_min = float(parts[0])
-                x_range_max = float(parts[1])
-            except ValueError:
-                print("Invalid number format.")
-                print_menu()
-                return
-        else:
-            x_range_min = x_min
-            x_range_max = x_max
+            x_range_min = max(x_min, min(x_max, x_range_min))
+            x_range_max = max(x_min, min(x_max, x_range_max))
+            if x_range_min >= x_range_max:
+                print("Invalid range: min must be < max")
+                continue
 
-        x_range_min = max(x_min, min(x_max, x_range_min))
-        x_range_max = max(x_min, min(x_max, x_range_max))
-        if x_range_min >= x_range_max:
-            print("Invalid range: min must be < max")
-            print_menu()
-            return
+            print("\nPeak finding parameters (q=back from any prompt returns to peak menu):")
+            while True:
+                prominence_input = safe_input("Prominence (relative to max, default 0.1, q=back): ").strip()
+                if prominence_input.lower() == "q":
+                    break
+                prominence = float(prominence_input) if prominence_input else 0.1
+                distance_input = safe_input("Minimum distance between peaks (data points, default 5, q=back): ").strip()
+                if distance_input.lower() == "q":
+                    break
+                distance = int(distance_input) if distance_input else 5
+                width_input = safe_input("Minimum peak width (data points, default 1, 0=disabled, q=back): ").strip()
+                if width_input.lower() == "q":
+                    break
+                width = int(width_input) if width_input else 1
+                include_raw = safe_input("Include peak intensity in output? (y/n, default n, q=back): ").strip().lower()
+                if include_raw == "q":
+                    break
+                include_intensity = include_raw == "y"
 
-        print("\nPeak finding parameters:")
-        prominence_input = safe_input("Prominence (relative to max, default 0.1): ").strip()
-        prominence = float(prominence_input) if prominence_input else 0.1
-        distance_input = safe_input("Minimum distance between peaks (data points, default 5): ").strip()
-        distance = int(distance_input) if distance_input else 5
-        width_input = safe_input("Minimum peak width (data points, default 1, 0=disabled): ").strip()
-        width = int(width_input) if width_input else 1
-        include_intensity = safe_input("Include peak intensity in output? (y/n, default n): ").strip().lower() == "y"
+                print(f"\nFinding peaks in X range [{x_range_min:.6g}, {x_range_max:.6g}]...")
+                results = find_operando_peaks(
+                    data_array,
+                    x_axis,
+                    x_range_min=x_range_min,
+                    x_range_max=x_range_max,
+                    prominence=prominence,
+                    distance=distance,
+                    width=width,
+                    include_intensity=include_intensity,
+                )
+                if not results:
+                    print("No peaks found in the selected X range.")
+                    continue
 
-        print(f"\nFinding peaks in X range [{x_range_min:.6g}, {x_range_max:.6g}]...")
-        results = find_operando_peaks(
-            data_array,
-            x_axis,
-            x_range_min=x_range_min,
-            x_range_max=x_range_max,
-            prominence=prominence,
-            distance=distance,
-            width=width,
-            include_intensity=include_intensity,
-        )
-        if not results:
-            print("No peaks found in the selected X range.")
-            print_menu()
-            return
+                folder = choose_save_path(file_paths, purpose="peak search export")
+                if not folder:
+                    continue
+                print(f"\nChosen path: {folder}")
+                fname = safe_input("Export filename (default: peaks.txt, q=back): ").strip()
+                if fname.lower() == "q":
+                    continue
+                if not fname:
+                    fname = "peaks.txt"
+                if not fname.endswith(".txt"):
+                    fname += ".txt"
+                target = fname if os.path.isabs(fname) else os.path.join(folder, fname)
+                if os.path.exists(target):
+                    yn = safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
+                    if yn != "y":
+                        continue
 
-        folder = choose_save_path(file_paths, purpose="peak search export")
-        if not folder:
-            print_menu()
-            return
-        print(f"\nChosen path: {folder}")
-        fname = safe_input("Export filename (default: peaks.txt): ").strip()
-        if not fname:
-            fname = "peaks.txt"
-        if not fname.endswith(".txt"):
-            fname += ".txt"
-        target = fname if os.path.isabs(fname) else os.path.join(folder, fname)
-        if os.path.exists(target):
-            yn = safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
-            if yn != "y":
-                print_menu()
-                return
-
-        try:
-            write_peak_results(target, results, include_intensity=include_intensity)
-            print(f"Peak positions exported to {target}")
-            print(f"Found {len(results)} peaks across {len(set(r[0] for r in results))} scans")
-        except Exception as exc:
-            print(f"Error saving file: {exc}")
+                try:
+                    write_peak_results(target, results, include_intensity=include_intensity)
+                    print(f"Peak positions exported to {target}")
+                    print(f"Found {len(results)} peaks across {len(set(r[0] for r in results))} scans")
+                except Exception as exc:
+                    print(f"Error saving file: {exc}")
     except Exception as exc:
         print(f"Error in peak search: {exc}")
         traceback.print_exc()

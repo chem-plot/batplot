@@ -99,7 +99,6 @@ import matplotlib.cm as cm  # type: ignore[import-untyped]
 import matplotlib.colors as mcolors  # type: ignore[import-untyped]
 from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import-untyped]
 from matplotlib.colors import to_rgb, rgb_to_hsv, hsv_to_rgb  # type: ignore[import-untyped]
-from matplotlib.colors import to_rgb  # type: ignore[import-untyped]
 
 # Try to import optional interactive menus
 try:

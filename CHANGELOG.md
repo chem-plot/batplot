@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.8.47] - 2026-07-21
+- Added Batch Interactive mode, loading multiple saved .pkl sessions
+  (must be the same type, e.g All are GC) to edit basic styles and
+  geometries of all files at once.
+  Example:
+  batplot gc1.pkl gc2.pkl gc3.pkl
+- Bug fixes
+
+
 ## [1.8.46] - 2026-07-07
 - Added Histogram mode, use batplot -h to learn more
 

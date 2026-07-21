@@ -394,10 +394,6 @@ batplot --v           # Version and release notes
 batplot --m            # Open illustrated manual
 ```
 
-- [USER_MANUAL.md](USER_MANUAL.md) — Detailed usage and workflows
-- [FLAGS_REFERENCE.md](FLAGS_REFERENCE.md) — Complete flag reference by mode
-- [DEVELOPING.md](DEVELOPING.md) — Developer guide for extending Batplot
-
 ---
 
 ## Requirements

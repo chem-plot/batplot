@@ -36,7 +36,8 @@ from ..._mpl_backend import (
     require_interactive_display,
     show_figure_if_possible,
 )
-from ...batch import _apply_ec_style
+from ...plot_modes.common.style_routing import apply_ec_style_dict
+from ...plot_modes.common.fonts import sync_legend_title_fontsize
 from ...utils import ensure_subdirectory
 from ...readers import (
     read_mpt_file,
@@ -343,7 +344,13 @@ def handle_gc_mode(args) -> int:
         _apply_default_ec_layout(fig)
         if style_cfg:
             try:
-                _apply_ec_style(fig, ax, style_cfg)
+                apply_ec_style_dict(
+                    style_cfg,
+                    fig,
+                    ax,
+                    file_data=file_data,
+                    is_multi_file=len(file_data) > 1,
+                )
                 if hasattr(fig, 'canvas'):
                     fig.canvas.draw()
             except Exception as e:
@@ -651,7 +658,7 @@ def handle_gc_mode(args) -> int:
                     legend.set_frame_on(False)
                 except Exception:
                     pass
-                legend.get_title().set_fontsize('medium')
+                sync_legend_title_fontsize(legend)
             fig._ec_legend_title = "Cycle"
             # No background grid by default for GC plots
         
@@ -661,7 +668,7 @@ def handle_gc_mode(args) -> int:
             # Apply style file if provided
             if style_cfg:
                 try:
-                    _apply_ec_style(fig, ax, style_cfg)
+                    apply_ec_style_dict(style_cfg, fig, ax, cycle_lines=cycle_lines)
                     # Redraw after applying style
                     fig.canvas.draw() if hasattr(fig, 'canvas') else None
                 except Exception as e:
@@ -938,7 +945,13 @@ def handle_dqdv_mode(args) -> int:
         _apply_default_ec_layout(fig)
         if style_cfg:
             try:
-                _apply_ec_style(fig, ax, style_cfg)
+                apply_ec_style_dict(
+                    style_cfg,
+                    fig,
+                    ax,
+                    file_data=file_data,
+                    is_multi_file=len(file_data) > 1,
+                )
                 if hasattr(fig, 'canvas'):
                     fig.canvas.draw()
             except Exception as e:
@@ -1119,7 +1132,7 @@ def handle_dqdv_mode(args) -> int:
                     legend.set_frame_on(False)
                 except Exception:
                     pass
-                legend.get_title().set_fontsize('medium')
+                sync_legend_title_fontsize(legend)
             fig._ec_legend_title = "Cycle"
             # No background grid by default (same as GC)
         
@@ -1129,7 +1142,7 @@ def handle_dqdv_mode(args) -> int:
             # Apply style file if provided
             if style_cfg:
                 try:
-                    _apply_ec_style(fig, ax, style_cfg)
+                    apply_ec_style_dict(style_cfg, fig, ax, cycle_lines=cycle_lines)
                     # Redraw after applying style
                     if hasattr(fig, 'canvas'):
                         fig.canvas.draw()
@@ -1354,7 +1367,13 @@ def handle_cv_mode(args) -> int:
         _apply_default_ec_layout(fig)
         if style_cfg:
             try:
-                _apply_ec_style(fig, ax, style_cfg)
+                apply_ec_style_dict(
+                    style_cfg,
+                    fig,
+                    ax,
+                    file_data=file_data,
+                    is_multi_file=len(file_data) > 1,
+                )
                 if hasattr(fig, 'canvas'):
                     fig.canvas.draw()
             except Exception as e:
@@ -1493,7 +1512,7 @@ def handle_cv_mode(args) -> int:
                     legend.set_frame_on(False)
                 except Exception:
                     pass
-                legend.get_title().set_fontsize('medium')
+                sync_legend_title_fontsize(legend)
             fig._ec_legend_title = "Cycle"
             # Match GC/dQdV: consistent label/title displacement and canvas
             _apply_default_ec_layout(fig)
@@ -1501,7 +1520,7 @@ def handle_cv_mode(args) -> int:
             # Apply style file if provided
             if style_cfg:
                 try:
-                    _apply_ec_style(fig, ax, style_cfg)
+                    apply_ec_style_dict(style_cfg, fig, ax, cycle_lines=cycle_lines)
                     # Redraw after applying style
                     if hasattr(fig, 'canvas'):
                         fig.canvas.draw()

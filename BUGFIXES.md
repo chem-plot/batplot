@@ -4,6 +4,1370 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Fix (batch current values)
+- ``print_batch_pair_status`` / ``print_batch_scalar_status`` in
+  ``batch_menu_helpers.py`` show numbered per-plot values when panels differ.
+- All batch axis-range prompts (operando, EC, CPC, XY) use multi-panel display.
+- Operando ``oz`` intensity uses ``prompt_batch_clim``.
+- Histo ``y``/``w`` and operando ``g: size`` batch submenus show all panels.
+- Batch EC ``c: cycles/colors`` shows visible cycles and colors for every plot.
+- Batch EC/CPC/XY ``g: size`` submenu: plot frame (``p``) and canvas (``c``),
+  matching normal-mode geometry; captured in ``p``/``i``/``s``/``b`` via existing
+  style+geometry snapshots.
+- Removed confusing ``(ref)`` labels from batch menu displays; moved EC
+  ``cycles/colors`` to Geometries column.
+- Batch spine/tick edits (EC, CPC, operando, XY) now sync to all panels
+  immediately after each change; spine sync skips axis limits so peer data
+  ranges are preserved.
+- ``edit_ref_then_sync`` defaults to ``include_geometry=False`` so ref-driven
+  style submenus (line style, legend, colors, rename, …) sync to all panels
+  without overwriting each plot's axis limits/clim.
+- CPC efficiency toggle (``ry``) restores ``ax2`` visibility on undo/import.
+- Histo batch ``r`` syncs axis labels only (not per-panel titles); ``w`` import fix.
+
+### Affected files
+- ``batplot/plot_modes/batch_session/batch_menu_helpers.py``
+- ``batplot/plot_modes/batch_session/batch_geom_helpers.py`` (new)
+- ``batplot/plot_modes/batch_session/ec_batch_helpers.py``
+- ``batplot/plot_modes/batch_session/menu_{operando,ec,cpc,xy,histo}.py``
+- ``batplot/plot_modes/electrochem/colors.py``
+- ``batplot/plot_modes/operando/layout_menu.py``
+- ``batplot/plot_modes/histo/y_range.py``
+- ``batplot/plot_modes/batch_session/{ec_batch_helpers,cpc_batch_helpers,xy_batch_helpers,operando_batch_helpers}.py``
+- ``batplot/plot_modes/batch_session/operando_batch_helpers.py``
+- ``batplot/plot_modes/cpc/interactive.py``
+- ``tests/test_batch_panel_status.py``, ``tests/test_batch_geom_menu.py``,
+  ``tests/test_batch_ec_cycles_status.py``, ``tests/test_batch_spine_sync.py``,
+  ``tests/test_batch_all_modes_sync.py``
+
+---
+
+## 2026-07-21: Operando ``g: size`` unified submenu (normal + batch)
+
+### Problem
+Operando size controls were scattered across ``g``, ``ow``, ``ew``, and ``h``.
+Batch ``g`` used two separate width/height prompts (so ``5 5`` failed as invalid
+width), and canvas resize did not preserve panel inch dimensions.
+
+### Fix
+- New ``operando/layout_menu.py``: shared ``g: size`` submenu with subkeys
+  ``c`` canvas, ``o`` contour width, ``e`` EC width, ``h`` shared panel height
+  (contour + colorbar + EC), ``s`` scale.
+- Normal and batch menus show only ``g: size``; legacy ``ow``/``ew``/``h`` still
+  work as shortcuts into the submenu.
+- Canvas resize preserves panel inches via ``apply_canvas_preserving_panels``.
+- Shared ``common/size_spec.py`` for flexible input parsing (``11 6``, ``6x4``,
+  ``w=11 h=6``, ``scale=1.2``).
+
+### Affected files
+- ``batplot/plot_modes/operando/layout_menu.py`` (new)
+- ``batplot/plot_modes/common/size_spec.py`` (new)
+- ``batplot/plot_modes/operando/{interactive,menu}.py``
+- ``batplot/plot_modes/batch_session/menu_operando.py``
+- ``tests/test_operando_layout_menu.py`` (new)
+
+---
+
+## 2026-07-21: Batch interactive — full PKL audit + centralized p/i/s/b contract
+
+### Audit
+Exhaustive non-interactive audit of **166** user ``.pkl`` files in
+``Li2FeSeO_processing/Figures`` and ``NFSO data/Figures`` (plus submenu smoke via
+``session_key_smoke``):
+
+| Kind | Count | Batch load | capture/restore | p→i round-trip | s→reload |
+|------|-------|------------|-----------------|----------------|----------|
+| XY | 84 | OK | OK | OK | OK |
+| Operando + EC | 36 | OK | OK | OK | OK |
+| EC (GC/CV/dQ/dV) | 33 | OK | OK | OK | OK |
+| CPC | 8 | OK | OK | OK | OK |
+| Histogram | 4 | OK | OK | OK | OK |
+| dQ/dV 2D contour | 1 | N/A (batch unsupported by design) | — | — | — |
+
+No load, capture, export/import, or save failures on supported kinds.
+
+### Improvement (p/i/s/b contract)
+Added ``batch_panel_state.py``: one registry per batch kind with ``capture``,
+``restore``, ``apply_import``, ``save``, and ``export_style``. New batch menu
+keys that change visuals must push undo via the registered ``capture`` and extend
+``tests/test_batch_pisb_contract.py``. CI integration test
+``test_user_figures_pkls_batch_pisb`` re-runs the audit when those folders are
+present (``BATPLOT_FIGURES_PKL_DIR`` / ``BATPLOT_FIGURES_PKL_DIR2``).
+
+### Affected files
+- ``batplot/plot_modes/batch_session/batch_panel_state.py`` (new)
+- ``tests/test_batch_pisb_contract.py`` (new)
+
+---
+
+## 2026-07-21: XY interactive menu — missing `pop_undo` in action context
+
+### Bug
+In ``batplot/plot_modes/xy/interactive.py``, ``XyActionContext`` was constructed
+without the required ``pop_undo`` callback. This caused a runtime
+``TypeError`` when running interactive ``p`` / ``i`` / ``s`` / ``b`` paths
+that rely on style export/import or session save/overwrite error-handling.
+
+### Fix
+- Added a local ``pop_undo`` helper in the XY interactive menu to drop the
+  most recently pushed undo snapshot.
+- Wired ``pop_undo`` into ``_xy_action_context()`` when creating
+  ``XyActionContext``.
+
+### Affected files
+- ``batplot/plot_modes/xy/interactive.py``
+---
+
+## 2026-07-19: Batch Tier C — multi-file visibility / legend order / XY peaks
+
+### Bug / Gap
+EC/CPC batch still stubbed multi-file ``v`` (and EC ``ra``). XY batch stubbed
+peak finder and listed a nonexistent ``pk`` key. Separately, EC style import of
+``file_visibility`` used ``file_visible and ln.get_visible()``, so a hide→show
+sync/import could leave peer curves stuck invisible after a prior hide.
+
+### Fix
+- EC batch: ``v`` (show/hide files) and ``ra`` (legend order) via ref→style sync.
+- CPC batch: ``v`` (show/hide files) via ref→style sync.
+- XY batch: ``v`` peak finder on reference (read-only/export).
+- EC ``style_apply``: hidden files force curves off; visible files keep
+  cycle-style visibility (display mode still applied after).
+- Clearer stub messages for remaining data-local keys (EC ``a/sm/2d``, XY
+  ``sm/a/o/d/cif``).
+
+### Affected files
+- ``batplot/plot_modes/electrochem/style_apply.py``
+- ``batplot/plot_modes/batch_session/{ec,cpc}_batch_helpers.py``
+- ``batplot/plot_modes/batch_session/menu_{ec,cpc,xy}.py``
+- ``tests/test_batch_menu_parity.py``
+
+---
+
+## 2026-07-19: Batch interactive menus — layout/style parity (Tier A/B + partial C)
+
+### Bug / Gap
+Batch interactive mode (multiple same-kind ``.pkl`` sessions) only exposed a thin
+subset of layout controls. Operando batch was limited to font / canvas /
+colormap / rename; EC/CPC lacked ranges, full spines, colors, display modes, etc.
+Users could not polish multi-plot batches the same way as single-session mode.
+``p`` / ``i`` / ``s`` / ``b`` already captured rich style+geometry, but the batch
+UI could not edit those fields live.
+
+### Fix
+- **Operando batch**: Styles (``oc/ow/el/ew/v/t/l/h/f/g/r``), Operando
+  (``ox/oy/oz/or``), Side Panel (``et/ex/ey/er/eg``), plus Tier C ``c`` (CIF
+  toggles) and ``pk`` (peak search on reference). Sync via style snapshot or
+  direct apply-to-all for numeric layout/ranges.
+- **EC batch**: ``l/t/k/h/d/c/g`` + ``r/x/y`` with ref→sync and shared ranges.
+- **CPC batch**: ``l/m/c/d/ry/t/h/g`` + ``r/x/y/ie``.
+- **XY batch**: full line-style menu (ref→sync), legend label toggle, clearer
+  color apply-to-all.
+- Helpers: ``operando_batch_helpers.py``, ``ec_batch_helpers.py``,
+  ``cpc_batch_helpers.py``. Undo pushes pre-edit snapshots; ``p/i/s/b`` unchanged
+  but now cover fields editable in the batch UI.
+- Hardening pass: EC ``e``/``oe`` no longer shadowed by nested style exporter;
+  XY batch ``t`` builds WASD with keyword args (no ``TypeError``); operando
+  cross-panel sync strips ``ec.ions_abs`` so ions recompute per panel.
+- Follow-up hardening: CPC ``_apply_style`` keeps ticks/labels independent
+  (batch spine sync + style import); XY batch ``x``/``y`` set shared limits on
+  all panels without cropping only the reference curve data.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/operando_batch_helpers.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/ec_batch_helpers.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/cpc_batch_helpers.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py`
+- `tests/test_operando_batch_menu.py`
+- `tests/test_batch_menu_parity.py`
+
+### Deferred (safe stubs / messages)
+- EC: ``a``, ``sm``, ``v``, ``ra``, ``2d``
+- CPC: multi-file ``v``
+- XY: ``sm``, ``a``, ``o``, ``d``, ``cif``, ``v``, ``pk``
+
+---
+
+## 2026-07-14: Critical stability fixes (p/i/s/b, sessions, structure)
+
+### Bugs
+1. Embedded dQ/dV companion edits after EC reload were discarded on quit
+   (no write-back into parent ``ec_gc`` pickle).
+2. XY style ``i`` derivative ylabel used a broken import
+   (``.plot_modes.xy.interactive``) and a nested non-export; failures were
+   swallowed silently.
+3. Operando single-mode ``i`` duplicated ~800 lines of apply logic instead of
+   using ``apply_operando_ec_style_config`` (batch path).
+4. Contour snapshot failures on EC ``2d`` return were silently ignored.
+5. Session pickles never stamped ``package_versions`` (mismatch diagnostics
+   always said ``unknown``).
+6. Dead unreachable XY reconstruct fork in ``session_routing`` (~800 lines).
+7. Duplicate unreachable XY ``h`` legend handler.
+
+### Fix
+- Merge companion snapshot into EC ``.pkl`` on companion quit.
+- Shared ``update_ylabel_for_derivative`` in ``xy/derivative.py``.
+- Operando ``handle_import_style`` delegates to ``style_apply``.
+- Warn on snapshot / embed failures; stamp versions on XY/EC/CPC/operando/histo dumps.
+- Replace dead reconstruct with explicit unrecognized-format return; remove
+  duplicate ``h`` branch.
+
+### Affected files
+- ``batplot/ec_common.py``, ``batplot/session.py``
+- ``batplot/plot_modes/{session_routing,xy/*,operando/actions,histo/interactive,electrochem/interactive}.py``
+- ``tests/test_critical_stability_fixes.py``
+
+---
+
+## 2026-07-14: Stability audit — contour ``os``, reload import, Windows CIF, EC display
+
+### Bugs found
+1. **dQ/dV 2D contour ``os``** wrote ``operando_ec`` via ``dump_operando_session``,
+   while ``s`` correctly wrote ``dqdv_2d_contour``. Overwriting a contour ``.pkl``
+   with ``os`` broke subsequent reload.
+2. **Standalone contour reload** in ``session_routing`` imported
+   ``.plot_modes.electrochem.dqdv_2d`` (wrong relative path →
+   ``ModuleNotFoundError``). ``batplot contour.pkl`` could not open.
+3. ``_VALID_SESSION_KINDS`` omitted ``dqdv_2d_contour`` (worked only via loose
+   ``version`` gate).
+4. EC session load set ``_ec_display_mode`` but did not re-apply charge/discharge
+   visibility (undo/style-import already did).
+5. ``cif_present`` treated Windows ``C:\...`` drive colon as ``path:label``, so
+   absolute ``.cif`` paths were missed on Windows.
+6. Batch menu I/O test expected obsolete ``batch_io_menu_options()`` string;
+   menus correctly use ``batch_options_menu_column(``.
+
+### Fix
+- Contour ``os`` → ``build_dqdv_2d_snapshot`` (same as ``s``).
+- Fix imports to ``.electrochem.dqdv_2d`` / ``plot_modes.electrochem.dqdv_2d``.
+- Register ``dqdv_2d_contour``; apply EC display mode on load; Windows-aware
+  ``cif_present``; update batch I/O regression test.
+
+### Affected files
+- ``batplot/plot_modes/session_routing.py``
+- ``batplot/plot_modes/operando/actions.py``
+- ``batplot/plot_modes/operando/interactive.py``
+- ``batplot/session.py``
+- ``batplot/plot_modes/common/sources.py``
+- ``tests/test_dqdv_contour_session_keys.py`` (new)
+- ``tests/test_batch_session.py``, ``tests/test_common_palettes.py``
+
+---
+
+## 2026-07-14: Color menus — only list visible cycles/curves
+
+### Bug
+Pressing ``c`` (cycles/colors) in multi-file GC dumped every cycle for every
+file (e.g. 159×N lines), including cycles whose lines were hidden and skipping
+only wholly hidden files. CPC color menus similarly listed hidden files (○).
+
+### Fix
+- EC: list only cycles with at least one visible charge/discharge/CV line; skip
+  hidden files; report ``Visible cycles``; in multi-file, if a file has more
+  than 20 visible cycles, print one compact row per file instead of expanding.
+- XY / batch XY: omit invisible curves from the color listing (indices unchanged).
+- CPC: list only visible files (no ○ hidden entries).
+
+### Affected files
+- ``batplot/plot_modes/electrochem/colors.py``
+- ``batplot/plot_modes/xy/colors.py``
+- ``batplot/plot_modes/batch_session/menu_xy.py``
+- ``batplot/plot_modes/cpc/colors.py``
+- ``tests/test_color_listing_visible.py``
+
+---
+
+## 2026-07-14: Batch menus — crosshair (``n``) on all panels
+
+### Feature
+Batch interactive Options column now includes ``n: crosshair``. Toggling turns the
+crosshair on/off for **every** panel (XY, EC, CPC, operando, histo). Figure export
+(``e`` / ``oe``) still uses ``savefig_without_crosshair`` so overlays are omitted
+(same as single-mode). Histo redraw clears/recreates crosshair when it was on
+(``ax.cla`` would otherwise leave stale artists).
+
+### Affected files
+- ``batplot/plot_modes/batch_session/batch_crosshair.py`` (new)
+- ``batplot/plot_modes/batch_session/batch_menu_helpers.py``
+- ``batplot/plot_modes/batch_session/menu_{xy,ec,cpc,operando,histo}.py``
+- ``tests/test_batch_crosshair.py``
+
+---
+
+## 2026-07-14: Spine/tick colors survive style import and session restore
+
+### Bug
+Changing spine color did not keep matching tick marks after ``tick_params`` /
+canvas rebuild on several restore paths: dQ/dV 2D snapshot applied colors
+**before** tick width restore (no finalize); histo ``reapply_histo_spine_layout``
+restored locators **after** colors; EC dual-top session used ``set_edgecolor`` +
+axis-wide ``tick_params``; EC/XY style import finalized too early; legacy XY
+session path finalized before ``update_tick_visibility``. Operando OP+EC shared
+one fig color store so finalize could overwrite the other panel.
+
+### Fix
+- Per-axis ``ax._bp_spine_side_colors`` (prefer in ``finalize_spine_colors``).
+- dQ/dV 2D: visibility/widths first, then ``set_spine_side_color`` + finalize.
+- Histo layout/finish: colors after locators and after canvas draw.
+- EC session dual-top via ``apply_dual_top_axis_style`` + trailing finalize.
+- EC/XY style import trailing finalize; legacy XY finalize after tick visibility.
+
+### Affected files
+- ``batplot/ui.py``
+- ``batplot/plot_modes/electrochem/dqdv_2d.py``, ``style_apply.py``
+- ``batplot/plot_modes/histo/spines.py``, ``interactive.py``
+- ``batplot/plot_modes/batch_session/menu_histo.py``
+- ``batplot/session.py``, ``session_routing.py``, ``xy/style.py``
+- ``tests/test_ec_roundtrip.py``
+
+---
+
+## 2026-07-14: dQ/dV 2D contour — font bold/highlight for p/i/s/b
+
+### Bug
+dQ/dV butterfly contour reuses the operando interactive stack. Live ``f``→``b``/``h``
+worked, but dedicated ``build_dqdv_2d_snapshot`` / ``restore_dqdv_2d_companion_figure``
+only stored font family/size. Undo/style import also applied extras **before**
+colorbar / butterfly tick rebuilds, so new High/Low and tick texts looked normal.
+Colorbar High/Low artists were omitted from font collectors. Batch could detect
+``dqdv_2d_contour`` then fail with a vague load error.
+
+### Fix
+- Snapshot ``font`` block includes weight/highlight (+ mathtext); restore applies
+  extras (old sessions without keys remain safe).
+- Shared ``collect_operando_font_artists`` includes colorbar texts + High/Low.
+- Refresh font extras after colorbar redraw, potential-window rebuild, undo, and
+  style import (``style_apply`` / actions).
+- Batch rejects ``dqdv_2d_contour`` with an explicit message.
+
+### Affected files
+- ``batplot/plot_modes/electrochem/dqdv_2d.py``
+- ``batplot/plot_modes/common/fonts.py``
+- ``batplot/plot_modes/operando/{interactive,style_apply,actions}.py``
+- ``batplot/plot_modes/batch_session/{load,routing,menu_operando}.py``
+- ``tests/test_ec_roundtrip.py``
+
+---
+
+## 2026-07-14: Font bold/highlight — p/i/s/b artist coverage and backward compat
+
+
+### Bug
+- **Histo**: ``f`` → ``b``/``h`` ran before bar labels and legend were created, so
+  numbers and mean/median legend stayed normal after redraw (``p``/``i``/``s``/``b``).
+- **XY (single panel)**: bold/highlight apply lists omitted legend and twin ``ax2``
+  tick/labels on style import (``i``), undo (``b``), and highlight submenus.
+- **``apply_font_extras_from_cfg``**: corrupt ``highlight_alpha``/``highlight_pad``
+  could raise and skip the whole font block on import.
+
+### Fix
+- Histo: call ``_apply_histo_text_fonts`` after bar labels, legend, and spine
+  duplicate titles; include ``ax.texts``, legend, and top/right duplicate artists.
+- XY: use shared ``collect_fig_font_artists`` (legend + ``fig._xy_ax2``) in
+  ``interactive.py``, ``xy/style.py``, ``ui.py`` refresh paths, and batch XY font menu.
+- ``apply_font_extras_from_cfg``: safe float coercion for highlight alpha/pad.
+
+### Affected files
+- ``batplot/plot_modes/histo/plot.py``
+- ``batplot/plot_modes/common/font_extras.py``
+- ``batplot/plot_modes/xy/interactive.py``, ``xy/style.py``
+- ``batplot/ui.py``, ``batch_session/menu_xy.py``
+- ``tests/test_histo.py``, ``tests/test_interactive_state.py``
+
+---
+
+## 2026-07-14: Phase 2 — unified state capture and EC interactive import
+
+### Bug
+EC interactive ``i`` used a ~700-line duplicate of ``apply_ec_style_config``,
+so CLI/batch and interactive style import could drift. Batch undo capture for
+EC/CPC repeated the same ``kind`` + ``geometry`` attachment pattern in several
+places.
+
+### Fix
+- Added ``plot_modes/common/state_capture.py`` with shared ``ro_active`` guards,
+  temp JSON snapshot I/O, and ``as_style_geom_export`` for style+geometry undo.
+- EC ``handle_import_style_command`` now delegates to ``apply_ec_style_config``.
+- XY style import uses ``ro_states_compatible_xy``; EC applier uses
+  ``ro_states_compatible``.
+- Batch ``write_temp_style_json`` / CPC undo push use the shared helpers.
+- EC/CPC batch undo capture uses ``as_style_geom_export``.
+
+### Affected files
+- ``batplot/plot_modes/common/state_capture.py`` (new)
+- ``batplot/plot_modes/electrochem/actions.py``
+- ``batplot/plot_modes/electrochem/style_apply.py``
+- ``batplot/plot_modes/xy/style.py``
+- ``batplot/plot_modes/batch_session/common.py``
+- ``batplot/plot_modes/batch_session/menu_ec.py``
+- ``batplot/plot_modes/batch_session/menu_cpc.py``
+- ``batplot/plot_modes/cpc/snapshots.py``
+- ``tests/test_state_capture.py`` (new)
+
+---
+
+## 2026-07-13: Unified style import for CLI/batch across modes
+
+### Bug
+CLI ``--all`` / startup style files and interactive ``i`` import used different
+code paths. XY and EC batch helpers in ``batch.py`` applied only a subset of
+style keys (fonts, basic ticks, partial spines). CPC CLI routing incorrectly
+called the EC batch applier on both axes instead of the CPC-specific applier.
+
+### Fix
+- Added ``plot_modes/common/style_routing.py`` with ``apply_xy_style_dict`` and
+  ``apply_ec_style_dict`` that delegate to the canonical mode appliers.
+- Extracted ``apply_xy_style_config`` from ``plot_modes/xy/style.py`` so file
+  import and dict import share one implementation.
+- Replaced duplicate ``_apply_xy_style`` / ``_apply_ec_style`` bodies in
+  ``batch.py`` with thin wrappers to the shared helpers.
+- EC routing now passes ``cycle_lines`` / ``file_data`` when available.
+- CPC routing now uses ``cpc.interactive._apply_style`` (twin-axis aware).
+
+### Affected files
+- ``batplot/plot_modes/common/style_routing.py`` (new)
+- ``batplot/plot_modes/xy/style.py``
+- ``batplot/batch.py``
+- ``batplot/plot_modes/electrochem/routing.py``
+- ``batplot/plot_modes/cpc/routing.py``
+- ``tests/test_style_routing.py`` (new)
+
+---
+
+## 2026-07-13: XY session reload — colors menu crashed without ``args.files``
+
+### Bug
+Loading a saved XY ``.pkl`` and pressing ``c`` (colors) failed with
+``'Args' object has no attribute 'files'`` because session reload built a
+minimal ``Args`` with only ``stack`` / ``autoscale`` / ``norm``.
+
+### Fix
+- Save ``source_files`` and ``args_subset['files']`` in XY session dumps.
+- On load, populate ``args.files`` via ``resolve_xy_source_files`` (saved paths,
+  CIF tick series, labels, ``fig._bp_source_paths``).
+- ``interactive_menu`` and ``normalize_xy_menu_kwargs`` call ``ensure_xy_args_files``
+  so color/rename/CIF menus never access a missing attribute.
+
+### Affected files
+- ``batplot/plot_modes/common/sources.py``
+- ``batplot/session.py`` (also restored missing ``build_saved_tick_state`` import for operando/EC pkl reload)
+- ``batplot/plot_modes/xy/interactive.py``
+- ``batplot/plot_modes/session_routing.py`` (standalone ``dqdv_2d_contour`` sessions)
+- ``batplot/plot_modes/batch_session/kinds.py``
+- ``tests/test_xy_source_files.py``, ``tests/test_session_backward_compat.py``
+
+---
+
+## 2026-07-13: Font menu — bold (`b`) and text highlight (`h`) in all modes
+
+### Feature
+The shared ``f`` font submenu now includes **``b``** (bold/normal weight) and **``h``**
+(text highlight with configurable face color, alpha, and padding) in XY, EC, CPC, operando,
+histo, and all batch session menus.
+
+### Details
+- Weight and highlight are stored on the figure (``_bp_font_weight``, ``_bp_text_highlight*``)
+  and exported in style ``font`` blocks for **p/i/s/b** round-trip.
+- Highlight is a bbox/path-effect overlay; spine/label **color** changes do not replace it
+  because ``refresh_font_extras_on_artists`` re-applies after font sync and color finalize paths.
+- Batch XY/EC/CPC/operando ``f`` uses ``run_batch_font_menu`` (family/size/weight/highlight)
+  instead of size-only prompts.
+
+### Affected files
+- ``batplot/plot_modes/common/menus.py``, ``font_extras.py``, ``batch_font.py``, ``fonts.py``
+- ``batplot/ui.py`` (``apply_font_changes``, ``sync_fonts``)
+- Mode interactives: ``xy/``, ``electrochem/``, ``cpc/``, ``operando/``, ``histo/``
+- Batch menus: ``batch_session/menu_*.py``
+- Style apply/export: ``xy/style.py``, ``electrochem/style*.py``, ``operando/style*.py``, ``cpc/interactive.py``
+
+---
+
+## 2026-07-11 (q): Undo (``b``) — baseline guard, duplicate snapshots, restore gaps
+
+### Bugs fixed
+1. **Batch modes** (XY/EC/CPC/operando/histo): ``b`` with no edits popped the menu-entry
+   baseline snapshot and reported success with no visible change. ``SyncUndoStacks.can_undo``
+   now requires ``len(stack) > 1`` on every panel (matches single histo ``len(history) <= 1`` guard).
+2. **Operando** ``et`` / ``ex`` / ``oz`` range menus: missing ``continue`` after ``w``/``s``
+   branches pushed a **duplicate** undo entry (one ``b`` did nothing, second ``b`` was needed).
+3. **XY arrange undo**: ``x_full_list`` / ``raw_y_full_list`` and ``label_text_objects`` order
+   were not snapshotted/restored — undo reverted curve data but left range/full-data lists wrong.
+4. **EC** ``v`` visibility: pushed undo before validating input (invalid file number burned a step).
+5. **EC** style import (``i``): pushed undo before file kind / ``--ro`` validation (rejected import
+   still consumed an undo slot). ``push_state`` now runs only after validation passes.
+6. **EC** undo restore: ``fig._ec_legend_user_visible`` and ``fig._ec_curve_linewidth`` were
+   captured but not written back on ``b``.
+7. **CPC** colors ``ly``/``ry``: pushed undo at submenu open; immediate ``q`` created a no-op step.
+8. **CPC / operando / EC** style import (``i``): ``push_state`` ran before file validation; rejected
+   imports burned undo slots. Snapshot now runs after kind/ro checks; ``pop_undo`` on apply failure.
+9. **CPC** file visibility (``v``): pushed undo before parsing selection; invalid/empty input burned a step.
+
+### Undo model (reference)
+| Mode | Stack | Baseline protected | Restore |
+|------|-------|-------------------|---------|
+| XY / EC / CPC / operando | pop-apply full snapshot | empty until first ``push_state`` | mode ``restore_state`` |
+| Histo single | pop current, apply ``history[-1]`` | yes (``len <= 1``) | ``_apply_state`` |
+| Batch all | ``SyncUndoStacks`` pop-apply | yes (``len > 1``) | panel ``_restore`` / style apply |
+
+### Affected files
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/electrochem/interactive.py`, `actions.py`
+- `batplot/plot_modes/cpc/colors.py`
+- `batplot/plot_modes/cpc/colors.py`, `cpc/actions.py`, `cpc/interactive.py`
+- `batplot/plot_modes/operando/actions.py`, `operando/interactive.py`
+- `tests/test_batch_session.py`
+
+### Full-mode audit checklist (``b`` undo, 2026-07-12)
+
+**Verified push before mutate + restore path exists:**
+
+| Mode | Style keys | Geometry keys | Undo stack | Baseline guard |
+|------|------------|---------------|------------|----------------|
+| XY | ``c,l,f,t,p,i`` | ``x,y,a,g,r`` | pop-apply snapshot | empty until 1st edit |
+| EC | ``c,l,k,h,t,p,i`` | ``x,y,r,2`` | pop-apply snapshot | empty until 1st edit |
+| CPC | ``c,l,t,p,i`` + colors | ``x,y,g,r,v`` | pop-apply style cfg | empty until 1st edit |
+| Operando | ``c,f,l,t,oc,ow,p,i`` + ``el,eg`` | ``ox,oy,oz,et,ex,ey,or,er,g`` | pop-apply dict | empty until 1st edit |
+| Histo | ``c,f,l,a,t,p,i`` | ``x,y,g,r`` | pop + apply ``history[-1]`` | ``len<=1`` blocked |
+| Batch * | subset per kind | subset | ``SyncUndoStacks`` | ``len>1`` required |
+
+**Intentionally no undo:** ``n`` crosshair, ``pk`` peak search, ``p/e/s/oe/os/ops/opsg`` export/save, ``q`` quit.
+
+**Full-state restore:** one ``b`` = one prior snapshot (not field-scoped). Legend/grid/fonts re-applied together with the changed property — by design.
+
+**Known remaining limits (not bugs):**
+- XY duplicate unreachable ``h`` submenu (second block never runs; legend rename in first block only).
+- Line-count mismatch skips line-style restore (XY/EC) without aborting data restore.
+- Batch menus expose fewer commands than single mode; undo only covers batch menu commands.
+- EC/CPC/operando fallback snapshots on capture failure restore sparse state.
+
+**Regression rule:** any new mutating menu command must call ``push_state`` / ``_snapshot`` **before** the mutation, never after validation failure.
+
+---
+
+## 2026-07-11 (p): Spine/tick color regression guard — mandatory finalize checklist
+
+### Why this entry exists
+Spine color bugs have recurred many times across modes because the failure mode is subtle:
+**spine edges and tick labels change color, but tick marks stay black** after ``t`` (WASD),
+``l`` (width), ``canvas.draw()``, or **p/i/s/b**. Any new spine/tick code path that calls
+``tick_params()`` or redraws the canvas **without** a trailing ``finalize_spine_colors*``
+will reintroduce the bug.
+
+### Mandatory rule (all modes)
+After **every** sequence that includes ``tick_params()``, ``apply_flat_tick_params``,
+``apply_wasd_tick_params``, ``apply_frame_and_tick_widths``, or a full ``canvas.draw()``:
+
+1. Call the correct finalizer **last** (after all tick/spine mutations):
+   - Single axis: ``finalize_spine_colors(fig, ax, tick_state=...)``
+   - CPC twin-Y: ``finalize_spine_colors_cpc(fig, ax, ax2, tick_state=...)``
+   - Operando + EC panel: ``finalize_spine_colors_for_axes(fig, [(ax, ts), (ec_ax, ts)])``
+2. Color menu (``c`` → ``w/a/s/d:color``): re-apply colors **after** ``canvas.draw()`` (draw wipes tick lines).
+3. p/i/s/b: store colors in fig attrs (``_xy_spine_colors``, ``_histo_spine_colors``,
+   ``_cpc_spine_colors``, ``_bp_spine_side_colors``); restore visibility/widths first, **then** finalize.
+
+### Live menus that MUST finalize (``c``, ``t``, ``l``, ``oc``)
+| Mode | ``c`` | ``t`` / WASD | ``l`` widths | p/i/s/b |
+|------|-------|--------------|--------------|---------|
+| XY | colors.py post-draw | interactive + batch ``xy_batch_helpers`` | EC-style via spine menu | style.py, session, undo |
+| Histo | histo/spines + refresh | ``reapply_histo_spine_layout`` | ``l`` → refresh + finalize | session snapshot |
+| EC | ``_apply_spine_color`` | interactive ``_apply_wasd`` + draw | spine submenu | style_apply, undo, session |
+| CPC | twin-axis store | interactive ``_apply_wasd`` + draw | spine submenu | interactive restore, session |
+| Operando | ``set_spine_side_color`` | per-pane WASD + draw | ``l`` widths + finalize | actions, style_apply, undo |
+| Batch XY | via style p/i | ``sync_ref_wasd_to_panels`` + draw | via p/i | panel capture/restore |
+| Batch histo | menu_histo ``c`` | ``t`` + refresh | ``l`` + refresh | snapshot undo |
+
+### Gaps closed in this pass
+- XY/EC/CPC/operando **``t`` submenu**: finalize in ``apply_wasd`` and in ``draw`` callback (covers ``i``/``l`` tick length/direction too).
+- Operando **undo** and **``l``** line widths: ``finalize_spine_colors_for_axes`` before draw.
+- EC **undo**: second finalize after grid/legend restore, immediately before draw.
+- Batch XY **``sync_ref_wasd_to_panels``** and spine menu draw: finalize after tick width sync.
+- XY **style import**: finalize after axis-title block and before final draw.
+
+### Affected files (this pass)
+- `batplot/plot_modes/xy/interactive.py`, `xy/style.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py`
+- `tests/test_xy_modules.py`
+
+### Do not regress
+When adding spine/tick features, search the codebase for ``tick_params`` in your path and
+confirm a matching ``finalize_spine_colors`` call appears **after** it in the same code path.
+
+---
+
+## 2026-07-11 (o): Histogram ``l`` line menu — spine/grid widths (XY-style)
+
+### Change
+Grid toggle and line widths moved from ``t`` → ``h`` → ``g`` into a dedicated ``l`` line
+submenu (single + batch histo), matching XY/EC ``l`` → ``f``/``g`` pattern.
+
+### Submenu
+- ``f``: frame (spine) and tick widths (shared ``apply_frame_and_tick_widths``)
+- ``g``: toggle y-grid on/off
+- ``w``: grid line width
+
+### p/i/s/b
+- ``show_grid`` and ``grid_linewidth`` in style snapshot
+- ``spine_linewidths`` and ``tick_widths`` in spine snapshot (undo/save/import)
+
+### Affected files
+- `batplot/plot_modes/histo/line_style.py` (new)
+- `batplot/plot_modes/histo/plot.py`, `interactive.py`, `spines.py`, `toggles.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-11 (n): Histogram grid wrongly shown after pkl batch load / spine refresh
+
+### Bug
+Batch histogram ``.pkl`` sessions opened with y-grid lines visible even when the user had
+turned grid off (``t`` → ``h`` → ``g``). Grid was applied mid-``draw_histogram`` then spine
+color finalize (``tick_params`` + ``canvas.draw``) could leave grid lines visible; grid was
+never re-applied afterward. Default ``show_grid`` was ``True`` so new/legacy sessions also
+showed grid unless explicitly toggled off.
+
+### Solution
+- ``apply_histo_grid`` / ``histo_y_grid_visible`` in ``histo/plot.py`` — re-apply y-grid from
+  ``state.style.show_grid`` **after** all spine/tick operations in ``refresh_histo_figure`` and
+  ``apply_histo_wasd``.
+- ``_sync_histo_ygrid_color`` only recolors grid when ``show_grid`` is on (via ``fig._bp_histo_state``).
+- Default ``show_grid`` → ``False`` (matches EC/XY: no grid unless enabled).
+- XY ``_sync_xy_grid_color`` skips when no visible gridlines (spine color fix cannot paint fake ticks).
+- Tests: grid off survives refresh, spine colors, p/i/s/b, batch pkl load.
+
+### Affected files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/xy/spines.py`
+- `tests/test_histo.py`
+
+---
+
+## 2026-07-11 (m): All modes — spine tick lines survive tick_params and p/i/s/b
+
+### Bug
+``c`` → ``w/a/s/d:color`` updated spine edges and tick **labels** but tick **marks** stayed
+black after ``canvas.draw()`` or ``tick_params()`` in XY, histo, EC, CPC, operando, and
+legacy ``.pkl`` loads. Style export/import (**p/i**), session save/load (**s**), and undo
+(**b**) had the same gap when spine colors were applied before tick visibility/width restore.
+
+### Root cause
+Matplotlib rebuilds tick line artists from ``axis._major_tick_kw['color']`` (default black)
+on draw. Per-tick ``tick1line.set_color()`` alone does not persist; a later ``tick_params``
+or full draw resets tick lines while labels/spines keep the new color.
+
+### Solution
+- Centralized in ``batplot/ui.py``: ``_sync_mpl_tick_params_for_side``,
+  ``get_fig_spine_colors``, ``finalize_spine_colors``, ``finalize_spine_colors_cpc``,
+  ``finalize_spine_colors_for_axes``.
+- ``set_spine_side_color`` now syncs ``tick_params(colors=...)`` when one side owns the axis.
+- Draw hook and ``_get_fig_spine_color_store`` include ``_cpc_spine_colors``.
+- **finalize** called after all ``tick_params`` in: EC/CPC/operando/XY undo & style apply,
+  ``session.py`` pkl loaders, ``session_routing.py`` legacy XY load, histo/XY spine helpers.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/xy/spines.py`
+- `batplot/plot_modes/electrochem/interactive.py`, `actions.py`, `style_apply.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/operando/actions.py`, `style_apply.py`
+- `batplot/session.py`
+- `batplot/plot_modes/session_routing.py`
+
+---
+
+## 2026-07-11 (l): XY spine colors — EC-style apply + p/i/s/b parity
+
+### Bug
+XY ``c`` → ``a:red`` changed the spine edge but not tick/label colors. XY only called
+``set_spine_side_color`` without EC's ``_apply_spine_color`` follow-up (reposition
+titles, store ``_stored_*label_color``, re-apply stored axis colors). Session load
+only set ``spine.set_edgecolor`` (not ticks). Undo restored spine colors before
+``tick_params``, which reset tick line colors.
+
+### Fix
+- New ``apply_xy_spine_color`` / ``apply_xy_spine_specs`` (mirrors EC ``_apply_spine_color``).
+- ``_sync_xy_mpl_tick_kw``: ``tick_params(colors=...)`` so matplotlib rebuilds tick **lines** on
+  ``canvas.draw()`` (per-tick ``set_color`` alone only stuck on labels).
+- Color menu: re-apply spine colors **after** final ``canvas.draw()`` (draw was wiping tick lines).
+- Undo ``restore_state``: defer spine colors until after all ``tick_params``.
+- ``apply_style_config`` (p/i): ``apply_xy_spine_specs`` after tick setup + final re-apply.
+- ``load_xy_session`` (s): ``apply_xy_spine_specs`` after tick restore (not edgecolor only).
+- Batch XY WASD sync uses ``apply_xy_spine_color``.
+- ``ui._get_fig_spine_color_store`` includes ``_xy_spine_colors`` for draw hook.
+
+### Affected files
+- `batplot/plot_modes/xy/spines.py` (new)
+- `batplot/plot_modes/xy/colors.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py`
+- `batplot/session.py` (XY load only)
+- `tests/test_xy_modules.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (k): Histo spine colors — match EC path + y-grid sync
+
+### Bug
+Histogram ``a:white`` reported tick lines ``#ffffff`` but black marks remained on
+the left axis. EC (``--gc``) spine colors worked. Histo used a custom
+``apply_histo_spine_colors`` loop (re-applying all stored sides, multiple draws)
+instead of EC's ``_apply_spine_color`` pattern. Histogram ``ax.grid(axis='y')``
+draws horizontal lines at tick heights that look identical to y tick marks and
+were never recolored with the spine.
+
+### Fix
+- ``_apply_histo_spine_color``: mirrors EC — ``set_spine_side_color`` + reposition
+  title + ``_apply_stored_histo_axis_colors``; one ``fig.canvas.draw()`` at end
+  (same as ``run_ec_spine_color_menu``).
+- ``_sync_histo_ygrid_color``: recolor visible y-grid lines when left/right spine
+  color changes.
+- Removed histo-only multi-pass ``apply_histo_spine_colors`` / draw-stability
+  finish; batch/single finish is ``canvas.draw()`` only.
+- ``format_histo_spine_extra_report``: prints y-grid line count/colors vs expected.
+
+### Affected files
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (j): Spine tick lines reset to black on canvas.draw()
+
+### Bug
+Diagnostic reported tick lines ``#ffffff`` but the GUI still showed **black tick
+marks** after ``a:white``. ``canvas.draw()`` rebuilds tick lines from
+``axis._major_tick_kw['color']`` (default black), wiping per-tick ``set_color``.
+A final ``draw()`` after the diagnostic made the screen disagree with the report.
+
+### Fix
+- ``_store_and_sync_tick_kw``: when only one tick side is active on an axis, sync
+  ``_major_tick_kw`` / ``_minor_tick_kw`` ``color`` and ``labelcolor`` so mpl
+  rebuild uses the stored spine color.
+- ``ensure_spine_color_draw_hook``: on ``draw_event``, re-apply stored spine colors
+  if visible tick lines mismatch (then ``draw_idle`` once).
+- ``format_spine_draw_stability_report``: prints BEFORE draw / AFTER draw / AFTER
+  re-apply tick line colors, axis kw, matplotlib version, and ``ui.py`` path.
+- Color menu: stability report + re-apply after every final draw.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/colors.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (i): Spine tick lines stay black on GUI after color change
+
+### Bug
+After ``a:white`` (or any spine color), diagnostic reported tick lines ``#ffffff`` but
+the interactive window still showed **black tick marks**. Labels looked "gone" on white
+background (they were white, not missing). ``tick_params`` / ``canvas.draw()`` rebuilds
+tick line artists with default (black) colors unless colors are re-applied **after** draw.
+
+### Fix
+- ``set_spine_side_color``: apply colors, ``canvas.draw()`` + ``flush_events``, then
+  re-apply the same side (post-draw second pass).
+- ``_color_side_tick_getters``: also colors visible lines from ``axis.get_ticklines()``
+  for the active side only (no axis-wide ``get_ticklabels``).
+- ``apply_histo_spine_colors``: batch apply all requested sides, one draw, second pass
+  (avoids N full redraws and axis-wide overwrites).
+- ``apply_histo_wasd`` / toggle menu: re-apply stored spine colors after
+  ``tick_params(direction/length)`` so WASD toggles do not reset tick line colors.
+- Color menu / batch spine finish: use ``canvas.draw()`` instead of ``draw_idle()``.
+- Diagnostic: report **visible-only** tick line colors; note when white-on-white
+  looks invisible.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/histo/toggles.py`
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (h): Spine color — stop re-applying other sides (root cause)
+
+### Bug
+``a:white`` set left spine/title white but tick labels stayed black. Diagnostic
+showed spine ``#ffffff`` then ``apply_histo_spine_colors`` re-applied **all** stored
+sides including ``right:#000000``. Axis-wide ``y`` ``tick_params`` / ``_major_tick_kw``
+for the right side overwrote left tick colors on the shared y-axis.
+
+### Fix
+- ``set_spine_side_color``: per-side only (``tick1``/``label1`` or ``tick2``/``label2``);
+  removed axis-wide ``tick_params`` / ``_poke_axis_tick_color_kw`` on shared axes.
+- ``apply_histo_spine_colors(..., only_sides=...)``: spine menu finish re-applies
+  **only the side(s) just edited**, not all four stored spine colors.
+- Diagnostic prints ``reapplied sides`` vs ``stored spine keys``.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (g): Spine color must color tick kw dict + live tick artists
+
+### Bug
+Diagnostic after ``a:white`` showed spine/title ``#ffffff`` but tick labels/lines
+still ``#000000`` (``mpl tick_params color=#000000``). Per-tick ``set_color`` alone
+did not stick on GUI-loaded histogram sessions with minor ticks.
+
+### Fix
+- ``set_spine_side_color``: poke ``_major_tick_kw``/``_minor_tick_kw``, call
+  ``axis.set_tick_params(color=, labelcolor=)``, color via ``get_yticklabels``/
+  ``get_xticklabels`` getters, then re-apply after ``draw_idle``.
+- Spine finish path: ``canvas.draw()`` then second ``apply_histo_spine_colors`` pass
+  before diagnostic report.
+- Still never passes tick visibility flags (left/right/labelleft/labelright).
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `BUGFIXES.md`
+
+---
+
+### Bug
+Setting ``a:white`` in batch histogram ``c`` moved y-axis ticks to the right side
+and overwrote tick visibility from saved ``.pkl`` sessions. The 2026-07-11 (e) fix
+used ``tick_params(left=True, right=False, ...)`` when coloring spines, which
+forced matplotlib tick-side visibility instead of only changing colors.
+
+### Fix
+- Removed visibility flags from spine color application; ``set_spine_side_color``
+  only colors spine + per-tick artists (+ axis-wide ``colors``/``labelcolor`` on y,
+  never ``left``/``right``/``labelleft``/``labelright``).
+- Spine color changes no longer call full ``refresh()`` (no ``ax.cla()``); they
+  only re-apply stored spine colors and ``draw_idle()``.
+- Reverted batch ``draw_panels`` to ``draw_idle()``.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/common.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (e): Spine tick/label colors — stronger apply + diagnostic report
+
+### Bug
+After the 2026-07-11 (d) change, batch histogram ``c`` → ``a:white`` could still leave
+y-axis tick marks and numbers black while only the spine edge turned white. The
+lightweight ``refresh_spines`` shortcut skipped a full redraw and was unreliable on
+interactive GUI backends.
+
+### Root cause
+- ``set_spine_side_color`` colored per-tick artists but did not always set
+  ``tick_params`` ``labelcolor`` or fall back to ``get_yticklabels()`` / tick lines.
+- Batch spine edits used ``draw_idle()`` instead of a full ``canvas.draw()``.
+- No runtime diagnostic showed whether ticks/labels were visible or which colors they had.
+
+### Fix
+- ``set_spine_side_color``: per-side ``tick_params`` with ``colors`` + ``labelcolor``,
+  plus getter-based fallback for rendered tick labels/lines.
+- Spine color menu prints ``format_spine_side_tick_report`` after each change (spine
+  visibility, wasd ticks/labels, mpl tick_params, actual label/tick colors, mismatch).
+- Reverted spine-only shortcut: spine changes call full ``refresh()`` again (per
+  2026-07-10 BUGFIXES); batch ``draw_panels`` uses ``canvas.draw()``.
+- Set ``BATPLOT_DEBUG_SPINE_COLOR=1`` for extra ``set_spine_side_color`` trace.
+
+### Affected files
+- `batplot/ui.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `BUGFIXES.md`
+
+---
+
+### Bug
+Setting a spine color in the histogram batch `c` menu (e.g. `a:white`) changed the spine line but left tick marks and axis labels at their previous color. The same incomplete application affected operando import/undo, EC dual-top-axis restore, XY batch spine sync, and legacy session reload paths that only called `spine.set_edgecolor()` plus coarse `tick_params(colors=...)`.
+
+### Root cause
+Per-side spine coloring must go through `set_spine_side_color()` in `batplot/ui.py`, which sets the spine edge and the per-tick artists (`tick1line`/`tick2line`, `label1`/`label2`) for one side only. Several code paths used `set_edgecolor` + axis-wide `tick_params`, which does not reliably color per-side tick/label artists. Histogram spine-color changes also triggered a full `ax.cla()` redraw immediately after applying colors, which could flash the old tick colors on interactive backends before redraw completed.
+
+### Solution
+- Route operando style apply/import, undo restore, EC dual-top-axis apply, dQ/dV 2D spine restore, XY batch spine sync, and legacy session spine restore through `set_spine_side_color`.
+- Histogram: keep spine colors in `fig._histo_spine_colors`, reapply after every redraw, and add a lightweight `refresh_spines` path in the color menu so spine-only edits reapply tick/label colors without a full histogram redraw.
+- Tests now assert tick and y-label hex colors match the spine color after refresh and style round-trip.
+
+### Affected files
+- `batplot/ui.py` (canonical helper, unchanged)
+- `batplot/plot_modes/histo/colors.py`, `interactive.py`, `plot.py`, `spines.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`, `xy_batch_helpers.py`
+- `batplot/plot_modes/operando/style_apply.py`, `actions.py`, `interactive.py`
+- `batplot/plot_modes/electrochem/spine_colors.py`, `style.py`, `actions.py`, `dqdv_2d.py`
+- `batplot/plot_modes/session_routing.py`
+- `tests/test_histo.py`
+
+---
+
+### Summary
+Third key-by-key audit found remaining edge cases: XY undo missing dual-Y
+metadata; EC/CPC session reload missing ``ro_active``; EC/CPC style-only (ps)
+export missing renamed axis label text; operando undo missing ``ion_params``.
+
+### Fix
+- XY undo: snapshot/restore ``right_y_curve_indices`` and ``txaxis``.
+- EC/CPC session: save/load ``ro_active``.
+- EC style: export/apply ``axis_labels`` on ps import.
+- CPC style: export/apply ``axis_labels`` (x, left y, right y).
+- Operando undo: snapshot/restore ``ion_params`` in ions mode.
+
+### Affected Files
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/session.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/plot_modes/electrochem/style_apply.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11 (b): Full p/i/s/b parity audit — remaining gaps closed
+
+### Summary
+Second audit found undo/import gaps: XY dual-y metadata and margins not applied on
+import; XY undo omitted axis title text overrides; EC undo skipped canvas size,
+per-cycle styles, dual-axis top styling, and global marker template; operando
+p/i omitted colorbar tick/label side, custom labels, and saved time ylim; histo
+single-mode ``ops``/``opsg`` and ``ps``/``psg`` did not match batch behavior.
+
+### Fix
+- XY: ``_apply_xy_dual_y_layout`` on import; ``margins`` fallback when no
+  ``axes_fraction``; undo snapshots/restores ``axis_title_texts``.
+- EC: shared ``capture_cycle_styles_snapshot`` / ``apply_dual_top_axis_style``;
+  undo restores ``fig_size``, cycle styles, curve markers, top-axis styling.
+- Operando: export/apply ``ticks_left``/``label_left``, ``custom_labels``,
+  ``saved_time_ylim``.
+- Histo single: ``ps``/``psg`` export prompt; ``ops``/``opsg`` pass
+  ``include_geometry`` like batch.
+
+### Affected Files
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/plot_modes/electrochem/style_apply.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/operando/style.py`
+- `batplot/plot_modes/operando/style_apply.py`
+- `batplot/plot_modes/histo/actions.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-11: Style export/import (p/i) parity across all modes
+
+### Summary
+Audit found gaps where exported style keys were not restored on import, batch
+XY ``p`` export ignored the chosen path (re-prompted interactively), CPC batch
+import skipped ``ro_active`` guard and applied geometry unconditionally, operando
+v2 export omitted colorbar/panel gap inches, EC ``labelpads`` were missing from
+p-export, and batch import reported success when apply silently skipped panels.
+
+### Fix
+- XY batch ``p``: pass ``overwrite_path`` + ``force_kind`` to ``export_style_config``.
+- CPC: import uses kind/ro guards; geometry only for ``cpc_style_geom``; restore
+  per-file markers and ``legend.single_file_effective`` on import.
+- EC: export/import ``labelpads`` in style snapshot and apply paths.
+- Operando: export/import ``cb_w_in``, ``cb_gap_in``, ``ec_gap_in`` in v2 geometry.
+- Histo: ``ps``/``psg`` export split (geometry fields); ``ops`` vs ``opsg``; kind check on import.
+- Batch import: honor apply ``False`` return; report skipped panels; no false success.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/batch_io.py`
+- `batplot/plot_modes/electrochem/style.py`
+- `batplot/plot_modes/electrochem/style_apply.py`
+- `batplot/plot_modes/electrochem/actions.py`
+- `batplot/plot_modes/operando/style.py`
+- `batplot/plot_modes/operando/style_apply.py`
+- `batplot/plot_modes/operando/actions.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-10: Batch p/i/s/b round-trip — full style restore across all modes
+
+### Summary
+Batch undo (``b``), import (``i``), and style export (``p``) did not round-trip
+styling consistently across modes. EC and operando batch used partial apply
+helpers that dropped WASD, legend, cycle styles, layout inches, and geometry.
+CPC snapshots omitted ``geometry``; XY undo kept canvas fixed after ``g``;
+histo batch ``t``→``h`` toggles flipped each panel independently; XY spine
+sync copied only WASD flags, not tick spacing/colors/lengths.
+
+### Fix
+- Add ``electrochem/style_apply.py`` and ``operando/style_apply.py`` with full
+  v2 style apply (same logic as single-mode ``i``); wire batch EC/operando
+  ``i``/``b`` through them.
+- CPC batch capture/restore includes ``geometry``; ``ps`` export omits it.
+- XY batch undo/import uses ``keep_canvas_fixed=False`` for ``.bpsg``/snapshots;
+  ``sync_ref_wasd_to_panels`` copies tick lengths, spacing, spine colors.
+- Histo batch ``h`` toggles reference panel then syncs display flags to all.
+- XY single-mode ``i`` rolls back undo push when import fails.
+
+### Affected Files
+- `batplot/plot_modes/electrochem/style_apply.py`
+- `batplot/plot_modes/operando/style_apply.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py`
+- `batplot/plot_modes/xy/actions.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-10: Histogram spine colors in batch ``c`` menu not applied or persisted
+
+### Summary
+Setting spine colors (e.g. ``a:white`` for left spine) in batch histogram ``c``
+menu only touched panel 1, did not sync to other panels, and was lost on redraw.
+Spine colors were not stored in snapshots, so ``p``/``i``/``s``/``b`` did not
+round-trip them.
+
+### Fix
+- Persist per-side spine colors on ``fig._histo_spine_colors`` and include
+  ``spine_colors`` in ``capture_histo_spine_snapshot``.
+- Re-apply stored spine colors after every ``refresh_histo_figure`` /
+  ``reapply_histo_spine_layout``.
+- Batch ``c`` menu applies spine color changes to **all** panels; spine-only
+  color input now calls ``refresh()`` like bar/edge changes.
+
+### Affected Files
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-10: Batch I/O — fix duplicate ``s`` / ``s all`` and add proper selection
+
+### Summary
+Batch ``s`` and ``s all`` both saved all panels silently with no selection or
+overwrite confirm. Menu labels said ``(all)`` but gave no way to pick individual
+plots. ``p``, ``i``, and ``e`` also skipped the plot-selection prompt.
+
+### Fix
+- Remove redundant ``s all`` menu entry; one ``s: save session(s)`` command.
+- All I/O keys now show plot list first; **Enter = all**, or pick ``1``, ``1 3``,
+  ``2-4``, etc.
+- ``s`` asks original path vs save-as; original path requires overwrite confirm.
+- Quit shortcut: ``s`` saves all sessions (with confirm), not two duplicate paths.
+- Remove misleading ``(all)`` from menu labels; ``default_all`` parameter removed.
+- Add ``batch_menu_io.py`` — single I/O layer wired by all five batch menus
+  (histo, XY, EC, CPC, operando) so behavior cannot drift per mode.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/batch_menu_io.py`
+- `batplot/plot_modes/batch_session/batch_io.py`
+- `batplot/plot_modes/batch_session/batch_menu_helpers.py`
+- `batplot/plot_modes/batch_session/batch_commands.py`
+- `batplot/plot_modes/batch_session/batch_figure_io.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-10: Batch interactive — window titles and figure export
+
+### Summary
+Batch session interactive menus showed generic matplotlib window titles (e.g.
+``Figure 1``) instead of the loaded ``.pkl`` filename, and had no ``e`` key to
+export figure images (one, several, or all panels) with overwrite-by-number or
+new-name prompts.
+
+### Fix
+- Set window title to the full session ``.pkl`` basename (e.g.
+  ``histo_bm60.pkl``) on load and after every ``draw_panels`` refresh.
+- Add ``e: export figure(s)`` and ``oe: overwrite figure(s)`` to all batch
+  menus (histogram, XY, EC, CPC, operando) via ``batch_figure_io.py``.
+- Per-panel export prompts: choose panels, pick folder, then name/number/o for
+  each plot; default filename stem matches the ``.pkl`` basename.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/batch_figure_io.py`
+- `batplot/plot_modes/batch_session/batch_menu_helpers.py`
+- `batplot/plot_modes/batch_session/batch_commands.py`
+- `batplot/plot_modes/batch_session/routing.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `batplot/plot_modes/batch_session/xy_batch_helpers.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Histogram ``y`` menu crashed — missing ``run_histo_y_range_menu`` import
+
+### Summary
+Pressing ``y`` (y range) in the histogram interactive menu raised
+``name 'run_histo_y_range_menu' is not defined`` because the import from
+``y_range.py`` was accidentally dropped during a refactor.
+
+### Fix
+- Restore ``from .y_range import run_histo_y_range_menu`` in
+  ``histo/interactive.py``.
+- Add ``tests/test_histo_interactive_imports.py`` — AST check that every
+  handler called from ``histo_interactive_menu`` is imported at module level.
+- Add ``tests/test_menu_handler_imports.py`` — same AST/import smoke audit for
+  all single-mode and batch-mode interactive menus (XY, EC, CPC, operando,
+  histo) plus batch helper modules.
+
+### Affected Files
+- `batplot/plot_modes/histo/interactive.py`
+- `tests/test_histo_interactive_imports.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Histogram style import (``i``) must not replace panel data
+
+### Summary
+Importing a histogram ``.bpsh`` style in batch (or single) mode replaced each
+panel's ``setup`` (values, bins) with the exporter's data, breaking multi-file
+batch sessions.
+
+### Fix
+- Added ``apply_histo_style_snapshot`` — applies ``style`` + spine/tick geometry
+  only; preserves ``setup`` and ``source_path``.
+- Single ``i``, batch ``i``, and CLI ``batch_process_histo`` style application
+  now use this helper (undo ``b`` and session ``s`` still use full snapshots).
+- ``normalize_histo_title`` runs before every snapshot so ``p``/``s``/``b`` do
+  not persist legacy auto titles.
+
+### Affected Files
+- `batplot/plot_modes/histo/session.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/batch.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Remove auto histogram plot titles (legacy ``Length`` / filename titles)
+
+### Summary
+Histogram plots showed unwanted top titles (e.g. column name ``Length``, filename,
+or ``Histogram Length``) in batch export, and legacy ``.pkl`` / ``.bpsh`` files
+carried those titles forward.
+
+### Fix
+- Stop setting the data filename as plot title in ``batch_process_histo``.
+- Add ``normalize_histo_title`` to strip known auto-generated title patterns on
+  build/restore while keeping explicit user-set titles (e.g. ``Particle sizes``).
+- Always clear the axes title when ``style.title`` is empty after redraw.
+- Strip legacy titles on **every** ``draw_histogram`` redraw (not only restore),
+  at batch/single menu startup, and after ``load_histo_session`` so old ``.pkl`` files
+  never show ``Histogram Length`` even when ``column_name`` is missing in the
+  saved state.
+- ``sanitize_histo_session_snap`` rewrites ``style.title`` in session data on
+  load, save, and undo so legacy titles are removed from the file when re-saved.
+- Broaden legacy matching for ``Histogram Length`` / ``Histogram <col>`` titles
+  from older builds.
+
+### Note
+If ``batplot`` still shows old behaviour, check ``which batplot`` — an older
+site-packages install (e.g. 1.8.31) ignores repo fixes until
+``pip install -e .`` from this project.
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/batch.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Histogram tick spacing lost after redraw / batch sync
+
+### Summary
+In histogram interactive mode (single and batch), spine menu commands ``n`` (tick
+spacing) and ``m`` (minor count) appeared to succeed but did not show on the
+plot. Batch mode did not propagate spacing to other panels.
+
+### Root Cause
+- ``draw_histogram`` calls ``ax.cla()``, which clears custom tick locators.
+- ``capture_histo_spine_snapshot`` did not store locator state, so ``p``/``i``/``s``/``b``
+  could not restore spacing.
+- Batch sync copied WASD state only; locators were not persisted before redraw.
+
+### Fix
+- Capture/restore ``tick_spacing`` (and title offsets) in histo spine snapshots.
+- Re-apply stored locators after each histogram redraw in ``reapply_histo_spine_layout``.
+- Persist spine state from the live axis before redraw in the toggle menu ``_draw`` hook.
+- Fix histo title-offset attribute names to match ``position_bottom_xlabel`` /
+  ``position_left_ylabel``.
+
+### Affected Files
+- `batplot/plot_modes/histo/spines.py`
+- `batplot/plot_modes/histo/toggles.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Histogram y-axis range control (``y`` geometry key)
+
+### Summary
+Histogram interactive mode (single and batch) had no way to set a fixed y-axis
+range for count/density; limits always followed auto-scaling from the data.
+
+### Fix
+- Added ``y: y range`` under Geometries with upper/lower/auto prompts (loop until ``q``).
+- Stored ``ylim`` in ``HistoStyle`` and included it in style export/import, session
+  save/load, and undo snapshots.
+- Batch mode applies the same y limits to all panels.
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `batplot/plot_modes/histo/y_range.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `tests/test_histo.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: CI failed on ``test_git_commit_and_push_pushes_when_nothing_staged_but_ahead``
+
+### Summary
+GitHub Actions reported test failures after every push because
+``test_git_commit_and_push_pushes_when_nothing_staged_but_ahead`` never reached
+the push path.
+
+### Root Cause
+- Temp test directory had no ``.git`` folder, so ``git_commit_and_push`` exited
+  early with "not a git repository".
+- Mock ``git rev-list`` handler used ``cmd[:4] == ["git", "rev-list", "--count"]``
+  but the real command has four elements including ``origin/main..HEAD``, so
+  ``_git_ahead_of_origin`` always returned 0.
+
+### Fix
+- Create ``.git`` in the temp test repo.
+- Match ``git rev-list --count`` with ``cmd[:3]``.
+
+### Affected Files
+- `tests/test_dev_upgrade.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Batch session figure windows titled Figure 1/2/3
+
+### Summary
+In batch interactive mode (``batplot a.pkl b.pkl --i``), matplotlib window titles
+showed generic ``Figure 1``, ``Figure 2``, etc. instead of the session filenames.
+
+### Fix
+- Set each panel window title from the loaded ``.pkl`` basename (without extension)
+  when batch figures are primed for interactive display.
+
+### Affected Files
+- `batplot/plot_modes/batch_session/common.py`
+- `batplot/plot_modes/batch_session/routing.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
+---
+
+## 2026-07-09: Batch histogram geometry only changed panel [1]
+
+### Summary
+In batch histogram mode, ``g`` → plot frame / canvas resize appeared to update
+only the first figure.
+
+### Root Cause
+After resizing the reference panel, geometry was copied to other panels as
+**axis fractions** from panel [1]. Panels with different canvas sizes therefore
+got different physical frame sizes in inches (e.g. ``3×3`` in on one canvas is not
+the same fraction as on another).
+
+### Fix
+- New ``histo_batch_helpers.py``: apply **absolute** plot-frame and canvas sizes
+  in inches to every panel; show per-panel sizes in prompts when they differ.
+- New ``batch_menu_helpers.py``: shared menu labels and apply-to-all figure/canvas
+  prompts across XY, EC, CPC, operando, and histogram batch menus.
+- ``p``, ``i``, and ``s`` in all batch menus default to **all plots** (no per-panel
+  pick list); ``b`` undo restores all panels together.
+- Per-panel values (sizes, colors, fonts, etc.) are shown only inside the
+  corresponding key prompt or submenu, not on the main batch menu listing.
+- Size/geometry and other edit prompts stay in a loop until ``q``/blank (match
+  single-panel ``ui.resize_plot_frame`` / ``ui.resize_canvas`` behavior).
+- Shared submenu defaults: blank exits like ``q`` (font, option, dispatch menus;
+  spine/tick menu). Operando visibility, peak search, EC/CPC file visibility,
+  operando height, histo range/bin wizard, and CPC efficiency toggle loop until back.
+
+### Affected Files
+- `batplot/plot_modes/common/menus.py`
+- `batplot/plot_modes/batch_session/histo_batch_helpers.py`
+- `batplot/plot_modes/batch_session/batch_io.py`
+- `batplot/plot_modes/batch_session/menu_histo.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `batplot/plot_modes/batch_session/menu_ec.py`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/plot_modes/batch_session/menu_operando.py`
+- `tests/test_batch_session.py`
+- `BUGFIXES.md`
+
 ---
 
 ## 2026-07-07: ``--dev-git`` falsely reported success without pushing
@@ -7195,3 +8559,378 @@ CPC and EPC default plots used the same 10 x 6 inch canvas as GC, CV, and dQ/dV,
 - ✅ macOS: Matplotlib figure sizing only; no OS-specific behavior
 - ✅ Windows: Same inch-based canvas/frame calculation
 - ✅ Linux: Same inch-based canvas/frame calculation
+
+---
+
+## 2026-07-06: Value-entry submenus stay in input loop until q (font size and related)
+
+### Summary
+After choosing font size in batch histogram (`f` → `s` → `8`), the menu returned to the font choice prompt (`f/s/q`) instead of staying on the size prompt so another value (e.g. `10`) could be entered immediately. The shared `run_font_menu` helper only prompted once per family/size choice.
+
+The same single-shot pattern existed in other value-entry submenus across modes (histogram density curve color/width/linestyle, histogram rename and line/grid width, EC/CPC/XY rename and line-width prompts, operando CIF font and EC line style).
+
+### Fix
+- **`run_font_menu`**: family and size now use `run_repeat_input_loop` — after applying a value, the same prompt repeats until `q`/blank.
+- **Histogram**: density curve (`c`/`w`/`l`), rename labels (`x`/`y`/`t`/`o`), line submenu frame/grid width.
+- **EC/CPC/XY**: axis/file rename, curve/frame width, marker size, dash patterns, legend position, theoretical capacity (`n`/`d`/`u`).
+- **Operando**: CIF title font, EC line/grid, CIF per-set color/rename/colormap, dQ/dV potential limits, EC ions params (`ey`→`n`), peak search params.
+- **Common spines**: tick length (`l`) loops in all modes using the shared spine menu.
+- Prompt text standardized to `q=back` on these loops.
+
+### Affected Files
+- `batplot/plot_modes/common/menus.py`
+- `batplot/plot_modes/common/spines.py`
+- `batplot/plot_modes/histo/density_curve.py`
+- `batplot/plot_modes/histo/labels.py`
+- `batplot/plot_modes/histo/line_style.py`
+- `batplot/plot_modes/electrochem/line_style.py`
+- `batplot/plot_modes/electrochem/labels.py`
+- `batplot/plot_modes/electrochem/interactive.py`
+- `batplot/plot_modes/cpc/labels.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/xy/line_style.py`
+- `batplot/plot_modes/xy/labels.py`
+- `batplot/plot_modes/xy/cif.py`
+- `batplot/plot_modes/xy/interactive.py`
+- `batplot/plot_modes/operando/line_style.py`
+- `batplot/plot_modes/operando/labels.py`
+- `batplot/plot_modes/operando/grid.py`
+- `batplot/plot_modes/operando/peaks.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `tests/test_interactive_state.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: Terminal input loops only; no OS-specific behavior
+- ✅ Windows: Same prompt/loop logic
+- ✅ Linux: Same prompt/loop logic
+
+---
+
+## 2026-07-13 — Font bold/highlight in EC/operando style import (`i`) and session reload (`s`)
+
+### Summary
+Style import (`i`) for single-panel EC and operando did not restore font **weight** or **text highlight** even though export (`p`) and undo (`b`) included them. Session `.pkl` save/load also omitted weight/highlight for XY, EC, CPC, and operando.
+
+### Fix
+- **EC `handle_import_style_command`**: apply `apply_font_extras_from_cfg` after family/size (matches batch path via `style_apply.py`).
+- **Operando `handle_import_style`**: same font-extras apply after `set_fonts`.
+- **Session dump/load**: `merge_session_font_dump` / `apply_session_font_extras` in all four session kinds; backward compatible (old pkls without weight/highlight still load).
+- **XY style import**: restored missing `apply_curve_color` import (broke curve colors on `i`).
+
+### Affected Files
+- `batplot/plot_modes/electrochem/actions.py`
+- `batplot/plot_modes/operando/actions.py`
+- `batplot/plot_modes/common/font_extras.py`
+- `batplot/plot_modes/xy/style.py`
+- `batplot/session.py`
+- `batplot/plot_modes/common/session_key_smoke.py`
+- `tests/test_ec_roundtrip.py`
+- `tests/test_cpc_roundtrip.py`
+- `tests/test_session_backward_compat.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: pickle + JSON style paths only; no OS-specific code
+
+---
+
+## 2026-07-13 — Color menus show hex codes for current curves
+
+### Summary
+In colors menus, **Current curves** (and equivalent listings) showed names only, without the color swatch + hex code that saved colors already displayed.
+
+### Fix
+- Added shared `format_color_listing()` in `color_utils.py` (`<swatch> #hex`).
+- Applied to XY, EC, CPC, histo, operando, CIF tick colors, and batch XY colors menu.
+
+### Affected Files
+- `batplot/color_utils.py`
+- `batplot/plot_modes/xy/colors.py`, `xy/cif.py`
+- `batplot/plot_modes/electrochem/colors.py`, `electrochem/spine_colors.py`, `electrochem/style.py`
+- `batplot/plot_modes/cpc/colors.py`
+- `batplot/plot_modes/histo/colors.py`
+- `batplot/plot_modes/operando/line_style.py`, `operando/grid.py`
+- `batplot/plot_modes/batch_session/menu_xy.py`
+- `tests/test_common_palettes.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: ANSI swatch + hex text only
+
+---
+
+## 2026-07-13 — Histo grid stayed on when `show_grid=False`
+
+### Summary
+`draw_histogram()` called `ax.grid(False, …, alpha=…, linestyle=…)` which matplotlib treats as “grid on with styling”, so histograms showed grid lines even when grid was toggled off.
+
+### Fix
+Match `apply_histo_grid()`: pass line-style kwargs only when enabling the grid; call `ax.grid(False, axis="y")` when off.
+
+### Affected Files
+- `batplot/plot_modes/histo/plot.py`
+- `tests/test_histo.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: matplotlib API only
+
+---
+
+## 2026-07-13 — XY session reload lost custom labelpad
+
+### Summary
+After loading a `.pkl`, x/y `labelpad` values drifted to the default (8 pt) instead of the saved values (e.g. 7.5).
+
+### Fix
+Restore axis style before spine re-apply, re-apply explicit axis title colors after spine (spine edge color must not clobber saved label colors), then apply pending labelpads only if spine helpers did not already consume them.
+
+### Affected Files
+- `batplot/session.py`
+- `tests/test_xy_modules.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: session pickle path only
+
+---
+
+## 2026-07-13 — Histo tick spacing lost after figure refresh
+
+### Summary
+Undo / session restore for histograms did not restore custom y-axis tick spacing after `refresh_histo_figure()` redrew the plot (locator reverted to `AutoLocator`).
+
+### Fix
+Call `_restore_histo_tick_locators()` at the end of `reapply_histo_spine_layout()` (same as the WASD path).
+
+### Affected Files
+- `batplot/plot_modes/histo/spines.py`
+- `tests/test_histo.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: matplotlib locator API only
+
+---
+
+## 2026-07-13 — XY style import lost labelpad / axis title color after spine re-apply
+
+### Summary
+Style import (`i`) could restore labelpads and then overwrite them when spine colors were re-applied; explicit axis title colors were similarly replaced by default spine edge color.
+
+### Fix
+After the final spine pass in `apply_style_config`, re-apply saved labelpads and axis title colors (same pattern as session load).
+
+### Affected Files
+- `batplot/plot_modes/xy/style.py`
+- `tests/test_xy_modules.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: JSON style import only
+
+---
+
+## 2026-07-13 — Figure export included active crosshair overlays
+
+### Summary
+When crosshair mode (``n``) was on, ``e`` / ``oe`` figure export could include the dashed lines and coordinate value panel in the saved image.
+
+### Fix
+- Shared ``suppress_crosshair_for_export`` / ``savefig_without_crosshair`` in ``crosshair_export.py``.
+- Each mode registers its crosshair state on ``fig``; all single and batch export paths call the wrapper (including ``save_standard_panel_figure`` and ``_ec_savefig_plot_window``).
+- Crosshair stays on screen after export; only the saved file is clean.
+
+### Affected Files
+- `batplot/plot_modes/common/crosshair_export.py`
+- `batplot/plot_modes/xy/interactive.py`, `xy/actions.py`
+- `batplot/plot_modes/electrochem/interactive.py`, `electrochem/export.py`
+- `batplot/plot_modes/cpc/interactive.py`, `cpc/actions.py`
+- `batplot/plot_modes/operando/interactive.py`, `operando/actions.py`
+- `batplot/plot_modes/histo/interactive.py`
+- `batplot/plot_modes/batch_session/batch_figure_io.py`
+- `tests/test_crosshair_export.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: matplotlib artist visibility only
+
+---
+
+## 2026-07-13 — XY X-range menu printed DEBUG lines to terminal
+
+### Summary
+Changing the X window (`x` key) printed `DEBUG: Curve N: …` for every curve — leftover development logging.
+
+### Fix
+Removed unconditional debug prints from `axis_range.py`. Style-import `[DEBUG]` exception traces in `xy/style.py` now respect `BATPLOT_STYLE_DEBUG=1` (same gate as existing `[style-import check]` diagnostics).
+
+### Affected Files
+- `batplot/plot_modes/xy/axis_range.py`
+- `batplot/plot_modes/xy/style.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: terminal output only
+
+---
+
+## 2026-07-13 — Code cleanup: dead code and duplicate helpers
+
+### Summary
+Removed unused one-shot script, duplicate helpers, and copy-paste blocks that added noise without changing behavior.
+
+### Fix
+- Deleted unused ``indent_batplot.py``.
+- ``batch.py``: reuse ``_resolve_mass`` from ``ec_common`` (was duplicated); fixed import order.
+- ``batplot.py``: removed duplicate ``to_rgb`` import.
+- ``operando/style_apply.py``: removed duplicate dqdv/labelpad/version blocks and duplicate end-of-import contour restore.
+- ``electrochem/style_apply.py``: merged split ``ui`` imports at module top.
+- Batch menus: use shared ``colorize_menu_item`` instead of five identical ``_colorize_menu`` copies.
+
+### Affected Files
+- `indent_batplot.py` (deleted)
+- `batplot/batch.py`, `batplot/batplot.py`
+- `batplot/plot_modes/operando/style_apply.py`
+- `batplot/plot_modes/electrochem/style_apply.py`
+- `batplot/plot_modes/batch_session/menu_*.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: refactor only, no behavior change intended
+
+---
+
+## 2026-07-21 — Font menu did not update EC/CPC legend title (“Cycle”)
+
+### Summary
+Changing font size in batch or normal EC/CPC menus updated axis labels and legend entries but left the legend **title** (e.g. “Cycle”) at the old hardcoded size (`medium`/`small`).
+
+### Fix
+- `legend_text_artists()` now includes `legend.get_title()` so family/size/weight/highlight apply to legend headers as well as entries (all modes using shared font helpers: EC, CPC, XY, Histo, Operando, batch).
+- Added `sync_legend_title_fontsize()`; EC/CPC `_legend_no_frame()` and initial EC plot setup in `routing.py` / `batch.py` use rcParams font size instead of fixed named sizes.
+- Legend rebuilds after undo/import/style apply preserve title font size.
+
+### Affected Files
+- `batplot/plot_modes/common/fonts.py`
+- `batplot/plot_modes/electrochem/legend.py`, `electrochem/routing.py`
+- `batplot/plot_modes/cpc/legend.py`
+- `batplot/batch.py`
+- `tests/test_interactive_state.py`, `tests/test_ec_roundtrip.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: matplotlib text API only
+
+---
+
+## 2026-07-21 — Session reload ignored saved font size on axis labels/ticks (all modes)
+
+### Summary
+After batch (or normal) font edit + save, session `.pkl` files stored `font.size` correctly, but reopening left axis labels and tick labels at the matplotlib default (16 pt) in EC/CPC/XY/Operando. Only text rebuilt last (e.g. legend) showed the saved size.
+
+### Root Cause
+`load_ec_session` set `plt.rcParams['font.size']` early, then called `set_xlabel`/`set_ylabel` and tick setup on label objects created at default size. Those artists kept their original fontsize unless explicitly updated. `apply_ec_style_config` (batch undo/import) had the same ordering issue.
+
+### Fix
+- Added unified `apply_session_font_cfg()` in `font_extras.py` (rcParams + family/size on all text artists + weight/highlight).
+- All session loaders (EC, CPC, XY, Operando) call it at the end of restore.
+- Style apply paths (EC, CPC, XY, Operando, dQ/dV 2D) re-apply font at the end after labels/legend rebuild (batch `p`/`i`/`b` and normal mode).
+
+### Affected Files
+- `batplot/plot_modes/common/font_extras.py`, `fonts.py`
+- `batplot/session.py`
+- `batplot/plot_modes/electrochem/style_apply.py`, `dqdv_2d.py`
+- `batplot/plot_modes/cpc/interactive.py`
+- `batplot/plot_modes/xy/style.py`
+- `batplot/plot_modes/operando/style_apply.py`
+- `tests/test_ec_roundtrip.py`, `tests/test_session_font_restore.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: matplotlib text API only
+
+---
+
+## 2026-07-21 — Batch menu: `g: size` column and EC `ra` legend key
+
+### Summary
+Batch EC/CPC/XY menus listed `g: size` under Geometries even though normal mode puts it under Styles. Batch EC always showed `ra: legend order` in Styles even for single-file plots; normal EC only offers `ra: rearrange legend` for multi-file sessions (Geometries column).
+
+### Fix
+- Moved `g: size` to the Styles column in batch EC, CPC, and XY menus (matching normal mode; operando/histo already correct).
+- Batch EC shows `ra: rearrange legend` only when a loaded panel has multiple files, in the Geometries column (same as normal EC).
+
+### Affected Files
+- `batplot/plot_modes/batch_session/menu_ec.py`, `menu_cpc.py`, `menu_xy.py`
+- `tests/test_batch_menu_parity.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: menu layout only
+
+---
+
+## 2026-07-21 — macOS IMK stderr noise during size menus and redraws
+
+### Summary
+On macOS, changing canvas/plot size in batch or normal mode could print
+`error messaging the mach port for IMKCFRunLoopWakeUpReliable` between prompts.
+Harmless Input Method Kit noise, but it looked like a crash.
+
+### Fix
+- Added fd-level ``imk_stderr_guard()`` (macOS only) so C-framework stderr writes
+  are filtered, not just Python ``sys.stderr``.
+- Applied during ``safe_input``, batch ``draw_panels``, ``g: size`` submenu,
+  ``ui.resize_canvas`` / ``resize_plot_frame``, figure priming, and operando
+  intensity slider.
+- Extended filter markers to include ``error messaging the mach port``.
+
+### Affected Files
+- `batplot/plot_modes/common/terminal.py`
+- `batplot/plot_modes/batch_session/common.py`, `batch_geom_helpers.py`
+- `batplot/ui.py`, `batplot/_mpl_backend.py`
+- `batplot/plot_modes/operando/interactive.py`
+- `tests/test_imk_stderr_guard.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS: filters IMK noise
+- ✅ Windows / Linux: guard is a no-op
+
+---
+
+## 2026-07-21 — Cross-platform parity for interactive I/O and size menus
+
+### Summary
+Audit to keep batplot behavior identical on macOS, Windows, and Linux: macOS-only
+stderr filtering must not affect other platforms; interactive prompts during GUI
+sessions should use the shared ``safe_input`` path everywhere.
+
+### Fix
+- Hardened macOS fd stderr guard with rollback on failure and explicit UTF-8 encoding.
+- Replaced remaining raw ``input()`` in EC style apply and XY style export with ``safe_input``.
+- Wrapped histo and operando batch size submenus with ``imk_stderr_guard`` (no-op off macOS).
+- Added ``tests/test_cross_platform_parity.py`` for guard no-op, canvas resize, and backend order.
+
+### Affected Files
+- `batplot/plot_modes/common/terminal.py`
+- `batplot/plot_modes/electrochem/style_apply.py`, `xy/style.py`
+- `batplot/plot_modes/batch_session/histo_batch_helpers.py`
+- `batplot/plot_modes/operando/layout_menu.py`
+- `tests/test_cross_platform_parity.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: identical menu logic; IMK filter macOS-only
+
+---
+
+## 2026-07-21 — Batch menu: Press a key prompt missing / wrong order
+
+### Summary
+Stdout flush fix was correct, but wrapping ``input()`` in the macOS fd-level
+``imk_stderr_guard`` redirected stderr during readline and hid ``Press a key:``
+entirely on macOS.
+
+### Fix
+- ``safe_input`` uses lightweight ``FilterIMKWarning`` on ``sys.stderr`` only
+  (no fd redirect during prompts).
+- fd-level ``imk_stderr_guard`` kept only for matplotlib redraws (``draw_panels``,
+  operando slider, figure priming) — not around menu input loops.
+- ``print_menu_columns`` still flushes stdout before ``prompt_menu_key()``.
+
+### Affected Files
+- `batplot/plot_modes/common/terminal.py`, `menu_rendering.py`
+- `batplot/plot_modes/batch_session/batch_geom_helpers.py`, `histo_batch_helpers.py`
+- `batplot/plot_modes/operando/layout_menu.py`, `batplot/ui.py`
+- `tests/test_menu_prompt_order.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux

@@ -96,6 +96,29 @@ def _run_saved_dqdv_2d_companion(fig, sess_path: str) -> None:
     except Exception as e:
         print(f"Saved dQ/dV 2D map menu failed: {e}")
     finally:
+        # Persist companion edits back into the parent EC session pickle.
+        try:
+            if cfig is not None and plt.fignum_exists(getattr(cfig, "number", -1)):
+                from .plot_modes.electrochem.dqdv_2d import build_dqdv_2d_snapshot
+
+                v_lo = float(getattr(cfig, "_dqdv_2d_v_lo", 0.0))
+                v_hi = float(getattr(cfig, "_dqdv_2d_v_hi", 1.0))
+                row_labels = [str(s) for s in (getattr(cfig, "_dqdv_2d_row_labels", None) or [])]
+                zlab = str(getattr(cfig, "_dqdv_2d_zlabel", "dQ/dV"))
+                snap = build_dqdv_2d_snapshot(cfig, cax, im, v_lo, v_hi, row_labels, zlab, cbar)
+                if snap is not None:
+                    try:
+                        fig._dqdv_2d_snapshot = snap
+                    except Exception:
+                        pass
+                    if _merge_dqdv_2d_into_ec_session(sess_path, snap):
+                        print(f"Updated dQ/dV 2D map in session: {sess_path}")
+                    else:
+                        print("Warning: dQ/dV 2D map edits were not written back to the EC session file.")
+                else:
+                    print("Warning: could not build dQ/dV 2D snapshot after companion menu.")
+        except Exception as e:
+            print(f"Warning: could not save dQ/dV 2D map back into session: {e}")
         try:
             plt.close(cfig)
         except Exception:
@@ -104,3 +127,31 @@ def _run_saved_dqdv_2d_companion(fig, sess_path: str) -> None:
             delattr(fig, "_dqdv_2d_companion_bundle")
         except Exception:
             pass
+
+
+def _merge_dqdv_2d_into_ec_session(sess_path: str, snap: dict) -> bool:
+    """Write ``snap`` into an existing ``ec_gc`` pickle as ``dqdv_2d``. Returns True on success."""
+    import os
+    import pickle
+
+    if not sess_path or not isinstance(snap, dict) or snap.get("Z") is None:
+        return False
+    if not os.path.isfile(sess_path):
+        return False
+    try:
+        with open(sess_path, "rb") as fh:
+            sess = pickle.load(fh)
+        if not isinstance(sess, dict) or sess.get("kind") != "ec_gc":
+            return False
+        sess["dqdv_2d"] = snap
+        try:
+            from .session import _package_versions_stamp
+
+            sess["package_versions"] = _package_versions_stamp()
+        except Exception:
+            pass
+        with open(sess_path, "wb") as fh:
+            pickle.dump(sess, fh)
+        return True
+    except Exception:
+        return False

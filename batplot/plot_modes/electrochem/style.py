@@ -10,8 +10,10 @@ import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib import colors as mcolors  # type: ignore[import-untyped]
 from matplotlib.ticker import AutoMinorLocator, MultipleLocator  # type: ignore[import-untyped]
 
-from ...color_utils import color_block
+from ..common.font_extras import font_extras_export_dict
+from ...color_utils import color_block, format_color_listing
 from ...plotting import apply_curve_color
+from ...ui import set_spine_side_color
 from ...utils import _colorize_option_keys, _confirm_overwrite, get_organized_path, list_files_in_subdirectory
 from ..common.terminal import safe_input as _safe_input
 from .colors import _iter_cycle_lines
@@ -33,6 +35,167 @@ def _get_geometry_snapshot(fig, ax) -> Dict:
     except Exception:
         pass
     return out
+
+
+def _line_color_hex(ln) -> Optional[str]:
+    try:
+        return mcolors.to_hex(ln.get_color())
+    except Exception:
+        col = ln.get_color()
+        if isinstance(col, str):
+            return col
+        try:
+            return mcolors.to_hex(mcolors.to_rgba(col))
+        except Exception:
+            return None
+
+
+def _line_style_snapshot(ln) -> Dict:
+    style: Dict = {}
+    color_hex = _line_color_hex(ln)
+    if color_hex:
+        style['color'] = color_hex
+    try:
+        style['linewidth'] = float(ln.get_linewidth())
+    except Exception:
+        pass
+    try:
+        style['linestyle'] = ln.get_linestyle()
+    except Exception:
+        pass
+    try:
+        style['marker'] = ln.get_marker()
+        style['markersize'] = float(ln.get_markersize())
+        style['markerfacecolor'] = ln.get_markerfacecolor()
+        style['markeredgecolor'] = ln.get_markeredgecolor()
+    except Exception:
+        pass
+    try:
+        style['alpha'] = ln.get_alpha()
+    except Exception:
+        pass
+    style['visible'] = bool(ln.get_visible())
+    return style
+
+
+def capture_cycle_styles_snapshot(cycle_lines: Dict, file_data: Optional[list] = None):
+    """Capture per-cycle line styles for undo / export parity."""
+    cycle_styles: Dict = {}
+    for cyc, parts in cycle_lines.items():
+        entry: Dict = {}
+        if isinstance(parts, dict):
+            for role in ("charge", "discharge"):
+                ln = parts.get(role)
+                if ln is None:
+                    continue
+                style = _line_style_snapshot(ln)
+                if style:
+                    entry[role] = style
+        else:
+            ln = parts
+            if ln is not None:
+                style = _line_style_snapshot(ln)
+                if style:
+                    entry['line'] = style
+        if entry:
+            cycle_styles[str(cyc)] = entry
+
+    cycle_styles_per_file = None
+    if file_data is not None and len(file_data) > 1:
+        cycle_styles_per_file = []
+        for f in file_data:
+            cl = f.get('cycle_lines')
+            if not cl:
+                cycle_styles_per_file.append({})
+                continue
+            per_file: Dict = {}
+            for cyc, parts in cl.items():
+                entry = {}
+                if isinstance(parts, dict):
+                    for role in ("charge", "discharge"):
+                        ln = parts.get(role)
+                        if ln is None:
+                            continue
+                        style = _line_style_snapshot(ln)
+                        if style:
+                            entry[role] = style
+                else:
+                    ln = parts
+                    if ln is not None:
+                        style = _line_style_snapshot(ln)
+                        if style:
+                            entry['line'] = style
+                if entry:
+                    per_file[str(cyc)] = entry
+            cycle_styles_per_file.append(per_file)
+    return cycle_styles, cycle_styles_per_file
+
+
+def capture_ec_curve_marker_defaults(cycle_lines: Dict):
+    curve_linewidth = None
+    curve_marker_props: Dict = {}
+    try:
+        for _cyc, _role, ln in _iter_cycle_lines(cycle_lines):
+            try:
+                curve_linewidth = float(ln.get_linewidth())
+            except Exception:
+                pass
+            try:
+                curve_marker_props = {
+                    'linestyle': ln.get_linestyle(),
+                    'marker': ln.get_marker(),
+                    'markersize': ln.get_markersize(),
+                    'markerfacecolor': ln.get_markerfacecolor(),
+                    'markeredgecolor': ln.get_markeredgecolor(),
+                }
+            except Exception:
+                pass
+            if curve_marker_props:
+                break
+    except Exception:
+        pass
+    if curve_linewidth is None:
+        curve_linewidth = 1.0
+    return curve_linewidth, curve_marker_props
+
+
+def capture_dual_top_axis(fig, ax) -> Optional[Dict]:
+    try:
+        secax = getattr(fig, '_xaxis_secondary', None)
+        if secax is None:
+            return None
+        top_spine = secax.spines.get('top')
+        return {
+            'xlabel': secax.get_xlabel(),
+            'xlabel_visible': bool(secax.xaxis.label.get_visible()),
+            'label_color': mcolors.to_hex(secax.xaxis.label.get_color()),
+            'spine_visible': bool(top_spine.get_visible()) if top_spine is not None else True,
+            'spine_color': mcolors.to_hex(top_spine.get_edgecolor()) if top_spine is not None else None,
+            'major_tick_color': (secax.xaxis.get_tick_params() or {}).get('color'),
+        }
+    except Exception:
+        return None
+
+
+def apply_dual_top_axis_style(secax, top_axis_cfg: Optional[Dict]) -> None:
+    if secax is None or not isinstance(top_axis_cfg, dict):
+        return
+    try:
+        if top_axis_cfg.get('xlabel') is not None:
+            secax.set_xlabel(str(top_axis_cfg.get('xlabel') or ''))
+        secax.xaxis.label.set_visible(bool(top_axis_cfg.get('xlabel_visible', True)))
+        if top_axis_cfg.get('label_color'):
+            secax.xaxis.label.set_color(top_axis_cfg['label_color'])
+        sp = secax.spines.get('top')
+        if sp is not None:
+            if top_axis_cfg.get('spine_visible') is not None:
+                sp.set_visible(bool(top_axis_cfg.get('spine_visible')))
+            if top_axis_cfg.get('spine_color'):
+                set_spine_side_color(secax, 'top', top_axis_cfg['spine_color'], fig=None)
+            elif top_axis_cfg.get('major_tick_color'):
+                set_spine_side_color(secax, 'top', top_axis_cfg['major_tick_color'], fig=None)
+    except Exception:
+        pass
 
 
 def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data: Optional[list] = None) -> Dict:
@@ -122,114 +285,12 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
     if curve_linewidth is None:
         curve_linewidth = 1.0  # default
 
-    # Curve marker properties: get from first visible curve
-    curve_marker_props = {}
-    try:
-        for cyc, role, ln in _iter_cycle_lines(cycle_lines):
-            try:
-                curve_marker_props = {
-                    'linestyle': ln.get_linestyle(),
-                    'marker': ln.get_marker(),
-                    'markersize': ln.get_markersize(),
-                    'markerfacecolor': ln.get_markerfacecolor(),
-                    'markeredgecolor': ln.get_markeredgecolor()
-                }
-                break
-            except Exception:
-                pass
-            if curve_marker_props:
-                break
-    except Exception:
-        pass
+    if curve_linewidth is None:
+        curve_linewidth, curve_marker_props = capture_ec_curve_marker_defaults(cycle_lines)
+    else:
+        _, curve_marker_props = capture_ec_curve_marker_defaults(cycle_lines)
 
-    def _line_color_hex(ln):
-        try:
-            return mcolors.to_hex(ln.get_color())
-        except Exception:
-            col = ln.get_color()
-            if isinstance(col, str):
-                return col
-            try:
-                return mcolors.to_hex(mcolors.to_rgba(col))
-            except Exception:
-                return None
-
-    def _line_style_snapshot(ln):
-        style = {}
-        color_hex = _line_color_hex(ln)
-        if color_hex:
-            style['color'] = color_hex
-        try:
-            style['linewidth'] = float(ln.get_linewidth())
-        except Exception:
-            pass
-        try:
-            style['linestyle'] = ln.get_linestyle()
-        except Exception:
-            pass
-        try:
-            style['marker'] = ln.get_marker()
-            style['markersize'] = float(ln.get_markersize())
-            style['markerfacecolor'] = ln.get_markerfacecolor()
-            style['markeredgecolor'] = ln.get_markeredgecolor()
-        except Exception:
-            pass
-        try:
-            style['alpha'] = ln.get_alpha()
-        except Exception:
-            pass
-        style['visible'] = bool(ln.get_visible())
-        return style
-
-    cycle_styles = {}
-    for cyc, parts in cycle_lines.items():
-        entry = {}
-        if isinstance(parts, dict):
-            for role in ("charge", "discharge"):
-                ln = parts.get(role)
-                if ln is None:
-                    continue
-                style = _line_style_snapshot(ln)
-                if style:
-                    entry[role] = style
-        else:
-            ln = parts
-            if ln is not None:
-                style = _line_style_snapshot(ln)
-                if style:
-                    entry['line'] = style
-        if entry:
-            cycle_styles[str(cyc)] = entry
-
-    # Multi-file: capture cycle_styles per file for p/i persistence
-    cycle_styles_per_file = None
-    if file_data is not None and len(file_data) > 1:
-        cycle_styles_per_file = []
-        for f in file_data:
-            cl = f.get('cycle_lines')
-            if not cl:
-                cycle_styles_per_file.append({})
-                continue
-            per_file = {}
-            for cyc, parts in cl.items():
-                entry = {}
-                if isinstance(parts, dict):
-                    for role in ("charge", "discharge"):
-                        ln = parts.get(role)
-                        if ln is None:
-                            continue
-                        style = _line_style_snapshot(ln)
-                        if style:
-                            entry[role] = style
-                else:
-                    ln = parts
-                    if ln is not None:
-                        style = _line_style_snapshot(ln)
-                        if style:
-                            entry['line'] = style
-                if entry:
-                    per_file[str(cyc)] = entry
-            cycle_styles_per_file.append(per_file)
+    cycle_styles, cycle_styles_per_file = capture_cycle_styles_snapshot(cycle_lines, file_data)
 
     # Build WASD state (20 parameters) from current axes state
     def _get_spine_visible(which: str) -> bool:
@@ -292,21 +353,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
     except Exception:
         grid_enabled = ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else False
 
-    dual_top_axis = None
-    try:
-        secax = getattr(fig, '_xaxis_secondary', None)
-        if secax is not None:
-            top_spine = secax.spines.get('top')
-            dual_top_axis = {
-                'xlabel': secax.get_xlabel(),
-                'xlabel_visible': bool(secax.xaxis.label.get_visible()),
-                'label_color': mcolors.to_hex(secax.xaxis.label.get_color()),
-                'spine_visible': bool(top_spine.get_visible()) if top_spine is not None else True,
-                'spine_color': mcolors.to_hex(top_spine.get_edgecolor()) if top_spine is not None else None,
-                'major_tick_color': (secax.xaxis.get_tick_params() or {}).get('color'),
-            }
-    except Exception:
-        dual_top_axis = None
+    dual_top_axis = capture_dual_top_axis(fig, ax)
 
     result = {
         'kind': 'ec_style',
@@ -320,6 +367,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
             'family': font_fam0,
             'size': font_size,
             'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
+            **font_extras_export_dict(fig),
         },
         'axis_label_colors': {
             'x': mcolors.to_hex(getattr(ax, '_stored_xlabel_color', None) or ax.xaxis.label.get_color()),
@@ -353,6 +401,14 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
             'left_x': float(getattr(ax, '_left_ylabel_manual_offset_x_pts', 0.0) or 0.0),
             'right_x': float(getattr(ax, '_right_ylabel_manual_offset_x_pts', 0.0) or 0.0),
             'right_y': float(getattr(ax, '_right_ylabel_manual_offset_y_pts', 0.0) or 0.0),
+        },
+        'labelpads': {
+            'x': getattr(ax.xaxis, 'labelpad', None),
+            'y': getattr(ax.yaxis, 'labelpad', None),
+        },
+        'axis_labels': {
+            'xlabel': ax.get_xlabel() or '',
+            'ylabel': ax.get_ylabel() or '',
         },
         'curve_linewidth': curve_linewidth,
         'curve_markers': curve_marker_props,
@@ -582,8 +638,8 @@ def _print_style_snapshot(cfg: Dict):
                 vis = 'ON' if style.get('visible', True) else 'off'
                 # Show color block for better visualization
                 try:
-                    color_block_str = color_block(color) if color != 'unknown' else ''
-                    segments.append(f"{role_label}={color_block_str} {color} ({vis})")
+                    color_block_str = format_color_listing(color) if color != 'unknown' else ''
+                    segments.append(f"{role_label}={color_block_str} ({vis})")
                 except Exception:
                     segments.append(f"{role_label}={color} ({vis})")
             if segments:

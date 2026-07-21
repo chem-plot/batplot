@@ -164,6 +164,78 @@ def test_dqdv_2d_snapshot_preserves_interactive_style_state():
     assert getattr(fig2, "_colorbar_label_mode") == "normal"
 
 
+def test_dqdv_2d_snapshot_roundtrips_font_weight_and_highlight():
+    from batplot.plot_modes.common.font_extras import (
+        apply_fig_font_weight,
+        apply_fig_text_highlight,
+        get_fig_font_weight,
+        get_fig_text_highlight,
+    )
+
+    fig, ax = plt.subplots()
+    z = np.arange(20, dtype=float).reshape(4, 5)
+    im = ax.imshow(z, aspect="auto", origin="lower", extent=(0.0, 2.0, -0.5, 3.5))
+    cbar = fig.colorbar(im, ax=ax)
+    ax.set_xlabel("V")
+    apply_fig_font_weight(fig, [ax.xaxis.label], "bold")
+    apply_fig_text_highlight(fig, [ax.xaxis.label], True, fc="yellow", alpha=0.7, pad=0.3)
+
+    snap = E.build_dqdv_2d_snapshot(fig, ax, im, 2.0, 3.0, ["a", "b", "c", "d"], "dQ/dV", cbar)
+    assert snap is not None
+    assert snap["font"]["weight"] == "bold"
+    assert snap["font"]["highlight"] is True
+
+    # Old session without extras must still restore
+    old = dict(snap)
+    old["font"] = {"size": 12, "family": ["DejaVu Sans"]}
+    restored_old = E.restore_dqdv_2d_companion_figure(old)
+    assert restored_old is not None
+    fig_old, ax_old, _, _ = restored_old
+    assert get_fig_font_weight(fig_old) == "normal"
+    assert get_fig_text_highlight(fig_old) is False
+    plt.close(fig_old)
+
+    restored = E.restore_dqdv_2d_companion_figure(snap)
+    assert restored is not None
+    fig2, ax2, _, _ = restored
+    assert get_fig_font_weight(fig2) == "bold"
+    assert get_fig_text_highlight(fig2) is True
+    assert ax2.xaxis.label.get_fontweight() == "bold"
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_dqdv_2d_snapshot_preserves_spine_and_tick_colors():
+    """Spine color in snapshot must restore tick marks (after tick_params), not only edges."""
+    from batplot.ui import set_spine_side_color
+
+    fig, ax = plt.subplots()
+    z = np.arange(20, dtype=float).reshape(4, 5)
+    im = ax.imshow(z, aspect="auto", origin="lower", extent=(0.0, 2.0, -0.5, 3.5))
+    cbar = fig.colorbar(im, ax=ax)
+    set_spine_side_color(ax, "left", "red", fig=fig)
+    set_spine_side_color(ax, "bottom", "#00aa00", fig=fig)
+
+    snap = E.build_dqdv_2d_snapshot(fig, ax, im, 2.0, 3.0, ["a", "b", "c", "d"], "dQ/dV", cbar)
+    assert snap is not None
+    assert mcolors.to_hex(snap["spines"]["left"]["color"]) == "#ff0000"
+
+    restored = E.restore_dqdv_2d_companion_figure(snap)
+    assert restored is not None
+    fig2, ax2, _, _ = restored
+    assert mcolors.to_hex(ax2.spines["left"].get_edgecolor()) == "#ff0000"
+    tick_colored = False
+    for tick in ax2.yaxis.get_major_ticks():
+        ln = getattr(tick, "tick1line", None)
+        if ln is not None and ln.get_visible():
+            assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#ff0000"
+            tick_colored = True
+            break
+    assert tick_colored
+    plt.close(fig)
+    plt.close(fig2)
+
+
 def test_style_snapshot_preserves_tick_lengths_for_import():
     fig, ax, cycle_lines, cap, volt = _build_ec_figure()
     fig._tick_lengths = {"major": 8.0, "minor": 5.6}
@@ -234,6 +306,7 @@ def test_style_import_applies_tick_lengths(session_path, monkeypatch):
         canvas_mode=True,
         print_menu=lambda *_args, **_kwargs: None,
         push_state=lambda _note="": None,
+        pop_undo=lambda: None,
         restore_state=lambda: None,
         format_file_timestamp=lambda _path: "",
         savefig_plot_window=lambda *_args, **_kwargs: None,
@@ -319,6 +392,7 @@ def test_ec_style_snapshot_and_import_preserve_multifile_visibility_and_line_sty
         canvas_mode=True,
         print_menu=lambda *_args, **_kwargs: None,
         push_state=lambda _note="": None,
+        pop_undo=lambda: None,
         restore_state=lambda: None,
         format_file_timestamp=lambda _path: "",
         savefig_plot_window=lambda *_args, **_kwargs: None,
@@ -386,7 +460,7 @@ def test_ec_rename_helper_updates_axis_and_file_labels():
     fig, ax, cycle_lines, cap, volt = _build_ec_figure()
     file_data = [{"filename": "file1", "display_name": "file1", "cycle_lines": cycle_lines}]
     states = []
-    inputs = iter(["y", "New voltage", "f", "1", "Renamed file", "q", "q"])
+    inputs = iter(["y", "New voltage", "q", "f", "1", "Renamed file", "q", "q"])
 
     updated = EL.run_ec_rename_menu(
         fig=fig,
@@ -526,6 +600,137 @@ def test_ec_legend_helpers_rebuild_visible_labels_and_sanitize_offsets():
     assert "hidden" not in [text.get_text() for text in legend.get_texts()]
     assert EG._sanitize_legend_offset(fig, (0.1, -0.1)) == (0.1, -0.1)
     assert EG._sanitize_legend_offset(fig, (999.0, 0.0)) is None
+
+
+def test_ec_legend_title_fontsize_tracks_font_menu_and_rebuild():
+    from batplot.plot_modes.common.fonts import (
+        apply_font_size_to_artists,
+        collect_fig_font_artists,
+        set_font_size_default,
+        sync_legend_title_fontsize,
+    )
+
+    fig, ax, cycle_lines, cap, volt = _build_ec_figure()
+    ax.legend(title="Cycle")
+    legend = ax.get_legend()
+    assert legend is not None
+
+    set_font_size_default(10)
+    apply_font_size_to_artists(collect_fig_font_artists(ax, fig), 10)
+    assert legend.get_title().get_fontsize() == 10
+    assert legend.get_texts()[0].get_fontsize() == 10
+
+    EG._rebuild_legend(ax)
+    legend = ax.get_legend()
+    assert legend is not None
+    assert legend.get_title().get_fontsize() == 10
+
+    sync_legend_title_fontsize(legend, 14)
+    assert legend.get_title().get_fontsize() == 14
+
+
+def _ec_action_context(fig, ax, cycle_lines, file_data, style_path, monkeypatch):
+    monkeypatch.setattr(EA, "choose_style_file", lambda *_args, **_kwargs: style_path)
+    return EA.ElectrochemActionContext(
+        fig=fig,
+        ax=ax,
+        cycle_lines=cycle_lines,
+        file_data=file_data,
+        tick_state={},
+        source_paths=[style_path],
+        all_cycles=[1],
+        is_dqdv=False,
+        is_multi_file=bool(file_data and len(file_data) > 1),
+        menu_title="EC",
+        canvas_mode=True,
+        print_menu=lambda *_args, **_kwargs: None,
+        push_state=lambda _note="": None,
+        pop_undo=lambda: None,
+        restore_state=lambda: None,
+        format_file_timestamp=lambda _path: "",
+        savefig_plot_window=lambda *_args, **_kwargs: None,
+        rebuild_legend=lambda *_args, **_kwargs: None,
+        get_style_snapshot=E._get_style_snapshot,
+        get_geometry_snapshot=E._get_geometry_snapshot,
+        print_style_snapshot=E._print_style_snapshot,
+        export_style_dialog=lambda *_args, **_kwargs: None,
+        apply_font_family=E._apply_font_family,
+        apply_font_size=E._apply_font_size,
+        apply_spine_color=lambda *_args, **_kwargs: None,
+        iter_cycle_lines=E._iter_cycle_lines,
+        apply_cycle_styles=E._apply_cycle_styles,
+        apply_stored_smooth_settings=E._apply_stored_smooth_settings,
+        sanitize_legend_offset=lambda _fig, xy: xy,
+        apply_file_display_names_to_legend=lambda *_args, **_kwargs: None,
+        apply_display_mode=lambda _mode: None,
+        ui_position_top_xlabel=lambda *_args, **_kwargs: None,
+        ui_position_bottom_xlabel=lambda *_args, **_kwargs: None,
+        ui_position_left_ylabel=lambda *_args, **_kwargs: None,
+        ui_position_right_ylabel=lambda *_args, **_kwargs: None,
+        apply_legend_position=lambda *_args, **_kwargs: None,
+        set_legend_user_pref=lambda *_args, **_kwargs: None,
+    )
+
+
+def test_ec_style_import_applies_font_weight_and_highlight(session_path, monkeypatch):
+    from batplot.plot_modes.common.font_extras import (
+        apply_fig_text_highlight,
+        get_fig_font_weight,
+        get_fig_text_highlight,
+        set_fig_font_weight,
+    )
+
+    fig, ax, cycle_lines, _cap, _volt = _build_ec_figure()
+    set_fig_font_weight(fig, "bold")
+    apply_fig_text_highlight(fig, E._ec_font_artists(ax), True, fc="yellow", alpha=0.7, pad=0.3)
+    cfg = E._get_style_snapshot(fig, ax, cycle_lines, tick_state={}, file_data=None)
+    style_path = session_path("ec_font_extras.bps")
+    with open(style_path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+
+    fig2, ax2, cycle_lines2, _, _ = _build_ec_figure()
+    ctx = _ec_action_context(fig2, ax2, cycle_lines2, [], style_path, monkeypatch)
+    EA.handle_import_style_command(ctx)
+
+    assert get_fig_font_weight(fig2) == "bold"
+    assert get_fig_text_highlight(fig2) is True
+    assert ax2.xaxis.label.get_fontweight() == "bold"
+
+
+def test_ec_session_save_restore_font_extras(session_path):
+    from batplot.plot_modes.common.font_extras import (
+        apply_fig_text_highlight,
+        get_fig_font_weight,
+        get_fig_text_highlight,
+        set_fig_font_weight,
+    )
+
+    fig, ax, cycle_lines, _cap, _volt = _build_ec_figure()
+    set_fig_font_weight(fig, "bold")
+    apply_fig_text_highlight(fig, E._ec_font_artists(ax), True)
+    p = session_path("ec_font_session.pkl")
+    S.dump_ec_session(p, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+    fig2, ax2, _meta = loaded(S.load_ec_session(p))
+    assert get_fig_font_weight(fig2) == "bold"
+    assert get_fig_text_highlight(fig2) is True
+    assert ax2.xaxis.label.get_fontweight() == "bold"
+
+
+def test_ec_session_save_restore_font_size_applies_to_axis_labels(session_path):
+    fig, ax, cycle_lines, _cap, _volt = _build_ec_figure()
+    E._apply_font_size(ax, 10.0)
+    p = session_path("ec_font_size_session.pkl")
+    S.dump_ec_session(p, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+
+    plt.rcParams["font.size"] = 16.0
+    fig2, ax2, _meta = loaded(S.load_ec_session(p))
+    assert plt.rcParams["font.size"] == 10.0
+    assert ax2.xaxis.label.get_fontsize() == 10.0
+    assert ax2.yaxis.label.get_fontsize() == 10.0
+    assert ax2.get_xticklabels()[0].get_fontsize() == 10.0
+    legend = ax2.get_legend()
+    if legend is not None:
+        assert legend.get_title().get_fontsize() == 10.0
 
 
 def test_ec_menu_printer_includes_mode_and_overwrite_shortcuts(capsys):

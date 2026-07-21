@@ -7,7 +7,6 @@ mutated in place; the dispatcher injects them plus the terminal callbacks.
 
 from __future__ import annotations
 
-import traceback
 from typing import Any, Callable, List
 
 import numpy as np  # type: ignore[import]
@@ -203,12 +202,9 @@ def run_x_range_menu(
                                            hasattr(fig, '_pre_derivative_x_data_list'))
                         if data_is_processed and x_data_list and all(xd.size > 0 for xd in x_data_list):
                             # Use CURRENT processed data to determine full range (preserves all processing)
-                            print(f"DEBUG: Using current processed data for auto restore (has {len(x_data_list)} curves)")
                             new_min = min(xd.min() for xd in x_data_list if xd.size)
                             new_max = max(xd.max() for xd in x_data_list if xd.size)
-                            print(f"DEBUG: Processed data range: {new_min:.6g} to {new_max:.6g}")
                         elif x_full_list:
-                            print(f"DEBUG: Using original full data (no processing detected)")
                             new_min = min(xf.min() for xf in x_full_list if xf.size)
                             new_max = max(xf.max() for xf in x_full_list if xf.size)
                         else:
@@ -218,19 +214,16 @@ def run_x_range_menu(
                         for i in range(len(labels)):
                             if data_is_processed and hasattr(fig, '_full_processed_x_data_list') and i < len(fig._full_processed_x_data_list):
                                 # Use FULL processed data (preserves all processing: reduce + smooth + derivative)
-                                print(f"DEBUG: Auto restore curve {i+1}: Using full processed data ({len(fig._full_processed_x_data_list[i])} points)")
                                 xf = np.asarray(fig._full_processed_x_data_list[i], dtype=float).flatten()
                                 yf = np.asarray(fig._full_processed_y_data_list[i], dtype=float).flatten()
                                 yf_raw = yf - (offsets_list[i] if i < len(offsets_list) else 0.0)
                             elif data_is_processed and i < len(x_data_list) and x_data_list[i].size > 0:
                                 # Fallback: use current processed data
-                                print(f"DEBUG: Auto restore curve {i+1}: Using current processed data ({len(x_data_list[i])} points)")
                                 xf = np.asarray(x_data_list[i], dtype=float).flatten()
                                 yf = np.asarray(y_data_list[i], dtype=float).flatten()
                                 yf_raw = yf - (offsets_list[i] if i < len(offsets_list) else 0.0)
                             else:
                                 # Use full original data (no processing)
-                                print(f"DEBUG: Auto restore curve {i+1}: Using original full data")
                                 xf = x_full_list[i] if i < len(x_full_list) else x_data_list[i]
                                 yf_raw = raw_y_full_list[i] if i < len(raw_y_full_list) else (orig_y[i] if i < len(orig_y) else y_data_list[i])
                                 xf = np.asarray(xf, dtype=float).flatten()
@@ -313,7 +306,6 @@ def run_x_range_menu(
                         print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                     except Exception as e:
                         print(f"Error during auto restore: {e}")
-                        traceback.print_exc()
                     continue
                 push_state("xrange")
                 if rng.lower() == 'full':
@@ -347,17 +339,12 @@ def run_x_range_menu(
                             # Use full processed data to allow expansion
                             full_x = np.asarray(fig._full_processed_x_data_list[i], dtype=float)
                             if full_x.size > 0:
-                                full_min = full_x.min()
-                                full_max = full_x.max()
-                                print(f"DEBUG: Curve {i+1}: Expanding range ({curr_min:.6g}-{curr_max:.6g} -> {new_min:.6g}-{new_max:.6g}), using full processed data (range {full_min:.6g} to {full_max:.6g})")
                                 x_current = full_x
                                 y_current = np.asarray(fig._full_processed_y_data_list[i], dtype=float)
                             else:
-                                print(f"DEBUG: Curve {i+1}: Full processed data empty, using current data")
                                 x_current = curr_x
                                 y_current = np.asarray(y_data_list[i], dtype=float)
                         else:
-                            print(f"DEBUG: Curve {i+1}: Using current processed data (range {curr_min:.6g} to {curr_max:.6g}, requested {new_min:.6g} to {new_max:.6g})")
                             x_current = curr_x
                             y_current = np.asarray(y_data_list[i], dtype=float)
                         # Remove offset for filtering

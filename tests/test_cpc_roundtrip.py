@@ -108,6 +108,7 @@ def _make_cpc_action_context(
         apply_style=C._apply_style,
         get_geometry_snapshot=C._get_geometry_snapshot,
         push_state=lambda note: push_states.append(note),
+        pop_undo=lambda: None,
         restore_state=lambda: restore_calls.append(True),
     )
     return ctx

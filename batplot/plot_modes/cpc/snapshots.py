@@ -56,13 +56,17 @@ def push_cpc_state(
     tick_state,
     note: str = "",
 ) -> None:
-    """Capture CPC undo state."""
+    """Capture CPC undo state (style + geometry, same schema as batch undo)."""
     try:
         from . import interactive as _interactive
+        from ..common.state_capture import as_style_geom_export
 
-        snap = _interactive._style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data)
+        snap = as_style_geom_export(
+            _interactive._style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data),
+            kind="cpc_style_geom",
+            geometry=_get_geometry_snapshot(ax, ax2),
+        )
         snap["__note__"] = note
-        snap["geometry"] = _get_geometry_snapshot(ax, ax2)
         snap.setdefault("ticks", {}).setdefault("visibility", dict(tick_state))
         state_history.append(snap)
         if len(state_history) > 40:

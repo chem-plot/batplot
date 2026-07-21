@@ -92,12 +92,41 @@ def axis_text_artists(ax: Any, *, include_title: bool = False, include_axes_text
 
 
 def legend_text_artists(legend: Any) -> list[Any]:
+    """Legend entry labels plus the legend title (e.g. EC ``Cycle`` header)."""
     if legend is None:
         return []
+    artists: list[Any] = []
     try:
-        return list(legend.get_texts())
+        artists.extend(list(legend.get_texts()))
     except Exception:
-        return []
+        pass
+    try:
+        title = legend.get_title()
+        if title is not None:
+            artists.append(title)
+    except Exception:
+        pass
+    return artists
+
+
+def sync_legend_title_fontsize(legend: Any, size: float | None = None) -> None:
+    """Match legend title size to rcParams or legend entry labels (after rebuild)."""
+    if legend is None:
+        return
+    try:
+        title = legend.get_title()
+        if title is None:
+            return
+        if size is None:
+            size = mpl.rcParams.get("font.size")
+            if size is None:
+                texts = [t.get_fontsize() for t in legend.get_texts() if t.get_text().strip()]
+                if texts:
+                    size = sum(texts) / len(texts)
+        if size is not None:
+            title.set_fontsize(float(size))
+    except Exception:
+        pass
 
 
 def secondary_xaxis_text_artists(secax: Any) -> list[Any]:
@@ -121,12 +150,83 @@ def secondary_xaxis_text_artists(secax: Any) -> list[Any]:
     return artists
 
 
+def collect_fig_font_artists(
+    ax: Any,
+    fig: Any | None = None,
+    *,
+    include_title: bool = True,
+    include_axes_texts: bool = False,
+    include_legend: bool = True,
+    legend: Any | None = None,
+    extra_axes: list[Any] | None = None,
+    extra_artists: list[Any] | None = None,
+) -> list[Any]:
+    """Collect axis labels, ticks, duplicate titles, legend, and optional extra text."""
+    artists = axis_text_artists(ax, include_title=include_title, include_axes_texts=include_axes_texts)
+    if fig is not None:
+        artists.extend([
+            getattr(ax, "_top_xlabel_artist", None),
+            getattr(ax, "_right_ylabel_artist", None),
+            getattr(ax, "_top_xlabel_text", None),
+        ])
+        try:
+            if getattr(fig, "_xaxis_mode", "capacity") == "dual":
+                artists.extend(secondary_xaxis_text_artists(getattr(fig, "_xaxis_secondary", None)))
+        except Exception:
+            pass
+    if include_legend:
+        try:
+            leg = legend if legend is not None else ax.get_legend()
+            artists.extend(legend_text_artists(leg))
+        except Exception:
+            pass
+    for extra_ax in extra_axes or []:
+        if extra_ax is None:
+            continue
+        artists.extend(axis_text_artists(extra_ax, include_title=include_title))
+        artists.extend([
+            getattr(extra_ax, "_top_xlabel_artist", None),
+            getattr(extra_ax, "_right_ylabel_artist", None),
+        ])
+    if extra_artists:
+        artists.extend(extra_artists)
+    return [a for a in artists if a is not None]
+
+
+def collect_operando_font_artists(
+    fig: Any,
+    ax: Any,
+    ec_ax: Any | None = None,
+    cbar: Any | None = None,
+) -> list[Any]:
+    """Axis + EC + colorbar text for operando / dQ/dV 2D contour font weight/highlight."""
+    artists: list[Any] = []
+    for a in (ax, ec_ax):
+        if a is None:
+            continue
+        artists.extend(collect_fig_font_artists(a, fig, include_title=True, include_axes_texts=True))
+    cbar_ax = getattr(cbar, "ax", None) if cbar is not None else None
+    if cbar_ax is not None:
+        try:
+            artists.extend(collect_fig_font_artists(cbar_ax, fig, include_axes_texts=True))
+        except Exception:
+            pass
+    for attr in ("_cbar_high_text", "_cbar_low_text"):
+        art = getattr(fig, attr, None)
+        if art is not None:
+            artists.append(art)
+    return [a for a in artists if a is not None]
+
+
 __all__ = [
     "apply_font_family_to_artists",
     "apply_font_size_to_artists",
     "axis_text_artists",
+    "collect_fig_font_artists",
+    "collect_operando_font_artists",
     "legend_text_artists",
     "secondary_xaxis_text_artists",
+    "sync_legend_title_fontsize",
     "set_font_family_defaults",
     "set_font_size_default",
 ]

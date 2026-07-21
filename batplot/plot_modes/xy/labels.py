@@ -56,27 +56,27 @@ def run_xy_rename_menu(
                 continue
             if mode == 'c':
                 print_label_latex_tips()
-                idx_in = safe_input("Curve number to rename (q=cancel): ").strip()
-                if not idx_in or idx_in.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                try:
-                    idx = int(idx_in) - 1
-                except ValueError:
-                    print("Invalid index.")
-                    continue
-                if not (0 <= idx < len(labels)):
-                    print("Invalid index.")
-                    continue
-                new_label = safe_input("New curve label (q=cancel): ")
-                if not new_label or new_label.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                new_label = convert_label_shortcuts(new_label)
-                push_state("rename-curve")
-                labels[idx] = new_label
-                label_text_objects[idx].set_text(f"{idx+1}: {new_label}")
-                fig.canvas.draw()
+                while True:
+                    idx_in = safe_input("Curve number to rename (q=back): ").strip()
+                    if not idx_in or idx_in.lower() == 'q':
+                        break
+                    try:
+                        idx = int(idx_in) - 1
+                    except ValueError:
+                        print("Invalid index.")
+                        continue
+                    if not (0 <= idx < len(labels)):
+                        print("Invalid index.")
+                        continue
+                    new_label = safe_input(f"New curve label [{labels[idx]}] (q=back): ")
+                    if not new_label or new_label.lower() == 'q':
+                        continue
+                    new_label = convert_label_shortcuts(new_label)
+                    push_state("rename-curve")
+                    labels[idx] = new_label
+                    label_text_objects[idx].set_text(f"{idx+1}: {new_label}")
+                    fig.canvas.draw()
+                    print(f"Curve {idx + 1} label updated.")
             elif mode == 't':
                 cts = get_cif_series()
                 if not cts:
@@ -84,70 +84,70 @@ def run_xy_rename_menu(
                     continue
                 print("CIF phases (then pick one; same list as cif→r)")
                 print_cif_phase_list(cts)
-                s = safe_input(
-                    "Phase number to rename (q=cancel): "
-                ).strip()
-                if not s or s.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                try:
-                    idx = int(s) - 1
-                    if not (0 <= idx < len(cts)):
-                        print("Index out of range.")
+                while True:
+                    s = safe_input("Phase number to rename (q=back): ").strip()
+                    if not s or s.lower() == 'q':
+                        break
+                    try:
+                        idx = int(s) - 1
+                        if not (0 <= idx < len(cts)):
+                            print("Index out of range.")
+                            continue
+                    except ValueError:
+                        print("Bad index.")
                         continue
-                except ValueError:
-                    print("Bad index.")
-                    continue
-                print_label_latex_tips()
-                new_name = safe_input(
-                    "New CIF phase label (q=cancel): "
-                ).strip()
-                if not new_name or new_name.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                new_name = convert_label_shortcuts(new_name)
-                apply_cif_phase_label_rename(idx, new_name)
-                print(f"Phase {idx + 1} label updated.")
+                    print_label_latex_tips()
+                    while True:
+                        new_name = safe_input("New CIF phase label (q=back): ").strip()
+                        if not new_name or new_name.lower() == 'q':
+                            break
+                        new_name = convert_label_shortcuts(new_name)
+                        apply_cif_phase_label_rename(idx, new_name)
+                        print(f"Phase {idx + 1} label updated.")
             elif mode in ('x','y'):
-                print("Enter new axis label (q=cancel).")
+                print("Enter new axis label (q=back).")
                 print_label_latex_tips()
-                new_axis = safe_input("New axis label: ")
-                if not new_axis or new_axis.lower() == 'q':
-                    print("Canceled.")
-                    continue
-                new_axis = convert_label_shortcuts(new_axis)
-                new_axis = normalize_label_text(new_axis)
-                remember_axis_name(new_axis)
-                push_state("rename-axis")
-                # Freeze layout and preserve current pad via one-shot pending to avoid drift
-                try:
-                    fig.set_layout_engine('none')
-                except Exception:
+                while True:
+                    if mode == 'x':
+                        current = ax.xaxis.label.get_text()
+                    else:
+                        current = ax.yaxis.label.get_text()
+                    new_axis = safe_input(f"New axis label [{current}] (q=back): ")
+                    if not new_axis or new_axis.lower() == 'q':
+                        break
+                    new_axis = convert_label_shortcuts(new_axis)
+                    new_axis = normalize_label_text(new_axis)
+                    remember_axis_name(new_axis)
+                    push_state("rename-axis")
+                    # Freeze layout and preserve current pad via one-shot pending to avoid drift
                     try:
-                        fig.set_tight_layout(False)
+                        fig.set_layout_engine('none')
+                    except Exception:
+                        try:
+                            fig.set_tight_layout(False)
+                        except Exception:
+                            pass
+                    try:
+                        fig.set_constrained_layout(False)
                     except Exception:
                         pass
-                try:
-                    fig.set_constrained_layout(False)
-                except Exception:
-                    pass
-                if mode == 'x':
-                    # Preserve current pad exactly once after rename
-                    try:
-                        ax._pending_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
-                    except Exception:
-                        pass
-                    ax.xaxis.label.set_text(new_axis)
-                    position_top_xlabel()
-                    position_bottom_xlabel()
-                else:
-                    try:
-                        ax._pending_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
-                    except Exception:
-                        pass
-                    ax.yaxis.label.set_text(new_axis)
-                    position_right_ylabel()
-                    position_left_ylabel()
+                    if mode == 'x':
+                        # Preserve current pad exactly once after rename
+                        try:
+                            ax._pending_xlabelpad = getattr(ax.xaxis, 'labelpad', None)
+                        except Exception:
+                            pass
+                        ax.xaxis.label.set_text(new_axis)
+                        position_top_xlabel()
+                        position_bottom_xlabel()
+                    else:
+                        try:
+                            ax._pending_ylabelpad = getattr(ax.yaxis, 'labelpad', None)
+                        except Exception:
+                            pass
+                        ax.yaxis.label.set_text(new_axis)
+                        position_right_ylabel()
+                        position_left_ylabel()
                 sync_fonts()
                 fig.canvas.draw()
             else:

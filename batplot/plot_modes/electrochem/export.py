@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from ..common.crosshair_export import savefig_without_crosshair
+
 
 def _ec_savefig_plot_window(fig, ax, target: str, *, transparent: bool = False) -> None:
     """Export EC/dQ/dV figure without clipping labels, legends, or duplicate labels."""
@@ -59,7 +61,7 @@ def _ec_savefig_plot_window(fig, ax, target: str, *, transparent: bool = False) 
         kwargs["transparent"] = True
         kwargs["facecolor"] = "none"
         kwargs["edgecolor"] = "none"
-    fig.savefig(target, **kwargs)
+    savefig_without_crosshair(fig, target, **kwargs)
 
 
 __all__ = ["_ec_savefig_plot_window"]

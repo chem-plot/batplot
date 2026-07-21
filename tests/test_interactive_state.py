@@ -5,6 +5,9 @@ WASD tick-state bookkeeping that caused recent regressions in operando undo and
 session load paths.
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, NullLocator
@@ -216,7 +219,7 @@ def test_font_helpers_apply_family_and_size_to_common_artists():
     ax.set_ylabel("Voltage")
     ax.set_title("Title")
     ax.text(0.5, 0.5, "note")
-    legend = ax.legend()
+    legend = ax.legend(title="Cycle")
 
     set_font_family_defaults("DejaVu Sans", sans_serif_stack=True)
     set_font_size_default(13)
@@ -230,6 +233,7 @@ def test_font_helpers_apply_family_and_size_to_common_artists():
     assert ax.xaxis.label.get_fontfamily()[0] == "DejaVu Sans"
     assert ax.title.get_fontsize() == 13
     assert legend.get_texts()[0].get_fontsize() == 13
+    assert legend.get_title().get_fontsize() == 13
 
 
 def test_colorize_prompt_preserves_command_text():
@@ -761,7 +765,7 @@ def test_run_spine_tick_menu_supports_major_and_minor_interval_submenus():
 
 
 def test_run_font_menu_dispatches_family_and_size_callbacks():
-    inputs = iter(["f", "2", "s", "11.5", "q"])
+    inputs = iter(["f", "2", "q", "s", "8", "10", "q", "q"])
     calls = []
 
     run_font_menu(
@@ -775,7 +779,172 @@ def test_run_font_menu_dispatches_family_and_size_callbacks():
         fonts=["Arial", "Helvetica"],
     )
 
-    assert calls == [("family", "Helvetica"), ("size", 11.5)]
+    assert calls == [("family", "Helvetica"), ("size", 8.0), ("size", 10.0)]
+
+
+def test_run_font_menu_dispatches_weight_and_highlight_callbacks():
+    inputs = iter(["b", "bold", "q", "h", "t", "c", "yellow", "q", "q", "q"])
+    calls = []
+
+    run_font_menu(
+        safe_input=lambda _prompt: next(inputs),
+        colorize_menu=lambda text: text,
+        colorize_prompt=lambda text: text,
+        get_current_family=lambda: "Arial",
+        get_current_size=lambda: 10,
+        apply_family=lambda family: calls.append(("family", family)),
+        apply_size=lambda size: calls.append(("size", size)),
+        get_current_weight=lambda: "normal",
+        apply_weight=lambda weight: calls.append(("weight", weight)),
+        get_current_highlight=lambda: False,
+        get_highlight_style=lambda: {"fc": "white", "alpha": 0.85, "pad": 0.2},
+        apply_highlight_toggle=lambda: calls.append(("highlight_toggle", None)),
+        apply_highlight_facecolor=lambda fc: calls.append(("highlight_fc", fc)),
+        apply_highlight_alpha=lambda alpha: calls.append(("highlight_alpha", alpha)),
+        apply_highlight_pad=lambda pad: calls.append(("highlight_pad", pad)),
+        fonts=["Arial", "Helvetica"],
+    )
+
+    assert calls == [("weight", "bold"), ("highlight_toggle", None), ("highlight_fc", "yellow")]
+
+
+def test_font_extras_export_apply_and_refresh():
+    from batplot.plot_modes.common.font_extras import (
+        apply_font_extras_from_cfg,
+        font_extras_export_dict,
+        get_fig_text_highlight,
+        refresh_font_extras_on_artists,
+        set_fig_font_weight,
+    )
+
+    fig, ax = plt.subplots()
+    ax.set_xlabel("X")
+    artists = [ax.xaxis.label]
+    set_fig_font_weight(fig, "bold")
+    cfg = font_extras_export_dict(fig)
+    cfg["highlight"] = True
+    cfg["highlight_fc"] = "0.95"
+    apply_font_extras_from_cfg(fig, artists, cfg)
+    assert ax.xaxis.label.get_fontweight() == "bold"
+    assert get_fig_text_highlight(fig) is True
+    ax.xaxis.label.set_bbox(None)
+    refresh_font_extras_on_artists(fig, artists)
+    assert ax.xaxis.label.get_bbox_patch() is not None
+
+
+def test_font_extras_old_cfg_and_corrupt_alpha_are_safe():
+    from batplot.plot_modes.common.font_extras import (
+        apply_font_extras_from_cfg,
+        get_fig_font_weight,
+        get_fig_text_highlight,
+        set_fig_font_weight,
+    )
+
+    fig, ax = plt.subplots()
+    ax.set_xlabel("X")
+    artists = [ax.xaxis.label]
+    set_fig_font_weight(fig, "normal")
+    # Pre-feature styles: missing weight/highlight must not crash or change store
+    apply_font_extras_from_cfg(fig, artists, {"size": 12, "family": "Arial"})
+    assert get_fig_font_weight(fig) == "normal"
+    assert get_fig_text_highlight(fig) is False
+    # Corrupt numeric fields fall back to defaults
+    set_fig_font_weight(fig, "bold")
+    apply_font_extras_from_cfg(
+        fig,
+        artists,
+        {"weight": "bold", "highlight": True, "highlight_alpha": "bad", "highlight_pad": None},
+    )
+    assert get_fig_text_highlight(fig) is True
+    assert ax.xaxis.label.get_bbox_patch() is not None
+    plt.close(fig)
+
+
+def test_font_extras_agg_savefig_preserves_bold_and_bbox(tmp_path):
+    """Agg backend (Win/macOS/Linux headless export) must draw bold + highlight bbox."""
+    from batplot.plot_modes.common.font_extras import apply_fig_font_weight, apply_fig_text_highlight
+
+    fig, ax = plt.subplots()
+    ax.set_xlabel("Scan")
+    artists = [ax.xaxis.label]
+    apply_fig_font_weight(fig, artists, "bold")
+    apply_fig_text_highlight(fig, artists, True, fc="yellow", alpha=0.8, pad=0.25)
+    out = tmp_path / "font_extras.png"
+    fig.savefig(out, dpi=72)
+    assert out.stat().st_size > 0
+    assert ax.xaxis.label.get_fontweight() == "bold"
+    assert ax.xaxis.label.get_bbox_patch() is not None
+    plt.close(fig)
+
+
+def test_xy_style_p_i_roundtrip_font_weight_includes_legend(session_path, fake_args):
+    """XY style export/import must restore bold on axis labels and legend texts."""
+    from batplot.plot_modes.common.font_extras import (
+        apply_fig_text_highlight,
+        get_fig_font_weight,
+        get_fig_text_highlight,
+        set_fig_font_weight,
+    )
+    from batplot.plot_modes.common.fonts import collect_fig_font_artists
+    from batplot.plot_modes.xy import style as ST
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [1, 2], label="c1")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    leg = ax.legend()
+    artists = collect_fig_font_artists(ax, fig, extra_artists=[])
+    set_fig_font_weight(fig, "bold")
+    apply_fig_text_highlight(fig, artists, True, fc="yellow", alpha=0.7, pad=0.3)
+    for a in artists:
+        if hasattr(a, "set_fontweight"):
+            a.set_fontweight("bold")
+
+    style_file = session_path("xy_font_extras.bps")
+    ST.export_style_config(
+        style_file,
+        fig,
+        ax,
+        [np.array([1, 2])],
+        ["c1"],
+        0.0,
+        fake_args,
+        {},
+        [0.0],
+        overwrite_path=style_file,
+        force_kind="ps",
+        label_text_objects=[],
+    )
+    payload = json.loads(Path(style_file).read_text(encoding="utf-8"))
+    assert payload["font"]["weight"] == "bold"
+    assert payload["font"]["highlight"] is True
+
+    fig2, ax2 = plt.subplots()
+    ax2.plot([0, 1], [1, 2], label="c1")
+    ax2.set_xlabel("X")
+    ax2.legend()
+    ST.apply_style_config(
+        style_file,
+        fig2,
+        ax2,
+        [np.array([0, 1])],
+        [np.array([1, 2])],
+        [np.array([1, 2])],
+        [0.0],
+        [],
+        fake_args,
+        {},
+        ["c1"],
+        update_labels_func=lambda *a, **k: None,
+    )
+    assert get_fig_font_weight(fig2) == "bold"
+    assert get_fig_text_highlight(fig2) is True
+    assert ax2.xaxis.label.get_fontweight() == "bold"
+    leg2 = ax2.get_legend()
+    assert leg2 is not None
+    assert all(t.get_fontweight() == "bold" for t in leg2.get_texts())
+    plt.close(fig)
+    plt.close(fig2)
 
 
 def test_run_dispatch_menu_routes_choices_to_mode_handler():

@@ -66,7 +66,12 @@ from .ui import (
     capture_axes_tick_locators,
     restore_axes_tick_locators,
     apply_wasd_minor_ticks,
+    finalize_spine_colors,
+    finalize_spine_colors_cpc,
+    finalize_spine_colors_for_axes,
 )
+from .plot_modes.common.sources import resolve_xy_source_files
+from .plot_modes.common.font_extras import apply_session_font_cfg, merge_session_font_dump
 from .plot_modes.common.interactive_state import build_saved_tick_state
 from .plot_modes.common.axis_state import (
     capture_axis_spines_and_tick_widths,
@@ -142,6 +147,23 @@ def _try_extract_version_from_pickle(filename: str) -> Dict[str, str]:
         # we can't extract version info. This is expected in version mismatch cases.
         pass
     return {}
+
+
+def _package_versions_stamp() -> Dict[str, str]:
+    """Versions recorded into every session pickle for mismatch diagnostics."""
+    out: Dict[str, str] = {
+        "numpy": _get_current_numpy_version(),
+    }
+    try:
+        import matplotlib as _mpl  # type: ignore[import-untyped]
+        out["matplotlib"] = str(getattr(_mpl, "__version__", "unknown"))
+    except Exception:
+        out["matplotlib"] = "unknown"
+    try:
+        out["python"] = sys.version.split()[0]
+    except Exception:
+        pass
+    return out
 
 
 def _get_current_numpy_version() -> str:
@@ -704,16 +726,14 @@ def _dump_session_impl(
             'tick_lengths': tick_lengths,
             'tick_direction': getattr(fig, '_tick_direction', 'out'),
             'tick_locator_state': _capture_session_tick_locator(ax),
-            'font': {
-                'size': plt.rcParams.get('font.size'),
-                'chain': list(plt.rcParams.get('font.sans-serif', [])),
-                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
-            },
+            'font': merge_session_font_dump(fig),
             'args_subset': {
                 'stack': bool(getattr(args, 'stack', False)),
                 'autoscale': bool(getattr(args, 'autoscale', False)),
                 'norm': bool(getattr(args, 'norm', False)),
+                'files': [str(f) for f in (getattr(args, 'files', None) or [])],
             },
+            'source_files': [str(f) for f in (getattr(args, 'files', None) or [])],
             'cif_tick_series': [tuple(t) for t in (cif_tick_series or [])],
             'cif_hkl_map': {k: [tuple(v) for v in val] for k, val in (cif_hkl_map or {}).items()},
             'cif_hkl_label_map': {k: dict(v) for k, v in (cif_hkl_label_map or {}).items()},
@@ -774,6 +794,7 @@ def _dump_session_impl(
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
         target = ensure_exact_case_filename(target)
         
+        sess['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"Session saved to {target}")
@@ -1037,11 +1058,7 @@ def _dump_operando_session_impl(
                 'label_mode': getattr(fig, '_colorbar_label_mode', 'highlow'),
             },
             'ec': ec_state,
-            'font': {
-                'size': plt.rcParams.get('font.size'),
-                'chain': list(plt.rcParams.get('font.sans-serif', [])),
-                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
-            },
+            'font': merge_session_font_dump(fig),
         }
         # CIF tick labels for operando (if present)
         if getattr(ax, '_operando_cif_tick_series', None):
@@ -1070,6 +1087,7 @@ def _dump_operando_session_impl(
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
         target = ensure_exact_case_filename(target)
         
+        sess['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"Operando session saved to {target}")
@@ -1621,6 +1639,17 @@ def _load_operando_session_impl(filename: str):
             except Exception:
                 pass
 
+    try:
+        finalize_spine_colors_for_axes(
+            fig,
+            [
+                (ax, getattr(ax, '_saved_tick_state', None)),
+                (ec_ax, getattr(ec_ax, '_saved_tick_state', None) if ec_ax is not None else None),
+            ],
+        )
+    except Exception:
+        pass
+
     # Persist fixed inch parameters from loaded session to attributes
     # This ensures interactive menu can read correct values
     try:
@@ -1773,6 +1802,18 @@ def _load_operando_session_impl(filename: str):
             fig.canvas.draw_idle()
         except Exception:
             pass
+    try:
+        from .plot_modes.common.fonts import collect_operando_font_artists
+
+        apply_session_font_cfg(
+            fig,
+            sess.get('font', {}) or {},
+            ax,
+            ec_ax,
+            artists=collect_operando_font_artists(fig, ax, ec_ax, cbar),
+        )
+    except Exception:
+        pass
     return fig, ax, im, cbar, ec_ax
 
 
@@ -2048,11 +2089,7 @@ def _dump_ec_session_impl(
             'lines': lines_state,
             'multi_file': file_data_saved is not None,
             'file_data': file_data_saved if file_data_saved is not None else None,
-            'font': {
-                'size': plt.rcParams.get('font.size'),
-                'chain': list(plt.rcParams.get('font.sans-serif', [])),
-                'mathtext_fontset': plt.rcParams.get('mathtext.fontset'),
-            },
+            'font': merge_session_font_dump(fig),
             'legend': {
                 'visible': legend_visible,
                 'position_inches': legend_xy_in,
@@ -2085,6 +2122,7 @@ def _dump_ec_session_impl(
                 'swapped': getattr(fig, '_xaxis_swapped', False),
                 'top_axis': dual_top_axis,
             },
+            'ro_active': bool(getattr(fig, '_ro_active', False)),
         }
         if skip_confirm:
             target = filename
@@ -2097,8 +2135,9 @@ def _dump_ec_session_impl(
             snap = getattr(fig, '_dqdv_2d_snapshot', None)
             if isinstance(snap, dict) and snap.get('Z') is not None:
                 sess['dqdv_2d'] = snap
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: could not embed dQ/dV 2D snapshot in EC session: {e}")
+        sess['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
         print(f"EC session saved to {target}")
@@ -2546,11 +2585,24 @@ def _load_ec_session_impl(
             setattr(fig, '_ec_rotation_angle', rotation_angle)
         except Exception:
             pass
-        # Restore display_mode (charge/discharge/both) for consistency
+        # Restore display_mode (charge/discharge/both) and re-apply visibility
         try:
             dm = sess.get('display_mode', 'both')
             if dm in ('charge', 'discharge', 'both'):
                 setattr(fig, '_ec_display_mode', dm)
+                from .plot_modes.electrochem.style_apply import _apply_display_mode
+
+                _apply_display_mode(
+                    dm,
+                    cycle_lines=cycle_lines,
+                    file_data=file_data_out,
+                    is_multi_file=bool(file_data_out),
+                    iter_cycle_lines=None,
+                )
+        except Exception:
+            pass
+        try:
+            fig._ro_active = bool(sess.get('ro_active', False))
         except Exception:
             pass
     else:
@@ -2685,7 +2737,12 @@ def _load_ec_session_impl(
             ax._right_ylabel_on = False
     except Exception:
         pass
-    
+
+    try:
+        finalize_spine_colors(fig, ax, tick_state=getattr(ax, '_saved_tick_state', None))
+    except Exception:
+        pass
+
     # Restore mode flag (e.g., dQdV mode)
     try:
         mode = sess.get('mode')
@@ -2740,18 +2797,9 @@ def _load_ec_session_impl(
                     top_axis_cfg = xd.get('top_axis') if isinstance(xd, dict) else None
                     if isinstance(top_axis_cfg, dict):
                         try:
-                            if top_axis_cfg.get('xlabel') is not None:
-                                secax.set_xlabel(str(top_axis_cfg.get('xlabel') or ''))
-                            secax.xaxis.label.set_visible(bool(top_axis_cfg.get('xlabel_visible', True)))
-                            if top_axis_cfg.get('label_color'):
-                                secax.xaxis.label.set_color(top_axis_cfg['label_color'])
-                            sp = secax.spines.get('top')
-                            if sp is not None:
-                                if top_axis_cfg.get('spine_visible') is not None:
-                                    sp.set_visible(bool(top_axis_cfg.get('spine_visible')))
-                                if top_axis_cfg.get('spine_color'):
-                                    sp.set_edgecolor(top_axis_cfg['spine_color'])
-                                    secax.tick_params(axis='x', which='both', colors=top_axis_cfg['spine_color'])
+                            from .plot_modes.electrochem.style import apply_dual_top_axis_style
+
+                            apply_dual_top_axis_style(secax, top_axis_cfg)
                         except Exception:
                             pass
                     try:
@@ -2781,6 +2829,12 @@ def _load_ec_session_impl(
                 ax.set_xlabel(ions_label)
     except Exception as e:
         print(f"Warning: Could not restore xaxis_dual: {e}")
+
+    try:
+        # After dual-top create (which may run tick_params), re-apply primary spine/tick colors.
+        finalize_spine_colors(fig, ax, tick_state=getattr(ax, '_saved_tick_state', None))
+    except Exception:
+        pass
 
     # Legend visibility/position
     try:
@@ -2853,11 +2907,15 @@ def _load_ec_session_impl(
             fig.canvas.draw_idle()
         except Exception:
             pass
+    try:
+        apply_session_font_cfg(fig, sess.get('font', {}) or {}, ax)
+    except Exception:
+        pass
     if not embed:
         try:
             blob = sess.get('dqdv_2d')
             if isinstance(blob, dict) and blob.get('Z') is not None:
-                from .plot_modes.electrochem.interactive import restore_dqdv_2d_companion_figure
+                from .plot_modes.electrochem.dqdv_2d import restore_dqdv_2d_companion_figure
                 cbundle = restore_dqdv_2d_companion_figure(blob)
                 if cbundle:
                     setattr(fig, '_dqdv_2d_companion_bundle', cbundle)
@@ -3159,15 +3217,13 @@ def _dump_cpc_session_impl(
             'tick_locator_state_ax2': _capture_session_tick_locator(ax2),
             'stored_titles': stored_titles,
             'title_offsets': title_offsets,
-            'font': {
-                'size': plt.rcParams.get('font.size'),
-                'chain': list(plt.rcParams.get('font.sans-serif', [])),
-            },
+            'font': merge_session_font_dump(fig, include_mathtext=False),
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
             ),
             'display_mode': getattr(fig, '_cpc_display_mode', 'both'),
             'spine_colors_auto': bool(getattr(fig, '_cpc_spine_auto', False)),
+            'ro_active': bool(getattr(fig, '_ro_active', False)),
         }
         
         # Add multi-file data if available
@@ -3253,6 +3309,7 @@ def _dump_cpc_session_impl(
             if not target:
                 print("CPC session save canceled.")
                 return
+        meta['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(meta, f)
         print(f"CPC session saved to {target}")
@@ -3324,6 +3381,10 @@ def _load_cpc_session_impl(filename: str):
                 pass
         ax = fig.add_subplot(111)
         ax2 = ax.twinx()
+        try:
+            fig._ro_active = bool(sess.get('ro_active', False))
+        except Exception:
+            pass
         # Fonts
         try:
             f = sess.get('font', {})
@@ -3804,12 +3865,23 @@ def _load_cpc_session_impl(filename: str):
         except Exception:
             pass
         try:
+            finalize_spine_colors_cpc(
+                fig, ax, ax2,
+                tick_state=getattr(ax, '_saved_tick_state', None),
+            )
+        except Exception:
+            pass
+        try:
             fig.canvas.draw()
         except Exception:
             try:
                 fig.canvas.draw_idle()
             except Exception:
                 pass
+        try:
+            apply_session_font_cfg(fig, sess.get('font', {}) or {}, ax, ax2)
+        except Exception:
+            pass
         return fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data
     except Exception as e:
         print(f"Error loading CPC session: {e}")
@@ -4119,8 +4191,6 @@ def _load_xy_session_impl(filename: str) -> tuple[Any, Any, dict[str, Any]] | No
                         continue
                     if 'linewidth' in spec:
                         spn.set_linewidth(spec['linewidth'])
-                    if 'color' in spec and spec['color'] is not None:
-                        spn.set_edgecolor(spec['color'])
                     if 'visible' in spec:
                         spn.set_visible(bool(spec['visible']))
             else:
@@ -4585,16 +4655,37 @@ def _load_xy_session_impl(filename: str) -> tuple[Any, Any, dict[str, Any]] | No
         try:
             fig_cfg_spines = sess.get('figure', {}).get('spines', {})
             _restore_xy_axis_style_from_session(ax, axis_cfg, fig=fig, spines_cfg=fig_cfg_spines)
-            _ui_position_bottom_xlabel(ax, fig, tick_state)
-            _ui_position_left_ylabel(ax, fig, tick_state)
+            from .plot_modes.xy.spines import apply_xy_spine_specs
+            apply_xy_spine_specs(fig, ax, tick_state, fig_cfg_spines)
+            # Spine re-apply may overwrite explicit axis title colors with spine edge color.
+            label_style = {}
+            if axis_cfg.get("axis_label_colors"):
+                label_style["axis_label_colors"] = axis_cfg["axis_label_colors"]
+            if label_style:
+                from .plot_modes.xy.style import apply_xy_axis_style
+                apply_xy_axis_style(ax, label_style, fig=fig, spines_cfg={})
+            # Spine re-apply may call label positioning; only consume pending pads once.
+            if getattr(ax, '_pending_xlabelpad', None) is not None:
+                _ui_position_bottom_xlabel(ax, fig, tick_state)
+            if getattr(ax, '_pending_ylabelpad', None) is not None:
+                _ui_position_left_ylabel(ax, fig, tick_state)
         except Exception:
             pass
 
         args_subset = sess.get('args_subset', {})
+        source_files = resolve_xy_source_files(
+            args=None,
+            labels=labels_list,
+            cif_tick_series=cif_tick_series,
+            fig=fig,
+            args_subset=args_subset,
+            session=sess,
+        )
         Args = type('Args', (), {
             'stack': saved_stack,
             'autoscale': bool(args_subset.get('autoscale', True)),
             'norm': bool(args_subset.get('norm', False)),
+            'files': source_files,
         })
         args_minimal = Args()
 
@@ -4629,6 +4720,15 @@ def _load_xy_session_impl(filename: str) -> tuple[Any, Any, dict[str, Any]] | No
             'use_rft': use_rft,
             'cif_globals': cif_globals_dict,
         }
+        try:
+            apply_session_font_cfg(
+                fig,
+                sess.get('font', {}) or {},
+                ax,
+                extra_artists=label_text_objects,
+            )
+        except Exception:
+            pass
         return fig, ax, menu_kwargs
     except Exception as e:
         print(f"Error loading XY session: {e}")

@@ -14,6 +14,65 @@ from ...plotting import update_labels
 from .data_ops import _calculate_derivative, _calculate_reversed_derivative
 
 
+
+def update_ylabel_for_derivative(
+    order: int,
+    current_label: Optional[str] = None,
+    *,
+    is_reversed: bool = False,
+    x_label: Optional[str] = None,
+    fallback_ylabel: str = "Y",
+) -> str:
+    """Generate an appropriate y-axis label for a derivative plot.
+
+    Extracted from the interactive menu so style import (``i``) can update the
+    ylabel without importing nested menu closures.
+    """
+    if current_label is None:
+        current_label = fallback_ylabel or "Y"
+
+    current_lower = current_label.lower()
+
+    if is_reversed:
+        y_label = (
+            current_label
+            if current_label and current_label != "Y"
+            else (fallback_ylabel or "Y")
+        )
+        if order == 1:
+            if x_label:
+                return f"d({x_label})/d({y_label})"
+            return f"dx/d({y_label})"
+        if x_label:
+            return f"d²({x_label})/d({y_label})²"
+        return f"d²x/d({y_label})²"
+
+    if order == 1:
+        if "/" in current_label:
+            if "d²" in current_label or "d2" in current_lower:
+                return current_label.replace("d²", "d").replace("d2", "d")
+            if "d" in current_label.lower() and "/" in current_label:
+                return current_label
+        if x_label:
+            return f"d({current_label})/d({x_label})"
+        return f"d({current_label})/dx"
+
+    # order == 2
+    if "/" in current_label:
+        if "d²" in current_label or "d2" in current_lower:
+            return current_label
+        if "d" in current_label.lower() and "/" in current_label:
+            return (
+                current_label.replace("d(", "d²(")
+                .replace("d2(", "d²(")
+                .replace("d/", "d²/")
+                .replace("/d(", "²/d(")
+            )
+    if x_label:
+        return f"d²({current_label})/d({x_label})²"
+    return f"d²({current_label})/dx²"
+
+
 def run_derivative_menu(
     *,
     args: Any,
@@ -125,4 +184,4 @@ def run_derivative_menu(
                 print(f"Error in derivative menu: {e}")
 
 
-__all__ = ["run_derivative_menu"]
+__all__ = ["run_derivative_menu", "update_ylabel_for_derivative"]

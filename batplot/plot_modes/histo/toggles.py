@@ -8,10 +8,11 @@ from ..common.spines import print_wasd_state, run_spine_tick_menu, sync_tick_sta
 from ..common.terminal import colorize_inline_commands
 from .plot import HistoState
 from .spines import (
-    apply_histo_wasd,
     ensure_histo_tick_state,
     ensure_histo_wasd,
     histo_title_offset_menu,
+    persist_histo_spine_before_redraw,
+    reapply_histo_spine_layout,
     sync_histo_spine_from_reference,
 )
 
@@ -34,7 +35,6 @@ def _run_histo_display_submenu(
     colorize_prompt: Callable[[str], str],
 ) -> None:
     options = {
-        "g": "grid lines",
         "d": "density vs count (y-axis)",
         "n": "bar value labels",
         "m": "mean and median lines",
@@ -48,14 +48,13 @@ def _run_histo_display_submenu(
             mean_med.append("median")
         stats = ", ".join(mean_med) if mean_med else "off"
         print("\n\033[1mHistogram display>\033[0m  Current:")
-        print(f"  grid:          {_flag_text(state.style.show_grid)}")
         print(f"  y-axis:        {y_mode}")
         print(f"  bar labels:    {_flag_text(state.style.show_bar_labels)}")
         print(f"  mean/median:   {stats}")
         for key, description in options.items():
             print("  " + colorize_menu(f"{key}: {description}"))
         print("  " + colorize_menu("q: back"))
-        choice = safe_input(colorize_prompt("Histogram (g/d/n/m/q): "), cancel_on_interrupt=True).strip().lower()
+        choice = safe_input(colorize_prompt("Histogram (d/n/m/q): "), cancel_on_interrupt=True).strip().lower()
         if not choice or choice == "q":
             break
         if choice not in options:
@@ -102,11 +101,12 @@ def run_histo_toggle_menu(
             sync_histo_spine_from_reference(fig, ax, sync_targets)
 
     def _apply_wasd(changed_sides=None) -> None:
-        apply_histo_wasd(fig, ax, wasd, tick_state, state, changed_sides=changed_sides)
+        reapply_histo_spine_layout(fig, ax, state, changed_sides=changed_sides)
         if sync_targets:
             sync_histo_spine_from_reference(fig, ax, sync_targets)
 
     def _draw() -> None:
+        persist_histo_spine_before_redraw(fig, ax, sync_targets=sync_targets)
         refresh()
         try:
             fig.canvas.draw()
@@ -117,14 +117,13 @@ def run_histo_toggle_menu(
         print_wasd_state(wasd, axis_map={"x": ax.xaxis, "y": ax.yaxis}, fig=fig)
         y_mode = "density" if state.style.density else "count"
         print("\033[1mHistogram display:\033[0m")
-        print(f"  grid={_flag_text(state.style.show_grid)}  y-axis={y_mode}  "
-              f"bar labels={_flag_text(state.style.show_bar_labels)}  "
+        print(f"  y-axis={y_mode}  bar labels={_flag_text(state.style.show_bar_labels)}  "
               f"mean={_flag_text(state.style.show_mean_line)}  "
               f"median={_flag_text(state.style.show_median_line)}")
 
     cyan, reset = "\033[96m", "\033[0m"
     extra_help = [
-        f"  Histogram       : {cyan}h{reset}=grid, density, bar labels, mean/median",
+        f"  Histogram       : {cyan}h{reset}=density, bar labels, mean/median",
     ]
 
     def _extra_command(cmd: str) -> bool:
@@ -141,6 +140,22 @@ def run_histo_toggle_menu(
         )
         return True
 
+    def _title_offsets() -> None:
+        histo_title_offset_menu(
+            fig=fig,
+            ax=ax,
+            tick_state=tick_state,
+            push_state=push_state,
+            safe_input=safe_input,
+            colorize_prompt=colorize_prompt,
+        )
+        persist_histo_spine_before_redraw(fig, ax, sync_targets=sync_targets)
+        refresh()
+        try:
+            fig.canvas.draw()
+        except Exception:
+            fig.canvas.draw_idle()
+
     run_spine_tick_menu(
         fig=fig,
         wasd=wasd,
@@ -156,14 +171,7 @@ def run_histo_toggle_menu(
         axis_map={"x": ax.xaxis, "y": ax.yaxis},
         direction_axes=[ax],
         length_axes=[ax],
-        title_offset_handler=lambda: histo_title_offset_menu(
-            fig=fig,
-            ax=ax,
-            tick_state=tick_state,
-            push_state=push_state,
-            safe_input=safe_input,
-            colorize_prompt=colorize_prompt,
-        ),
+        title_offset_handler=_title_offsets,
         on_quit=lambda: setattr(ax, "_saved_tick_state", dict(tick_state)),
         print_state=_print_state,
         extra_help_lines=extra_help,

@@ -8,9 +8,11 @@ import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
 from matplotlib.ticker import FuncFormatter, NullFormatter  # type: ignore[import-untyped]
 
-from ...ui import capture_axes_tick_locators, restore_axes_tick_locators
+from ...ui import capture_axes_tick_locators, restore_axes_tick_locators, set_spine_side_color
 from ...utils import natural_sort_key
 from ...ec_common import _default_ec_figsize
+from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
+from ..common.fonts import collect_operando_font_artists
 
 
 def _dqdv_2d_row_tick_indices(n_rows: int, max_ticks: int = 24) -> np.ndarray:
@@ -511,6 +513,8 @@ def build_dqdv_2d_snapshot(
         "font": {
             "size": plt.rcParams.get("font.size"),
             "family": list(plt.rcParams.get("font.sans-serif", [])),
+            "mathtext_fontset": plt.rcParams.get("mathtext.fontset"),
+            **font_extras_export_dict(cfig),
         },
         "colorbar": {
             "label": str(getattr(cbar_ax, "_colorbar_label", zlab)) if cbar_ax is not None else str(zlab),
@@ -584,12 +588,15 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
     cbar = _MockColorbar(cbar_ax, im)
     cbar_ax._colorbar_label = zlab
     try:
-        font_cfg = blob.get("font", {})
-        if font_cfg.get("family"):
+        font_cfg = blob.get("font", {}) or {}
+        fam = font_cfg.get("family") or font_cfg.get("chain")
+        if fam:
             plt.rcParams["font.family"] = "sans-serif"
-            plt.rcParams["font.sans-serif"] = list(font_cfg["family"])
+            plt.rcParams["font.sans-serif"] = list(fam) if isinstance(fam, (list, tuple)) else [str(fam)]
         if font_cfg.get("size") is not None:
             plt.rcParams["font.size"] = float(font_cfg["size"])
+        if font_cfg.get("mathtext_fontset"):
+            plt.rcParams["mathtext.fontset"] = str(font_cfg["mathtext_fontset"])
     except Exception:
         pass
     try:
@@ -607,14 +614,13 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
     except Exception:
         pass
     try:
+        # Visibility / widths first (tick_params below would wipe colors if applied after).
         for name, spec in (blob.get("spines", {}) or {}).items():
             sp = cax.spines.get(name)
             if sp is None or not isinstance(spec, dict):
                 continue
             if spec.get("linewidth") is not None:
                 sp.set_linewidth(float(spec["linewidth"]))
-            if spec.get("color") is not None:
-                sp.set_edgecolor(spec["color"])
             if spec.get("visible") is not None:
                 sp.set_visible(bool(spec["visible"]))
     except Exception:
@@ -649,10 +655,37 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
     except Exception:
         pass
     try:
+        # Spine/tick/label colors AFTER tick_params, then finalize for p/i/s/b stability.
+        from ...ui import finalize_spine_colors
+
+        for name, spec in (blob.get("spines", {}) or {}).items():
+            if not isinstance(spec, dict) or spec.get("color") is None:
+                continue
+            if cax.spines.get(name) is None:
+                continue
+            set_spine_side_color(cax, name, spec["color"], fig=cfig)
+        finalize_spine_colors(cfig, cax, draw=False)
+    except Exception:
+        pass
+    try:
         cb_cfg = blob.get("colorbar", {}) or {}
         cbar_ax._colorbar_label = str(cb_cfg.get("label") or zlab)
         cfig._colorbar_label_mode = cb_cfg.get("mode", "highlow")
         cbar_ax.set_visible(bool(cb_cfg.get("visible", True)))
+    except Exception:
+        pass
+    try:
+        font_cfg = dict(blob.get("font") or {})
+        if "weight" not in font_cfg:
+            font_cfg["weight"] = "normal"
+        if "highlight" not in font_cfg:
+            font_cfg["highlight"] = False
+        apply_session_font_cfg(
+            cfig,
+            font_cfg,
+            cax,
+            artists=collect_operando_font_artists(cfig, cax, cbar=cbar),
+        )
     except Exception:
         pass
     try:

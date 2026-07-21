@@ -137,38 +137,39 @@ def _print_line_summary(fig: Any, ax: Any, line_target_list: list, iter_cycle_li
 
 
 def _set_curve_linewidth(*, fig: Any, ax: Any, line_target_list: list, iter_cycle_lines, rebuild_legend, push_state, safe_input) -> None:
-    spec = safe_input("Curve linewidth (single value for all curves, q=cancel): ").strip()
-    if not spec or spec.lower() == "q":
-        return
-    try:
-        push_state("curve-linewidth")
-        linewidth = float(spec)
-        setattr(fig, "_ec_curve_linewidth", linewidth)
-        for target_lines in line_target_list:
-            for _cyc, _role, line in iter_cycle_lines(target_lines):
-                try:
-                    line.set_linewidth(linewidth)
-                except Exception:
-                    pass
-        _redraw_with_legend(fig, ax, rebuild_legend)
-        print(f"Set all curve linewidths to {linewidth}")
-    except ValueError:
-        print("Invalid width value.")
+    while True:
+        spec = safe_input("Curve linewidth (single value for all curves, q=back): ").strip()
+        if not spec or spec.lower() == "q":
+            break
+        try:
+            push_state("curve-linewidth")
+            linewidth = float(spec)
+            setattr(fig, "_ec_curve_linewidth", linewidth)
+            for target_lines in line_target_list:
+                for _cyc, _role, line in iter_cycle_lines(target_lines):
+                    try:
+                        line.set_linewidth(linewidth)
+                    except Exception:
+                        pass
+            _redraw_with_legend(fig, ax, rebuild_legend)
+            print(f"Set all curve linewidths to {linewidth}")
+        except ValueError:
+            print("Invalid width value.")
 
 
 def _set_frame_tick_widths(*, fig: Any, ax: Any, push_state, safe_input) -> None:
-    value = safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
-    if not value or value.lower() == "q":
-        print("Canceled.")
-        return
-    try:
-        push_state("framewidth")
-        frame_w, tick_major, tick_minor = parse_frame_tick_widths(value)
-        apply_frame_and_tick_widths([ax], frame_width=frame_w, major_width=tick_major, minor_width=tick_minor)
-        fig.canvas.draw()
-        print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
-    except ValueError:
-        print("Invalid numeric value(s).")
+    while True:
+        value = safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q=back: ").strip()
+        if not value or value.lower() == "q":
+            break
+        try:
+            push_state("framewidth")
+            frame_w, tick_major, tick_minor = parse_frame_tick_widths(value)
+            apply_frame_and_tick_widths([ax], frame_width=frame_w, major_width=tick_major, minor_width=tick_minor)
+            fig.canvas.draw()
+            print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
+        except ValueError:
+            print("Invalid numeric value(s).")
 
 
 def _toggle_grid(*, fig: Any, ax: Any, push_state) -> None:
@@ -212,24 +213,30 @@ def _apply_curve_style(
 
     state_name = "line+dots" if style == "ld" else "dots-only"
     message = "Applied line+dots style to all curves." if style == "ld" else "Applied dots-only style to all curves."
-    push_state(state_name)
-    try:
-        marker_size_input = safe_input("Marker size (blank=auto ~3*lw): ").strip()
-        custom_marker_size = float(marker_size_input) if marker_size_input else None
-    except ValueError:
+    while True:
+        marker_size_input = safe_input("Marker size (blank=auto ~3*lw, q=back): ").strip().lower()
+        if marker_size_input == "q":
+            break
         custom_marker_size = None
-    _style_lines(
-        line_target_list,
-        iter_cycle_lines,
-        linestyle="-" if style == "ld" else "None",
-        marker="o",
-        custom_marker_size=custom_marker_size,
-    )
-    if is_dqdv and hasattr(fig, "_dqdv_smooth_settings"):
-        for target_lines in line_target_list:
-            apply_stored_smooth_settings(target_lines, fig)
-    _redraw_with_legend(fig, ax, rebuild_legend)
-    print(message)
+        if marker_size_input:
+            try:
+                custom_marker_size = float(marker_size_input)
+            except ValueError:
+                print("Invalid marker size.")
+                continue
+        push_state(state_name)
+        _style_lines(
+            line_target_list,
+            iter_cycle_lines,
+            linestyle="-" if style == "ld" else "None",
+            marker="o",
+            custom_marker_size=custom_marker_size,
+        )
+        if is_dqdv and hasattr(fig, "_dqdv_smooth_settings"):
+            for target_lines in line_target_list:
+                apply_stored_smooth_settings(target_lines, fig)
+        _redraw_with_legend(fig, ax, rebuild_legend)
+        print(message)
 
 
 def _style_lines(line_target_list: list, iter_cycle_lines, *, linestyle: str, marker: str, custom_marker_size: float | None = None) -> None:

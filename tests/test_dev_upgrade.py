@@ -274,6 +274,7 @@ def test_find_stale_hardcoded_versions(tmp_path):
 
 
 def test_git_commit_and_push_pushes_when_nothing_staged_but_ahead(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
     pushed = {"called": False}
 
     def fake_run(cmd, _project_root, **kwargs):
@@ -281,7 +282,7 @@ def test_git_commit_and_push_pushes_when_nothing_staged_but_ahead(tmp_path, monk
             return SimpleNamespace(returncode=0, stdout=" M batplot/__pycache__/x.pyc\n", stderr="")
         if cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd[:4] == ["git", "rev-list", "--count"]:
+        if cmd[:3] == ["git", "rev-list", "--count"]:
             return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
         if cmd[:3] == ["git", "branch", "--show-current"]:
             return SimpleNamespace(returncode=0, stdout="main\n", stderr="")

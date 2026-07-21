@@ -272,6 +272,20 @@ def color_block(color: Optional[str]) -> str:
         return "[??]"
 
 
+def format_color_listing(color) -> str:
+    """Return ``<swatch> <hex>`` for menu listings (curves, saved colors, etc.)."""
+    if color is None:
+        return f"{color_block(None)} --"
+    try:
+        rgba = mcolors.to_rgba(color)
+        return f"{color_block(color)} {mcolors.to_hex(rgba)}"
+    except Exception:
+        text = str(color).strip()
+        if not text:
+            return f"{color_block(None)} --"
+        return f"{color_block(text)} {text}"
+
+
 def color_bar(colors: Sequence[str]) -> str:
     """Return a string of adjacent color blocks."""
     blocks = [color_block(col) for col in colors if col]

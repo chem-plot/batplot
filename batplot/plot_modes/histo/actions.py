@@ -31,7 +31,7 @@ class HistoActionContext:
     push_state: Callable[[], None]
     pop_undo: Callable[[], None]
     save_session: Callable[[str], None]
-    export_style: Callable[[str], None]
+    export_style: Callable[..., None]
     export_figure: Callable[[str], None]
     apply_style_file: Callable[[str], None]
 
@@ -57,7 +57,7 @@ def handle_quick_overwrite_session(ctx: HistoActionContext) -> None:
         print(f"Error overwriting session: {exc}")
 
 
-def handle_quick_overwrite_style(ctx: HistoActionContext) -> None:
+def handle_quick_overwrite_style(ctx: HistoActionContext, *, include_geometry: bool = True) -> None:
     try:
         last_style_path = getattr(ctx.fig, "_last_style_export_path", None)
         if not last_style_path:
@@ -72,7 +72,7 @@ def handle_quick_overwrite_style(ctx: HistoActionContext) -> None:
         if yn != "y":
             return
         target = ensure_exact_case_filename(last_style_path)
-        ctx.export_style(target)
+        ctx.export_style(target, include_geometry=include_geometry)
         print(f"Overwritten style to {target}")
     except Exception as exc:
         print(f"Error overwriting style: {exc}")
@@ -306,7 +306,10 @@ def handle_style_export(ctx: HistoActionContext) -> None:
                 yn = ctx.safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
                 if yn != "y":
                     continue
-                ctx.export_style(ensure_exact_case_filename(last_style_path))
+                ctx.export_style(
+                    ensure_exact_case_filename(last_style_path),
+                    include_geometry=bool(getattr(ctx.fig, "_last_style_export_include_geometry", True)),
+                )
                 print(f"Overwritten style to {last_style_path}")
                 return
             if sub.isdigit() and n_style and 1 <= int(sub) <= n_style:
@@ -316,10 +319,20 @@ def handle_style_export(ctx: HistoActionContext) -> None:
                 yn = ctx.safe_input(f"Overwrite '{fname}'? (y/n): ").strip().lower()
                 if yn != "y":
                     continue
-                ctx.export_style(ensure_exact_case_filename(target_path))
+                ctx.export_style(
+                    ensure_exact_case_filename(target_path),
+                    include_geometry=bool(getattr(ctx.fig, "_last_style_export_include_geometry", True)),
+                )
                 print(f"Overwritten style to {target_path}")
                 return
             if sub == "e":
+                geom_choice = ctx.safe_input(
+                    "Export ps=style only, psg=style+geometry (default psg), q=cancel: ",
+                ).strip().lower()
+                if geom_choice == "q":
+                    print("Style export canceled.")
+                    continue
+                include_geometry = geom_choice != "ps"
                 save_base = choose_save_path(ctx.source_file_paths, purpose="style export")
                 if not save_base:
                     print("Style export canceled.")
@@ -355,7 +368,10 @@ def handle_style_export(ctx: HistoActionContext) -> None:
                     yn = ctx.safe_input(f"Overwrite '{os.path.basename(last_style_path)}'? (y/n): ").strip().lower()
                     if yn != "y":
                         continue
-                    ctx.export_style(ensure_exact_case_filename(last_style_path))
+                    ctx.export_style(
+                        ensure_exact_case_filename(last_style_path),
+                        include_geometry=include_geometry,
+                    )
                     print(f"Overwritten style to {last_style_path}")
                     return
                 target: str | None = None
@@ -386,7 +402,7 @@ def handle_style_export(ctx: HistoActionContext) -> None:
                         if yn != "y":
                             continue
                 if target:
-                    ctx.export_style(target)
+                    ctx.export_style(target, include_geometry=include_geometry)
                     print(f"Saved style to {target}")
                 return
             print("Unknown choice.")

@@ -23,6 +23,7 @@ from ...utils import (
 )
 from ...color_utils import (
     color_block,
+    format_color_listing,
     ensure_colormap,
     get_colormap,
     resolve_color_token,
@@ -286,7 +287,7 @@ def run_cif_ticks_menu(
                             _C = '\033[96m'; _R = '\033[0m'
                             print("CIF color (per set).")
                             for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
-                                print(f"  {i+1}: {color_block(col)}  {lab}")
+                                print(f"  {i+1}: {format_color_listing(col)}  {lab}")
                             print("Examples:")
                             print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
                             print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
@@ -447,15 +448,15 @@ def run_cif_ticks_menu(
                                 print("Invalid index.")
                                 continue
                             print_label_latex_tips()
-                            new_lab = _safe_input(
-                                "New CIF phase label (q=cancel): "
-                            ).strip()
-                            if not new_lab or new_lab.lower() == 'q':
-                                print("Canceled.")
-                                continue
-                            new_lab = convert_label_shortcuts(new_lab)
-                            _apply_cif_phase_label_rename(idx, new_lab)
-                            print(f"Phase {idx + 1} label updated.")
+                            while True:
+                                new_lab = _safe_input(
+                                    f"New CIF phase label (q=back): "
+                                ).strip()
+                                if not new_lab or new_lab.lower() == 'q':
+                                    break
+                                new_lab = convert_label_shortcuts(new_lab)
+                                _apply_cif_phase_label_rename(idx, new_lab)
+                                print(f"Phase {idx + 1} label updated.")
                 except Exception as e:
                     print(f"Error renaming CIF phase labels: {e}")
             else:

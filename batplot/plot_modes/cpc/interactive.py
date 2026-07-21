@@ -50,6 +50,7 @@ import numpy as np  # type: ignore[import]
 
 from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
+    finalize_spine_colors_cpc,
     resize_plot_frame, resize_canvas,
     update_tick_visibility as _ui_update_tick_visibility,
     position_top_xlabel as _ui_position_top_xlabel,
@@ -72,6 +73,8 @@ from ...color_utils import resolve_color_token
 from .session import dump_cpc_session
 from .colors import _generate_similar_color, run_cpc_color_menu
 from .labels import run_cpc_rename_menu
+from ..common.crosshair_export import register_crosshair
+from ..common.menu_rendering import prompt_menu_key
 from ..common.terminal import (
     colorize_inline_commands as _colorize_inline_commands,
     colorize_prompt as _colorize_prompt,
@@ -82,9 +85,20 @@ from ..common.fonts import (
     apply_font_family_to_artists,
     apply_font_size_to_artists,
     axis_text_artists,
+    collect_fig_font_artists,
     legend_text_artists,
     set_font_family_defaults,
     set_font_size_default,
+)
+from ..common.font_extras import (
+    apply_fig_font_weight,
+    apply_fig_text_highlight,
+    apply_font_extras_from_cfg,
+    apply_session_font_cfg,
+    font_extras_export_dict,
+    get_fig_font_weight,
+    get_fig_text_highlight,
+    get_fig_text_highlight_style,
 )
 from ..common.menus import run_axis_limit_menu, run_dispatch_menu, run_font_menu, run_legend_position_menu, run_option_menu
 from ..common.sources import file_data_source_paths
@@ -168,6 +182,24 @@ def _is_hollow_marker(artist) -> bool:
     except Exception:
         pass
     return False
+
+
+def _cpc_font_artists(ax, ax2, fig=None):
+    if fig is None:
+        try:
+            fig = ax.get_figure()
+        except Exception:
+            fig = None
+    artists: list = []
+    for a in (ax, ax2):
+        if a is None:
+            continue
+        artists.extend(collect_fig_font_artists(a, fig, include_title=True))
+    try:
+        artists.extend(legend_text_artists(ax.get_legend()))
+    except Exception:
+        pass
+    return artists
 
 
 def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=None) -> Dict:
@@ -359,7 +391,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         },
         # Track whether data axes were swapped via --ro when this style was saved
         'ro_active': bool(getattr(fig, '_ro_active', False)),
-        'font': {'family': fam0, 'size': fsize, 'mathtext_fontset': mathtext_fs},
+        'font': {'family': fam0, 'size': fsize, 'mathtext_fontset': mathtext_fs, **font_extras_export_dict(fig)},
         'legend': {
             'visible': legend_visible,
             'position_inches': legend_xy_in,  # [x, y] offset from canvas center in inches
@@ -409,6 +441,11 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             'x': getattr(ax.xaxis, 'labelpad', None),
             'ly': getattr(ax.yaxis, 'labelpad', None),  # left y-axis (capacity)
             'ry': getattr(ax2.yaxis, 'labelpad', None),  # right y-axis (efficiency)
+        },
+        'axis_labels': {
+            'xlabel': ax.get_xlabel() or getattr(ax, '_stored_xlabel', '') or '',
+            'ylabel_left': ax.get_ylabel() or getattr(ax, '_stored_ylabel', '') or '',
+            'ylabel_right': ax2.get_ylabel() or getattr(ax2, '_stored_ylabel', '') or '',
         },
         'title_offsets': {
             'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
@@ -563,6 +600,20 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
     elif file_data and not is_multi_file:
         # Single-file: apply from series if not using display_mode
         pass  # Handled below in series block
+
+    axis_labels = cfg.get('axis_labels') or {}
+    try:
+        if axis_labels.get('xlabel'):
+            ax.set_xlabel(str(axis_labels['xlabel']))
+            ax._stored_xlabel = str(axis_labels['xlabel'])
+        if axis_labels.get('ylabel_left'):
+            ax.set_ylabel(str(axis_labels['ylabel_left']))
+            ax._stored_ylabel = str(axis_labels['ylabel_left'])
+        if axis_labels.get('ylabel_right') and ax2 is not None:
+            ax2.set_ylabel(str(axis_labels['ylabel_right']))
+            ax2._stored_ylabel = str(axis_labels['ylabel_right'])
+    except Exception:
+        pass
     
     # Save current labelpad values BEFORE any style changes
     saved_xlabelpad = None
@@ -649,6 +700,10 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                         if fam0: art.set_fontfamily(fam0)
                 except Exception:
                     pass
+            try:
+                apply_font_extras_from_cfg(fig, _cpc_font_artists(ax, ax2, fig), font)
+            except Exception:
+                pass
         except Exception:
             pass
     _apply_font_config()
@@ -725,6 +780,7 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                         except Exception:
                             pass
                     try:
+                        ax2.set_visible(eff_vis)
                         ax2.yaxis.label.set_visible(eff_vis)
                     except Exception:
                         pass
@@ -787,8 +843,10 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                         sc_eff.set_alpha(float(ef['alpha']))
                     if 'visible' in ef:
                         try:
-                            sc_eff.set_visible(bool(ef['visible']))
-                            ax2.yaxis.label.set_visible(bool(ef['visible']))
+                            eff_vis = bool(ef['visible'])
+                            sc_eff.set_visible(eff_vis)
+                            ax2.set_visible(eff_vis)
+                            ax2.yaxis.label.set_visible(eff_vis)
                         except Exception:
                             pass
                     if ef.get('offsets') is not None and hasattr(sc_eff, 'set_offsets'):
@@ -822,6 +880,8 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                 leg_xy_in = leg_cfg.get('position_inches')
                 if 'title' in leg_cfg:
                     fig._cpc_legend_title = leg_cfg.get('title') or _get_legend_title(fig)
+                if 'single_file_effective' in leg_cfg:
+                    fig._cpc_legend_single_file_effective = bool(leg_cfg.get('single_file_effective'))
                 if leg_xy_in is not None:
                     fig._cpc_legend_xy_in = _sanitize_legend_offset(tuple(leg_xy_in))
                 leg = ax.get_legend()
@@ -859,22 +919,35 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                 except Exception:
                     pass
             if wasd:
-                # Use WASD state (20 parameters)
-                bx = bool(wasd.get('bottom', {}).get('labels', True))
-                tx = bool(wasd.get('top', {}).get('labels', False))
-                ly = bool(wasd.get('left', {}).get('labels', True))
-                ry = bool(wasd.get('right', {}).get('labels', True))
+                # Use WASD state (ticks and labels are independent)
+                b_ticks = bool(wasd.get('bottom', {}).get('ticks', True))
+                t_ticks = bool(wasd.get('top', {}).get('ticks', False))
+                l_ticks = bool(wasd.get('left', {}).get('ticks', True))
+                r_ticks = bool(wasd.get('right', {}).get('ticks', True))
+                b_labels = bool(wasd.get('bottom', {}).get('labels', True))
+                t_labels = bool(wasd.get('top', {}).get('labels', False))
+                l_labels = bool(wasd.get('left', {}).get('labels', True))
+                r_labels = bool(wasd.get('right', {}).get('labels', True))
                 mbx = bool(wasd.get('bottom', {}).get('minor', False))
                 mtx = bool(wasd.get('top', {}).get('minor', False))
                 mly = bool(wasd.get('left', {}).get('minor', False))
                 mry = bool(wasd.get('right', {}).get('minor', False))
+                # Legacy combined flags (kept for older callers that only check bx/tx/…)
+                bx = bool(b_ticks and b_labels)
+                tx = bool(t_ticks and t_labels)
+                ly = bool(l_ticks and l_labels)
+                ry = bool(r_ticks and r_labels)
             else:
-                # Fall back to old visibility dict
+                # Fall back to old visibility dict (combined tick+label flags)
                 vis = tk.get('visibility', {})
                 bx = bool(vis.get('bx', True))
                 tx = bool(vis.get('tx', False))
                 ly = bool(vis.get('ly', True))
                 ry = bool(vis.get('ry', True))
+                b_ticks = b_labels = bx
+                t_ticks = t_labels = tx
+                l_ticks = l_labels = ly
+                r_ticks = r_labels = ry
                 mbx = bool(vis.get('mbx', False))
                 mtx = bool(vis.get('mtx', False))
                 mly = bool(vis.get('mly', False))
@@ -890,8 +963,8 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             else:
                 tick_state.update({
                     'bx': bx, 'tx': tx, 'ly': ly, 'ry': ry,
-                    'b_ticks': bx, 't_ticks': tx, 'l_ticks': ly, 'r_ticks': ry,
-                    'b_labels': bx, 't_labels': tx, 'l_labels': ly, 'r_labels': ry,
+                    'b_ticks': b_ticks, 't_ticks': t_ticks, 'l_ticks': l_ticks, 'r_ticks': r_ticks,
+                    'b_labels': b_labels, 't_labels': t_labels, 'l_labels': l_labels, 'r_labels': r_labels,
                     'mbx': mbx, 'mtx': mtx, 'mly': mly, 'mry': mry,
                 })
             try:
@@ -900,9 +973,13 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                 pass
             
             if True:  # Always apply
-                ax.tick_params(axis='x', bottom=bx, labelbottom=bx, top=tx, labeltop=tx)
-                ax.tick_params(axis='y', left=ly, labelleft=ly)
-                ax2.tick_params(axis='y', right=ry, labelright=ry)
+                ax.tick_params(
+                    axis='x',
+                    bottom=b_ticks, labelbottom=b_labels,
+                    top=t_ticks, labeltop=t_labels,
+                )
+                ax.tick_params(axis='y', left=l_ticks, labelleft=l_labels)
+                ax2.tick_params(axis='y', right=r_ticks, labelright=r_labels)
                 try:
                     ax.xaxis.label.set_visible(bool(wasd.get('bottom', {}).get('title', True)) if wasd else bx)
                     ax.yaxis.label.set_visible(bool(wasd.get('left', {}).get('title', True)) if wasd else ly)
@@ -924,7 +1001,7 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                 )
                             ax._top_xlabel_text.set_text(ax._stored_top_xlabel)
                             ax._top_xlabel_text.set_visible(True)
-                            ax._top_xlabel_text.set_position((0.5, 1.07 if tx else 1.02))
+                            ax._top_xlabel_text.set_position((0.5, 1.07 if t_labels else 1.02))
                         elif hasattr(ax, '_top_xlabel_text') and ax._top_xlabel_text is not None:
                             ax._top_xlabel_text.set_visible(False)
                 except Exception:
@@ -1062,6 +1139,10 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                         pass
         except Exception:
             pass
+        try:
+            finalize_spine_colors_cpc(fig, ax, ax2, tick_state=tick_state)
+        except Exception:
+            pass
     _apply_spine_config()
 
     # Restore labelpads (preserve current if not in config)
@@ -1190,6 +1271,11 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                     f['color'] = col
                                 except Exception:
                                     pass
+                            if 'charge_marker' in f_info and f.get('sc_charge'):
+                                try:
+                                    f['sc_charge'].set_marker(f_info['charge_marker'])
+                                except Exception:
+                                    pass
                             if 'discharge_color' in f_info and f.get('sc_discharge'):
                                 try:
                                     col = f_info['discharge_color']
@@ -1200,6 +1286,11 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                     else:
                                         f['sc_discharge'].set_facecolor(col)
                                         f['sc_discharge'].set_edgecolor(col)
+                                except Exception:
+                                    pass
+                            if 'discharge_marker' in f_info and f.get('sc_discharge'):
+                                try:
+                                    f['sc_discharge'].set_marker(f_info['discharge_marker'])
                                 except Exception:
                                     pass
                             if 'efficiency_color' in f_info and f.get('sc_eff'):
@@ -1213,6 +1304,11 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                         f['sc_eff'].set_facecolor(col)
                                         f['sc_eff'].set_edgecolor(col)
                                     f['eff_color'] = col
+                                except Exception:
+                                    pass
+                            if 'efficiency_marker' in f_info and f.get('sc_eff'):
+                                try:
+                                    f['sc_eff'].set_marker(f_info['efficiency_marker'])
                                 except Exception:
                                     pass
                             # Restore charge/discharge visibility (display mode)
@@ -1289,6 +1385,11 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
         except Exception:
             pass
     _restore_legend_labels_config()
+
+    try:
+        apply_session_font_cfg(fig, cfg.get('font', {}), ax, ax2)
+    except Exception:
+        pass
 
     try:
         fig.canvas.draw_idle()
@@ -1506,6 +1607,10 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
             note=note,
         )
 
+    def pop_undo() -> None:
+        if state_history:
+            state_history.pop()
+
     def restore_state():
         restore_cpc_state(
             state_history,
@@ -1544,8 +1649,11 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
             except Exception:
                 pass
             try:
-                for spine_name, color in getattr(fig, '_cpc_spine_colors', {}).items():
-                    _set_spine_color(spine_name, color)
+                finalize_spine_colors_cpc(
+                    fig, ax, ax2,
+                    tick_state=tick_state,
+                    colors=getattr(fig, '_cpc_spine_colors', None),
+                )
             except Exception:
                 pass
             fig.canvas.draw_idle()
@@ -1607,6 +1715,7 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
 
     # Crosshair state for CPC
     crosshair_cpc = {'active': False, 'hline': None, 'vline': None, 'text': None, 'cid_motion': None}
+    register_crosshair(fig, crosshair_cpc)
 
     def _toggle_crosshair_cpc():
         if not crosshair_cpc['active']:
@@ -1825,6 +1934,10 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                     bottom=lambda: _ui_position_bottom_xlabel(ax, fig, tick_state),
                     left=lambda: _ui_position_left_ylabel(ax, fig, tick_state),
                 )
+                try:
+                    finalize_spine_colors_cpc(fig, ax, ax2, tick_state=tick_state)
+                except Exception:
+                    pass
 
             def _print_wasd():
                 _Cw = '\033[96m'; _Rw = '\033[0m'
@@ -1880,6 +1993,10 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                     pass
             def _draw_cpc_spine_menu():
                 try:
+                    finalize_spine_colors_cpc(fig, ax, ax2, tick_state=tick_state)
+                except Exception:
+                    pass
+                try:
                     fig.canvas.draw()
                 except Exception:
                     fig.canvas.draw_idle()
@@ -1920,7 +2037,7 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                 key = pending_key
                 pending_key = None
             else:
-                key = _safe_input(_colorize_prompt("Press a key: ")).strip().lower()
+                key = prompt_menu_key()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting interactive menu...")
             break
@@ -1955,6 +2072,7 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
             apply_style=_apply_style,
             get_geometry_snapshot=_get_geometry_snapshot,
             push_state=push_state,
+            pop_undo=pop_undo,
             restore_state=restore_state,
         )
         
@@ -1969,62 +2087,61 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
         if key == 'v':
             try:
                 if is_multi_file:
-                    _print_file_list(file_data, current_file_idx)
-                    print("  " + _colorize_menu("1, 1 2 3, 1-4: toggle file(s)"))
-                    print("  " + _colorize_menu("a: toggle all"))
-                    print("  " + _colorize_menu("q: back"))
-                    choice = _safe_input(_colorize_prompt(f"Select file numbers (1-{len(file_data)}), a=all, q=back: ")).strip()
-                    if choice.lower() == 'q':
-                        _print_menu(fig)
+                    while True:
                         _print_file_list(file_data, current_file_idx)
-                        continue
-                    
-                    push_state("visibility")
-                    indices_to_toggle = []
-                    if choice.lower() in ('a', 'all'):
-                        indices_to_toggle = list(range(len(file_data)))
-                    else:
-                        # Parse: "1", "1 2 3", "1,2,3", "1-4", or mixed "1 2-4"
-                        parts = choice.replace(',', ' ').split()
-                        for p in parts:
-                            p = p.strip()
-                            if not p:
-                                continue
-                            if '-' in p and p.count('-') == 1:
-                                try:
-                                    lo, hi = p.split('-')
-                                    lo_i = int(lo.strip()) - 1
-                                    hi_i = int(hi.strip()) - 1
-                                    for i in range(lo_i, hi_i + 1):
-                                        if 0 <= i < len(file_data):
-                                            indices_to_toggle.append(i)
-                                except ValueError:
-                                    pass
-                            else:
-                                try:
-                                    idx = int(p) - 1
-                                    if 0 <= idx < len(file_data):
-                                        indices_to_toggle.append(idx)
-                                except ValueError:
-                                    pass
-                        indices_to_toggle = sorted(set(indices_to_toggle))
-                    
-                    if indices_to_toggle:
-                        for idx in indices_to_toggle:
-                            f = file_data[idx]
-                            new_vis = not f.get('visible', True)
-                            f['visible'] = new_vis
-                            f['sc_charge'].set_visible(new_vis)
-                            f['sc_discharge'].set_visible(new_vis)
-                            f['sc_eff'].set_visible(new_vis)
-                        _rebuild_legend(ax, ax2, file_data, preserve_position=True)
-                        fig.canvas.draw_idle()
-                        names = [file_data[i].get('filename', f'File {i+1}') for i in indices_to_toggle]
-                        print(f"Toggled: {', '.join(names)}")
-                    else:
-                        print("Invalid input. Use: 1, 1 2 3, 1-4, a, or q.")
+                        print("  " + _colorize_menu("1, 1 2 3, 1-4: toggle file(s)"))
+                        print("  " + _colorize_menu("a: toggle all"))
+                        print("  " + _colorize_menu("q: back"))
+                        choice = _safe_input(
+                            _colorize_prompt(f"Select file numbers (1-{len(file_data)}), a=all, q=back: ")
+                        ).strip()
+                        if not choice or choice.lower() == 'q':
+                            break
+
+                        indices_to_toggle = []
+                        if choice.lower() in ('a', 'all'):
+                            indices_to_toggle = list(range(len(file_data)))
+                        else:
+                            parts = choice.replace(',', ' ').split()
+                            for p in parts:
+                                p = p.strip()
+                                if not p:
+                                    continue
+                                if '-' in p and p.count('-') == 1:
+                                    try:
+                                        lo, hi = p.split('-')
+                                        lo_i = int(lo.strip()) - 1
+                                        hi_i = int(hi.strip()) - 1
+                                        for i in range(lo_i, hi_i + 1):
+                                            if 0 <= i < len(file_data):
+                                                indices_to_toggle.append(i)
+                                    except ValueError:
+                                        pass
+                                else:
+                                    try:
+                                        idx = int(p) - 1
+                                        if 0 <= idx < len(file_data):
+                                            indices_to_toggle.append(idx)
+                                    except ValueError:
+                                        pass
+                            indices_to_toggle = sorted(set(indices_to_toggle))
+
+                        if indices_to_toggle:
+                            push_state("visibility")
+                            for idx in indices_to_toggle:
+                                f = file_data[idx]
+                                new_vis = not f.get('visible', True)
+                                f['visible'] = new_vis
+                                f['sc_charge'].set_visible(new_vis)
+                                f['sc_discharge'].set_visible(new_vis)
+                                f['sc_eff'].set_visible(new_vis)
+                            _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                            fig.canvas.draw_idle()
+                            names = [file_data[i].get('filename', f'File {i+1}') for i in indices_to_toggle]
+                            print(f"Toggled: {', '.join(names)}")
+                        else:
+                            print("Invalid input. Use: 1, 1 2 3, 1-4, a, or q.")
                 else:
-                    # Single file mode: v is not meaningful (no per-file visibility)
                     print("File visibility (v) is only available in multi-file CPC mode.")
             except ValueError:
                 print("Invalid input. Use: 1, 1 2 3, 1-4, a, or q.")
@@ -2232,113 +2349,113 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                 _print_file_list(file_data, current_file_idx)
             continue
         elif key == 'ry':
-            # Toggle efficiency visibility on the right axis
-            try:
-                push_state("toggle-eff")
-                
-                # Capture current legend position BEFORE toggling visibility
-                # This ensures the position is preserved when legend is rebuilt
+            while True:
+                print("  " + _colorize_menu("t: toggle efficiency axis visibility"))
+                print("  " + _colorize_menu("q: back"))
+                sub = _safe_input(_colorize_prompt("Efficiency axis (t/q): ")).strip().lower()
+                if not sub or sub == 'q':
+                    break
+                if sub != 't':
+                    print("Unknown option.")
+                    continue
                 try:
-                    if not hasattr(fig, '_cpc_legend_xy_in') or getattr(fig, '_cpc_legend_xy_in') is None:
-                        leg0 = ax.get_legend()
-                        if leg0 is not None and leg0.get_visible():
-                            try:
-                                # Ensure renderer exists
+                    push_state("toggle-eff")
+
+                    # Capture current legend position BEFORE toggling visibility
+                    try:
+                        if not hasattr(fig, '_cpc_legend_xy_in') or getattr(fig, '_cpc_legend_xy_in') is None:
+                            leg0 = ax.get_legend()
+                            if leg0 is not None and leg0.get_visible():
                                 try:
-                                    renderer = fig.canvas.get_renderer()
+                                    try:
+                                        renderer = fig.canvas.get_renderer()
+                                    except Exception:
+                                        fig.canvas.draw()
+                                        renderer = fig.canvas.get_renderer()
+                                    bb = leg0.get_window_extent(renderer=renderer)
+                                    cx = 0.5 * (bb.x0 + bb.x1)
+                                    cy = 0.5 * (bb.y0 + bb.y1)
+                                    fx, fy = fig.transFigure.inverted().transform((cx, cy))
+                                    fw, fh = fig.get_size_inches()
+                                    offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
+                                    offset = _sanitize_legend_offset(offset)
+                                    if offset is not None:
+                                        fig._cpc_legend_xy_in = offset
                                 except Exception:
-                                    fig.canvas.draw()
-                                    renderer = fig.canvas.get_renderer()
-                                bb = leg0.get_window_extent(renderer=renderer)
-                                cx = 0.5 * (bb.x0 + bb.x1)
-                                cy = 0.5 * (bb.y0 + bb.y1)
-                                fx, fy = fig.transFigure.inverted().transform((cx, cy))
-                                fw, fh = fig.get_size_inches()
-                                offset = ((fx - 0.5) * fw, (fy - 0.5) * fh)
-                                offset = _sanitize_legend_offset(offset)
-                                if offset is not None:
-                                    fig._cpc_legend_xy_in = offset
-                            except Exception:
-                                pass
+                                    pass
+                    except Exception:
+                        pass
+
+                    if is_multi_file:
+                        any_eff_visible = any(
+                            f.get('sc_eff', {}).get_visible()
+                            if hasattr(f.get('sc_eff'), 'get_visible') else True
+                            for f in file_data if f.get('sc_eff')
+                        )
+                        new_vis = not any_eff_visible
+                    else:
+                        vis = bool(sc_eff.get_visible()) if hasattr(sc_eff, 'get_visible') else True
+                        new_vis = not vis
+
+                    if is_multi_file:
+                        for f in file_data:
+                            eff_sc = f.get('sc_eff')
+                            if eff_sc is not None:
+                                try:
+                                    eff_sc.set_visible(new_vis)
+                                except Exception:
+                                    pass
+                    else:
+                        sc_eff.set_visible(new_vis)
+
+                    try:
+                        ax2.yaxis.label.set_visible(new_vis)
+                    except Exception:
+                        pass
+
+                    try:
+                        ax2.tick_params(axis='y', right=new_vis, labelright=new_vis)
+                        tick_state['ry'] = bool(new_vis)
+                    except Exception:
+                        pass
+
+                    try:
+                        wasd = getattr(fig, '_cpc_wasd_state', None)
+                        if not isinstance(wasd, dict):
+                            wasd = {
+                                'top': {'spine': bool(ax.spines.get('top').get_visible()) if ax.spines.get('top') else False,
+                                        'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))),
+                                        'minor': bool(tick_state.get('mtx', False)),
+                                        'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))),
+                                        'title': bool(getattr(ax, '_top_xlabel_on', False))},
+                                'bottom': {'spine': bool(ax.spines.get('bottom').get_visible()) if ax.spines.get('bottom') else True,
+                                           'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))),
+                                           'minor': bool(tick_state.get('mbx', False)),
+                                           'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))),
+                                           'title': bool(ax.xaxis.label.get_visible()) and bool(ax.get_xlabel())},
+                                'left': {'spine': bool(ax.spines.get('left').get_visible()) if ax.spines.get('left') else True,
+                                         'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))),
+                                         'minor': bool(tick_state.get('mly', False)),
+                                         'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))),
+                                         'title': bool(ax.yaxis.label.get_visible()) and bool(ax.get_ylabel())},
+                                'right': {'spine': bool(ax2.spines.get('right').get_visible()) if ax.spines.get('right') else True,
+                                          'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', True))),
+                                          'minor': bool(tick_state.get('mry', False)),
+                                          'labels': bool(tick_state.get('r_labels', tick_state.get('ry', True))),
+                                          'title': bool(ax2.yaxis.label.get_visible()) and bool(ax2.get_ylabel())},
+                            }
+                        wasd.setdefault('right', {})
+                        wasd['right']['ticks'] = bool(new_vis)
+                        wasd['right']['labels'] = bool(new_vis)
+                        wasd['right']['title'] = bool(new_vis)
+                        setattr(fig, '_cpc_wasd_state', wasd)
+                    except Exception:
+                        pass
+
+                    _rebuild_legend(ax, ax2, file_data, preserve_position=True)
+                    fig.canvas.draw_idle()
                 except Exception:
                     pass
-                
-                # Determine current visibility state (check if any efficiency is visible)
-                if is_multi_file:
-                    # In multi-file mode, check if any efficiency is visible
-                    any_eff_visible = any(f.get('sc_eff', {}).get_visible() if hasattr(f.get('sc_eff'), 'get_visible') else True for f in file_data if f.get('sc_eff'))
-                    new_vis = not any_eff_visible
-                else:
-                    # Single file mode
-                    vis = bool(sc_eff.get_visible()) if hasattr(sc_eff, 'get_visible') else True
-                    new_vis = not vis
-                
-                # 1. Hide/show efficiency points (all files in multi-file mode)
-                if is_multi_file:
-                    for f in file_data:
-                        eff_sc = f.get('sc_eff')
-                        if eff_sc is not None:
-                            try:
-                                eff_sc.set_visible(new_vis)
-                            except Exception:
-                                pass
-                else:
-                    sc_eff.set_visible(new_vis)
-                
-                # 2. Hide/show right y-axis title
-                try:
-                    ax2.yaxis.label.set_visible(new_vis)
-                except Exception:
-                    pass
-                
-                # 3. Hide/show right y-axis ticks and labels (only affect ax2, don't touch ax)
-                try:
-                    ax2.tick_params(axis='y', right=new_vis, labelright=new_vis)
-                    # Update tick_state
-                    tick_state['ry'] = bool(new_vis)
-                except Exception:
-                    pass
-                
-                # Persist WASD state so save/load and styles honor the toggle
-                try:
-                    wasd = getattr(fig, '_cpc_wasd_state', None)
-                    if not isinstance(wasd, dict):
-                        wasd = {
-                            'top':    {'spine': bool(ax.spines.get('top').get_visible()) if ax.spines.get('top') else False,
-                                       'ticks': bool(tick_state.get('t_ticks', tick_state.get('tx', False))),
-                                       'minor': bool(tick_state.get('mtx', False)),
-                                       'labels': bool(tick_state.get('t_labels', tick_state.get('tx', False))),
-                                       'title': bool(getattr(ax, '_top_xlabel_on', False))},
-                            'bottom': {'spine': bool(ax.spines.get('bottom').get_visible()) if ax.spines.get('bottom') else True,
-                                       'ticks': bool(tick_state.get('b_ticks', tick_state.get('bx', True))),
-                                       'minor': bool(tick_state.get('mbx', False)),
-                                       'labels': bool(tick_state.get('b_labels', tick_state.get('bx', True))),
-                                       'title': bool(ax.xaxis.label.get_visible()) and bool(ax.get_xlabel())},
-                            'left':   {'spine': bool(ax.spines.get('left').get_visible()) if ax.spines.get('left') else True,
-                                       'ticks': bool(tick_state.get('l_ticks', tick_state.get('ly', True))),
-                                       'minor': bool(tick_state.get('mly', False)),
-                                       'labels': bool(tick_state.get('l_labels', tick_state.get('ly', True))),
-                                       'title': bool(ax.yaxis.label.get_visible()) and bool(ax.get_ylabel())},
-                            'right':  {'spine': bool(ax2.spines.get('right').get_visible()) if ax2.spines.get('right') else True,
-                                       'ticks': bool(tick_state.get('r_ticks', tick_state.get('ry', True))),
-                                       'minor': bool(tick_state.get('mry', False)),
-                                       'labels': bool(tick_state.get('r_labels', tick_state.get('ry', True))),
-                                       'title': bool(ax2.yaxis.label.get_visible()) and bool(ax2.get_ylabel())},
-                        }
-                    wasd.setdefault('right', {})
-                    wasd['right']['ticks'] = bool(new_vis)
-                    wasd['right']['labels'] = bool(new_vis)
-                    wasd['right']['title'] = bool(new_vis)
-                    setattr(fig, '_cpc_wasd_state', wasd)
-                except Exception:
-                    pass
-                
-                # 4. Rebuild legend to remove/add efficiency entries (preserve position)
-                _rebuild_legend(ax, ax2, file_data, preserve_position=True)
-                
-                fig.canvas.draw_idle()
-            except Exception:
-                pass
             _print_menu(fig); continue
         elif key == 'h':
             # Legend submenu: toggle visibility and move legend in inches relative to canvas center.
@@ -2381,39 +2498,37 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                 pass
             _print_menu(fig); continue
         elif key == 'f':
+            def _cpc_font_artists_local():
+                return _cpc_font_artists(ax, ax2, fig)
             def _apply_cpc_font_family(fam):
                 push_state("font-family")
                 set_font_family_defaults(fam, sans_serif_stack=True)
-                artists = []
-                for a in (ax, ax2):
-                    artists.extend(axis_text_artists(a))
-                artists.extend([
-                    getattr(ax, '_top_xlabel_artist', None),
-                    getattr(ax, '_top_xlabel_text', None),
-                    getattr(ax2, '_right_ylabel_artist', None),
-                ])
-                try:
-                    artists.extend(legend_text_artists(ax.get_legend()))
-                except Exception:
-                    pass
-                apply_font_family_to_artists(artists, fam)
+                apply_font_family_to_artists(_cpc_font_artists_local(), fam)
                 fig.canvas.draw_idle()
             def _apply_cpc_font_size(size):
                 push_state("font-size")
                 set_font_size_default(size)
-                artists = []
-                for a in (ax, ax2):
-                    artists.extend(axis_text_artists(a))
-                artists.extend([
-                    getattr(ax, '_top_xlabel_artist', None),
-                    getattr(ax, '_top_xlabel_text', None),
-                    getattr(ax2, '_right_ylabel_artist', None),
-                ])
-                try:
-                    artists.extend(legend_text_artists(ax.get_legend()))
-                except Exception:
-                    pass
-                apply_font_size_to_artists(artists, size)
+                apply_font_size_to_artists(_cpc_font_artists_local(), size)
+                fig.canvas.draw_idle()
+            def _apply_cpc_font_weight(weight):
+                push_state("font-weight")
+                apply_fig_font_weight(fig, _cpc_font_artists_local(), weight)
+                fig.canvas.draw_idle()
+            def _toggle_cpc_highlight():
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _cpc_font_artists_local(), not get_fig_text_highlight(fig))
+                fig.canvas.draw_idle()
+            def _set_cpc_hl_fc(fc):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _cpc_font_artists_local(), get_fig_text_highlight(fig), fc=fc)
+                fig.canvas.draw_idle()
+            def _set_cpc_hl_alpha(alpha):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _cpc_font_artists_local(), get_fig_text_highlight(fig), alpha=alpha)
+                fig.canvas.draw_idle()
+            def _set_cpc_hl_pad(pad):
+                push_state("font-highlight")
+                apply_fig_text_highlight(fig, _cpc_font_artists_local(), get_fig_text_highlight(fig), pad=pad)
                 fig.canvas.draw_idle()
             run_font_menu(
                 safe_input=_safe_input,
@@ -2423,6 +2538,14 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                 get_current_size=lambda: plt.rcParams.get('font.size', None),
                 apply_family=_apply_cpc_font_family,
                 apply_size=_apply_cpc_font_size,
+                get_current_weight=lambda: get_fig_font_weight(fig),
+                apply_weight=_apply_cpc_font_weight,
+                get_current_highlight=lambda: get_fig_text_highlight(fig),
+                get_highlight_style=lambda: get_fig_text_highlight_style(fig),
+                apply_highlight_toggle=_toggle_cpc_highlight,
+                apply_highlight_facecolor=_set_cpc_hl_fc,
+                apply_highlight_alpha=_set_cpc_hl_alpha,
+                apply_highlight_pad=_set_cpc_hl_pad,
                 blank_exits=True,
             )
             _print_menu(fig); continue
@@ -2457,23 +2580,23 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
                     if sub == 'q':
                         break
                     if sub == 'f':
-                        fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q: ").strip()
-                        if not fw_in or fw_in.lower() == 'q':
-                            print("Canceled.")
-                            continue
-                        try:
-                            push_state("framewidth")
-                            frame_w, tick_major, tick_minor = parse_frame_tick_widths(fw_in)
-                            apply_frame_and_tick_widths(
-                                [ax, ax2],
-                                frame_width=frame_w,
-                                major_width=tick_major,
-                                minor_width=tick_minor,
-                            )
-                            fig.canvas.draw()
-                            print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
-                        except ValueError:
-                            print("Invalid numeric value(s).")
+                        while True:
+                            fw_in = _safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q=back: ").strip()
+                            if not fw_in or fw_in.lower() == 'q':
+                                break
+                            try:
+                                push_state("framewidth")
+                                frame_w, tick_major, tick_minor = parse_frame_tick_widths(fw_in)
+                                apply_frame_and_tick_widths(
+                                    [ax, ax2],
+                                    frame_width=frame_w,
+                                    major_width=tick_major,
+                                    minor_width=tick_minor,
+                                )
+                                fig.canvas.draw()
+                                print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
+                            except ValueError:
+                                print("Invalid numeric value(s).")
                     elif sub == 'g':
                         push_state("grid")
                         # Toggle grid state - check if any gridlines are visible

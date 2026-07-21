@@ -153,79 +153,83 @@ def _run_file_rename(
 
 
 def _rename_one_file(*, fig, ax, ax2, file_data, file_info, push_state, rebuild_legend, safe_input) -> None:
-    base_name = extract_cpc_file_base_name(file_info)
-    print(f"Current file name in legend: '{base_name}'")
-    new_name = safe_input("Enter new file name (q=cancel): ").strip()
-    if not new_name or new_name.lower() == "q":
-        return
-    new_name = convert_label_shortcuts(new_name)
-    try:
-        push_state("rename-legend")
-        labels = apply_cpc_file_name(file_info, new_name)
-        rebuild_legend(ax, ax2, file_data, preserve_position=True)
-        fig.canvas.draw_idle()
-        print(f"Legend labels updated: '{labels[0]}', '{labels[1]}', '{labels[2]}'")
-    except Exception as exc:
-        print(f"Error: {exc}")
+    while True:
+        base_name = extract_cpc_file_base_name(file_info)
+        print(f"Current file name in legend: '{base_name}'")
+        new_name = safe_input("Enter new file name (q=back): ").strip()
+        if not new_name or new_name.lower() == "q":
+            break
+        new_name = convert_label_shortcuts(new_name)
+        try:
+            push_state("rename-legend")
+            labels = apply_cpc_file_name(file_info, new_name)
+            rebuild_legend(ax, ax2, file_data, preserve_position=True)
+            fig.canvas.draw_idle()
+            print(f"Legend labels updated: '{labels[0]}', '{labels[1]}', '{labels[2]}'")
+        except Exception as exc:
+            print(f"Error: {exc}")
 
 
 def _rename_x_axis(*, fig, ax, push_state, safe_input) -> None:
-    current = ax.get_xlabel()
-    print(f"Current x-axis title: '{current}'")
-    new_title = safe_input("Enter new x-axis title (q=cancel): ")
-    if not new_title or new_title.lower() == "q":
-        return
-    new_title = normalize_label_text(convert_label_shortcuts(new_title))
-    remember_axis_name(new_title)
-    try:
-        push_state("rename-x")
-        ax.set_xlabel(new_title)
-        ax._stored_xlabel = new_title
-        ax._stored_top_xlabel = new_title
-        if hasattr(ax, "_top_xlabel_text") and ax._top_xlabel_text is not None and ax._top_xlabel_text.get_visible():
-            ax._top_xlabel_text.set_text(new_title)
-        fig.canvas.draw_idle()
-        print(f"X-axis title updated to: '{new_title}'")
-    except Exception as exc:
-        print(f"Error: {exc}")
+    while True:
+        current = ax.get_xlabel()
+        print(f"Current x-axis title: '{current}'")
+        new_title = safe_input("Enter new x-axis title (q=back): ")
+        if not new_title or new_title.lower() == "q":
+            break
+        new_title = normalize_label_text(convert_label_shortcuts(new_title))
+        remember_axis_name(new_title)
+        try:
+            push_state("rename-x")
+            ax.set_xlabel(new_title)
+            ax._stored_xlabel = new_title
+            ax._stored_top_xlabel = new_title
+            if hasattr(ax, "_top_xlabel_text") and ax._top_xlabel_text is not None and ax._top_xlabel_text.get_visible():
+                ax._top_xlabel_text.set_text(new_title)
+            fig.canvas.draw_idle()
+            print(f"X-axis title updated to: '{new_title}'")
+        except Exception as exc:
+            print(f"Error: {exc}")
 
 
 def _rename_left_y_axis(*, fig, ax, push_state, safe_input) -> None:
-    current = ax.get_ylabel()
-    print(f"Current left y-axis title: '{current}'")
-    new_title = safe_input("Enter new left y-axis title (q=cancel): ")
-    if not new_title or new_title.lower() == "q":
-        return
-    new_title = normalize_label_text(convert_label_shortcuts(new_title))
-    remember_axis_name(new_title)
-    try:
-        push_state("rename-ly")
-        ax.set_ylabel(new_title)
-        ax._stored_ylabel = new_title
-        fig.canvas.draw_idle()
-        print(f"Left y-axis title updated to: '{new_title}'")
-    except Exception as exc:
-        print(f"Error: {exc}")
+    while True:
+        current = ax.get_ylabel()
+        print(f"Current left y-axis title: '{current}'")
+        new_title = safe_input("Enter new left y-axis title (q=back): ")
+        if not new_title or new_title.lower() == "q":
+            break
+        new_title = normalize_label_text(convert_label_shortcuts(new_title))
+        remember_axis_name(new_title)
+        try:
+            push_state("rename-ly")
+            ax.set_ylabel(new_title)
+            ax._stored_ylabel = new_title
+            fig.canvas.draw_idle()
+            print(f"Left y-axis title updated to: '{new_title}'")
+        except Exception as exc:
+            print(f"Error: {exc}")
 
 
 def _rename_right_y_axis(*, fig, ax2, push_state, safe_input) -> None:
-    current = ax2.get_ylabel()
-    print(f"Current right y-axis title: '{current}'")
-    new_title = safe_input("Enter new right y-axis title (q=cancel): ")
-    if not new_title or new_title.lower() == "q":
-        return
-    new_title = normalize_label_text(convert_label_shortcuts(new_title))
-    remember_axis_name(new_title)
-    try:
-        push_state("rename-ry")
-        ax2.set_ylabel(new_title)
-        if not hasattr(ax2, "_stored_ylabel"):
-            ax2._stored_ylabel = ""
-        ax2._stored_ylabel = new_title
-        fig.canvas.draw_idle()
-        print(f"Right y-axis title updated to: '{new_title}'")
-    except Exception as exc:
-        print(f"Error: {exc}")
+    while True:
+        current = ax2.get_ylabel()
+        print(f"Current right y-axis title: '{current}'")
+        new_title = safe_input("Enter new right y-axis title (q=back): ")
+        if not new_title or new_title.lower() == "q":
+            break
+        new_title = normalize_label_text(convert_label_shortcuts(new_title))
+        remember_axis_name(new_title)
+        try:
+            push_state("rename-ry")
+            ax2.set_ylabel(new_title)
+            if not hasattr(ax2, "_stored_ylabel"):
+                ax2._stored_ylabel = ""
+            ax2._stored_ylabel = new_title
+            fig.canvas.draw_idle()
+            print(f"Right y-axis title updated to: '{new_title}'")
+        except Exception as exc:
+            print(f"Error: {exc}")
 
 
 def _current_file_labels(file_info) -> tuple[str, str, str]:

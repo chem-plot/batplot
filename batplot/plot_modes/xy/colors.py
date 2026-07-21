@@ -15,10 +15,11 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 from matplotlib import colors as mcolors  # type: ignore[import]
 
 from ...plotting import apply_curve_color, update_labels
-from ...ui import set_spine_side_color as _ui_set_spine_side_color
+from .spines import apply_xy_spine_color
 from ...color_utils import (
     color_block,
     color_bar,
+    format_color_listing,
     palette_preview,
     manage_user_colors,
     get_user_color_list,
@@ -54,6 +55,7 @@ def run_xy_color_menu(
     push_state: Callable[[str], Any],
     safe_input: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
+    tick_state: dict | None = None,
 ) -> None:
     """Run the colors submenu."""
     _line = line_getter
@@ -109,19 +111,26 @@ def run_xy_color_menu(
 
         while True:
             # Header: show current curves
-            print("\n\033[1mColors>\033[0m  Current curves:")
+            print("\n\033[1mColors>\033[0m  Current curves (visible only):")
+            any_curve = False
             for idx, label in enumerate(labels):
                 try:
-                    cur = _line(idx).get_color()
+                    ln = _line(idx)
+                    if ln is not None and not ln.get_visible():
+                        continue
+                    cur = ln.get_color() if ln is not None else None
                 except Exception:
                     cur = None
-                print(f"  {idx+1}: {color_block(cur)} {label}")
+                any_curve = True
+                print(f"  {idx+1}: {format_color_listing(cur)} {label}")
+            if not any_curve:
+                print("  (none visible)")
             # Saved user colors
             user_colors = get_user_color_list(fig)
             if user_colors:
                 print("Saved colors (refer as number or u#):")
                 for idx, col in enumerate(user_colors, 1):
-                    print(f"  {idx}: {color_block(col)} {col}")
+                    print(f"  {idx}: {format_color_listing(col)}")
             # Palettes
             history = getattr(fig, '_curve_palette_history', [])
             cur_pal = history[-1]['palette'] if history else None
@@ -157,7 +166,7 @@ def run_xy_color_menu(
                         _C = '\033[96m'; _R = '\033[0m'
                         print("CIF color (per set).")
                         for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
-                            print(f"  {i+1}: {lab}  color={_C}{col}{_R}")
+                            print(f"  {i+1}: {format_color_listing(col)}  {lab}")
                         print("Examples:")
                         print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
                         print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
@@ -242,6 +251,7 @@ def run_xy_color_menu(
             _is_spine = all(':' in t and t.split(':', 1)[0].lower() in _spine_keys for t in tokens if t)
             if _is_spine and tokens:
                 push_state("color-spine")
+                changed_spines: list[tuple[str, str]] = []
                 for tok in tokens:
                     key_part, color_spec = tok.split(':', 1)
                     spine_name = _spine_keys[key_part.lower()]
@@ -250,15 +260,17 @@ def run_xy_color_menu(
                         continue
                     try:
                         resolved = resolve_color_token(color_spec, fig)
-                        _ui_set_spine_side_color(ax, spine_name, resolved, fig=fig)
-                        if spine_name == 'top':
-                            position_top_xlabel()
-                        elif spine_name == 'right':
-                            position_right_ylabel()
-                        print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                        apply_xy_spine_color(fig, ax, tick_state or {}, spine_name, resolved)
+                        changed_spines.append((spine_name, resolved))
+                        print(f"Set {spine_name} spine to {format_color_listing(resolved)}")
                     except Exception as e:
                         print(f"Error setting {spine_name} color: {e}")
-                fig.canvas.draw()
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+                for spine_name, resolved in changed_spines:
+                    apply_xy_spine_color(fig, ax, tick_state or {}, spine_name, resolved)
                 continue
             # Detect palette: last token has no ':' and more than one token total OR single token is a palette name/number
             _has_colon = any(':' in t for t in tokens)
