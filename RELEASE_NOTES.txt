@@ -134,3 +134,6 @@
   batplot gc1.pkl gc2.pkl gc3.pkl
 
 - Bug fixes
+
+## 1.8.48
+- Bug fixes on session reload

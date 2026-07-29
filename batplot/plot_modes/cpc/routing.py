@@ -467,7 +467,7 @@ def handle_cpc_mode(args) -> int:
                 with open(style_file_path, 'r', encoding='utf-8') as f:
                     style_cfg = json.load(f)
                 print(f"Using style file: {os.path.basename(style_file_path)}")
-                from .interactive import _apply_style
+                from .style import _apply_style
 
                 sc0 = file_data[0]
                 _apply_style(

@@ -133,11 +133,13 @@ def apply_font_extras_from_cfg(fig: Any, artists: Iterable[Any], cfg: dict[str, 
     highlight = cfg.get("highlight")
     if highlight is not None:
         try:
-            alpha = float(cfg.get("highlight_alpha", DEFAULT_HIGHLIGHT_ALPHA))
+            alpha_raw = cfg.get("highlight_alpha", DEFAULT_HIGHLIGHT_ALPHA)
+            alpha = float(alpha_raw) if isinstance(alpha_raw, (int, float, str)) else DEFAULT_HIGHLIGHT_ALPHA
         except (TypeError, ValueError):
             alpha = DEFAULT_HIGHLIGHT_ALPHA
         try:
-            pad = float(cfg.get("highlight_pad", DEFAULT_HIGHLIGHT_PAD))
+            pad_raw = cfg.get("highlight_pad", DEFAULT_HIGHLIGHT_PAD)
+            pad = float(pad_raw) if isinstance(pad_raw, (int, float, str)) else DEFAULT_HIGHLIGHT_PAD
         except (TypeError, ValueError):
             pad = DEFAULT_HIGHLIGHT_PAD
         fc = cfg.get("highlight_fc", DEFAULT_HIGHLIGHT_FC)
@@ -193,7 +195,9 @@ def sync_font_rcparams_from_cfg(font_cfg: dict[str, object] | None) -> None:
     elif fam:
         set_font_family_defaults(fam, sans_serif_stack=True, update_mathtext=True)
     if font_cfg.get("size") is not None:
-        set_font_size_default(float(font_cfg["size"]))
+        size_raw = font_cfg["size"]
+        if isinstance(size_raw, (int, float, str)):
+            set_font_size_default(float(size_raw))
     if font_cfg.get("mathtext_fontset"):
         mpl.rcParams["mathtext.fontset"] = font_cfg["mathtext_fontset"]
 
@@ -244,11 +248,13 @@ def apply_session_font_cfg(
     if fam:
         apply_font_family_to_artists(collected, fam)
     if font_cfg.get("size") is not None:
-        sz = float(font_cfg["size"])
-        apply_font_size_to_artists(collected, sz)
-        for ax in axes:
-            if ax is not None:
-                sync_legend_title_fontsize(ax.get_legend(), sz)
+        size_raw = font_cfg["size"]
+        if isinstance(size_raw, (int, float, str)):
+            sz = float(size_raw)
+            apply_font_size_to_artists(collected, sz)
+            for ax in axes:
+                if ax is not None:
+                    sync_legend_title_fontsize(ax.get_legend(), sz)
     apply_font_extras_from_cfg(fig, collected, font_cfg)
 
 

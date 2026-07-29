@@ -61,7 +61,7 @@ def batch_import_style(
     *,
     path_prompt: str,
     load_style: Callable[[str], Any],
-    apply_style: Callable[[Any, Any], None],
+    apply_style: Callable[[Any, Any], bool | None],
     prepare: Callable[[list[int]], None] | None = None,
     on_applied: Callable[[list[int], str], None] | None = None,
 ) -> list[int] | None:

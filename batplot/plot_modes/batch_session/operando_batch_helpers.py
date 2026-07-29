@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, List, Sequence
+from typing import Callable, List, Sequence, TypeVar
 
 from ..common.spines import (
     apply_frame_and_tick_widths,
@@ -30,6 +30,8 @@ from ...ui import finalize_spine_colors_for_axes
 from .batch_menu_helpers import prompt_axis_limits
 from .common import SyncUndoStacks
 from .load import OperandoPanel
+
+PanelT = TypeVar("PanelT")
 
 
 def _cfg_signature(cfg: dict) -> str:
@@ -96,11 +98,11 @@ def _label_only_axes_geometry(axes_geom: dict | None) -> dict | None:
 
 
 def sync_style_from_ref(
-    ref: OperandoPanel,
-    panels: Sequence[OperandoPanel],
+    ref: PanelT,
+    panels: Sequence[PanelT],
     *,
-    capture_panel: Callable[[OperandoPanel], dict],
-    apply_cfg: Callable[[OperandoPanel, dict], bool],
+    capture_panel: Callable[[PanelT], dict],
+    apply_cfg: Callable[..., bool | None],
     include_geometry: bool = False,
 ) -> None:
     """Copy style (+ optional geometry) from the reference panel onto every other panel.
@@ -138,14 +140,14 @@ def sync_style_from_ref(
 
 
 def edit_ref_then_sync(
-    ref: OperandoPanel,
-    panels: List[OperandoPanel],
+    ref: PanelT,
+    panels: List[PanelT],
     *,
     undo: SyncUndoStacks,
-    capture_panel: Callable[[OperandoPanel], dict],
-    apply_cfg: Callable[[OperandoPanel, dict], bool],
+    capture_panel: Callable[[PanelT], dict],
+    apply_cfg: Callable[..., bool | None],
     draw_all: Callable[[], None],
-    edit_fn: Callable[[], None],
+    edit_fn: Callable[..., object],
     include_geometry: bool = False,
 ) -> None:
     """Run a ref-only editor, then push one undo point and sync style to all panels.

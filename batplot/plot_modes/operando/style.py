@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Tuple, cast
+from typing import Any, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,30 +10,12 @@ import numpy as np
 from ...ui import capture_axes_tick_locators
 from ..common.font_extras import apply_font_extras_from_cfg, font_extras_export_dict
 from ..common.fonts import collect_fig_font_artists
+from ..common.spines import current_tick_width
 from .layout import _ensure_fixed_params, _get_fig_size, _get_geometry_snapshot
 
 
 def _axis_tick_width(axis_obj, which: str = 'major'):
-    try:
-        ticks = axis_obj.get_major_ticks() if which == 'major' else axis_obj.get_minor_ticks()
-        if not ticks:
-            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-            width = tick_kw.get('width')
-            if width is None:
-                axis_name = getattr(axis_obj, 'axis_name', 'x')
-                rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(cast(Any, rc_key))
-            return float(width) if width is not None else None
-        for tick in ticks:
-            line = tick.tick1line
-            if line.get_visible():
-                return float(line.get_linewidth())
-            line2 = getattr(tick, 'tick2line', None)
-            if line2 is not None and line2.get_visible():
-                return float(line2.get_linewidth())
-        return None
-    except (AttributeError, TypeError, ValueError, KeyError):
-        return None
+    return current_tick_width(axis_obj, which)
 
 
 def _axis_tick_length(axis_obj, which: str = "major"):

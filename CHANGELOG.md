@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.48] - 2026-07-29
+- Bug fixes on session reload
+
+
 ## [1.8.47] - 2026-07-21
 - Added Batch Interactive mode, loading multiple saved .pkl sessions
   (must be the same type, e.g All are GC) to edit basic styles and

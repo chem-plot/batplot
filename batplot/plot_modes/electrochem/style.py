@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional
 import json
 import os
 
@@ -11,6 +11,7 @@ from matplotlib import colors as mcolors  # type: ignore[import-untyped]
 from matplotlib.ticker import AutoMinorLocator, MultipleLocator  # type: ignore[import-untyped]
 
 from ..common.font_extras import font_extras_export_dict
+from ..common.spines import current_tick_width
 from ...color_utils import color_block, format_color_listing
 from ...plotting import apply_curve_color
 from ...ui import set_spine_side_color
@@ -228,18 +229,7 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
 
     # Tick widths
     def _tick_width(axis_obj, which: str):
-        try:
-            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-            width = tick_kw.get('width')
-            if width is None:
-                axis_name = getattr(axis_obj, 'axis_name', 'x')
-                rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(cast(Any, rc_key))
-            if width is not None:
-                return float(width)
-        except Exception:
-            return None
-        return None
+        return current_tick_width(axis_obj, which)
 
     tick_widths = {
         'x_major': _tick_width(ax.xaxis, 'major'),

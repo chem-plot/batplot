@@ -186,7 +186,7 @@ def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-def _sanitize_legend_offset(xy: Optional[tuple]) -> Optional[tuple]:
+def _sanitize_legend_offset(xy: object) -> Optional[tuple[float, float]]:
     if xy is None or not isinstance(xy, tuple) or len(xy) != 2:
         return None
     try:
@@ -389,9 +389,25 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
         except Exception:
             pass
 
+    # Drop proxy handles left behind by a previous compact-legend build so
+    # repeated rebuilds (undo / style import) don't accumulate empty scatters.
+    try:
+        for stale in [c for c in list(ax.collections) if getattr(c, "_cpc_legend_proxy", False)]:
+            try:
+                stale.remove()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    def _proxy_scatter(**kw):
+        handle = ax.scatter([], [], **kw)
+        handle._cpc_legend_proxy = True  # type: ignore[attr-defined]
+        return handle
+
     marker_area = 28.0
-    chg_handle = ax.scatter([], [], marker="s", s=marker_area, facecolors="#444444", edgecolors="#444444", linewidths=1.0, label="Charge")
-    dch_handle = ax.scatter([], [], marker="s", s=marker_area, facecolors="none", edgecolors="#444444", linewidths=1.2, label="Discharge")
+    chg_handle = _proxy_scatter(marker="s", s=marker_area, facecolors="#444444", edgecolors="#444444", linewidths=1.0, label="Charge")
+    dch_handle = _proxy_scatter(marker="s", s=marker_area, facecolors="none", edgecolors="#444444", linewidths=1.2, label="Discharge")
     handles = [chg_handle, dch_handle]
     labels = ["Charge", "Discharge"]
 
@@ -405,16 +421,16 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
                     break
         except Exception:
             eff_color = "#888888"
-        eff_handle = ax.scatter([], [], marker="^", s=marker_area, facecolors=eff_color, edgecolors=eff_color, linewidths=1.0, label="Efficiency")
+        eff_handle = _proxy_scatter(marker="^", s=marker_area, facecolors=eff_color, edgecolors=eff_color, linewidths=1.0, label="Efficiency")
         handles.append(eff_handle)
         labels.append("Efficiency")
 
-    sep = ax.scatter([], [], s=0.0, alpha=0.0, label="")
+    sep = _proxy_scatter(s=0.0, alpha=0.0, label="")
     handles.append(sep)
     labels.append("")
 
     for color, filename in file_rows:
-        file_handle = ax.scatter([], [], marker="s", s=marker_area, facecolors=color, edgecolors=color, linewidths=1.0, label=filename)
+        file_handle = _proxy_scatter(marker="s", s=marker_area, facecolors=color, edgecolors=color, linewidths=1.0, label=filename)
         handles.append(file_handle)
         labels.append(filename)
 

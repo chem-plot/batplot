@@ -189,7 +189,12 @@ def sample_palette_colors(
     except Exception:
         ensure_colormap("viridis")
         cmap = cmap_getter("viridis")
-    if prefer_listed_colors and hasattr(cmap, "colors") and cmap.colors is not None:
+    if (
+        prefer_listed_colors
+        and cmap is not None
+        and hasattr(cmap, "colors")
+        and getattr(cmap, "colors", None) is not None
+    ):
         colors = cmap.colors
         out = []
         for i in range(n):

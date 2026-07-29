@@ -4,6 +4,187 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Fix (XY `.pkl` X-range expand dropped full data) — 2026-07-29
+- **Bug**: After opening a cropped XY session (e.g. ``XRD.pkl`` with viewport
+  2.7–2.8 while ``x_full_data`` still held ~5562 points), changing X to a wider
+  window (e.g. ``1 5``) did not restore points outside the saved display crop.
+  Data looked “lost” even though the ``.pkl`` still contained the full arrays.
+- **Root cause**: Session load always restores ``fig._original_x_data_list`` as a
+  full-data backup. The interactive X menu treated presence of that attribute as
+  “processed” and, when expanding past the current crop without
+  ``_full_processed_*`` buffers, re-sliced from the *cropped* ``x_data_list``
+  instead of ``x_full_list`` / ``raw_y_full_list``.
+- **Solution**:
+  - ``_xy_truly_processed`` only counts real smooth/derivative / full-processed
+    state — not ``_original_x_data_list`` alone.
+  - Unprocessed and session-reload paths always refilter from saved full arrays
+    via ``_refilter_curves_from_full`` (``x`` / ``w`` / ``s`` / ``a``).
+  - If processed buffers exist but do not span the requested window,
+    fall back to ``x_full_data`` (``_full_processed_covers``).
+  - ``_ensure_original_data`` now prefers ``x_full_list`` over the cropped display
+    window when first snapshotting originals for smooth/reset; Y is stored
+    offset-free. Non-stack smooth rebuilds full-processed buffers from originals
+    when possible.
+- **Compatibility**: Windows / macOS / Linux. Existing ``.pkl`` files unchanged;
+  no re-save required if ``x_full_data`` was already persisted.
+- **Scope note**: Axis-limit crop-and-refilter is XY-specific. EC / CPC /
+  operando / histo change axis limits without deleting underlying arrays.
+- **Tests**: ``tests/test_xy_roundtrip.py::test_x_range_expand_after_reload_uses_full_data_not_crop``
+- **Affected files**: ``batplot/plot_modes/xy/axis_range.py``,
+  ``batplot/plot_modes/xy/interactive.py``,
+  ``tests/test_xy_roundtrip.py``, ``BUGFIXES.md``
+
+---
+
+### Fix (EC dQ/dV filter originals lost in `.pkl`) — 2026-07-29
+- **Bug**: After dQ/dV ``sm`` filter/outlier/smooth, save ``.pkl``, reload, then
+  ``sm → r`` (reset) could not restore pre-filter points. Line attrs
+  ``_original_xdata`` / ``_original_ydata`` were memory-only.
+- **Solution**: Persist ``original_xdata`` / ``original_ydata`` / ``smooth_applied``
+  in EC session line payloads (same pattern as ``orig_xdata_gc``) and restore on
+  load so reset and re-apply skip double-filtering.
+- **Compatibility**: Windows / macOS / Linux; older PKLs without these keys still load.
+- **Tests**: ``tests/test_ec_roundtrip.py::test_dump_load_preserves_dqdv_filter_originals_for_reset``
+- **Affected files**: ``batplot/plot_modes/electrochem/session.py``,
+  ``tests/test_ec_roundtrip.py``, ``BUGFIXES.md``
+
+---
+
+### Fix (basedpyright: batch SVG patch restore Optional member access) — 2026-07-22
+- **Bug**: ``reportOptionalMemberAccess`` on ``batch_figure_io.save_standard_panel_figure``
+  for ``patch.set_alpha`` / ``patch.set_facecolor`` during SVG transparency restore,
+  because ``owners`` was typed with ``Any | None`` patches.
+- **Solution**: Pre-filter to ``patch_owners: list[tuple[Any, Any]]`` (skip ``None``
+  owner/patch) before save/restore so restore never sees Optional patches.
+  Behavior unchanged.
+
+### Affected files
+- ``batplot/plot_modes/batch_session/batch_figure_io.py``
+
+---
+
+### Refactor (basedpyright: operando ``apply_operando_ec_style_config`` too complex) — 2026-07-22
+- **Bug**: basedpyright reported ``Code is too complex to analyze`` /
+  ``reportGeneralTypeIssues`` on the ~800-line ``apply_operando_ec_style_config``
+  in ``batplot/plot_modes/operando/style_apply.py``.
+- **Solution**: Split into private helpers by existing comment-headed blocks
+  (dqdv_2d, labelpads, fonts/canvas, geometry inches, colormap, WASD/spines/ticks,
+  reverse/intensity/CIF/ions, visibility, title offsets, reposition, axes_geometry).
+  Public API and runtime behavior unchanged (same prints / early ``return False``
+  for missing ions current / try-except swallowing).
+- **Affected files**: ``batplot/plot_modes/operando/style_apply.py``
+
+---
+
+### Fix (basedpyright: ``__all__`` names not present in mode packages) — 2026-07-22
+- **Bug**: ``reportUnsupportedDunderAll`` on ``plot_modes/{cpc,electrochem,operando,xy}/__init__.py``
+  because interactive menu names were listed in ``__all__`` but only exposed via
+  lazy ``__getattr__`` (IDE/pyright treat those as missing from the module).
+  Also a stale duplicate ``__all__`` in ``operando/session.py`` listed foreign
+  dump/load symbols that do not exist in that module.
+- **Solution**: Eager-import the menu symbols in each package ``__init__.py``
+  and drop ``__all__`` there (nothing star-imports these packages; ``__all__``
+  only fed ``reportUnsupportedDunderAll``). Remove lazy ``__getattr__``.
+  Verified no import cycles with ``batplot.session``. Dropped ``__all__`` from
+  ``operando/session.py`` as well (it previously listed foreign dump/load
+  names from other modes). Repo-wide audit: **0** stale ``__all__`` entries.
+
+### Affected files
+- ``batplot/plot_modes/{cpc,electrochem,operando,xy}/__init__.py``
+- ``batplot/plot_modes/operando/session.py``
+
+---
+
+### Audit (p/i/s/b style+geometry key coverage, all modes) — 2026-07-22
+- Verified interactive + batch capture paths for CPC/EC/XY/operando/histo against
+  real user ``.pkl`` sessions (Li2FeSeO + NFSO Figures).
+- **CPC ``ie`` (invert efficiency)**: offsets round-trip via ``series.efficiency.offsets``
+  / ``multi_files[].efficiency_offsets`` for ``p``/``i``/``b`` and efficiency ``y``
+  arrays for ``s``. **``ry``** visibility likewise. Runtime checks on synthetic +
+  ``cpc.pkl`` / ``cpc2.pkl``: pass.
+- **Operando** (contour ``oc``/``oz``/``ox``/``oy``/``r`` + EC ``el``/spines/font):
+  v2 style ``psg`` + session + undo: pass.
+- **EC / XY / histo** style+geometry (with ``psg`` for limits/labels): pass.
+- **By design (not bugs):** style-only ``ps`` omits axis limits (use ``psg``);
+  XY ``sm``/``d`` store settings in style but curve arrays only in ``s``/``b``;
+  EC ``2d`` companion is saved on parent ``s`` and has its own operando p/i/s/b
+  once open; crosshair ``n`` / peak export ``pk``/``v`` are non-persisted.
+
+---
+
+### Fix (basedpyright: CPC/EC batch helpers typed as OperandoPanel) — 2026-07-22
+- **Bug**: ``cpc_batch_helpers.py`` / ``ec_batch_helpers.py`` (and callers in
+  ``menu_cpc`` / ``menu_ec`` / ``menu_xy``) reported type errors because
+  ``sync_style_from_ref`` / ``edit_ref_then_sync`` were hard-typed to
+  ``OperandoPanel``.
+- **Solution**: Made those helpers generic (``TypeVar``), relaxed
+  ``apply_cfg`` / ``edit_fn`` / ``batch_import_style`` / undo restore callables
+  to accept real return types, and fixed remaining missing imports
+  (``List``/``Tuple``/``sys``/``numpy``) plus font/menu optional narrowing.
+  ``basedpyright batplot/ tests/`` → **0 errors** (warnings only). No runtime
+  behavior change.
+
+### Affected files
+- ``batplot/plot_modes/batch_session/operando_batch_helpers.py``
+- ``batplot/plot_modes/batch_session/{batch_menu_io,common,menu_histo}.py``
+- ``batplot/plot_modes/common/{menus,font_extras,session_key_smoke}.py``
+- ``batplot/plot_modes/{cpc/style,cpc/legend,electrochem/session,xy/session}.py``
+
+---
+
+### Fix / optimize (unify tick-width readers + EC batch tick-state helpers) — 2026-07-22
+- **Context**: Property-level PISB audit against real user sessions under
+  ``Li2FeSeO_processing/Figures`` and ``NFSO data/Figures`` (166 ``.pkl`` load OK;
+  representative XY/EC/CPC/operando/histo roundtrips for ``p``/``i``/``s``/``b``
+  including tick widths, plus import of existing ``.bps``/``.bpsg`` style files).
+- **Change**: All mode tick-width readers now go through
+  ``plot_modes.common.spines.current_tick_width`` (XY style/export, XY undo,
+  EC style/interactive, CPC already, operando style/interactive, dQ/dV 2D).
+  Exception contract matches the operando helper (only swallows
+  ``AttributeError``/``TypeError``/``ValueError``/``KeyError``; unexpected
+  failures still surface). EC batch menu delegates
+  ``_default_tick_state`` / ``_tick_state_from_fig`` to
+  ``ec_batch_helpers.default_ec_tick_state`` / ``ec_tick_state_from_fig``.
+- **Compatibility**: Session ``.pkl`` schema and style JSON keys unchanged;
+  behavior of ``p``/``i``/``s``/``b`` unchanged except the earlier tick-width
+  export fix (no longer hard-codes 1.5). Cross-platform (pure matplotlib APIs).
+
+### Affected files
+- ``batplot/plot_modes/common/spines.py``
+- ``batplot/plot_modes/xy/{style,interactive}.py``
+- ``batplot/plot_modes/electrochem/{style,interactive,dqdv_2d}.py``
+- ``batplot/plot_modes/operando/{style,interactive}.py``
+- ``batplot/plot_modes/batch_session/menu_ec.py``
+
+---
+
+### Fix (tick widths exported as 1.5 in XY/operando style files) — 2026-07-22
+- **Bug**: After changing tick widths via the ``l`` (line widths) menu, exporting a
+  style with ``p`` and importing it with ``i`` restored the wrong tick width
+  (always 1.5). Affected XY ``.bps``/``.bpsg`` exports, the XY ``p`` print summary,
+  operando style capture (normal + batch ``p``/``i``/``b``), and the dQ/dV 2D
+  fallback reader. Session save/load (``s``) was NOT affected — it already read
+  widths from the axis tick params.
+- **Root cause**: These capture paths read the tick width via
+  ``tick.tick1line.get_linewidth()``. Matplotlib stores the tick width as the tick
+  line's *marker edge width*; ``get_linewidth()`` returns the generic Line2D rc
+  default (``lines.linewidth`` = 1.5) regardless of the actual tick width, so
+  every export recorded 1.5.
+- **Solution**: All capture paths now read the width from the axis tick params
+  (``axis._major_tick_kw`` / ``_minor_tick_kw`` with an rcParams fallback) via the
+  shared ``plot_modes/common/spines.current_tick_width`` helper (XY), and the same
+  tick-kw logic in operando/dqdv. Cross-platform: pure matplotlib API usage.
+- **Verification**: Property-level PISB audit across all five modes (XY, EC, CPC,
+  operando, histo — 61 artist-level checks of fonts, spines, tick widths/lengths,
+  colors, sizes through ``p``/``i``/``s``/``b``) passes, plus the full test suite.
+
+### Affected files
+- ``batplot/plot_modes/xy/style.py`` (export_style_config + ``p`` summary)
+- ``batplot/plot_modes/operando/style.py`` (``_axis_tick_width``)
+- ``batplot/plot_modes/electrochem/dqdv_2d.py`` (fallback now uses rcParams)
+
+---
+
 ### Fix (batch current values)
 - ``print_batch_pair_status`` / ``print_batch_scalar_status`` in
   ``batch_menu_helpers.py`` show numbered per-plot values when panels differ.
@@ -8934,3 +9115,63 @@ entirely on macOS.
 
 ### Cross-Platform Compatibility
 - ✅ macOS / Windows / Linux
+
+---
+
+## 2026-07-21 — Structure: split monolithic `session.py` into mode-owned modules
+
+### Summary
+`batplot/session.py` had grown to ~4791 lines (all mode dump/load + shared helpers).
+This made review and safe changes harder without changing pickle behavior.
+
+### Refactor (behavior-preserving)
+- Moved dump/load implementations into mode modules:
+  - `plot_modes/xy/session.py`
+  - `plot_modes/electrochem/session.py`
+  - `plot_modes/cpc/session.py`
+  - `plot_modes/operando/session.py`
+- Extracted shared version/tick/bbox helpers to `plot_modes/common/session_helpers.py`
+  (re-exported from `batplot.session` for existing callers).
+- Root `batplot/session.py` is now a thin public facade (~107 lines) with lazy
+  dispatch to avoid circular imports.
+- Mode package `__init__.py` files (xy/ec/cpc/operando) use lazy `__getattr__`
+  exports for the same reason.
+- Public APIs and `.pkl` schemas unchanged.
+
+### Affected Files
+- `batplot/session.py`
+- `batplot/plot_modes/{xy,electrochem,cpc,operando}/session.py`
+- `batplot/plot_modes/{xy,electrochem,cpc,operando}/__init__.py`
+- `batplot/plot_modes/common/session_helpers.py`
+- `tests/test_contracts.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: import/layout only; pickle I/O unchanged
+
+---
+
+## 2026-07-21 — Structure: CPC style extract + XRD readers + tick-width share
+
+### Summary
+Continue reducing oversized modules without changing plot/session behavior:
+CPC style snapshot/apply, Bruker XRD readers, and duplicated tick-width helpers.
+
+### Refactor (behavior-preserving)
+- Moved CPC `_style_snapshot` / `_apply_style` (+ helpers) to `plot_modes/cpc/style.py`.
+  `interactive.py` re-exports them; `snapshots.py` / batch / routing import from `style`
+  (breaks `snapshots` ↔ `interactive` cycle).
+- Extracted Bruker RAW/BRML XRD readers to `batplot/readers_xrd.py`; `readers.py`
+  re-exports the same public names.
+- `session_helpers._current_tick_width` now delegates to shared
+  `spines.current_tick_width` (identical logic). CPC style tick helper uses the
+  shared function. Operando `_axis_tick_width` left local (different exception
+  contract covered by tests).
+
+### Affected Files
+- `batplot/plot_modes/cpc/{style.py,interactive.py,snapshots.py,routing.py}`
+- `batplot/plot_modes/batch_session/menu_cpc.py`
+- `batplot/readers.py`, `batplot/readers_xrd.py`
+- `batplot/plot_modes/common/session_helpers.py`
+
+### Cross-Platform Compatibility
+- ✅ macOS / Windows / Linux: structure/import only

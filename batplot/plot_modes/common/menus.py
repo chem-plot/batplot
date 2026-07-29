@@ -70,7 +70,7 @@ def run_font_menu(
     fonts: Optional[list[str]] = None,
     blank_exits: bool = True,
     get_current_weight: Callable[[], object] | None = None,
-    apply_weight: Callable[[str], None] | None = None,
+    apply_weight: Callable[[str], object] | None = None,
     get_current_highlight: Callable[[], bool] | None = None,
     get_highlight_style: Callable[[], dict] | None = None,
     apply_highlight_toggle: Callable[[], None] | None = None,
@@ -84,31 +84,33 @@ def run_font_menu(
     different artists to update (legends, duplicate titles, secondary axes).
     """
     fonts = fonts or DEFAULT_FONT_FAMILIES
-    has_weight = apply_weight is not None and get_current_weight is not None
-    has_highlight = (
-        apply_highlight_toggle is not None
-        and get_current_highlight is not None
-        and get_highlight_style is not None
-    )
     while True:
         status = f"family='{get_current_family()}', size={get_current_size()}"
-        if has_weight:
+        if get_current_weight is not None:
             status += f", weight={get_current_weight()}"
-        if has_highlight:
+        if get_current_highlight is not None:
             on = "on" if get_current_highlight() else "off"
             status += f", highlight={on}"
         print(f"\nFont (current: {status})")
         print("  " + colorize_menu("f: family"))
         print("  " + colorize_menu("s: size"))
-        if has_weight:
+        if apply_weight is not None and get_current_weight is not None:
             print("  " + colorize_menu("b: bold / weight"))
-        if has_highlight:
+        if (
+            apply_highlight_toggle is not None
+            and get_current_highlight is not None
+            and get_highlight_style is not None
+        ):
             print("  " + colorize_menu("h: text highlight (bbox behind labels)"))
         print("  " + colorize_menu("q: back"))
         keys = "f/s"
-        if has_weight:
+        if apply_weight is not None and get_current_weight is not None:
             keys += "/b"
-        if has_highlight:
+        if (
+            apply_highlight_toggle is not None
+            and get_current_highlight is not None
+            and get_highlight_style is not None
+        ):
             keys += "/h"
         keys += "/q"
         sub = safe_input(colorize_prompt(f"Font ({keys}): ")).strip().lower()
@@ -174,12 +176,14 @@ def run_font_menu(
                 process=_apply_size_choice,
             )
             continue
-        if sub == "b" and has_weight:
+        if sub == "b" and apply_weight is not None and get_current_weight is not None:
+            weight_getter = get_current_weight
+            weight_applier = apply_weight
 
             def _apply_weight_choice(choice: str) -> bool:
                 raw = choice.strip().lower()
                 if not raw:
-                    new_w = "normal" if str(get_current_weight()).lower() == "bold" else "bold"
+                    new_w = "normal" if str(weight_getter()).lower() == "bold" else "bold"
                 elif raw in ("bold", "b"):
                     new_w = "bold"
                 elif raw in ("normal", "n", "regular", "r"):
@@ -188,24 +192,32 @@ def run_font_menu(
                     print("Use bold, normal, or blank to toggle.")
                     return False
                 try:
-                    apply_weight(new_w)
+                    weight_applier(new_w)
                     print(f"Applied font weight: {new_w}")
                 except Exception as exc:
                     print(f"Error changing font weight: {exc}")
                 return True
 
             run_repeat_input_loop(
-                prompt=lambda: f"Font weight (current: {get_current_weight()}, bold/normal/blank=toggle, q=back): ",
+                prompt=lambda: f"Font weight (current: {weight_getter()}, bold/normal/blank=toggle, q=back): ",
                 safe_input=safe_input,
                 colorize_prompt=colorize_prompt,
                 process=_apply_weight_choice,
                 cancel_on_blank=False,
             )
             continue
-        if sub == "h" and has_highlight:
+        if (
+            sub == "h"
+            and apply_highlight_toggle is not None
+            and get_current_highlight is not None
+            and get_highlight_style is not None
+        ):
+            hl_toggle = apply_highlight_toggle
+            hl_get = get_current_highlight
+            hl_style = get_highlight_style
             while True:
-                st = get_highlight_style()
-                on = "on" if get_current_highlight() else "off"
+                st = hl_style()
+                on = "on" if hl_get() else "off"
                 print(f"\nText highlight (current: {on}, face={st.get('fc', 'white')}, alpha={st.get('alpha', 0.85):g}, pad={st.get('pad', 0.2):g})")
                 print("  " + colorize_menu("t: toggle on/off"))
                 print("  " + colorize_menu("c: face color (e.g. white, #f8f8f8)"))
@@ -217,29 +229,31 @@ def run_font_menu(
                     break
                 if hsub == "t":
                     try:
-                        apply_highlight_toggle()
-                        print(f"Text highlight {'on' if get_current_highlight() else 'off'}.")
+                        hl_toggle()
+                        print(f"Text highlight {'on' if hl_get() else 'off'}.")
                     except Exception as exc:
                         print(f"Error toggling highlight: {exc}")
                     continue
                 if hsub == "c" and apply_highlight_facecolor is not None:
+                    hl_facecolor = apply_highlight_facecolor
 
                     def _apply_hl_color(spec: str) -> bool:
                         try:
-                            apply_highlight_facecolor(spec)
+                            hl_facecolor(spec)
                             print(f"Highlight face color set to {spec}.")
                         except Exception as exc:
                             print(f"Error: {exc}")
                         return True
 
                     run_repeat_input_loop(
-                        prompt=lambda: f"Highlight face color (current: {get_highlight_style().get('fc', 'white')}, q=back): ",
+                        prompt=lambda: f"Highlight face color (current: {hl_style().get('fc', 'white')}, q=back): ",
                         safe_input=safe_input,
                         colorize_prompt=colorize_prompt,
                         process=_apply_hl_color,
                     )
                     continue
                 if hsub == "a" and apply_highlight_alpha is not None:
+                    hl_alpha = apply_highlight_alpha
 
                     def _apply_hl_alpha(raw: str) -> bool:
                         try:
@@ -251,20 +265,21 @@ def run_font_menu(
                             print("Alpha must be between 0 and 1.")
                             return False
                         try:
-                            apply_highlight_alpha(val)
+                            hl_alpha(val)
                             print(f"Highlight alpha set to {val:g}.")
                         except Exception as exc:
                             print(f"Error: {exc}")
                         return True
 
                     run_repeat_input_loop(
-                        prompt=lambda: f"Highlight alpha (current: {get_highlight_style().get('alpha', 0.85):g}, q=back): ",
+                        prompt=lambda: f"Highlight alpha (current: {hl_style().get('alpha', 0.85):g}, q=back): ",
                         safe_input=safe_input,
                         colorize_prompt=colorize_prompt,
                         process=_apply_hl_alpha,
                     )
                     continue
                 if hsub == "p" and apply_highlight_pad is not None:
+                    hl_pad = apply_highlight_pad
 
                     def _apply_hl_pad(raw: str) -> bool:
                         try:
@@ -276,14 +291,14 @@ def run_font_menu(
                             print("Pad must be non-negative.")
                             return False
                         try:
-                            apply_highlight_pad(val)
+                            hl_pad(val)
                             print(f"Highlight pad set to {val:g}.")
                         except Exception as exc:
                             print(f"Error: {exc}")
                         return True
 
                     run_repeat_input_loop(
-                        prompt=lambda: f"Highlight pad (current: {get_highlight_style().get('pad', 0.2):g}, q=back): ",
+                        prompt=lambda: f"Highlight pad (current: {hl_style().get('pad', 0.2):g}, q=back): ",
                         safe_input=safe_input,
                         colorize_prompt=colorize_prompt,
                         process=_apply_hl_pad,

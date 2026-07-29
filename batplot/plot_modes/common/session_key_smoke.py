@@ -441,7 +441,7 @@ def smoke_session_path(path: str) -> None:
             raise RuntimeError("load_cpc_session returned None")
         fig, ax, ax2, sc_charge, _sc_discharge, sc_eff, file_data = res
         try:
-            smoke_cpc_loaded(fig, ax, ax2, file_data, sc_charge, sc_eff)
+            smoke_cpc_loaded(fig, ax, ax2, file_data or [], sc_charge, sc_eff)
         finally:
             plt.close(fig)
     elif kind == "operando":

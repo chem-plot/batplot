@@ -13,6 +13,8 @@ from ...utils import natural_sort_key
 from ...ec_common import _default_ec_figsize
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
 from ..common.fonts import collect_operando_font_artists
+from ..common.spines import current_tick_width
+from ..common.session_helpers import _current_tick_length
 
 
 def _dqdv_2d_row_tick_indices(n_rows: int, max_ticks: int = 24) -> np.ndarray:
@@ -431,35 +433,9 @@ def build_dqdv_2d_snapshot(
         except Exception:
             cmap_name = "viridis"
     def _tick_width(axis_obj, which: str):
-        try:
-            tick_kw = axis_obj._major_tick_kw if which == "major" else axis_obj._minor_tick_kw
-            width = tick_kw.get("width")
-            if width is not None:
-                return float(width)
-        except Exception:
-            pass
-        try:
-            ticks = axis_obj.get_major_ticks() if which == "major" else axis_obj.get_minor_ticks()
-            if ticks:
-                return float(ticks[0].tick1line.get_linewidth())
-        except Exception:
-            pass
-        return None
+        return current_tick_width(axis_obj, which)
     def _tick_length(axis_obj, which: str):
-        try:
-            tick_kw = axis_obj._major_tick_kw if which == "major" else axis_obj._minor_tick_kw
-            length = tick_kw.get("size") or tick_kw.get("length")
-            if length is not None:
-                return float(length)
-        except Exception:
-            pass
-        try:
-            ticks = axis_obj.get_major_ticks() if which == "major" else axis_obj.get_minor_ticks()
-            if ticks:
-                return float(ticks[0].tick1line.get_markersize())
-        except Exception:
-            pass
-        return None
+        return _current_tick_length(axis_obj, which)
     cbar_ax = getattr(cbar, "ax", None)
     snap: Dict[str, Any] = {
         "version": 1,

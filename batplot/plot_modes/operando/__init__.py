@@ -1,5 +1,5 @@
 """Operando plot mode."""
 
-from .interactive import operando_ec_interactive_menu
+from __future__ import annotations
 
-__all__ = ["operando_ec_interactive_menu"]
+from .interactive import operando_ec_interactive_menu

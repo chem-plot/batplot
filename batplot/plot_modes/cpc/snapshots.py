@@ -58,11 +58,12 @@ def push_cpc_state(
 ) -> None:
     """Capture CPC undo state (style + geometry, same schema as batch undo)."""
     try:
-        from . import interactive as _interactive
+        from .style import _apply_style, _style_snapshot
+        from .legend import _reapply_cpc_legend_text_colors
         from ..common.state_capture import as_style_geom_export
 
         snap = as_style_geom_export(
-            _interactive._style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data),
+            _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data),
             kind="cpc_style_geom",
             geometry=_get_geometry_snapshot(ax, ax2),
         )
@@ -94,16 +95,17 @@ def restore_cpc_state(
         return False
     cfg = state_history.pop()
     try:
-        from . import interactive as _interactive
+        from .style import _apply_style
+        from .legend import _reapply_cpc_legend_text_colors
 
-        _interactive._apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg, file_data)
+        _apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg, file_data)
         _apply_cpc_geometry_snapshot(ax, ax2, cfg.get("geometry"))
         vis = (cfg.get("ticks") or {}).get("visibility") or {}
         for key, value in vis.items():
             if key in tick_state:
                 tick_state[key] = bool(value)
         update_ticks_func()
-        _interactive._reapply_cpc_legend_text_colors(ax)
+        _reapply_cpc_legend_text_colors(ax)
         try:
             fig.canvas.draw()
         except Exception:

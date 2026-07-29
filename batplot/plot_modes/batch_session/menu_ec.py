@@ -69,6 +69,7 @@ from .batch_menu_helpers import (
 )
 from .common import SyncUndoStacks, draw_panels, print_batch_header, set_all_panel_figure_titles
 from .ec_batch_helpers import (
+    default_ec_tick_state,
     ec_all_cycles,
     ec_apply_display_mode,
     ec_apply_nice_ticks,
@@ -76,6 +77,7 @@ from .ec_batch_helpers import (
     ec_normalize_file_data,
     ec_print_file_list_factory,
     ec_run_file_visibility_menu,
+    ec_tick_state_from_fig,
     edit_ref_then_sync,
     ensure_ec_fig_state,
     noop_snapshot,
@@ -87,44 +89,11 @@ from .load import EcPanel
 
 
 def _default_tick_state() -> dict:
-    return {
-        "bx": True,
-        "tx": False,
-        "ly": True,
-        "ry": False,
-        "mbx": False,
-        "mtx": False,
-        "mly": False,
-        "mry": False,
-    }
+    return default_ec_tick_state()
 
 
 def _tick_state_from_fig(fig) -> dict:
-    wasd = getattr(fig, "_ec_wasd_state", None)
-    if isinstance(wasd, dict):
-        top = wasd.get("top", {})
-        bot = wasd.get("bottom", {})
-        left = wasd.get("left", {})
-        right = wasd.get("right", {})
-        return {
-            "bx": bool(bot.get("ticks", True)),
-            "tx": bool(top.get("ticks", False)),
-            "ly": bool(left.get("ticks", True)),
-            "ry": bool(right.get("ticks", False)),
-            "mbx": bool(bot.get("minor", False)),
-            "mtx": bool(top.get("minor", False)),
-            "mly": bool(left.get("minor", False)),
-            "mry": bool(right.get("minor", False)),
-            "b_ticks": bool(bot.get("ticks", True)),
-            "t_ticks": bool(top.get("ticks", False)),
-            "l_ticks": bool(left.get("ticks", True)),
-            "r_ticks": bool(right.get("ticks", False)),
-            "b_labels": bool(bot.get("labels", True)),
-            "t_labels": bool(top.get("labels", False)),
-            "l_labels": bool(left.get("labels", True)),
-            "r_labels": bool(right.get("labels", False)),
-        }
-    return _default_tick_state()
+    return ec_tick_state_from_fig(fig)
 
 
 def _ec_batch_has_multi_file(panels: List[EcPanel]) -> bool:

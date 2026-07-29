@@ -334,7 +334,15 @@ def apply_flat_tick_params(ax: Any, tick_state: Mapping[str, object]) -> None:
 
 
 def current_tick_width(axis_obj: Any, which: str) -> Optional[float]:
-    """Return the current representative tick width for an x/y axis object."""
+    """Return the current representative tick width for an x/y axis object.
+
+    Reads ``axis._major_tick_kw`` / ``_minor_tick_kw`` (what ``tick_params``
+    stores). Do not use ``tick.tick1line.get_linewidth()`` — that reports the
+    generic Line2D rc default (1.5), not the tick marker edge width.
+
+    Unexpected failures (e.g. ``RuntimeError`` from a broken axis) propagate;
+    only missing/invalid tick metadata returns ``None``.
+    """
     try:
         tick_kw = axis_obj._major_tick_kw if which == "major" else axis_obj._minor_tick_kw
         width = tick_kw.get("width")
@@ -342,7 +350,7 @@ def current_tick_width(axis_obj: Any, which: str) -> Optional[float]:
             axis_name = getattr(axis_obj, "axis_name", "x")
             width = plt.rcParams.get(cast(Any, f"{axis_name}tick.{which}.width"))
         return float(width) if width is not None else None
-    except Exception:
+    except (AttributeError, TypeError, ValueError, KeyError):
         return None
 
 

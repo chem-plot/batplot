@@ -65,6 +65,7 @@ from ..common.spines import (
     apply_changed_side_title_positions,
     apply_flat_tick_params,
     build_wasd_state,
+    current_tick_width,
     default_flat_tick_state,
     legacy_tick_state_to_flat,
     run_spine_tick_menu,
@@ -1021,17 +1022,82 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         save_config(config)
     
     def _ensure_original_data():
-        """Ensure original data is stored for all curves."""
-        if not hasattr(fig, '_original_x_data_list'):
-            fig._original_x_data_list = [np.array(a, copy=True) for a in x_data_list]
-            fig._original_y_data_list = [np.array(a, copy=True) for a in y_data_list]
-    
+        """Ensure original data is stored for all curves.
+
+        Prefer untrimmed ``x_full_list`` / ``raw_y_full_list`` when they cover more
+        than the current display window so later X expansion / smooth-reset does
+        not freeze a cropped viewport as the "original".
+
+        ``_original_y_data_list`` is always stored **without** stack offsets
+        (``_reset_to_original`` re-adds them).
+        """
+        if hasattr(fig, '_original_x_data_list'):
+            return
+        n = len(x_data_list)
+        ox: list = []
+        oy: list = []
+        for i in range(n):
+            xf = np.asarray(x_full_list[i], dtype=float).flatten() if i < len(x_full_list) else np.array([])
+            yf = np.asarray(raw_y_full_list[i], dtype=float).flatten() if i < len(raw_y_full_list) else np.array([])
+            xd = np.asarray(x_data_list[i], dtype=float).flatten()
+            yd = np.asarray(y_data_list[i], dtype=float).flatten()
+            off = float(offsets_list[i]) if i < len(offsets_list) else 0.0
+            if xf.size > xd.size and xf.size == yf.size:
+                ox.append(np.array(xf, copy=True))
+                oy.append(np.array(yf, copy=True))
+            else:
+                ox.append(np.array(xd, copy=True))
+                oy.append(np.array(yd - off, copy=True))
+        fig._original_x_data_list = ox
+        fig._original_y_data_list = oy
+
     def _update_full_processed_data():
-        """Update the full processed data (after all processing steps, before any X-range filtering)."""
-        # This stores the complete processed data (reduce + smooth + derivative) for X-range filtering
-        fig._full_processed_x_data_list = [np.array(a, copy=True) for a in x_data_list]
-        fig._full_processed_y_data_list = [np.array(a, copy=True) for a in y_data_list]
-    
+        """Store processed curve buffers for X-range filtering.
+
+        When originals are wider than the current display crop and the plot is
+        not stack/norm-normalized (raw originals would have a different scale),
+        re-run the last smooth settings across the full original X so expansion
+        can keep processing. Otherwise store the current (possibly cropped)
+        display arrays.
+        """
+        n = len(x_data_list)
+        fx: list = []
+        fy: list = []
+        settings = getattr(fig, '_smooth_settings', None) or {}
+        method = settings.get('method')
+        use_full_originals = (
+            hasattr(fig, '_original_x_data_list')
+            and not (getattr(args, 'stack', False) or getattr(args, 'norm', False))
+            and method in ('adjacent_average', 'savgol', 'fft')
+        )
+        for i in range(n):
+            xd = np.asarray(x_data_list[i], dtype=float).flatten()
+            yd = np.asarray(y_data_list[i], dtype=float).flatten()
+            off = float(offsets_list[i]) if i < len(offsets_list) else 0.0
+            if use_full_originals and i < len(fig._original_x_data_list):
+                ox = np.asarray(fig._original_x_data_list[i], dtype=float).flatten()
+                oy = np.asarray(fig._original_y_data_list[i], dtype=float).flatten()
+                if ox.size > xd.size and ox.size == oy.size:
+                    try:
+                        if method == 'adjacent_average':
+                            from .data_ops import _adjacent_average_smooth
+                            sy = _adjacent_average_smooth(oy, int(settings.get('points', 5)))
+                        elif method == 'savgol':
+                            from ..common.smoothing import savgol_smooth as _savgol_smooth
+                            sy = _savgol_smooth(oy, int(settings.get('window', 5)), int(settings.get('poly', 2)))
+                        else:
+                            from .data_ops import _fft_smooth
+                            sy = _fft_smooth(oy, float(settings.get('cutoff', 0.1)))
+                        fx.append(np.array(ox, copy=True))
+                        fy.append(np.asarray(sy, dtype=float).flatten() + off)
+                        continue
+                    except Exception:
+                        pass
+            fx.append(np.array(xd, copy=True))
+            fy.append(np.array(yd, copy=True))
+        fig._full_processed_x_data_list = fx
+        fig._full_processed_y_data_list = fy
+
     def _reset_to_original():
         """Reset all curves to original data."""
         if not hasattr(fig, '_original_x_data_list'):
@@ -1150,18 +1216,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         try:
             # Helper to capture a representative tick line width
             def _tick_width(axis_obj, which):
-                try:
-                    tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-                    width = tick_kw.get('width')
-                    if width is None:
-                        axis_name = getattr(axis_obj, 'axis_name', 'x')
-                        rc_key = f"{axis_name}tick.{which}.width"
-                        width = plt.rcParams.get(cast(Any, rc_key))
-                    if width is not None:
-                        return float(width)
-                except Exception:
-                    return None
-                return None
+                return current_tick_width(axis_obj, which)
             _cts_for_snap = _cif_series_for_session()
             snap = {
                 "note": note,

@@ -33,6 +33,7 @@ from ...ui import (
 )
 from ..common.axis_state import capture_axis_wasd_state
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
+from ..common.spines import current_tick_width
 from ..common.terminal import safe_input
 
 
@@ -511,12 +512,9 @@ def print_style_info(
 
     # ---- Line widths (l) ----
     def axis_tick_width(axis, which):
-        ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
-        for t in ticks:
-            line = t.tick1line
-            if line.get_visible():
-                return line.get_linewidth()
-        return None
+        # Tick width lives in the axis tick params (marker edge width), not in
+        # Line2D.get_linewidth() which stays at the rc default (1.5).
+        return current_tick_width(axis, which)
 
     x_major_w = axis_tick_width(ax.xaxis, "major")
     x_minor_w = axis_tick_width(ax.xaxis, "minor")
@@ -660,12 +658,9 @@ def export_style_config(
         sp = fig.subplotpars
 
         def axis_tick_width(axis, which):
-            ticks = axis.get_major_ticks() if which == "major" else axis.get_minor_ticks()
-            for t in ticks:
-                line = t.tick1line
-                if line.get_visible():
-                    return line.get_linewidth()
-            return None
+            # Tick width lives in the axis tick params (marker edge width), not
+            # in Line2D.get_linewidth() which stays at the rc default (1.5).
+            return current_tick_width(axis, which)
 
         spine_vis = {name: spn.get_visible() for name, spn in ax.spines.items()}
 
@@ -1539,17 +1534,21 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 is_reversed = cfg.get("derivative_reversed", False)
                 if "derivative_reversed" in cfg:
                     fig._derivative_reversed = bool(cfg["derivative_reversed"])
-                # Update y-axis label based on derivative order
-                from .derivative import update_ylabel_for_derivative
-                current_ylabel = ax.get_ylabel() or ""
-                new_ylabel = update_ylabel_for_derivative(
-                    order,
-                    current_ylabel,
-                    is_reversed=is_reversed,
-                    x_label=(ax.get_xlabel() or None),
-                    fallback_ylabel=current_ylabel or "Y",
-                )
-                ax.set_ylabel(new_ylabel)
+                # Legacy files only: synthesize a derivative ylabel. Newer
+                # exports carry explicit axis_title_texts (applied below),
+                # which are authoritative — renaming here would leak a
+                # "dx/d(Y)" label into sessions whose y title is hidden/empty.
+                if not isinstance(cfg.get("axis_title_texts"), dict):
+                    from .derivative import update_ylabel_for_derivative
+                    current_ylabel = ax.get_ylabel() or ""
+                    new_ylabel = update_ylabel_for_derivative(
+                        order,
+                        current_ylabel,
+                        is_reversed=is_reversed,
+                        x_label=(ax.get_xlabel() or None),
+                        fallback_ylabel=current_ylabel or "Y",
+                    )
+                    ax.set_ylabel(new_ylabel)
             except Exception as e:
                 print(f"Warning: could not update derivative ylabel: {e}")
         elif hasattr(fig, '_derivative_order'):

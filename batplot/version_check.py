@@ -101,15 +101,10 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Added Batch Interactive mode, loading multiple saved .pkl sessions',
+    'custom_message': '- Bug fixes on session reload',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Added Batch Interactive mode, loading multiple saved .pkl sessions',
-        '- (must be the same type, e.g All are GC) to edit basic styles and',
-        '- geometries of all files at once.',
-        '- Example:',
-        '- batplot gc1.pkl gc2.pkl gc3.pkl',
-        '- Bug fixes'
+        '- Bug fixes on session reload'
     ],
     'show_update_notes': True,
 }

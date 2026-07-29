@@ -51,19 +51,23 @@ def test_session_facade_delegates_to_per_mode_modules(monkeypatch):
 
 
 def test_session_facade_preserves_public_signatures():
-    pairs = (
-        ("dump_session", "_dump_session_impl"),
-        ("load_xy_session", "_load_xy_session_impl"),
-        ("dump_ec_session", "_dump_ec_session_impl"),
-        ("load_ec_session", "_load_ec_session_impl"),
-        ("dump_cpc_session", "_dump_cpc_session_impl"),
-        ("load_cpc_session", "_load_cpc_session_impl"),
-        ("dump_operando_session", "_dump_operando_session_impl"),
-        ("load_operando_session", "_load_operando_session_impl"),
+    # All mode session implementations live in mode-owned modules; the root
+    # facade dispatches lazily. Private ``_*_impl`` names resolve via ``__getattr__``.
+    mode_pairs = (
+        ("batplot.plot_modes.xy.session", "dump_session", "load_xy_session",
+         "_dump_session_impl", "_load_xy_session_impl"),
+        ("batplot.plot_modes.electrochem.session", "dump_ec_session", "load_ec_session",
+         "_dump_ec_session_impl", "_load_ec_session_impl"),
+        ("batplot.plot_modes.cpc.session", "dump_cpc_session", "load_cpc_session",
+         "_dump_cpc_session_impl", "_load_cpc_session_impl"),
+        ("batplot.plot_modes.operando.session", "dump_operando_session", "load_operando_session",
+         "_dump_operando_session_impl", "_load_operando_session_impl"),
     )
-
-    for public_name, impl_name in pairs:
-        assert inspect.signature(getattr(S, public_name)) == inspect.signature(getattr(S, impl_name))
+    for mod_name, dump_n, load_n, dump_impl, load_impl in mode_pairs:
+        mod = importlib.import_module(mod_name)
+        assert inspect.signature(getattr(S, dump_impl)) == inspect.signature(getattr(mod, dump_n))
+        assert inspect.signature(getattr(S, load_impl)) == inspect.signature(getattr(mod, load_n))
+        assert callable(getattr(S, dump_n)) and callable(getattr(S, load_n))
 
 
 def test_legacy_mode_import_paths_still_work():

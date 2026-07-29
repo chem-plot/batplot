@@ -110,6 +110,36 @@ def test_dump_load_preserves_marker_styles(session_path):
     assert restored_discharge.get_markerfacecolor() == "#abcdef"
 
 
+def test_dump_load_preserves_dqdv_filter_originals_for_reset(session_path):
+    """dQ/dV filter originals must survive .pkl so reset after reload still works."""
+    fig, ax, cycle_lines, cap, volt = _build_ec_figure()
+    # Simulate dQ/dV outlier/filter: keep pre-filter arrays on the line
+    for parts in cycle_lines.values():
+        for ln in parts.values():
+            x0 = np.asarray(ln.get_xdata(), float).copy()
+            y0 = np.asarray(ln.get_ydata(), float).copy()
+            ln._original_xdata = x0
+            ln._original_ydata = y0
+            ln.set_xdata(x0[::2])
+            ln.set_ydata(y0[::2])
+            ln._smooth_applied = True
+    fig._dqdv_smooth_settings = {"method": "voltage_step", "threshold_v": 0.0005}
+    p = session_path("ec_dqdv_originals.pkl")
+
+    S.dump_ec_session(p, fig=fig, ax=ax, cycle_lines=cycle_lines, skip_confirm=True)
+    _fig2, ax2, meta = loaded(S.load_ec_session(p))
+    ln2 = ax2.lines[0]
+    assert hasattr(ln2, "_original_xdata"), "pre-filter X not restored from .pkl"
+    assert hasattr(ln2, "_original_ydata"), "pre-filter Y not restored from .pkl"
+    assert getattr(ln2, "_smooth_applied", False) is True
+    assert_allclose(ln2._original_xdata, cap)
+    assert len(ln2.get_xdata()) < len(ln2._original_xdata)
+    # Reset path used by sm → r
+    ln2.set_xdata(ln2._original_xdata)
+    ln2.set_ydata(ln2._original_ydata)
+    assert_allclose(ln2.get_xdata(), cap)
+
+
 def test_dump_load_preserves_dqdv_smooth_and_ions_original_x(session_path):
     fig, ax, cycle_lines, cap, volt = _build_ec_figure()
     c_th = 150.0

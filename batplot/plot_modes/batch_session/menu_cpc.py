@@ -16,7 +16,7 @@ from ..common.menus import run_legend_position_menu
 from ..common.spines import apply_frame_and_tick_widths, parse_frame_tick_widths
 from ..common.terminal import colorize_prompt, safe_input
 from ..cpc.colors import run_cpc_color_menu
-from ..cpc.interactive import _apply_style, _style_snapshot
+from ..cpc.style import _apply_style, _style_snapshot
 from ..cpc.labels import run_cpc_rename_menu
 from ..cpc.legend import (
     _rebuild_legend,

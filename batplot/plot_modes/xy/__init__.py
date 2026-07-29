@@ -1,5 +1,5 @@
 """XY plot mode."""
 
-from .interactive import interactive_menu
+from __future__ import annotations
 
-__all__ = ["interactive_menu"]
+from .interactive import interactive_menu

@@ -26,17 +26,20 @@ def save_standard_panel_figure(
     """Save a panel figure with SVG transparency handling (shared by batch export)."""
     path = ensure_exact_case_filename(path)
     _, ext = os.path.splitext(path)
-    owners: list[tuple[Any, Any | None]] = [(fig, getattr(fig, "patch", None)), (ax, getattr(ax, "patch", None))]
-    for extra in extra_axes:
-        if extra is not None:
-            owners.append((extra, getattr(extra, "patch", None)))
+    # Collect only real patches so restore never sees Optional patch/owner.
+    patch_owners: list[tuple[Any, Any]] = []
+    for owner in (fig, ax, *extra_axes):
+        if owner is None:
+            continue
+        patch = getattr(owner, "patch", None)
+        if patch is None:
+            continue
+        patch_owners.append((owner, patch))
 
     if ext.lower() == ".svg":
-        saved: list[tuple[Any, Any | None, Any]] = []
+        saved: list[tuple[Any, Any, Any]] = []
         try:
-            for owner, patch in owners:
-                if patch is None:
-                    continue
+            for owner, patch in patch_owners:
                 try:
                     fc = owner.get_facecolor() if owner is fig else patch.get_facecolor()
                 except Exception:

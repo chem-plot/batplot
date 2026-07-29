@@ -53,6 +53,7 @@ from ..common.spines import (
     apply_frame_and_tick_widths,
     apply_wasd_spines,
     apply_wasd_tick_params,
+    current_tick_width,
     keep_yaxis_label_on_side,
     parse_frame_tick_widths,
     run_spine_tick_menu,
@@ -142,18 +143,7 @@ from ...utils import (
 
 def _axis_tick_width(axis_obj, which: str = 'major'):
     """Return tick line width from axis tick params or rc defaults."""
-    try:
-        tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-        width = tick_kw.get('width')
-        if width is None:
-            axis_name = getattr(axis_obj, 'axis_name', 'x')
-            rc_key = f"{axis_name}tick.{which}.width"
-            width = plt.rcParams.get(cast(Any, rc_key))
-        if width is not None:
-            return float(width)
-    except (AttributeError, TypeError, ValueError, KeyError):
-        pass
-    return None
+    return current_tick_width(axis_obj, which)
 
 
 def _colorize_menu(text):

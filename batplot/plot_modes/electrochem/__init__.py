@@ -1,5 +1,5 @@
 """Electrochemistry plot modes."""
 
-from .interactive import electrochem_interactive_menu
+from __future__ import annotations
 
-__all__ = ["electrochem_interactive_menu"]
+from .interactive import electrochem_interactive_menu

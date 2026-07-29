@@ -34,7 +34,7 @@ class SyncUndoStacks:
         """True when at least one panel has more than the baseline snapshot (index 0)."""
         return any(len(s) > 1 for s in self._stacks)
 
-    def undo_all(self, restore_fn: Callable[[int, Any], None]) -> bool:
+    def undo_all(self, restore_fn: Callable[[int, Any], object]) -> bool:
         if not self.can_undo():
             print("No undo history.")
             return False

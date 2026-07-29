@@ -96,6 +96,56 @@ def test_dump_load_preserves_full_untrimmed_data(session_path, fake_args):
     assert_allclose(xfl[0].max(), 100.0)
 
 
+def test_x_range_expand_after_reload_uses_full_data_not_crop(session_path, fake_args):
+    """Regression (XRD.pkl class): expanding X after .pkl reload must use x_full_data.
+
+    Session load restores ``_original_x_data_list`` as a full-data backup. The X
+    menu must NOT treat that alone as "processed" and re-slice from the cropped
+    displayed window (which permanently drops points outside the saved viewport).
+    """
+    from batplot.plot_modes.xy.axis_range import run_x_range_menu
+
+    fig, ax, x_full, y_full, x_disp, y_disp = _build_xy_figure(20.0, 40.0)
+    # Mimic a prior save that persisted original_* alongside x_full_data
+    fig._original_x_data_list = [np.array(x_full, copy=True)]
+    fig._original_y_data_list = [np.array(y_full, copy=True)]
+    p = session_path("xy_xrange_expand.pkl")
+    _dump_xy(p, fig, ax, x_disp, y_disp, x_full, y_full, fake_args)
+
+    fig2, ax2, mk = loaded(S.load_xy_session(p))
+    assert hasattr(fig2, "_original_x_data_list")
+    assert mk["x_data_list"][0].size == x_disp.size
+
+    inputs = iter(["10 90", "q"])
+
+    def _safe_input(_prompt=""):
+        return next(inputs)
+
+    run_x_range_menu(
+        args=mk["args"],
+        ax=ax2,
+        fig=fig2,
+        labels=mk["labels"],
+        label_text_objects=mk.get("label_text_objects") or [],
+        x_data_list=mk["x_data_list"],
+        y_data_list=mk["y_data_list"],
+        orig_y=mk["orig_y"],
+        offsets_list=mk["offsets_list"],
+        x_full_list=mk["x_full_list"],
+        raw_y_full_list=mk["raw_y_full_list"],
+        push_state=lambda *_a, **_k: None,
+        _safe_input=_safe_input,
+        _line=lambda i: ax2.lines[i],
+        colorize_menu=lambda s: s,
+        colorize_prompt=lambda s: s,
+    )
+
+    expanded = mk["x_data_list"][0]
+    assert expanded.size > x_disp.size, "X expand after reload stayed on cropped window"
+    assert abs(float(expanded.min()) - 10.0) < 0.15
+    assert abs(float(expanded.max()) - 90.0) < 0.15
+
+
 def test_cli_pkl_shortcut_preserves_full_untrimmed_data(session_path, fake_args, monkeypatch):
     """The top-level `batplot session.pkl` path must use the full-data-aware loader."""
     fig, ax, x_full, y_full, x_disp, y_disp = _build_xy_figure()

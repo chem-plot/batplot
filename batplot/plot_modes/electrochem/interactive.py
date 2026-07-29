@@ -911,18 +911,7 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
     state_history: List[dict] = []
 
     def _tick_width(axis_obj, which: str):
-        try:
-            tick_kw = axis_obj._major_tick_kw if which == 'major' else axis_obj._minor_tick_kw
-            width = tick_kw.get('width')
-            if width is None:
-                axis_name = getattr(axis_obj, 'axis_name', 'x')
-                rc_key = f"{axis_name}tick.{which}.width"
-                width = plt.rcParams.get(cast(Any, rc_key))
-            if width is not None:
-                return float(width)
-        except Exception:
-            return None
-        return None
+        return current_tick_width(axis_obj, which)
     def _locator_step(locator):
         try:
             if isinstance(locator, MultipleLocator):

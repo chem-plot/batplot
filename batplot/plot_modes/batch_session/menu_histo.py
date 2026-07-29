@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import List
+from typing import Any, List
 
 from ..common.files import confirm_previous_path
 from ..common.menu_rendering import colorize_menu_item as _colorize_menu, print_menu_columns, prompt_menu_key
@@ -15,7 +15,7 @@ from ..histo.colors import run_histo_color_menu
 from ..histo.fonts import run_histo_font_menu, sync_histo_font_rcparams
 from ..histo.interactive import _export_style, _export_figure
 from ..histo.load import load_table
-from ..histo.plot import normalize_histo_title, refresh_histo_figure
+from ..histo.plot import HistoState, normalize_histo_title, refresh_histo_figure
 from ..histo.session import apply_histo_snapshot, apply_histo_style_snapshot, capture_histo_snapshot, save_histo_session
 from ..histo.toggles import run_histo_toggle_menu
 from ..histo.wizard import HistoSetup, run_histo_wizard
@@ -196,11 +196,13 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
             continue
 
         if cmd == "l":
-            sync_targets = [(p.fig, p.ax, p.state) for p in panels[1:]]
+            line_sync_targets: list[tuple[Any, Any, HistoState]] = [
+                (p.fig, p.ax, p.state) for p in panels[1:]
+            ]
 
             def _apply_ref_line_style_to_all() -> None:
-                if sync_targets:
-                    sync_histo_line_style_from_reference(ref.ax, ref.state, sync_targets)
+                if line_sync_targets:
+                    sync_histo_line_style_from_reference(ref.ax, ref.state, line_sync_targets)
                 _refresh_all()
 
             run_histo_line_style_menu(

@@ -27,6 +27,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from batplot.plot_modes.cpc import interactive as CI
+from batplot.plot_modes.common import menu_rendering as MR
+from batplot.plot_modes.common import terminal as T
 from batplot.plot_modes.electrochem import actions as EA
 from batplot.plot_modes.electrochem import interactive as EI
 from batplot.plot_modes.operando import interactive as OI
@@ -65,6 +67,22 @@ class ScriptedInput:
         return self._i >= len(self._answers)
 
 
+def _patch_menu_input(monkeypatch, scripter, *modules):
+    """Patch all menu input entry points used by interactive loops."""
+    monkeypatch.setattr(T, "safe_input", scripter)
+
+    def _prompt_menu_key(*_args, **_kwargs):
+        return scripter().strip().lower()
+
+    monkeypatch.setattr(T, "prompt_menu_key", _prompt_menu_key)
+    monkeypatch.setattr(MR, "prompt_menu_key", _prompt_menu_key)
+    for mod in modules:
+        if hasattr(mod, "_safe_input"):
+            monkeypatch.setattr(mod, "_safe_input", scripter)
+        if hasattr(mod, "prompt_menu_key"):
+            monkeypatch.setattr(mod, "prompt_menu_key", _prompt_menu_key)
+
+
 def _build_ec_figure():
     fig, ax = plt.subplots()
     cap = np.linspace(0.0, 150.0, 40)
@@ -96,7 +114,7 @@ def _build_operando_figure():
 def drive_ec(monkeypatch, keys, max_calls=500):
     """Run the EC menu with the scripted ``keys`` and return the input scripter."""
     scripter = ScriptedInput(keys, max_calls=max_calls)
-    monkeypatch.setattr(EI, "_safe_input", scripter)
+    _patch_menu_input(monkeypatch, scripter, EI)
     monkeypatch.setattr(EA, "choose_save_path", lambda *_a, **_k: None)
     fig, ax, cycle_lines = _build_ec_figure()
     EI.electrochem_interactive_menu(fig, ax, cycle_lines=cycle_lines, canvas_mode=True)
@@ -106,7 +124,7 @@ def drive_ec(monkeypatch, keys, max_calls=500):
 def drive_op(monkeypatch, keys, max_calls=500):
     """Run the operando menu with the scripted ``keys`` and return the scripter."""
     scripter = ScriptedInput(keys, max_calls=max_calls)
-    monkeypatch.setattr(OI, "_safe_input", scripter)
+    _patch_menu_input(monkeypatch, scripter, OI)
     monkeypatch.setattr(OI, "choose_save_path", lambda *_a, **_k: None)
     fig, ax, im, cbar, ec_ax = _build_operando_figure()
     OI.operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, canvas_mode=True)
@@ -127,7 +145,7 @@ def _build_cpc_figure():
 
 def drive_cpc(monkeypatch, keys, max_calls=500):
     scripter = ScriptedInput(keys, max_calls=max_calls)
-    monkeypatch.setattr(CI, "_safe_input", scripter)
+    _patch_menu_input(monkeypatch, scripter, CI)
     monkeypatch.setattr(CI, "choose_save_path", lambda *_a, **_k: None)
     fig, ax, ax2, sc_c, sc_d, sc_e = _build_cpc_figure()
     CI.cpc_interactive_menu(fig, ax, ax2, sc_c, sc_d, sc_e, canvas_mode=True)
@@ -146,7 +164,7 @@ def _build_xy_figure():
 
 def drive_xy(monkeypatch, keys, max_calls=500):
     scripter = ScriptedInput(keys, max_calls=max_calls)
-    monkeypatch.setattr(XI, "_safe_input", scripter)
+    _patch_menu_input(monkeypatch, scripter, XI)
     monkeypatch.setattr(XA, "choose_save_path", lambda *_a, **_k: None)
     fig, ax, y_list, x_list, labels, orig_y = _build_xy_figure()
     args = types.SimpleNamespace(stack=False, norm=False, ro=False, xrange=None)
