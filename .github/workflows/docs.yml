@@ -36,6 +36,32 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install mkdocs-material
 
+      - name: Stamp last-published time on the home page
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          sha = (os.environ.get("GITHUB_SHA") or "")[:7] or "local"
+          line = f"**Last published:** {stamp} (commit `{sha}`)"
+          path = Path("docs/index.md")
+          text = path.read_text(encoding="utf-8")
+          new, n = re.subn(
+              r"^\*\*Last published:\*\*.*$",
+              line,
+              text,
+              count=1,
+              flags=re.M,
+          )
+          if n != 1:
+              raise SystemExit("Could not find '**Last published:**' line in docs/index.md")
+          path.write_text(new, encoding="utf-8")
+          print(line)
+          PY
+
       - name: Build site
         run: mkdocs build --strict
 

@@ -1,4 +1,7 @@
-/* Docs-only styles (does not affect the batplot Python app). */
+/* Keep product name casing as written (never capitalize "batplot") */
+.md-typeset h1 {
+  text-transform: none;
+}
 
 /* Visible code *blocks* (fenced ``` … ```) */
 .md-typeset pre {

@@ -1,5 +1,7 @@
 # batplot user manual
 
+**Last published:** _pending deploy_
+
 Interactive CLI plotting for battery and materials characterization data.
 
 Tian Dai · University of Oslo · [GitHub](https://github.com/chem-plot/batplot)

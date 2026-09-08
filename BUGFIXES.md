@@ -4,6 +4,16 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Docs (Home title lowercase + last-published stamp) — 2026-09-08
+- **Issue**: Home H1 looked capitalized in the browser; hard to tell if Pages
+  had redeployed.
+- **Solution**: Keep ``# batplot user manual``; disable ``text-transform`` on
+  H1; inject ``**Last published:** <UTC> (commit …)`` during the docs workflow
+  before ``mkdocs build``.
+- **Compatibility**: Docs/CI only.
+- **Affected files**: ``docs/index.md``, ``docs/stylesheets/extra.css``,
+  ``.github/workflows/docs.yml``, ``BUGFIXES.md``
+
 ### Dev-upgrade (Always stage MkDocs manual for GitHub Pages) — 2026-09-08
 - **Issue**: Need the MkDocs user manual to ship with ``--dev-upgrade`` /
   ``--dev-git`` so GitHub Pages stays in sync with releases.
