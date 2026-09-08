@@ -131,29 +131,12 @@ def main() -> int:
     ec = demo / "EC"
     xas = demo / "XAS"
 
-    # Generic two-column sample for “no --xaxis” docs
-    two_col = demo_data / "two_col.txt"
-    src_xy = xrd / "TD_S0062-64.xy"
-    if src_xy.is_file():
-        two_col.write_text(
-            "\n".join(src_xy.read_text(encoding="utf-8", errors="replace").splitlines()[:250])
-            + "\n",
-            encoding="utf-8",
-        )
-
     jobs: list[tuple[str, list[str], str]] = []
 
     def add(name: str, argv: list[str], note: str) -> None:
         jobs.append((name, argv, note))
 
     # --- 1D / XY ---
-    add(
-        "manual-xy-simple.png",
-        # Installed CLI still needs a typed axis for unknown extensions; docs
-        # show ``batplot two_col.txt --i`` (optional --xaxis in current tree).
-        [str(two_col), "--xaxis", "X", "--out", str(out_dir / "manual-xy-simple.png")],
-        "Generic two-column `.txt` (X/Y)",
-    )
     add(
         "manual-xy-2theta.png",
         [

@@ -4,6 +4,16 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Docs (Drop premature two_col / ``--xaxis`` aside in Ch.5) — 2026-09-08
+- **Issue**: Ch.5 opened with a ``two_col.txt`` tutorial and “without needing
+  ``--xaxis``” before ``--xaxis`` was introduced.
+- **Solution**: Remove that example/figure; caption is simply “plots the first
+  two columns as x and y”.
+- **Compatibility**: Docs-only.
+- **Affected files**: ``docs/05-examples-1d-mode.md``,
+  ``scripts/capture_manual_figures.py``, ``docs/images/manual/MANIFEST.md``,
+  ``BUGFIXES.md`` (deleted ``two_col.txt``, ``manual-xy-simple.png``)
+
 ### Docs (Home title lowercase + last-published stamp) — 2026-09-08
 - **Issue**: Home H1 looked capitalized in the browser; hard to tell if Pages
   had redeployed.

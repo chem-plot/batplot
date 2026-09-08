@@ -15,23 +15,7 @@ The 1D / XY mode is the default mode of *batplot*. It is optimized for XRD but _
 batplot data.txt --i
 ```
 
-**plots the first two columns (x, y) without needing `--xaxis`**
-
-!!! example "Tutorial — shared demo file"
-
-    From [`docs/demo_data/two_col.txt`](demo_data/two_col.txt):
-
-    ```text
-    batplot two_col.txt --i
-    ```
-
-    ![](images/manual/manual-xy-simple.png)
-
-    <p class="figure-caption"><strong>Figure: simple two-column</strong> (two_col.txt)</p>
-
-!!! note
-
-    `--xaxis` is optional. Use it when you want a named axis type or label (e.g. `--xaxis 2theta`, `--xaxis energy`). Simple two-column files can be opened with just the file path and `--i`.
+**plots the first two columns as x and y**
 
 ## Plot XRD Data with Wavelength Conversion
 

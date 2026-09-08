@@ -33,7 +33,6 @@ PNG max width: 900px (CSS also limits display size)
 | `manual-xy-readcol.png` | OK | readcol 1 4 |
 | `manual-xy-reproj.png` | OK | TD_R02.dat:0.259:1.54 |
 | `manual-xy-ry.png` | OK | dual y --ry |
-| `manual-xy-simple.png` | OK | Generic two-column .txt (X/Y) |
 | `manual-xy-stack.png` | OK | TD_R stack --wl 0.259 |
 | `manual-xy-xas.png` | OK | XAS energy |
 
