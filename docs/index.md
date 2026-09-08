@@ -13,7 +13,7 @@ Use the **left sidebar** to open each chapter.
 - Email: [tianda@uio.no](mailto:tianda@uio.no)  
 - Profile: [mn.uio.no/kjemi/…/tianda](https://www.mn.uio.no/kjemi/english/people/aca/tianda/)  
 - ORCID: [0000-0002-0385-3274](https://orcid.org/0000-0002-0385-3274)  
-- GitHub: [chem-plot/batplot](https://github.com/chem-plot/batplot) · [chem-plot](https://github.com/chem-plot/)  
+- GitHub: [https://github.com/chem-plot/batplot](https://github.com/chem-plot/batplot)  
 - Updates list: `batplot-lab@kjemi.uio.no`  
   (If you are not at UiO, email [sympa@kjemi.uio.no](mailto:sympa@kjemi.uio.no) with subject: `subscribe batplot-lab@kjemi.uio.no your-name`)
 
