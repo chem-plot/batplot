@@ -112,6 +112,9 @@ Important files:
 - `colors.py`, `line_style.py`, `labels.py`, `axis_range.py`, `smoothing.py`,
   `derivative.py`, `peaks.py`, `cif.py`, `data_ops.py`, `arrange.py`: focused
   XY features.
+- `undo_state.py`: undo snapshot capture/restore (`xy_push_state` /
+  `xy_restore_state`), called through thin wrappers in `interactive.py`.
+- `offset_menu.py`: the `o` curve-offset submenu.
 
 ### Electrochemistry Mode
 
@@ -125,6 +128,10 @@ Important files:
 - `dqdv_2d.py`: dQ/dV 2D companion contour persistence and helpers.
 - `style.py`, `colors.py`, `line_style.py`, `labels.py`, `legend.py`,
   `legend_order.py`, `spine_colors.py`: EC styling features.
+- `undo_state.py`: undo snapshot capture/restore (`ec_push_state` /
+  `ec_restore_state`), called through thin wrappers in `interactive.py`.
+- `dual_axis_menu.py`: the `a` capacity/ions/dual-X submenu.
+- `smoothing_menu.py`: the `sm` dQ/dV smoothing submenu.
 
 Shared EC/CPC defaults live in `batplot/ec_common.py`. Canvas size, plot layout,
 and mass-resolution behavior should be changed there when the goal is parity
@@ -141,6 +148,9 @@ Important files:
 - `interactive.py`: CPC-specific interactive command loop.
 - `actions.py`: save/export/undo actions.
 - `legend.py`, `colors.py`, `labels.py`, `snapshots.py`: CPC-specific behavior.
+- `wasd_menu.py`: the `t` WASD spine/tick/label toggle submenu.
+- `panel_menus.py`: the `v`/`k`/`d`/`ry`/`l`/`m`/`ie` submenus (visibility,
+  spine colors, display mode, efficiency axis, widths, markers, inversion).
 - `session.py`: public CPC session wrappers.
 
 CPC shares several expectations with EC but has a second y-axis and scatter
@@ -162,6 +172,12 @@ Important files:
   display behavior.
 - `style.py`, `colors.py`, `labels.py`, `line_style.py`, `peaks.py`: styling
   and annotation behavior.
+- `undo_state.py`: undo snapshot capture/restore (`op_snapshot` /
+  `op_restore`), called through thin wrappers in `interactive.py`.
+- `cif_menu.py`: the `c` CIF tick-label submenu.
+- `axes_limits_menu.py`: the `ox`/`oy`/`et`/`ex`/`ey` range and ions/time
+  submenus.
+- `intensity_menu.py`: the `oz` color-scale submenu (including the drag bar).
 - `session.py`: public operando session wrappers.
 
 Operando state has more moving parts than the other modes. Keep changes focused
@@ -171,7 +187,15 @@ and add round-trip tests for persistence changes.
 
 ### Readers
 
-File parsing lives primarily in `batplot/readers.py`.
+File parsing lives primarily in `batplot/readers.py`, which re-exports every
+public reader so `from batplot.readers import ...` always works. The
+implementations are split by area:
+
+- `readers.py`: generic CSV/XY readers plus the re-export facade.
+- `readers_ec.py`: electrochemistry readers (BioLogic, Neware, Landt, CS-B,
+  BATX, dQ/dV numerics, time-voltage).
+- `readers_xrd.py`: XRD vendor formats.
+- `readers_common.py`: low-level numeric parsing helpers shared by the above.
 
 Add a reader here when:
 
@@ -436,7 +460,10 @@ Before changing release behavior:
      `--dev-upgrade` runs `sync_pyproject_package_data()` to refresh
      `[tool.setuptools.package-data]`.
    - Git: `_git_stage_release_snapshot()` stages tracked updates and all untracked
-     non-ignored paths (no hand-maintained file list).
+     non-ignored paths (no hand-maintained file list), and **always** re-stages
+     the MkDocs user manual (`docs/`, `mkdocs.yml`, `.github/workflows/docs.yml`,
+     `scripts/capture_manual_figures.py`) so GitHub Pages updates on every
+     `--dev-upgrade` / `--dev-git` push.
 4. Keep GitHub/PyPI conflict handling explicit and testable.
 
 Canonical version files checked on every release:

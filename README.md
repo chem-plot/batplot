@@ -208,7 +208,7 @@ batplot file1.csv file2.csv --gc --save
 
 ### Galvanostatic cycling (GC)
 
-GC mode plots potential vs. capacity for each charge/discharge cycle—the primary visualization for battery cycling data. Batplot automatically detects cycles from Neware `.csv` or Biologic `.mpt` files, assigns each cycle a distinct color, and supports both specific capacity (mAh/g) and raw capacity. For `.mpt` files, pass `--mass` (mg) to compute specific capacity. Discontinuous or paused experiments are handled by splitting data into contiguous charge/discharge segments. Use the interactive menu to customize colors, visibility, and export.
+GC mode plots potential vs. capacity for each charge/discharge cycle—the primary visualization for battery cycling data. *batplot* automatically detects cycles from Neware `.csv` or Biologic `.mpt` files, assigns each cycle a distinct color, and supports both specific capacity (mAh/g) and raw capacity. For `.mpt` files, pass `--mass` (mg) to compute specific capacity. Discontinuous or paused experiments are handled by splitting data into contiguous charge/discharge segments. Use the interactive menu to customize colors, visibility, and export.
 
 ```bash
 # From .csv (capacity in file)

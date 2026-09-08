@@ -1,4 +1,4 @@
-# Batplot user manual
+# batplot user manual
 
 Interactive CLI plotting for battery and materials characterization data.
 

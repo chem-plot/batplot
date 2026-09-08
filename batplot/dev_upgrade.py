@@ -78,6 +78,15 @@ GIT_RELEASE_SKIP_PATHS = (
     "batplot_user_manual.docx",
 )
 
+# MkDocs user manual — always stage so GitHub Pages stays in sync with releases.
+# (``site/`` remains gitignored; Pages builds from these sources via docs.yml.)
+GIT_RELEASE_DOCS_PATHS = (
+    "docs",
+    "mkdocs.yml",
+    ".github/workflows/docs.yml",
+    "scripts/capture_manual_figures.py",
+)
+
 
 def _git_run(cmd: list[str], project_root: Path, *, check: bool = True, **kwargs):
     return subprocess.run(cmd, cwd=project_root, check=check, **kwargs)
@@ -193,6 +202,8 @@ def _git_fetch_rebase_and_push(project_root: Path, branch: str) -> bool:
             print(f"  {remote_url}")
             print(f"{GREEN}✓ Users on older batplot versions will fetch release notes from:{NC}")
             print("  https://raw.githubusercontent.com/chem-plot/batplot/main/batplot/data/latest_release_notes.json")
+            print(f"{GREEN}✓ MkDocs manual (if docs/ changed) deploys via GitHub Pages workflow:{NC}")
+            print("  https://chem-plot.github.io/batplot/")
 
         return True
 
@@ -304,11 +315,21 @@ def _git_stage_release_snapshot(project_root: Path) -> None:
     ``git add -- .`` failing when ignored build/cache directories exist locally,
     and automatically picks up future new source/test/workflow files without a
     hand-maintained allow-list.
+
+    Always re-stages the MkDocs user manual paths (``GIT_RELEASE_DOCS_PATHS``)
+    so ``--dev-upgrade`` / ``--dev-git`` push docs changes that trigger the
+    GitHub Pages workflow.
     """
     _git_run(["git", "add", "-u", "--", "."], project_root)
     untracked = _list_untracked_release_paths(project_root)
     if untracked:
         _git_run(["git", "add", "--", *untracked], project_root)
+    # Explicit docs staging (covers new/moved manual files even if filters drift)
+    existing_docs = [
+        rel for rel in GIT_RELEASE_DOCS_PATHS if (project_root / rel).exists()
+    ]
+    if existing_docs:
+        _git_run(["git", "add", "--", *existing_docs], project_root)
     _git_unstage_release_skips(project_root)
     _git_unstage_excluded_patterns(project_root)
 
@@ -585,7 +606,7 @@ def get_latest_version_from_release_notes(project_root: Path) -> Optional[str]:
     release_notes_file = project_root / "RELEASE_NOTES.txt"
     if not release_notes_file.exists():
         return None
-    blocks = parse_release_notes_blocks(release_notes_file.read_text())
+    blocks = parse_release_notes_blocks(release_notes_file.read_text(encoding="utf-8"))
     if not blocks:
         return None
     try:
@@ -634,12 +655,12 @@ def update_version_check_update_info(project_root: Path, update_notes: str) -> N
     'show_update_notes': True,
 }}'''
     
-    content = version_check_file.read_text()
+    content = version_check_file.read_text(encoding="utf-8")
     # Replace the UPDATE_INFO = { ... } block (match from opening to closing })
     pattern = r'UPDATE_INFO = \{.*?\n\}\s*\n'
     new_content = re.sub(pattern, new_block + '\n\n', content, flags=re.DOTALL)
     if new_content != content:
-        version_check_file.write_text(new_content)
+        version_check_file.write_text(new_content, encoding="utf-8")
         print("\033[0;32m✓ Updated version_check.py (users will see these notes when an update is available)\033[0m")
 
 
@@ -739,10 +760,11 @@ def git_commit_and_push(
         print(f"\n{BLUE}Git: Commit and push changes to GitHub?{NC}")
         print("  This will stage:")
         print("    - All batplot source, tests, CI workflows, docs, and metadata")
+        print("    - MkDocs user manual (docs/, mkdocs.yml, docs workflow) → GitHub Pages")
         print("    - New files added since the last release (no hand-maintained list)")
         print("    - Tracked deletions so removed files disappear from GitHub")
         print("  Excludes:")
-        print("    - Build outputs, caches, bytecode, .DS_Store, virtualenvs")
+        print("    - Build outputs, caches, bytecode, .DS_Store, virtualenvs, site/")
         print("    - Local-only assets (USER_MANUAL.md, batplot_user_manual.docx)")
 
         try:
@@ -808,11 +830,11 @@ def update_citation_cff(project_root: Path, new_version: str) -> None:
     cff_file = project_root / "CITATION.cff"
     if not cff_file.exists():
         return
-    content = cff_file.read_text()
+    content = cff_file.read_text(encoding="utf-8")
     today = datetime.now().strftime("%Y-%m-%d")
     content = re.sub(r'^version:\s*.+$', f'version: v{new_version}', content, flags=re.MULTILINE)
     content = re.sub(r'^date-released:\s*.+$', f'date-released: {today}', content, flags=re.MULTILINE)
-    cff_file.write_text(content)
+    cff_file.write_text(content, encoding="utf-8")
     print(f"✓ Updated CITATION.cff (version v{new_version}, date {today})")
 
 
@@ -830,6 +852,45 @@ def clean_build_files(project_root: Path):
             shutil.rmtree(item)
     
     print("✓ Cleaned dist/, build/, and .egg-info directories")
+
+
+def _module_available(mod_name: str) -> bool:
+    try:
+        __import__(mod_name)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_dev_tool(mod_name: str, *, pip_name: Optional[str] = None) -> bool:
+    """Ensure a release tool module is importable; install via pip if missing.
+
+    Returns True if the module can be used. Cross-platform (Windows/macOS/Linux).
+    """
+    pkg = pip_name or mod_name
+    if _module_available(mod_name):
+        return True
+    print(f"Installing missing release tool: {pkg} ...")
+    # Prefer ensurepip if pip itself is missing (broken/minimal venvs).
+    if not _module_available("pip"):
+        ep = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            cwd=os.getcwd(),
+        )
+        if ep.returncode != 0:
+            print("Could not bootstrap pip (ensurepip failed).")
+            print(f"  Fix the venv, then: {sys.executable} -m pip install {pkg}")
+            return False
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", pkg],
+        cwd=os.getcwd(),
+    )
+    if result.returncode != 0 or not _module_available(mod_name):
+        print(f"Could not install '{pkg}'.")
+        print(f"  Try: {sys.executable} -m pip install {pkg}")
+        return False
+    print(f"✓ Installed {pkg}")
+    return True
 
 
 def _required_package_data_files(project_root: Path) -> list[str]:
@@ -926,7 +987,7 @@ def get_release_notes_for_version(project_root: Path, version: str) -> str:
     release_notes_file = project_root / "RELEASE_NOTES.txt"
     if not release_notes_file.exists():
         return ""
-    blocks = parse_release_notes_blocks(release_notes_file.read_text())
+    blocks = parse_release_notes_blocks(release_notes_file.read_text(encoding="utf-8"))
     return blocks.get(version, "").strip()
 
 
@@ -1081,7 +1142,7 @@ def run_upgrade():
     all_version_notes = {}  # version -> notes (for CHANGELOG merge)
     
     if release_notes_file.exists():
-        raw = release_notes_file.read_text()
+        raw = release_notes_file.read_text(encoding="utf-8")
         blocks = parse_release_notes_blocks(raw)
         
         if blocks:
@@ -1133,7 +1194,7 @@ def run_upgrade():
         # Parse existing CHANGELOG for versions already present
         existing_versions = set()
         if changelog_file.exists():
-            existing = changelog_file.read_text()
+            existing = changelog_file.read_text(encoding="utf-8")
             for m in re.finditer(r'^##\s*\[?(\d+\.\d+\.\d+(?:\.\d+)?)\]?\s*[- ]', existing, re.MULTILINE):
                 existing_versions.add(m.group(1))
         # Add entries for each version in all_version_notes that isn't already there
@@ -1144,28 +1205,28 @@ def run_upgrade():
         if new_entries:
             header = "# Changelog\n\n"
             if changelog_file.exists():
-                existing = changelog_file.read_text()
+                existing = changelog_file.read_text(encoding="utf-8")
                 if existing.startswith("# Changelog"):
                     rest = existing.split("\n", 1)[-1].lstrip() if "\n" in existing else ""
-                    changelog_file.write_text(header + "\n\n".join(new_entries) + "\n\n" + rest)
+                    changelog_file.write_text(header + "\n\n".join(new_entries) + "\n\n" + rest, encoding="utf-8")
                 else:
-                    changelog_file.write_text(header + "\n\n".join(new_entries) + "\n\n" + existing)
+                    changelog_file.write_text(header + "\n\n".join(new_entries) + "\n\n" + existing, encoding="utf-8")
             else:
-                changelog_file.write_text(header + "\n\n".join(new_entries))
+                changelog_file.write_text(header + "\n\n".join(new_entries), encoding="utf-8")
             print(f"\n{GREEN}✓ Added {len(new_entries)} version(s) to CHANGELOG.md{NC}")
     elif update_notes:
         # Single entry (from prompt or legacy single-block file)
         changelog_entry = f"## [{new_version}] - {today}\n{update_notes}\n"
         if changelog_file.exists():
-            existing = changelog_file.read_text()
+            existing = changelog_file.read_text(encoding="utf-8")
             if existing.startswith("# Changelog"):
                 lines = existing.split('\n', 1)
                 rest = lines[1].lstrip() if len(lines) > 1 else ""
-                changelog_file.write_text(f"{lines[0]}\n\n{changelog_entry}\n{rest}")
+                changelog_file.write_text(f"{lines[0]}\n\n{changelog_entry}\n{rest}", encoding="utf-8")
             else:
-                changelog_file.write_text(f"# Changelog\n\n{changelog_entry}\n{existing}")
+                changelog_file.write_text(f"# Changelog\n\n{changelog_entry}\n{existing}", encoding="utf-8")
         else:
-            changelog_file.write_text(f"# Changelog\n\n{changelog_entry}")
+            changelog_file.write_text(f"# Changelog\n\n{changelog_entry}", encoding="utf-8")
         print(f"\n{GREEN}✓ Added to CHANGELOG.md{NC}")
     
     if update_notes:
@@ -1213,11 +1274,14 @@ def run_upgrade():
         print(f"\n{YELLOW}Verification:{NC}")
         init_file = project_root / "batplot" / "__init__.py"
         toml_file = project_root / "pyproject.toml"
-        print(f"  __init__.py: {[line.strip() for line in init_file.read_text().splitlines() if '__version__' in line][0]}")
-        print(f"  pyproject.toml: {[line.strip() for line in toml_file.read_text().splitlines() if line.startswith('version =')][0]}")
+        print(f"  __init__.py: {[line.strip() for line in init_file.read_text(encoding="utf-8").splitlines() if '__version__' in line][0]}")
+        print(f"  pyproject.toml: {[line.strip() for line in toml_file.read_text(encoding="utf-8").splitlines() if line.startswith('version =')][0]}")
         
         # Step 3: Build
         print(f"\n{GREEN}[3/5]{NC} Building package...")
+        if not ensure_dev_tool("build"):
+            print(f"{RED}Build failed: missing 'build' module.{NC}")
+            return 1
         result = subprocess.run([sys.executable, "-m", "build"], cwd=project_root)
         if result.returncode != 0:
             print(f"{RED}Build failed!{NC}")
@@ -1240,6 +1304,9 @@ def run_upgrade():
         # Step 5: Upload
         print(f"\n{GREEN}[5/5]{NC} Uploading to PyPI...")
         # Twine uses ~/.pypirc (or TWINE_USERNAME / TWINE_PASSWORD). Do not hardcode credentials here.
+        if not ensure_dev_tool("twine"):
+            print(f"{RED}Upload failed: missing 'twine' module.{NC}")
+            return 1
         dist_dir = project_root / "dist"
         dist_files = [str(f) for f in dist_dir.iterdir()] if dist_dir.exists() else []
         if not dist_files:

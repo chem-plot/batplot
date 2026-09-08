@@ -7,6 +7,7 @@ import zipfile
 from types import SimpleNamespace
 
 from batplot.dev_upgrade import (
+    GIT_RELEASE_DOCS_PATHS,
     GIT_RELEASE_SKIP_PATHS,
     GIT_STAGE_EXCLUDE_GLOBS,
     _git_ahead_of_origin,
@@ -142,6 +143,42 @@ def test_git_stage_release_snapshot_stages_tracked_updates_and_untracked_files(t
     assert calls[2][0:3] == ["git", "reset", "HEAD"]
     for skip_path in GIT_RELEASE_SKIP_PATHS:
         assert ["git", "reset", "HEAD", "--", skip_path] in calls
+
+
+def test_git_stage_release_snapshot_always_stages_mkdocs_manual(tmp_path, monkeypatch):
+    """--dev-upgrade must push the MkDocs manual so GitHub Pages stays current."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "index.md").write_text("# Manual\n", encoding="utf-8")
+    (tmp_path / "mkdocs.yml").write_text("site_name: batplot\n", encoding="utf-8")
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "docs.yml").write_text("name: docs\n", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "capture_manual_figures.py").write_text("# capture\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, _project_root, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("batplot.dev_upgrade._list_untracked_release_paths", lambda _root: [])
+    monkeypatch.setattr("batplot.dev_upgrade._git_run", fake_run)
+
+    _git_stage_release_snapshot(tmp_path)
+
+    docs_add = [
+        c for c in calls
+        if c[:3] == ["git", "add", "--"] and any(p in c for p in GIT_RELEASE_DOCS_PATHS)
+    ]
+    assert docs_add, "expected an explicit git add of MkDocs docs paths"
+    staged_args = docs_add[0]
+    for rel in GIT_RELEASE_DOCS_PATHS:
+        assert rel in staged_args
+    assert "docs" in GIT_RELEASE_DOCS_PATHS
+    assert "mkdocs.yml" in GIT_RELEASE_DOCS_PATHS
+    assert ".github/workflows/docs.yml" in GIT_RELEASE_DOCS_PATHS
 
 
 def test_git_unstage_excluded_patterns_drops_tracked_pycache(tmp_path, monkeypatch):

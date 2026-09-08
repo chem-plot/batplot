@@ -4,6 +4,16 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Dev-upgrade (Always stage MkDocs manual for GitHub Pages) — 2026-09-08
+- **Issue**: Need the MkDocs user manual to ship with ``--dev-upgrade`` /
+  ``--dev-git`` so GitHub Pages stays in sync with releases.
+- **Solution**: ``GIT_RELEASE_DOCS_PATHS`` + explicit ``git add`` of ``docs/``,
+  ``mkdocs.yml``, ``.github/workflows/docs.yml``, and the capture script in
+  ``_git_stage_release_snapshot()``; prompt/success text mention Pages.
+- **Compatibility**: Dev tooling only (Windows/macOS/Linux).
+- **Affected files**: ``batplot/dev_upgrade.py``, ``tests/test_dev_upgrade.py``,
+  ``DEVELOPING.md``, ``BUGFIXES.md``
+
 ### Docs (Remove cumulative capacity section) — 2026-09-08
 - **Issue**: Manual documented ``--cum`` / cumulative GC, which is not useful
   for the tutorial.

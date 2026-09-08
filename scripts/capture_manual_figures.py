@@ -514,7 +514,7 @@ def main() -> int:
         "# Manual figure manifest",
         "",
         f"Demo root: `{demo}`",
-        f"Batplot: `{_batplot_bin()}`",
+        f"batplot: `{_batplot_bin()}`",
         f"Wavelengths: TD_R* = {WL_SYNC} Å (synchrotron); TD_S0062-64 / Operando TD_S0034 = {WL_CU} Å (Cu)",
         f"PNG max width: {MAX_PNG_WIDTH}px (CSS also limits display size)",
         "",
