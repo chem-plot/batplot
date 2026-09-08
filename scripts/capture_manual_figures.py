@@ -215,40 +215,33 @@ def main() -> int:
         f"Normalized overlay (`--norm --wl {WL_SYNC}`)",
     )
 
-    _run([str(demo_data / "demo_cols.txt"), "--strip-header", "2"])
-    stripped = demo_data / "stripped" / "demo_cols.txt"
-    committed = demo_data / "demo_cols_stripped.txt"
-    if stripped.is_file():
-        shutil.copy2(stripped, committed)
-    readcol_src = str(committed if committed.is_file() else stripped)
-
     add(
         "manual-xy-readcol.png",
         [
-            readcol_src,
+            str(xrd / "TD_R02.dat"),
             "--readcol",
             "1",
-            "4",
+            "3",
             "--xaxis",
-            "2theta",
+            "q",
             "--out",
             str(out_dir / "manual-xy-readcol.png"),
         ],
-        "`demo_cols_stripped.txt --readcol 1 4`",
+        "`TD_R02.dat --readcol 1 3 --xaxis q`",
     )
     add(
         "manual-xy-readcol-multi.png",
         [
-            readcol_src,
+            str(xrd / "TD_R02.dat"),
             "--readcol",
             "1",
-            "2-4",
+            "2-3",
             "--xaxis",
-            "2theta",
+            "q",
             "--out",
             str(out_dir / "manual-xy-readcol-multi.png"),
         ],
-        "`--readcol 1 2-4` multi-y curves",
+        "`TD_R02.dat --readcol 1 2-3 --xaxis q`",
     )
     add(
         "manual-xy-stack.png",

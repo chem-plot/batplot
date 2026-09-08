@@ -148,39 +148,39 @@ batplot TD_S0062-64.xy Li2FeSeO.cif:1.54 --xaxis 2theta --wl 1.54 --i
 
 ## Using --readcol to Specify Columns {: #using-readcol-to-specify-columns }
 
-These examples use the same multi-column layout as [Utilities — shared demo file](11-utilities.md#shared-demo-file) (`demo_cols.txt` / stripped copy: `angle_deg`, `I_sample`, `I_blank`, `I_norm`).
+By default *batplot* plots columns **1** and **2**. Use `--readcol` when you need other columns. Synchrotron file `TD_R02.dat` has **three** columns (x, y₁, y₂):
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 3 --xaxis q --i
 ```
 
-**plots column 1 (`angle_deg`) and column 4 (`I_norm`) as x and y**
+**plots column 1 as x and column 3 as y**
 
 ![](images/manual/manual-xy-readcol.png)
 
-<p class="figure-caption"><strong>Figure: --readcol 1 4</strong> (angle vs I_norm)</p>
+<p class="figure-caption"><strong>Figure: --readcol 1 3</strong> (TD_R02.dat)</p>
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 2 1 3 1 4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 2 1 3 --xaxis q --i
 ```
 
-**plots 3 curves with column 1 as x and columns 2, 3, 4 as y**
+**plots two curves: column 1 vs 2, and column 1 vs 3**
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 2-4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 2-3 --xaxis q --i
 ```
 
-**plots 3 curves with column 1 as x and columns 2–4 as y (range shorthand)**
+**same as above using range shorthand for the y columns**
 
 ![](images/manual/manual-xy-readcol-multi.png)
 
-<p class="figure-caption"><strong>Figure: --readcol 1 2-4</strong> (three y columns)</p>
+<p class="figure-caption"><strong>Figure: --readcol 1 2-3</strong> (TD_R02.dat, two y columns)</p>
 
 ```text
-batplot demo_a.txt --readcol 1 2 demo_b.txt --readcol 1 4 --i
+batplot TD_R02.dat --readcol 1 2 TD_R03.dat --readcol 1 3 --xaxis q --i
 ```
 
-**plots 2 curves with specified columns for each file**
+**per-file column selection when overlaying multiple files**
 
 ## Stacking Multiple Files Using --stack
 

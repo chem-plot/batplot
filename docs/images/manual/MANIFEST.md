@@ -29,8 +29,8 @@ PNG max width: 900px (CSS also limits display size)
 | `manual-xy-q-suffix.png` | OK | TD_S0062-64.xy:1.54 |
 | `manual-xy-q.png` | OK | Cu XRD → Q TD_S0062-64 --wl 1.54 |
 | `manual-xy-qye.png` | OK | R02.qye |
-| `manual-xy-readcol-multi.png` | OK | readcol 1 2-4 |
-| `manual-xy-readcol.png` | OK | readcol 1 4 |
+| `manual-xy-readcol-multi.png` | OK | TD_R02 --readcol 1 2-3 |
+| `manual-xy-readcol.png` | OK | TD_R02 --readcol 1 3 |
 | `manual-xy-reproj.png` | OK | TD_R02.dat:0.259:1.54 |
 | `manual-xy-ry.png` | OK | dual y --ry |
 | `manual-xy-stack.png` | OK | TD_R stack --wl 0.259 |

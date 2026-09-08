@@ -112,41 +112,43 @@ batplot /path/to/folder --strip-header 2 --ext .xy,.dat,.txt
 
 ## Choose columns (`--readcol`)
 
-Default 1D plotting uses columns **1** and **2**. After `--showcol` on `demo_cols.txt`, you know `[4]` is `I_norm`. Plot angle vs normalized intensity from the stripped copy:
+Default 1D plotting uses columns **1** and **2**. For a real three-column file such as `TD_R02.dat`, pick another Y with `--readcol` (see also [1D mode](05-examples-1d-mode.md#using-readcol-to-specify-columns)):
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 3 --xaxis q --i
 ```
 
-**X = column 1 (`angle_deg`), Y = column 4 (`I_norm`)**
+**X = column 1, Y = column 3**
 
 ![](images/manual/manual-xy-readcol.png)
 
-<p class="figure-caption"><strong>Figure: --readcol 1 4</strong> on the shared demo file (same image as in [1D mode](05-examples-1d-mode.md#using-readcol-to-specify-columns))</p>
+<p class="figure-caption"><strong>Figure: --readcol 1 3</strong> (TD_R02.dat)</p>
 
-Plot sample and normalized intensity together (shared X):
+Plot both Y columns against the same X:
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 2 1 4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 2 1 3 --xaxis q --i
 ```
 
-**two curves: `I_sample` and `I_norm` vs `angle_deg`**
-
-Range shorthand and per-file overrides (same file layout):
+**two curves: columns 2 and 3 vs column 1**
 
 ```text
-batplot demo_cols_stripped.txt --readcol 1 2-4 --xaxis 2theta --i
+batplot TD_R02.dat --readcol 1 2-3 --xaxis q --i
 ```
 
-**three curves: columns 2, 3, and 4 vs column 1**
+**same thing with range shorthand**
+
+![](images/manual/manual-xy-readcol-multi.png)
+
+<p class="figure-caption"><strong>Figure: --readcol 1 2-3</strong> (TD_R02.dat)</p>
 
 ```text
-batplot demo_a.txt --readcol 1 2 demo_b.txt --readcol 1 4 --i
+batplot TD_R02.dat --readcol 1 2 TD_R03.dat --readcol 1 3 --xaxis q --i
 ```
 
 **each file can pick its own columns**
 
-More `--readcol` patterns: [1D / XY — Using --readcol](05-examples-1d-mode.md#using-readcol-to-specify-columns).
+After `--showcol` on the shared `demo_cols.txt` layout above, you can likewise plot headered columns (e.g. `--readcol 1 4` for `angle_deg` vs `I_norm`).
 
 ## Convert XRD files (`--convert`)
 
