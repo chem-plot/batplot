@@ -1,0 +1,70 @@
+site_name: batplot User Manual
+site_description: Interactive CLI plotting for battery and materials characterization
+site_url: https://chem-plot.github.io/batplot/
+repo_url: https://github.com/chem-plot/batplot
+repo_name: chem-plot/batplot
+edit_uri: ""
+
+# Docs-only site. Does not ship with the batplot Python package.
+docs_dir: docs
+site_dir: site
+
+exclude_docs: |
+  CONTRIBUTING_DOCS.md
+  _import/**
+
+theme:
+  name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.sections
+    - toc.integrate
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/nav-toggle.js
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 2
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - 1. What is batplot?: 01-what-is-batplot.md
+  - 2. Installation: 02-installation.md
+  - 3. Terminal basics: 03-basics-of-using-terminal.md
+  - 4. How to use batplot: 04-how-to-use-batplot.md
+  - 5. 1D / XY: 05-examples-1d-mode.md
+  - 6. Electrochemistry: 06-examples-electrochemistry-ec-and-cpc-epc-modes.md
+  - 7. *Operando*: 07-examples-operando-mode.md
+  - 8. Histogram: 08-examples-histogram-mode.md
+  - 9. Batch mode: 09-batch-processing.md
+  - 10. Interactive menus: 10-interactive-menus.md
+  - 11. Utilities: 11-utilities.md
+  - 12. Summary of flags: 12-summary-of-flags.md
+
+extra:
+  generator: false

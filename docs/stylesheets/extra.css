@@ -1,0 +1,269 @@
+/* Docs-only styles (does not affect the batplot Python app). */
+
+/* Visible code *blocks* (fenced ``` … ```) */
+.md-typeset pre {
+  background-color: #1e1e2e;
+  border: 1px solid #313244;
+  border-radius: 0.4rem;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  box-shadow: none;
+}
+
+/* Inline `code` — Consolas for file extensions / short tokens */
+.md-typeset code {
+  font-family: Consolas, "Courier New", "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+}
+
+.md-typeset :not(pre) > code {
+  background-color: #eceff4;
+  color: #2e3440;
+  padding: 0.12em 0.4em;
+  border-radius: 0.25rem;
+  font-family: Consolas, "Courier New", "SF Mono", Menlo, monospace;
+}
+
+/* Fenced code blocks keep a coding font (JetBrains Mono first) */
+.md-typeset pre > code {
+  background-color: transparent;
+  color: #cdd6f4;
+  font-family: "JetBrains Mono", Consolas, "Fira Code", "SF Mono", Menlo, monospace;
+  font-size: 0.84em;
+  line-height: 1.55;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+/*
+ * CLI examples are commands, not source code — do NOT paint numbers red
+ * (Pygments/bash treats 1.54, column indexes, etc. as numeric literals).
+ */
+.md-typeset pre .m,
+.md-typeset pre .mi,
+.md-typeset pre .mf,
+.md-typeset pre .mh,
+.md-typeset pre .mo,
+.md-typeset pre .il,
+.md-typeset .highlight .m,
+.md-typeset .highlight .mi,
+.md-typeset .highlight .mf,
+.md-typeset .highlight .mh,
+.md-typeset .highlight .mo,
+.md-typeset .highlight .il {
+  color: #cdd6f4 !important;
+}
+
+/* Italic product name: write *batplot* in Markdown */
+.md-typeset em {
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* Figure captions (below screenshots) */
+.md-typeset p.figure-caption {
+  text-align: center;
+  font-weight: 700;
+  margin-top: 0.35em;
+  margin-bottom: 1.4em;
+}
+
+.md-typeset p.figure-caption strong {
+  font-weight: 700;
+}
+
+/* Keep manual / tutorial plots compact (source PNGs are also resized to 900px) */
+.md-typeset p > img,
+.md-typeset .admonition.example img {
+  max-width: min(420px, 92%);
+  height: auto;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Tutorial blocks that use real tutorial/test files + figures */
+.md-typeset .admonition.example {
+  border-left-color: #0d9488;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-left-width: 0.2rem;
+  border-radius: 0.35rem;
+}
+
+.md-typeset .admonition.example > .admonition-title {
+  background: #ccfbf1;
+  color: #115e59;
+  font-weight: 700;
+}
+
+.md-typeset .admonition.example > .admonition-title::before {
+  background-color: #0d9488;
+}
+
+.md-typeset .admonition.example .figure-caption {
+  margin-bottom: 0.4em;
+}
+
+/* Right TOC sidebar unused — subsections live in the left nav (toc.integrate) */
+.md-sidebar--secondary {
+  display: none !important;
+  width: 0 !important;
+}
+
+/*
+ * Material centers .md-grid in the viewport (margin auto). With the right
+ * sidebar hidden that leaves a large empty strip on the LEFT. Pin layout left.
+ */
+.md-grid {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.md-main__inner {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary {
+    left: 0;
+  }
+}
+
+/* Nested subsection links under the active chapter */
+.md-nav--secondary,
+.md-nav__list .md-nav__list {
+  margin-left: 0.2rem;
+}
+
+/* Collapsed in-page TOC under a chapter title (toggled by JS) */
+.md-nav__item > .md-nav.bp-nav-collapsed {
+  display: none !important;
+}
+
+/* Hint that the active chapter title toggles its dropdown */
+.md-nav--primary .md-nav__item--active > .md-nav__link[aria-expanded] {
+  cursor: pointer;
+}
+
+.md-nav--primary .md-nav__item--active > .md-nav__link[aria-expanded]::after {
+  content: " ▾";
+  font-size: 0.75em;
+  opacity: 0.65;
+}
+
+.md-nav--primary .md-nav__item--active > .md-nav__link[aria-expanded="false"]::after {
+  content: " ▸";
+}
+
+/* ---- Clickable interactive-menu mockups (docs only) ---- */
+
+.md-typeset .bp-menu,
+.md-typeset .bp-menu * {
+  box-sizing: border-box;
+}
+
+.md-typeset .bp-menu {
+  --bp-bg: #1e1e2e;
+  --bp-border: #45475a;
+  --bp-title: #cdd6f4;
+  --bp-head: #f9e2af; /* yellow headings like the live menu */
+  --bp-key: #89dceb; /* cyan keys */
+  --bp-desc: #bac2de;
+  --bp-sep: #585b70;
+  font-family: Consolas, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  background: var(--bp-bg);
+  color: var(--bp-desc);
+  border: 1px solid var(--bp-border);
+  border-radius: 0.35rem;
+  padding: 0.85rem 1rem 0.7rem;
+  margin: 1rem 0 1.35rem;
+  overflow-x: auto;
+  scroll-margin-top: 4.5rem;
+}
+
+.md-typeset .bp-menu-sep {
+  color: var(--bp-sep);
+  margin: 0 0 0.45rem;
+  user-select: none;
+  letter-spacing: 0.02em;
+}
+
+.md-typeset .bp-menu-title {
+  color: var(--bp-title);
+  font-weight: 700;
+  margin: 0 0 0.55rem;
+}
+
+.md-typeset .bp-menu-grid {
+  display: grid;
+  gap: 0.75rem 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr));
+  align-items: start;
+}
+
+.md-typeset .bp-menu-col-head {
+  color: var(--bp-head);
+  font-weight: 700;
+  margin: 0 0 0.35rem;
+  white-space: nowrap;
+}
+
+.md-typeset .bp-menu-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.md-typeset .bp-menu a.bp-item {
+  color: var(--bp-desc);
+  text-decoration: none;
+  border-radius: 0.2rem;
+  padding: 0.08rem 0.2rem;
+  margin: 0 -0.2rem;
+  white-space: nowrap;
+}
+
+.md-typeset .bp-menu a.bp-item:hover,
+.md-typeset .bp-menu a.bp-item:focus {
+  background: #313244;
+  text-decoration: none;
+  outline: none;
+}
+
+.md-typeset .bp-menu .bp-k {
+  color: var(--bp-key);
+  font-weight: 700;
+}
+
+.md-typeset .bp-menu-note {
+  margin: 0.65rem 0 0;
+  color: #a6adc8;
+  font-size: 0.78rem;
+  font-family: var(--md-text-font-family);
+  line-height: 1.4;
+}
+
+.md-typeset .bp-back {
+  margin: 0.15rem 0 0.85rem;
+  font-size: 0.84em;
+}
+
+.md-typeset .bp-back a {
+  font-weight: 600;
+}
+
+/* Keep key-section anchors clear of the sticky header */
+.md-typeset h3[id^="xy-key-"],
+.md-typeset h3[id^="ec-key-"],
+.md-typeset h3[id^="cpc-key-"],
+.md-typeset h3[id^="op-key-"],
+.md-typeset h3[id^="histo-key-"] {
+  scroll-margin-top: 4.5rem;
+}
+
+}

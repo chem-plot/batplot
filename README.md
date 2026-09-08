@@ -2,20 +2,23 @@
 
 **Interactive plotting tool for battery and materials characterization data**
 
-`batplot` is a Python CLI tool for visualizing and analyzing electrochemical and structural characterization data with interactive styling and session management. The electrochemistry and operando plots were inspired from Amalie Skurtveit's python scripts (https://github.com/piieceofcake?tab=repositories).
+`batplot` is a Command-line based software for quick visuallization of 1D (x,y) and 2D (x,y,z) data with interactive styling and session management. It is designed for researchers within the fields of materials sciences and electrochemistry who do not have programming skills. 
+The electrochemistry and operando plots were inspired from Amalie Skurtveit's python scripts (https://github.com/piieceofcake?tab=repositories).
 
 ## Features
 
 With a single line of command to easily plot publication-ready plots with customized, intuitive interactive editing features such as:
 - **Electrochemistry Plot**: Galvanostatic cycling (GC), cyclic voltammetry (CV), differential capacity (dQdV), capacity per cycle (CPC) with multi-file support
-- **1D XY plot**: Designed for XRD, PDF, XAS (XANES/EXAFS) but also support other types
+- **1D XY plot**: Designed for 1D data such as XRD, PDF, XAS (XANES/EXAFS) but also support other types
 - **Operando Contour plot**: Correlate in-situ characterizations (XRD/PDF/XAS) with electrochemical data
+- **XRD axis units**: Interactive Options `u` converts 2θ ↔ Q ↔ d (XY and operando); CIF phase ticks follow the current domain
 - **Histogram mode**: Column histograms from tabular `.csv`/`.txt` data (e.g. particle-size lists)
 - **Interactive plotting**: Real-time editing customized for each type of plottings
 - **Session Persistence**: Save and reload complete plot states with `.pkl` files
 - **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files (histogram: `.bpsh`)
 - **Batch Processing**: Export each file separately with `--all`
 - **Column preview**: `--showcol` prints numbered columns, header names when found, and the first 10 values per column (CSV, Excel, text, .mpt, .brml, Bruker .raw, etc.)
+- **Strip header lines**: `--strip-header N` removes the first N lines from a file or a folder of files (with `--ext`) and writes copies into a `stripped/` subfolder (originals untouched)
 
 ## Installation
 
@@ -28,7 +31,6 @@ pip install batplot
 
 - Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
 - Tutorial files: https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip
-- Manual: https://github.com/chem-plot/batplot/blob/main/batplot_user_manual.pdf
 
 ---
 
@@ -40,11 +42,12 @@ In batplot, --xaxis is frequently used to indicate the data type.
 
 ```bash
 
-# Specify X-axis type (Q, 2theta, r, k, energy, time or any user defined names)
+# Specify X-axis type (Q, 2theta, d, r, k, energy, time or any user defined names)
 # By defauly, batplot will skip the header lines, plot the first and second columns as x and y
 # Q and q are equivalent (case-insensitive)
 batplot pattern.xye --xaxis 2theta --i
 batplot data.qye --xaxis q --i
+batplot data.xye --xaxis d --wl 1.54 --i
 batplot data.txt --xaxis whatever --i
 
 # Set X-axis range
@@ -55,20 +58,41 @@ batplot pattern.xye --xaxis 2theta --out figure
 batplot pattern.txt --xaxis Energy --out figure.png
 ```
 
-### Wavelength and Q conversion for XRD data
+### Strip header lines (export copies)
 
 ```bash
-# Convert 2θ to Q using wavelength (Å), --xaxis is no longer needed as providing wavelength is implying that user wants to convert and plot the data in Q space
-batplot data.raw --wl 1.5406 --i
+# Single file: drop first 5 lines → ./stripped/data.txt
+batplot data.txt --strip-header 5
 
-# Per-file wavelength: file.xye:1.54, in this case --xaxis is also not needed and files will be plotted in Q space
+# Folder: only .xy files → folder/stripped/*.xy
+batplot /path/to/folder --strip-header 3 --ext .xy
+
+# Multiple extensions (comma-separated)
+batplot /path/to/folder --strip-header 2 --ext .xy,.dat,.txt
+```
+
+Originals are never modified. Binary formats (`.brml`, `.raw`, `.xlsx`, …) are skipped.
+
+### Wavelength and XRD unit conversion (plot vs export)
+
+```bash
+# Plot: convert 2θ→Q for display (λ in Å). --xaxis not needed when --wl / file:λ is given
+batplot data.raw --wl 1.5406 --i
 batplot scan1.brml:1.5406 scan2.xye:0.7093 --i
 
-# Convert and export to converted/ subfolder (q and Q equivalent)
-batplot data.xye --convert 1.54 q
-batplot data.qye --convert q 1.54
+# Export: --convert writes into a converted/ subfolder next to each input
+# Units: q|Q, d|D, 2theta|2th|tth  — or a number = 2θ at that wavelength
+batplot data.xye --convert 1.54 q          # 2θ(λ=1.54) → Q  → *.qye
+batplot data.qye --convert q 1.54          # Q → 2θ(λ=1.54) → *.xy
+batplot data.qye --convert q d             # Q ↔ d (no λ)
+batplot data.xy --convert d 2theta --wl 1.5406
+batplot data.xye --convert 0.26 1.54       # 2θ(λ1) → 2θ(λ2)
 
-# With --readcol for custom column layout (e.g. 2θ in col 3, intensity in col 4)
+# Folder of .xy → Q with typed extension filter / output extension
+batplot /path/to/folder --ext .xy --convert 0.26 q
+batplot /path/to/folder --ext xy --convert 2theta q --wl 0.26 --convert-ext .qye
+
+# Custom columns when converting
 batplot data.csv --readcol 3 4 --convert 1.54 q
 batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q
 ```
@@ -135,6 +159,27 @@ batplot data.chik --k3chik --xrange 2 12
 batplot pattern.xye --i
 batplot file1.xy file2.xy --stack --i
 batplot allfiles --xaxis 2theta --xrange 15 75 --i
+```
+
+**XRD Options `u` (axis units):** On diffraction plots only, press `u` to convert the x-axis among **2θ ↔ Q ↔ d**. Conversions that involve 2θ need a wavelength (`--wl`, `file:wl`, or a prompt). Data, axis labels/limits, and CIF ticks stay in sync. Not available for PDF/XAS or other non-XRD axes.
+
+```bash
+# Launch in 2θ, then use Options u → q (or d) inside the menu
+batplot data.xye:0.709 --xaxis 2theta --i
+batplot data.xye --xaxis 2theta --wl 1.5406 --i
+```
+
+### CIF phase ticks
+
+Add one or more `.cif` files to overlay Bragg reflection markers. Peaks are stored in Q and drawn in the current axis domain (2θ / Q / d). Use `cif` in the interactive menu to add, rename, or hide sets; after Options `u`, ticks redraw in the new units.
+
+```bash
+# Q plot + CIF ticks
+batplot scan.xye:1.54 phase.cif --i
+
+# 2θ plot: give λ for data and/or CIF (file.cif:wl)
+batplot scan.xye phase.cif:0.709 --xaxis 2theta --wl 0.709 --i
+batplot scan.xye:1.54 phase.cif --stack --i
 ```
 
 ### Session save without interactive menu (`--save`)
@@ -250,6 +295,12 @@ batplot --operando --1d --i
 
 # With CIF tick labels
 batplot folder phase.cif:1.54 --operando --i
+```
+
+**XRD Options `u`:** In the operando interactive menu, press `u` to convert the contour x-axis among **2θ ↔ Q ↔ d** (XRD only; needs λ for 2θ). CIF ticks follow the new domain. Prefer an explicit `--xaxis` when combining with `--wl` (e.g. `--xaxis 2theta --wl 0.709` keeps degrees; `--wl` alone still defaults to Q).
+
+```bash
+batplot folder phase.cif --operando --xaxis 2theta --wl 0.709 --i
 ```
 
 Operando column selection:
@@ -391,7 +442,7 @@ batplot --h ec           # Electrochemistry guide
 batplot --h op           # Operando guide
 batplot --h histo        # Histogram mode guide
 batplot --v           # Version and release notes
-batplot --m            # Open illustrated manual
+batplot --m            # Open online user manual (GitHub Pages)
 ```
 
 ---

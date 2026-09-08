@@ -24,6 +24,14 @@ archive_unused/
 
 batplot_user_manual.docx
 
+# MkDocs build output + intermediate Word import
+site/
+docs/_import/
+
+# Local regenerable demo scratch (figures stay under docs/images/manual/)
+docs/demo_data/_operando_subset/
+docs/demo_data/stripped/
+
 *.log
 *.tmp
 *.bak
