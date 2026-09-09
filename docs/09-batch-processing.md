@@ -1,4 +1,4 @@
-# 9 Batch mode
+# 9. Batch mode
 
 *batplot* batch workflows cover three related jobs:
 

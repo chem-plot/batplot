@@ -1,4 +1,4 @@
-# 1 What Is batplot?
+# 1. What Is batplot?
 
 *batplot* is a lightweight, open-source Python command-line interface (CLI) tool designed for rapid, publication-quality visualization of battery and materials characterization data. It reads raw instrument output files directly and produces fully styled, interactive figures from a single terminal command, with no scripting required.
 

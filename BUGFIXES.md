@@ -4,6 +4,16 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Docs (Consistent ``N.`` chapter numbering) — 2026-09-09
+- **Issue**: Chapter titles mixed ``1 Title`` and ``3. Title`` (some with a
+  period after the number, some without) in sidebar, home list, and H1s.
+- **Solution**: Use ``N. Title`` everywhere (nav, ``docs/index.md``, chapter
+  H1s for 1, 2, 4, 9, 10, 12).
+- **Compatibility**: Docs-only.
+- **Affected files**: ``mkdocs.yml``, ``docs/index.md``, ``docs/01-*.md``,
+  ``docs/02-*.md``, ``docs/04-*.md``, ``docs/09-*.md``, ``docs/10-*.md``,
+  ``docs/12-*.md``, ``BUGFIXES.md``
+
 ### Docs (README + ``--h`` link to GitHub Pages manual) — 2026-09-09
 - **Issue**: README Quick Start / Help and ``batplot --h`` still pointed at an
   old PDF-manual wording and did not show the live manual URL.

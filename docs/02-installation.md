@@ -1,4 +1,4 @@
-# 2 Installation
+# 2. Installation
 
 Anaconda Prompt is needed prior to using *batplot*. Anaconda is a distribution platform for Python that manages different Python versions and packages. The key tool is a command called conda, which is a package and environment manager.
 

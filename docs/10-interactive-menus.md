@@ -1,4 +1,4 @@
-# 10 Interactive menus
+# 10. Interactive menus
 
 Add `--i` to open a text menu beside the live figure. Type a key, then Enter.
 

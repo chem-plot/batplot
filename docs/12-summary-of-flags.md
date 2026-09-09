@@ -1,4 +1,4 @@
-# 12 Summary of Flags
+# 12. Summary of Flags
 
 All flags use the double-dash (`--`) prefix. Below are tables organized by mode. Interactive **menu keys** live in each mode chapter (see [Interactive menus index](10-interactive-menus.md)), not here.
 

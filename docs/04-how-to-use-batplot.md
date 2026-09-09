@@ -1,4 +1,4 @@
-# 4 How to Use batplot
+# 4. How to Use batplot
 
 ## General Command Structure
 
