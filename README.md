@@ -14,11 +14,10 @@ With a single line of command to easily plot publication-ready plots with custom
 - **XRD axis units**: Interactive Options `u` converts 2θ ↔ Q ↔ d (XY and operando); CIF phase ticks follow the current domain
 - **Histogram mode**: Column histograms from tabular `.csv`/`.txt` data (e.g. particle-size lists)
 - **Interactive plotting**: Real-time editing customized for each type of plottings
-- **Session Persistence**: Save and reload complete plot states with `.pkl` files
+- **Session Save**: Save and reload complete plot states with `.pkl` files
 - **Style Management**: Import/export plot styles as `.bps`/`.bpsg` files (histogram: `.bpsh`)
 - **Batch Processing**: Export each file separately with `--all`
-- **Column preview**: `--showcol` prints numbered columns, header names when found, and the first 10 values per column (CSV, Excel, text, .mpt, .brml, Bruker .raw, etc.)
-- **Strip header lines**: `--strip-header N` removes the first N lines from a file or a folder of files (with `--ext`) and writes copies into a `stripped/` subfolder (originals untouched)
+
 
 ## Installation
 
