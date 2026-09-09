@@ -7,7 +7,7 @@ import os
 from typing import Any, List
 
 from ..common.files import confirm_previous_path
-from ..common.menu_rendering import colorize_menu_item as _colorize_menu, print_menu_columns, prompt_menu_key
+from ..common.menu_rendering import colorize_menu as _colorize_menu, print_menu_columns, prompt_menu_key
 from ..common.terminal import colorize_prompt, safe_input
 from ..histo.labels import run_histo_rename_menu
 from ..histo.density_curve import run_histo_density_curve_menu
@@ -15,7 +15,7 @@ from ..histo.colors import run_histo_color_menu
 from ..histo.fonts import run_histo_font_menu, sync_histo_font_rcparams
 from ..histo.interactive import _export_style, _export_figure
 from ..histo.load import load_table
-from ..histo.plot import HistoState, normalize_histo_title, refresh_histo_figure
+from ..histo.plot import HistoState, normalize_histo_title, refresh_histo_figure, sync_histo_geometry
 from ..histo.session import apply_histo_snapshot, apply_histo_style_snapshot, capture_histo_snapshot, save_histo_session
 from ..histo.toggles import run_histo_toggle_menu
 from ..histo.wizard import HistoSetup, run_histo_wizard
@@ -40,7 +40,13 @@ from .batch_menu_io import (
     batch_quit_or_save_all,
     batch_save_sessions,
 )
-from .common import SyncUndoStacks, draw_panels, print_batch_header, set_all_panel_figure_titles
+from .common import (
+    SyncUndoStacks,
+    draw_panels,
+    make_style_import_prepare,
+    print_batch_header,
+    set_all_panel_figure_titles,
+)
 from .batch_menu_helpers import (
     batch_options_menu_column,
     print_batch_pair_status,
@@ -69,8 +75,12 @@ def _save_histo_panel(panel: HistoPanel, path: str) -> None:
 
 
 def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
+    # Mirror single-panel entry: sync live canvas/frame into state BEFORE
+    # refresh, so refresh does not wipe a GUI-resized geometry with stale
+    # style.figsize / axes_fraction (p/i/s/b authority).
     for p in panels:
         normalize_histo_title(p.state)
+        sync_histo_geometry(p.fig, p.ax, p.state)
         refresh_histo_figure(p.fig, p.ax, p.state)
     set_all_panel_figure_titles(panels)
     print_batch_header("histo", panels)
@@ -109,8 +119,14 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
     def _batch_toggle(key: str) -> None:
         rs = ref.state.style
         if key == "d":
+            # Mirror single-panel: only rewrite ylabel when it still matches
+            # the prior mode default; keep cleared/custom titles.
+            prev_defaults = {id(p): p.state.y_label_default() for p in panels}
+            prev_ylabels = {id(p): p.state.style.ylabel for p in panels}
             rs.density = not rs.density
-            rs.ylabel = rs.y_label_default()
+            if prev_ylabels[id(ref)] == prev_defaults[id(ref)]:
+                # y_label_default lives on HistoState, not HistoStyle.
+                rs.ylabel = ref.state.y_label_default()
         elif key == "n":
             rs.show_bar_labels = not rs.show_bar_labels
         elif key == "m":
@@ -118,11 +134,18 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
             rs.show_median_line = not rs.show_median_line
         for p in panels:
             ps = p.state.style
-            ps.density = rs.density
-            ps.ylabel = ps.y_label_default()
-            ps.show_bar_labels = rs.show_bar_labels
-            ps.show_mean_line = rs.show_mean_line
-            ps.show_median_line = rs.show_median_line
+            if key == "d":
+                was_default = prev_ylabels[id(p)] == prev_defaults[id(p)]
+                ps.density = rs.density
+                if was_default:
+                    ps.ylabel = p.state.y_label_default()
+                else:
+                    ps.ylabel = prev_ylabels[id(p)]
+            elif key == "n":
+                ps.show_bar_labels = rs.show_bar_labels
+            elif key == "m":
+                ps.show_mean_line = rs.show_mean_line
+                ps.show_median_line = rs.show_median_line
         _refresh_all()
 
     while True:
@@ -161,6 +184,10 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
                 for p in panels:
                     setattr(p.state.style, "edge_color", c)
 
+            def _set_bar_alpha(a: float) -> None:
+                for p in panels:
+                    setattr(p.state.style, "alpha", float(a))
+
             def _apply_spine_color(side: str, color: str) -> None:
                 for p in panels:
                     set_histo_spine_color(p.fig, p.ax, side, color)
@@ -186,6 +213,8 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
                 set_bar_color=_set_bar_color,
                 get_edge_color=lambda: ref.state.style.edge_color,
                 set_edge_color=_set_edge_color,
+                get_bar_alpha=lambda: float(ref.state.style.alpha),
+                set_bar_alpha=_set_bar_alpha,
                 push_state=_push_all,
                 refresh=_refresh_all,
                 finish_spine_change=_finish_spine_colors_only,
@@ -249,6 +278,7 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
                 safe_input=safe_input,
                 colorize_menu=_colorize_menu,
                 colorize_prompt=colorize_prompt,
+                fig=ref.fig,
             )
             draw_panels(panels)
             continue
@@ -302,7 +332,17 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
                     ps = p.state.style
                     ps.xlabel = rs.xlabel
                     ps.ylabel = rs.ylabel
+                    ps.title = rs.title
                     ps.top_xlabel = rs.top_xlabel
+                    # Keep live override in lockstep (clear must not leave peers
+                    # showing a stale top-x from a previous ``r``→``o`` edit).
+                    if rs.top_xlabel:
+                        p.ax._top_xlabel_text_override = rs.top_xlabel  # type: ignore[attr-defined]
+                    elif hasattr(p.ax, "_top_xlabel_text_override"):
+                        try:
+                            delattr(p.ax, "_top_xlabel_text_override")
+                        except Exception:
+                            p.ax._top_xlabel_text_override = ""  # type: ignore[attr-defined]
                     refresh_histo_figure(p.fig, p.ax, p.state)
                 _refresh_all()
 
@@ -485,7 +525,14 @@ def run_histo_batch_menu(panels: List[HistoPanel]) -> None:
                 apply_style=lambda panel, payload: apply_histo_style_snapshot(
                     panel.fig, panel.ax, panel.state, payload
                 ),
-                prepare=lambda _indices: _push_all(),
+                prepare=make_style_import_prepare(
+                    undo,
+                    panels,
+                    lambda p: capture_histo_snapshot(p.state, p.fig, p.ax),
+                    lambda panel, snap: apply_histo_snapshot(
+                        panel.fig, panel.ax, panel.state, snap
+                    ),
+                ),
                 on_applied=_on_histo_imported,
             )
             continue

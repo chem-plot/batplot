@@ -7,6 +7,7 @@ from typing import Callable, Tuple
 import numpy as np  # type: ignore[import]
 
 from ..common.menus import run_repeat_input_loop
+from ...color_utils import blank_means_back, format_color_listing, run_color_token_input_loop
 from .plot import HistoState
 
 
@@ -74,6 +75,7 @@ def run_histo_density_curve_menu(
     safe_input: Callable[..., str],
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
+    fig=None,
 ) -> None:
     """Interactive submenu for the KDE density curve overlay."""
 
@@ -88,16 +90,18 @@ def run_histo_density_curve_menu(
         ls_name = linestyle_labels.get(st.density_curve_ls, st.density_curve_ls)
         print("\n\033[1mDensity curve>\033[0m  (KDE overlay on histogram)")
         print(f"  show:      {_flag(st.show_density_curve)}")
-        print(f"  color:     {st.density_curve_color}")
+        print(f"  color:     {format_color_listing(st.density_curve_color)}")
         print(f"  width:     {st.density_curve_lw:g}")
         print(f"  linestyle: {ls_name}")
+        print(f"  alpha:     {st.density_curve_alpha:g}")
         print("  " + colorize_menu("t: toggle on/off"))
-        print("  " + colorize_menu("c: color"))
+        print("  " + colorize_menu("c: color (e: pick color from screen)"))
         print("  " + colorize_menu("w: line width"))
         print("  " + colorize_menu("l: linestyle (s/d/t)"))
+        print("  " + colorize_menu("a: alpha (0–1)"))
         print("  " + colorize_menu("q: back"))
-        choice = safe_input(colorize_prompt("Density (t/c/w/l/q): "), cancel_on_interrupt=True).strip().lower()
-        if not choice or choice == "q":
+        choice = safe_input(colorize_prompt("Density (t/c/w/l/a/q): "), cancel_on_interrupt=True).strip().lower()
+        if choice == "q" or blank_means_back(choice):
             break
         if choice == "t":
             push_state()
@@ -111,14 +115,18 @@ def run_histo_density_curve_menu(
                 push_state()
                 st.density_curve_color = spec
                 refresh()
-                print(f"Density curve color set to {spec}.")
+                print(f"Density curve color set to {format_color_listing(spec)}.")
                 return True
 
-            run_repeat_input_loop(
-                prompt=lambda: f"Curve color (current: {st.density_curve_color}, q=back): ",
+            run_color_token_input_loop(
+                prompt=lambda: (
+                    f"Curve color (current: {format_color_listing(st.density_curve_color)}, "
+                    f"e=pick/apply last, u=manage, q=back): "
+                ),
                 safe_input=safe_input,
                 colorize_prompt=colorize_prompt,
                 process=_apply_curve_color,
+                fig=fig,
             )
             continue
         if choice == "w":
@@ -165,6 +173,30 @@ def run_histo_density_curve_menu(
                 safe_input=safe_input,
                 colorize_prompt=colorize_prompt,
                 process=_apply_curve_linestyle,
+            )
+            continue
+        if choice == "a":
+
+            def _apply_curve_alpha(raw: str) -> bool:
+                try:
+                    alpha = float(raw)
+                except ValueError:
+                    print("Invalid alpha.")
+                    return False
+                if alpha < 0.0 or alpha > 1.0:
+                    print("Alpha must be between 0 and 1.")
+                    return False
+                push_state()
+                st.density_curve_alpha = alpha
+                refresh()
+                print(f"Density curve alpha set to {alpha:g}.")
+                return True
+
+            run_repeat_input_loop(
+                prompt=lambda: f"Alpha (current: {st.density_curve_alpha:g}, 0–1, q=back): ",
+                safe_input=safe_input,
+                colorize_prompt=colorize_prompt,
+                process=_apply_curve_alpha,
             )
             continue
         print("Unknown option.")

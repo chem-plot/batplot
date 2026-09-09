@@ -101,10 +101,10 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Bug fixes on session reload',
+    'custom_message': '- Bug fixes',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Bug fixes on session reload'
+        '- Bug fixes'
     ],
     'show_update_notes': True,
 }
@@ -231,7 +231,7 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
     # Check cache unless forced (only use cache if it has a valid latest_version)
     if not force and cache_file.exists():
         try:
-            with open(cache_file, 'r') as f:
+            with open(cache_file, 'r', encoding='utf-8') as f:
                 cache = json.load(f)
                 latest = cache.get('latest_version')
                 # Check once per minute (60 seconds); skip cache if previous fetch failed (latest is None)
@@ -248,7 +248,7 @@ def check_for_updates(current_version: str, force: bool = False) -> None:
     
     # Update cache
     try:
-        with open(cache_file, 'w') as f:
+        with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump({
                 'timestamp': now,
                 'latest_version': latest,
@@ -298,14 +298,26 @@ def _print_update_message(current: str, latest: str, versions_behind: int = 0) -
         box_width = 120
     content_width = box_width - 4  # "│  " and "  │"
 
-    print(f"\n\033[93m╭{'─' * box_width}╮\033[0m")
-    print(f"\033[93m│\033[0m  \033[1mA new version of batplot is available!\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
-    print(f"\033[93m│\033[0m  Current: \033[91m{current}\033[0m → Latest: \033[92m{latest}\033[0m" + " " * max(0, box_width - 20 - len(current) - len(latest)) + "\033[93m│\033[0m")
+    # ASCII frame only — box-drawing / arrows break on classic Windows cp1252.
+    from batplot.plot_modes.common.terminal import safe_console_print
+
+    def _row(inner: str) -> None:
+        pad = max(0, box_width - len(inner) - 4)
+        safe_console_print(f"\033[93m|\033[0m  {inner}" + (" " * pad) + "\033[93m|\033[0m")
+
+    if sys.platform == "win32":
+        disable_hint = "set BATPLOT_NO_VERSION_CHECK=1  (cmd)  or  $env:BATPLOT_NO_VERSION_CHECK=1  (PowerShell)"
+    else:
+        disable_hint = "export BATPLOT_NO_VERSION_CHECK=1"
+
+    safe_console_print(f"\n\033[93m+{'-' * box_width}+\033[0m")
+    _row("\033[1mA new version of batplot is available!\033[0m")
+    _row(f"Current: \033[91m{current}\033[0m -> Latest: \033[92m{latest}\033[0m")
 
     # Add custom message (wrapped to multiple lines if needed)
     if custom_msg and custom_msg.strip():
         for line in _wrap_line(custom_msg, content_width):
-            print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
+            _row(line)
 
     # Add update notes (wrapped, no truncation); skip duplicates of custom_message
     if update_notes and show_notes and isinstance(update_notes, list):
@@ -313,15 +325,19 @@ def _print_update_message(current: str, latest: str, versions_behind: int = 0) -
         for note in update_notes:
             if note and note.strip() and note.strip() != custom_norm:
                 for line in _wrap_line(note, content_width):
-                    print(f"\033[93m│\033[0m  {line}" + " " * max(0, box_width - len(line) - 4) + "\033[93m│\033[0m")
+                    _row(line)
 
-    print(f"\033[93m│\033[0m  Update with: \033[96mpip install --upgrade batplot\033[0m" + " " * max(0, box_width - 34) + "\033[93m│\033[0m")
+    _row("Update with: \033[96mpip install --upgrade batplot\033[0m")
     if versions_behind > 1:
-        print(f"\033[93m│\033[0m  \033[1m({versions_behind} versions behind — run 'batplot --version' for full release notes)\033[0m" + " " * max(0, box_width - 65) + "\033[93m│\033[0m")
+        _row(
+            f"\033[1m({versions_behind} versions behind - run 'batplot --version' "
+            f"for full release notes)\033[0m"
+        )
     else:
-        print(f"\033[93m│\033[0m  \033[1mRun 'batplot --version' for full release notes\033[0m" + " " * max(0, box_width - 49) + "\033[93m│\033[0m")
-    print(f"\033[93m│\033[0m  To disable this check: \033[96mexport BATPLOT_NO_VERSION_CHECK=1\033[0m" + " " * max(0, box_width - 45) + "\033[93m│\033[0m")
-    print(f"\033[93m╰{'─' * box_width}╯\033[0m\n")
+        _row("\033[1mRun 'batplot --version' for full release notes\033[0m")
+    for line in _wrap_line(f"To disable this check: {disable_hint}", content_width):
+        _row(f"\033[96m{line}\033[0m")
+    safe_console_print(f"\033[93m+{'-' * box_width}+\033[0m\n")
 
 
 if __name__ == '__main__':

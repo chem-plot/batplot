@@ -11,18 +11,20 @@ from ...ui import finalize_spine_colors_cpc
 from ..common.batch_font import run_batch_font_menu
 from ..common.files import confirm_previous_path
 from ..common.fonts import collect_fig_font_artists
-from ..common.menu_rendering import colorize_menu_item as _colorize_menu, print_menu_columns, prompt_menu_key
+from ..common.menu_rendering import colorize_menu as _colorize_menu, print_menu_columns, prompt_menu_key
 from ..common.menus import run_legend_position_menu
 from ..common.spines import apply_frame_and_tick_widths, parse_frame_tick_widths
 from ..common.terminal import colorize_prompt, safe_input
 from ..cpc.colors import run_cpc_color_menu
 from ..cpc.style import _apply_style, _style_snapshot
 from ..cpc.labels import run_cpc_rename_menu
+from ..cpc.overview import run_cpc_overview
 from ..cpc.legend import (
     _rebuild_legend,
     _sanitize_legend_offset,
     _visible_handles_labels,
 )
+from ..cpc.legend_order import run_cpc_legend_order_menu
 from ..cpc.session import dump_cpc_session
 from ..cpc.snapshots import _apply_cpc_geometry_snapshot, _get_geometry_snapshot
 from .batch_commands import prompt_style_source_index
@@ -39,8 +41,19 @@ from .batch_menu_io import (
     batch_quit_or_save_all,
     batch_save_sessions,
 )
-from .common import SyncUndoStacks, draw_panels, print_batch_header, set_all_panel_figure_titles
+from .common import (
+    SyncUndoStacks,
+    draw_panels,
+    make_style_import_prepare,
+    print_batch_header,
+    set_all_panel_figure_titles,
+)
 from .cpc_batch_helpers import (
+    apply_cpc_colors_only,
+    apply_cpc_file_visibility_only,
+    apply_cpc_labels_only,
+    apply_cpc_legend_only,
+    apply_cpc_wasd_chrome_only,
     cpc_normalize_file_data,
     cpc_print_file_list_factory,
     cpc_run_file_visibility_menu,
@@ -52,18 +65,30 @@ from .cpc_batch_helpers import (
 from .load import CpcPanel
 
 
+def _cpc_batch_has_multi_file(panels: List[CpcPanel]) -> bool:
+    for panel in panels:
+        _fd, is_multi = cpc_normalize_file_data(panel)
+        if is_multi:
+            return True
+        raw = getattr(panel, "file_data", None)
+        if raw and len(raw) > 1:
+            return True
+    return False
+
+
 def _print_cpc_batch_menu(panels: List[CpcPanel]) -> None:
     col1 = [
         "f: font",
         "l: line widths",
         "m: marker sizes",
-        "d: display chg/dch",
+        "d: display (Chg/Dch)",
         "ry: show/hide efficiency",
         "t: spines/ticks",
         "h: legend",
-        "v: show/hide files",
         "g: size",
     ]
+    if _cpc_batch_has_multi_file(panels):
+        col1.insert(-1, "v: show/hide files")
     col2 = [
         "c: colors",
         "r: rename labels",
@@ -72,6 +97,7 @@ def _print_cpc_batch_menu(panels: List[CpcPanel]) -> None:
         "ie: invert efficiency",
     ]
     col3 = batch_options_menu_column(panels)
+    col3.insert(1, "o: overview")
     print_menu_columns(
         title=f"Batch CPC Menu ({len(panels)} plots)",
         columns=[("Styles", col1), ("Geometries", col2), ("Options", col3)],
@@ -150,7 +176,7 @@ def _apply_cpc_style(panel: CpcPanel, cfg: dict, *, apply_geometry: bool = True)
 
 
 def _save_cpc_panel(panel: CpcPanel, path: str) -> None:
-    dump_cpc_session(
+    ok = dump_cpc_session(
         path,
         fig=panel.fig,
         ax=panel.ax,
@@ -161,6 +187,8 @@ def _save_cpc_panel(panel: CpcPanel, path: str) -> None:
         file_data=panel.file_data,
         skip_confirm=True,
     )
+    if not ok:
+        raise RuntimeError(f"Failed to save CPC session to {path}")
 
 
 def _export_cpc_panel(panel: CpcPanel, path: str) -> None:
@@ -178,22 +206,15 @@ def _push_all(undo: SyncUndoStacks, panels: List[CpcPanel]) -> None:
 
 
 def _apply_display_mode_all(panels: List[CpcPanel], mode: str) -> None:
+    from ..cpc.panel_menus import apply_cpc_file_artist_visibility
+
     for p in panels:
         file_data, _ = cpc_normalize_file_data(p)
-        for f in file_data:
-            sc_c = f.get("sc_charge")
-            sc_d = f.get("sc_discharge")
-            try:
-                if sc_c is not None:
-                    sc_c.set_visible(mode in ("charge", "both"))
-                if sc_d is not None:
-                    sc_d.set_visible(mode in ("discharge", "both"))
-            except Exception:
-                pass
         try:
             p.fig._cpc_display_mode = mode
         except Exception:
             pass
+        apply_cpc_file_artist_visibility(p.fig, file_data)
         try:
             _rebuild_legend(p.ax, p.ax2, file_data, preserve_position=True)
         except Exception:
@@ -221,28 +242,65 @@ def _set_marker_sizes_all(panels: List[CpcPanel], size: float) -> None:
 
 
 def _toggle_efficiency_all(panels: List[CpcPanel]) -> bool:
-    """Toggle efficiency visibility using reference state; return new visible flag."""
+    """Toggle efficiency visibility using reference state; return new visible flag.
+
+    Mirrors interactive ``ry``: series + tick/label/title chrome only (never
+    ``ax2.set_visible``, which would hide the right spine).
+    """
+    from ..cpc.panel_menus import (
+        _cpc_efficiency_globally_on,
+        apply_cpc_file_artist_visibility,
+    )
+    from ..common.spines import sync_tick_state_from_wasd
+
     ref = panels[0]
-    cur = True
-    try:
-        if ref.sc_eff is not None:
-            cur = bool(ref.sc_eff.get_visible())
-    except Exception:
-        pass
-    new_vis = not cur
+    file_data0, _ = cpc_normalize_file_data(ref)
+    # Same global ry intent as interactive (wasd / visible-file fallback).
+    new_vis = not _cpc_efficiency_globally_on(ref.fig, file_data0)
     for p in panels:
         file_data, _ = cpc_normalize_file_data(p)
-        for f in file_data:
-            sc = f.get("sc_eff")
-            try:
-                if sc is not None:
-                    sc.set_visible(new_vis)
-            except Exception:
-                pass
         try:
-            if p.sc_eff is not None:
+            p.ax2.yaxis.label.set_visible(new_vis)
+            p.ax2.tick_params(axis="y", right=new_vis, labelright=new_vis)
+        except Exception:
+            pass
+        try:
+            wasd = getattr(p.fig, "_cpc_wasd_state", None)
+            if not isinstance(wasd, dict):
+                wasd = {}
+            wasd.setdefault("right", {})
+            wasd["right"]["ticks"] = bool(new_vis)
+            wasd["right"]["labels"] = bool(new_vis)
+            wasd["right"]["title"] = bool(new_vis)
+            p.fig._cpc_wasd_state = wasd
+            ts = getattr(p.ax, "_saved_tick_state", None)
+            if isinstance(ts, dict):
+                sync_tick_state_from_wasd(
+                    ts,
+                    wasd,
+                    tick_defaults={
+                        "top": False,
+                        "bottom": True,
+                        "left": True,
+                        "right": True,
+                    },
+                    label_defaults={
+                        "top": False,
+                        "bottom": True,
+                        "left": True,
+                        "right": True,
+                    },
+                )
+                p.ax._saved_tick_state = dict(ts)
+                if getattr(p, "tick_state", None) is not None:
+                    p.tick_state.clear()
+                    p.tick_state.update(ts)
+        except Exception:
+            pass
+        apply_cpc_file_artist_visibility(p.fig, file_data, eff_on=bool(new_vis))
+        try:
+            if p.sc_eff is not None and not file_data:
                 p.sc_eff.set_visible(new_vis)
-            p.ax2.set_visible(new_vis)
         except Exception:
             pass
         try:
@@ -252,24 +310,57 @@ def _toggle_efficiency_all(panels: List[CpcPanel]) -> bool:
     return new_vis
 
 
-def _invert_efficiency_all(panels: List[CpcPanel]) -> None:
+def _cpc_eff_inverted_flag(panel: CpcPanel) -> bool:
+    """Return whether efficiency is currently inverted on *panel* (first file).
+
+    Single-file panels use an ephemeral ``file_data`` stub, so the flag is also
+    mirrored on ``fig._cpc_eff_inverted`` for round-trips within a batch session.
+    """
+    if panel.file_data:
+        for f in panel.file_data:
+            if f.get("sc_eff") is not None:
+                return bool(f.get("eff_inverted", False))
+    return bool(getattr(panel.fig, "_cpc_eff_inverted", False))
+
+
+def _invert_efficiency_all(panels: List[CpcPanel]) -> bool:
+    """Invert efficiency around 100% to a shared target from the reference panel.
+
+    Mirrors ``ry``/``d``: compute desired state from ref, then bring every panel
+    to that state (do not blindly toggle peers that already differ).
+    Returns the new inverted flag.
+    """
+    ref = panels[0]
+    new_inv = not _cpc_eff_inverted_flag(ref)
     for p in panels:
         file_data, _ = cpc_normalize_file_data(p)
-        seen = set()
+        seen: set[int] = set()
+        cur_panel = _cpc_eff_inverted_flag(p)
         for f in file_data:
             sc = f.get("sc_eff")
             if sc is None or id(sc) in seen:
                 continue
             seen.add(id(sc))
             try:
-                offsets = sc.get_offsets()
-                if offsets is None or len(offsets) == 0:
-                    continue
-                xs = offsets[:, 0]
-                ys = offsets[:, 1]
-                sc.set_offsets(list(zip(xs, 200.0 - ys)))
+                cur = (
+                    bool(f.get("eff_inverted", False))
+                    if p.file_data
+                    else cur_panel
+                )
+                if cur != new_inv:
+                    offsets = sc.get_offsets()
+                    if offsets is not None and len(offsets) > 0:
+                        xs = offsets[:, 0]
+                        ys = offsets[:, 1]
+                        sc.set_offsets(list(zip(xs, 200.0 - ys)))
+                f["eff_inverted"] = new_inv
             except Exception as exc:
                 print(f"Invert efficiency failed: {exc}")
+        try:
+            p.fig._cpc_eff_inverted = new_inv
+        except Exception:
+            pass
+    return new_inv
 
 
 def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
@@ -308,11 +399,21 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
             continue
 
         if cmd == "g":
+            def _after_cpc_geom() -> None:
+                # batch_geom helpers only move primary ax; keep twin locked.
+                for p in panels:
+                    try:
+                        if getattr(p, "ax2", None) is not None:
+                            p.ax2.set_position(p.ax.get_position())
+                    except Exception:
+                        pass
+
             run_batch_geom_size_menu(
                 panels,
                 push_undo=lambda: _push_all(undo, panels),
                 draw_all=lambda: draw_panels(panels),
                 colorize_menu=_colorize_menu,
+                on_applied=_after_cpc_geom,
             )
             continue
 
@@ -333,10 +434,41 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
             while True:
                 print("Line widths for ALL plots:")
                 print("  " + _colorize_menu("f: frame/tick widths"))
+                print("  " + _colorize_menu("g: toggle grid lines"))
                 print("  " + _colorize_menu("q: back"))
-                sub = safe_input(colorize_prompt("Choose (f/q): "), cancel_on_interrupt=True).strip().lower()
+                sub = safe_input(colorize_prompt("Choose (f/g/q): "), cancel_on_interrupt=True).strip().lower()
                 if not sub or sub == "q":
                     break
+                if sub == "g":
+                    # Converge all panels to the toggled ref grid state (ry/d pattern).
+                    def _grid_on(ax) -> bool:
+                        try:
+                            for line in ax.get_xgridlines() + ax.get_ygridlines():
+                                if line.get_visible():
+                                    return True
+                        except Exception:
+                            pass
+                        return False
+
+                    new_grid = not _grid_on(ref.ax)
+                    _push_all(undo, panels)
+                    for p in panels:
+                        try:
+                            if new_grid:
+                                p.ax.grid(
+                                    True,
+                                    color="0.85",
+                                    linestyle="-",
+                                    linewidth=0.5,
+                                    alpha=0.7,
+                                )
+                            else:
+                                p.ax.grid(False)
+                        except Exception as exc:
+                            print(f"Grid toggle failed: {exc}")
+                    draw_panels(panels)
+                    print(f"Grid {'enabled' if new_grid else 'disabled'} on all plots.")
+                    continue
                 if sub != "f":
                     print("Unknown option.")
                     continue
@@ -351,9 +483,10 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                         frame_w, tick_w, tick_minor = parse_frame_tick_widths(
                             fw_in, single_minor_scale=1.0, paired_minor_scale=1.0
                         )
-                        frame_w = max(0.1, frame_w)
-                        tick_w = max(0.1, tick_w)
-                        tick_minor = max(0.1, tick_minor)
+                        # Allow 0 (parity with interactive ``l``); reject negatives only.
+                        frame_w = max(0.0, frame_w)
+                        tick_w = max(0.0, tick_w)
+                        tick_minor = max(0.0, tick_minor)
                         _push_all(undo, panels)
                         for p in panels:
                             apply_frame_and_tick_widths(
@@ -386,8 +519,9 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                     break
                 try:
                     num = float(spec)
-                    if num <= 0:
-                        print("Size must be positive.")
+                    # Size 0 hides markers (interactive ``m`` / style parity).
+                    if num < 0:
+                        print("Size must be >= 0.")
                         continue
                 except ValueError:
                     print("Invalid value.")
@@ -403,14 +537,21 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
             print_file_list = cpc_print_file_list_factory(is_multi)
 
             def _set_spine(side: str, color) -> None:
-                cpc_set_spine_color(ref.fig, ref.ax, ref.ax2, side, color)
+                cpc_set_spine_color(
+                    ref.fig,
+                    ref.ax,
+                    ref.ax2,
+                    side,
+                    color,
+                    tick_state=getattr(ref, "tick_state", None),
+                )
 
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cpc_style,
+                apply_cfg=apply_cpc_colors_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_cpc_color_menu(
                     fig=ref.fig,
@@ -465,13 +606,14 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cpc_style,
+                apply_cfg=apply_cpc_wasd_chrome_only,
                 draw_all=lambda: draw_panels(panels),
             )
             continue
 
         if cmd == "h":
-            file_data, _ = cpc_normalize_file_data(ref)
+            file_data, is_multi = cpc_normalize_file_data(ref)
+            print_file_list = cpc_print_file_list_factory(is_multi)
 
             def _toggle_legend() -> None:
                 try:
@@ -495,12 +637,25 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 except Exception as exc:
                     print(f"Error applying legend position: {exc}")
 
+            def _rearrange_legend() -> None:
+                run_cpc_legend_order_menu(
+                    fig=ref.fig,
+                    ax=ref.ax,
+                    ax2=ref.ax2,
+                    file_data=file_data,
+                    is_multi_file=is_multi,
+                    print_file_list=print_file_list,
+                    rebuild_legend=_rebuild_legend,
+                    push_state=noop_snapshot,
+                    safe_input=safe_input,
+                )
+
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cpc_style,
+                apply_cfg=apply_cpc_legend_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_legend_position_menu(
                     fig=ref.fig,
@@ -514,6 +669,7 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                     safe_input=safe_input,
                     colorize_menu=_colorize_menu,
                     colorize_prompt=colorize_prompt,
+                    rearrange_legend=_rearrange_legend if is_multi else None,
                 ),
             )
             continue
@@ -521,12 +677,13 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
         if cmd == "r":
             file_data, is_multi = cpc_normalize_file_data(ref)
             print_file_list = cpc_print_file_list_factory(is_multi)
+            # Labels-only: full style apply would overwrite peer series colors.
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cpc_style,
+                apply_cfg=apply_cpc_labels_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_cpc_rename_menu(
                     fig=ref.fig,
@@ -609,9 +766,31 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
 
         if cmd == "ie":
             _push_all(undo, panels)
-            _invert_efficiency_all(panels)
+            new_inv = _invert_efficiency_all(panels)
             draw_panels(panels)
-            print("Inverted efficiency around 100% on all plots.")
+            print(
+                f"Efficiency {'inverted' if new_inv else 'restored'} around 100% "
+                f"on all plots."
+            )
+            continue
+
+        if cmd == "o":
+            # Overview for each batch panel (reference first, then remaining)
+            for i, p in enumerate(panels):
+                file_data, _ = cpc_normalize_file_data(p)
+                print(f"\n--- Plot {i + 1}: {os.path.basename(p.path)} ---")
+                try:
+                    run_cpc_overview(
+                        file_data,
+                        ax=p.ax,
+                        safe_input=safe_input,
+                        colorize_menu=_colorize_menu,
+                        colorize_prompt=colorize_prompt,
+                        print_file_list=None,
+                        include_hidden=False,
+                    )
+                except Exception as exc:
+                    print(f"Error in overview: {exc}")
             continue
 
         if cmd == "i":
@@ -624,7 +803,9 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 path_prompt="Import style path (.bps/.bpsg, q=cancel): ",
                 load_style=lambda path: _load_style_file(path) or None,
                 apply_style=lambda panel, cfg: _apply_cpc_style(panel, cfg, apply_geometry=True),
-                prepare=lambda _indices: _push_all(undo, panels),
+                prepare=make_style_import_prepare(
+                    undo, panels, _capture_panel, _restore_panel
+                ),
                 on_applied=_on_style_imported,
             )
             continue
@@ -647,6 +828,12 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 cfg["kind"] = "cpc_style_geom" if sub == "psg" else "cpc_style"
                 if sub == "ps":
                     cfg.pop("geometry", None)
+                    fig_block = cfg.get("figure")
+                    if isinstance(fig_block, dict):
+                        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+                            fig_block.pop(key, None)
+                        if not fig_block:
+                            cfg.pop("figure", None)
                 with open(out, "w", encoding="utf-8") as fh:
                     json.dump(cfg, fh, indent=2)
                 panel.fig._last_style_export_path = os.path.abspath(out)  # type: ignore[attr-defined]
@@ -678,6 +865,12 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 cfg["kind"] = "cpc_style_geom" if cmd == "opsg" else "cpc_style"
                 if cmd == "ops":
                     cfg.pop("geometry", None)
+                    fig_block = cfg.get("figure")
+                    if isinstance(fig_block, dict):
+                        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+                            fig_block.pop(key, None)
+                        if not fig_block:
+                            cfg.pop("figure", None)
                 try:
                     with open(path, "w", encoding="utf-8") as fh:
                         json.dump(cfg, fh, indent=2)
@@ -706,7 +899,7 @@ def run_cpc_batch_menu(panels: List[CpcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=lambda panel, cfg: _apply_cpc_style(panel, cfg, apply_geometry=True),
+                apply_cfg=apply_cpc_file_visibility_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: cpc_run_file_visibility_menu(
                     file_data=file_data,

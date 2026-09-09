@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, List, Sequence
 
-from ..common.files import confirm_previous_path
 from ..common.terminal import colorize_prompt, safe_input
 from .batch_io import parse_panel_selection, print_numbered_panels, prompt_panel_indices
 
@@ -55,36 +54,45 @@ def run_batch_overwrite_sessions(
     panels: Sequence[Any],
     save_panel: Callable[[Any, str], None],
 ) -> None:
-    """Overwrite each panel's last (or loaded) session path, with per-panel confirm."""
+    """Overwrite each panel's last (or loaded) session path, with one confirm per panel.
+
+    Batch load seeds ``fig._last_session_save_path`` from ``panel.path``, so asking
+    via ``confirm_previous_path`` and then again via ``panel.path`` used to prompt
+    twice for the same file. Resolve a single candidate, confirm once, then save.
+    """
     for i, panel in enumerate(panels):
         fig = panel_fig(panel)
         fallback = getattr(panel, "path", None)
-        path = confirm_previous_path(
-            fig,
-            "_last_session_save_path",
-            safe_input=safe_input,
-            missing_message=(
-                f"No previous save for [{i + 1}] {os.path.basename(fallback or '?')}."
+        last = getattr(fig, "_last_session_save_path", None)
+
+        candidate = None
+        if last and os.path.isfile(last):
+            candidate = last
+        elif fallback and os.path.isfile(fallback):
+            candidate = fallback
+        elif last:
+            print(f"Previous save file not found: {last}")
+            continue
+        else:
+            print(
+                f"No previous save for [{i + 1}] "
+                f"{os.path.basename(fallback or '?')}."
+            )
+            continue
+
+        # Same path may be both last-save and loaded session — ask once only.
+        yn = safe_input(
+            colorize_prompt(
+                f"Overwrite [{i + 1}] '{os.path.basename(candidate)}'? (y/n): "
             ),
-            missing_file_message="Previous save file not found: {path}",
-            confirm_prompt="Overwrite '{basename}'? (y/n): ",
-            canceled_message=None,
-        )
-        if not path and fallback:
-            yn = safe_input(
-                colorize_prompt(
-                    f"Overwrite loaded session [{i + 1}] '{os.path.basename(fallback)}'? (y/n): "
-                ),
-                cancel_on_interrupt=True,
-            ).strip().lower()
-            if yn == "y":
-                path = fallback
-        if not path:
+            cancel_on_interrupt=True,
+        ).strip().lower()
+        if yn != "y":
             continue
         try:
-            save_panel(panel, path)
-            fig._last_session_save_path = os.path.abspath(path)  # type: ignore[attr-defined]
-            print(f"Overwritten [{i + 1}] {os.path.basename(path)}")
+            save_panel(panel, candidate)
+            fig._last_session_save_path = os.path.abspath(candidate)  # type: ignore[attr-defined]
+            print(f"Overwritten [{i + 1}] {os.path.basename(candidate)}")
         except Exception as exc:
             print(f"Overwrite failed for [{i + 1}]: {exc}")
 

@@ -258,6 +258,49 @@ def test_dump_load_preserves_mathtext_fontset(session_path, fake_args):
     assert plt.rcParams["mathtext.fontset"] == "stix"
 
 
+def test_stack_offset_session_does_not_double_y(session_path, fake_args):
+    """Stacked sessions must store offset-free orig_y; reload must not double offsets (s/b)."""
+    x = np.linspace(0.0, 10.0, 50)
+    y0 = np.sin(x)
+    y1 = np.cos(x)
+    off0, off1 = 0.0, -1.5
+    fig, ax = plt.subplots()
+    ax.plot(x, y0 + off0)
+    ax.plot(x, y1 + off1)
+    path = session_path("xy_stack_offsets.pkl")
+    # Correct dump: orig_y without offsets (matches pipeline fix)
+    S.dump_session(
+        path, fig=fig, ax=ax,
+        x_data_list=[x, x], y_data_list=[y0 + off0, y1 + off1],
+        orig_y=[y0, y1],
+        x_full_list=[x, x], raw_y_full_list=[y0, y1],
+        offsets_list=[off0, off1], labels=["a", "b"], delta=0.0, args=fake_args,
+        tick_state={}, skip_confirm=True,
+    )
+    res = S.load_xy_session(path)
+    assert res is not None
+    _fig2, _ax2, mk = res
+    assert_allclose(mk["y_data_list"][0], y0 + off0)
+    assert_allclose(mk["y_data_list"][1], y1 + off1)
+    assert_allclose(mk["orig_y"][0], y0)
+    assert_allclose(mk["orig_y"][1], y1)
+
+    # Backward compat: old dumps with offset-included orig_y must still load correctly
+    path_old = session_path("xy_stack_offsets_legacy.pkl")
+    S.dump_session(
+        path_old, fig=fig, ax=ax,
+        x_data_list=[x, x], y_data_list=[y0 + off0, y1 + off1],
+        orig_y=[y0 + off0, y1 + off1],  # buggy legacy shape
+        x_full_list=[x, x], raw_y_full_list=[y0, y1],
+        offsets_list=[off0, off1], labels=["a", "b"], delta=0.0, args=fake_args,
+        tick_state={}, skip_confirm=True,
+    )
+    res2 = S.load_xy_session(path_old)
+    assert res2 is not None
+    _f3, _a3, mk2 = res2
+    assert_allclose(mk2["y_data_list"][1], y1 + off1)
+
+
 def test_export_import_preserves_style(session_path, fake_args):
     """A .bpsg style+geometry file applied to a fresh figure restores style."""
     fig, ax, x_full, y_full, x_disp, y_disp = _build_xy_figure()

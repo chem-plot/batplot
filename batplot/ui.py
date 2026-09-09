@@ -33,7 +33,18 @@ from matplotlib.ticker import (  # type: ignore[import]
     NullFormatter,
     NullLocator,
 )
-from .plot_modes.common.terminal import safe_input
+from .plot_modes.common.size_spec import (
+    canvas_applied_msg,
+    canvas_size_prompt,
+    current_canvas_status,
+    current_plot_frame_status,
+    fmt_inches_pair,
+    is_size_quit_token,
+    parse_size_spec,
+    plot_frame_applied_msg,
+    plot_frame_size_prompt,
+)
+from .plot_modes.common.terminal import colorize_prompt, safe_input
 import matplotlib.transforms as mtransforms  # type: ignore[import]
 
 _DEBUG_SPINE_COLOR = os.environ.get("BATPLOT_DEBUG_SPINE_COLOR", "").strip().lower() in ("1", "true", "yes")
@@ -191,26 +202,165 @@ def _visible_tick_sides_on_axis(ax, axis) -> dict[str, bool]:
     }
 
 
+def _tick_state_from_live_artists(ax) -> dict:
+    """Infer flat tick_state from live major tick/label visibility.
+
+    Needed when an axis (e.g. operando EC after ``tick_right()``) has never
+    seeded ``_saved_tick_state`` — hard-coded left/bottom defaults would make
+    ``k`` skip coloring the actual right ticks.
+    """
+    def _side_on(axis, use_tick1: bool) -> tuple[bool, bool]:
+        try:
+            majors = axis.get_major_ticks()
+        except Exception:
+            majors = []
+        if not majors:
+            return False, False
+        line_attr = "tick1line" if use_tick1 else "tick2line"
+        label_attr = "label1" if use_tick1 else "label2"
+        ticks_on = any(
+            getattr(t, line_attr, None) is not None and getattr(t, line_attr).get_visible()
+            for t in majors
+        )
+        labels_on = any(
+            getattr(t, label_attr, None) is not None and getattr(t, label_attr).get_visible()
+            for t in majors
+        )
+        return bool(ticks_on), bool(labels_on)
+
+    b_t, b_l = _side_on(ax.xaxis, True)
+    t_t, t_l = _side_on(ax.xaxis, False)
+    l_t, l_l = _side_on(ax.yaxis, True)
+    r_t, r_l = _side_on(ax.yaxis, False)
+    if not any((b_t, t_t, l_t, r_t)):
+        # Fresh axis before ticks exist — conventional single-axis defaults.
+        return {
+            "b_ticks": True,
+            "b_labels": True,
+            "t_ticks": False,
+            "t_labels": False,
+            "l_ticks": True,
+            "l_labels": True,
+            "r_ticks": False,
+            "r_labels": False,
+            "bx": True,
+            "tx": False,
+            "ly": True,
+            "ry": False,
+        }
+    return {
+        "b_ticks": b_t,
+        "b_labels": b_l,
+        "t_ticks": t_t,
+        "t_labels": t_l,
+        "l_ticks": l_t,
+        "l_labels": l_l,
+        "r_ticks": r_t,
+        "r_labels": r_l,
+        "bx": bool(b_t and b_l),
+        "tx": bool(t_t and t_l),
+        "ly": bool(l_t and l_l),
+        "ry": bool(r_t and r_l),
+    }
+
+
 def _resolve_tick_state(ax, tick_state=None) -> dict:
-    if isinstance(tick_state, dict) and tick_state:
+    # Empty dict is authoritative (do not fall through to hard-coded defaults).
+    if isinstance(tick_state, dict):
         return dict(tick_state)
     saved = getattr(ax, "_saved_tick_state", None)
-    if isinstance(saved, dict) and saved:
+    if isinstance(saved, dict):
         return dict(saved)
-    return {
-        "b_ticks": True,
-        "b_labels": True,
-        "t_ticks": False,
-        "t_labels": False,
-        "l_ticks": True,
-        "l_labels": True,
-        "r_ticks": False,
-        "r_labels": False,
-        "bx": True,
-        "tx": False,
-        "ly": True,
-        "ry": False,
-    }
+    return _tick_state_from_live_artists(ax)
+
+
+def _is_colorbar_axes(ax) -> bool:
+    """Best-effort skip of colorbar axes when counting peer panes."""
+    if ax is None:
+        return True
+    try:
+        if getattr(ax, "_colorbar", None) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        # matplotlib Colorbar stores ``ax`` / ``cax``; parents often set this.
+        if getattr(ax, "_colorcontainer", None) is not None:
+            return True
+    except Exception:
+        pass
+    label = str(getattr(ax, "get_label", lambda: "")() or "")
+    return label.startswith("<colorbar")
+
+
+def _is_secondary_axis(ax) -> bool:
+    """EC dual ions SecondaryAxis is chrome of the same pane, not a peer pane."""
+    if ax is None:
+        return False
+    try:
+        if type(ax).__name__ == "SecondaryAxis":
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(getattr(ax, "_parent", None) is not None and hasattr(ax, "set_alignment"))
+    except Exception:
+        return False
+
+
+def _figure_peer_spine_axes(fig, ax=None) -> list:
+    """Other independent plot axes on ``fig`` (operando EC / CPC twin peers).
+
+    Excludes colorbars and SecondaryAxis (same logical pane as primary).
+    SecondaryAxis itself has no peer-pane isolation (it shares the primary pane).
+    """
+    if fig is None:
+        return []
+    if _is_secondary_axis(ax):
+        return []
+    peers = []
+    for other in list(getattr(fig, "axes", None) or []):
+        if other is None or other is ax:
+            continue
+        if _is_colorbar_axes(other) or _is_secondary_axis(other):
+            continue
+        if getattr(other, "spines", None) is None:
+            continue
+        peers.append(other)
+    return peers
+
+
+def _multi_pane_spine_figure(fig, ax=None) -> bool:
+    """True when spine colors must stay per-axis (never hitchhike via fig store).
+
+    Triggers when:
+    - more than one *independent* axis is registered for the draw hook, or
+    - the figure already has another plot axis (operando+EC, CPC twin, …),
+    - any peer already holds a non-empty per-axis spine-color store.
+
+    SecondaryAxis / colorbars do not count as peer panes (EC dual ions chrome).
+    """
+    if fig is None:
+        return False
+    hook = [
+        a
+        for a in (getattr(fig, "_bp_spine_hook_axes", None) or [])
+        if a is not None and not _is_colorbar_axes(a) and not _is_secondary_axis(a)
+    ]
+    if len(hook) > 1:
+        return True
+    if _figure_peer_spine_axes(fig, ax):
+        return True
+    colored = 0
+    for a in list(getattr(fig, "axes", None) or []):
+        if _is_colorbar_axes(a) or _is_secondary_axis(a):
+            continue
+        store = getattr(a, "_bp_spine_side_colors", None)
+        if isinstance(store, dict) and store:
+            colored += 1
+            if colored > 1:
+                return True
+    return False
 
 
 def _side_ticks_on(ts: dict, side: str) -> bool:
@@ -262,6 +412,114 @@ def get_fig_spine_colors(fig) -> dict[str, str]:
     return merged
 
 
+def resolve_spine_dump_color(ax, side: str, fig=None):
+    """Resolve a spine color for p/i/s/b dumps (store preferred over edgecolor).
+
+    Order: per-axis ``_bp_spine_side_colors`` → mode fig stores → live edgecolor.
+    Survives ``tick_params`` wiping artist edgecolor while stores still hold ``k``.
+    Old sessions without stores still dump via edgecolor (BC).
+    """
+    if side not in ("top", "bottom", "left", "right"):
+        return None
+    ax_store = getattr(ax, "_bp_spine_side_colors", None) if ax is not None else None
+    if isinstance(ax_store, dict) and ax_store.get(side) is not None:
+        try:
+            return _hex_color(ax_store[side])
+        except Exception:
+            return ax_store[side]
+    if fig is not None:
+        for attr in (
+            "_cpc_spine_colors",
+            "_xy_spine_colors",
+            "_histo_spine_colors",
+            "_bp_spine_side_colors",
+        ):
+            store = getattr(fig, attr, None)
+            if isinstance(store, dict) and store.get(side) is not None:
+                try:
+                    return _hex_color(store[side])
+                except Exception:
+                    return store[side]
+    try:
+        sp = ax.spines.get(side) if ax is not None else None
+        if sp is not None:
+            return sp.get_edgecolor()
+    except Exception:
+        pass
+    return None
+
+
+def _force_ec_dual_secax_tick_colors(sec, color) -> None:
+    """Color SecondaryAxis x ticks/labels via tick_params + artists.
+
+    SecondaryAxis never shows bottom ticks, so axis-wide ``colors=`` is safe.
+    Bypasses ``_sync_mpl_tick_params_for_side`` which early-returns when the
+    *parent* tick_state has both bottom and top majors on (normal dual GC).
+    """
+    hex_c = _hex_color(color)
+    try:
+        sec.tick_params(axis="x", which="both", colors=hex_c, labelcolor=hex_c)
+    except Exception:
+        pass
+    _apply_side_color_once(sec, "top", hex_c)
+    for kw_name in ("_major_tick_kw", "_minor_tick_kw"):
+        kw = getattr(sec.xaxis, kw_name, None)
+        if isinstance(kw, dict):
+            kw["color"] = hex_c
+            kw["labelcolor"] = hex_c
+    store = getattr(sec.xaxis, "_bp_side_tick_colors", None)
+    if not isinstance(store, dict):
+        store = {}
+    store["top"] = hex_c
+    sec.xaxis._bp_side_tick_colors = store  # type: ignore[attr-defined]
+
+
+def _finalize_secondary_xaxis_top_color(
+    fig,
+    colors: dict[str, str] | None,
+    *,
+    sides=None,
+    tick_state=None,
+) -> None:
+    """Re-apply stored top color onto EC dual SecondaryAxis (spine+ticks+title)."""
+    if not colors or "top" not in colors:
+        return
+    if sides is not None and "top" not in sides:
+        return
+    sec = getattr(fig, "_xaxis_secondary", None)
+    if sec is None:
+        return
+    hex_top = _hex_color(colors["top"])
+    try:
+        fig._bp_spine_secondary_ax = sec  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    if sec.spines.get("top") is not None:
+        _force_ec_dual_secax_tick_colors(sec, hex_top)
+        # Prefer distinct stored title color when present
+        title_c = getattr(sec, "_bp_top_title_color", None) or hex_top
+        try:
+            sec.xaxis.label.set_color(_hex_color(title_c))
+        except Exception:
+            pass
+    # Primary top spine is still drawn under dual mode; keep it matched.
+    # Do not push axis-wide x tick colors on primary (bottom ticks stay their color).
+    parent = getattr(sec, "_parent", None)
+    if parent is not None and parent.spines.get("top") is not None:
+        try:
+            parent.spines["top"].set_edgecolor(hex_top)
+        except Exception:
+            pass
+        try:
+            p_store = getattr(parent, "_bp_spine_side_colors", None)
+            if not isinstance(p_store, dict):
+                p_store = {}
+            p_store["top"] = hex_top
+            parent._bp_spine_side_colors = p_store  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 def finalize_spine_colors(
     fig,
     ax,
@@ -280,6 +538,11 @@ def finalize_spine_colors(
                 for k, v in ax_store.items()
                 if v is not None and str(k) in ("top", "bottom", "left", "right")
             }
+        elif _multi_pane_spine_figure(fig, ax):
+            # Dual-pane (operando+EC): never paint from fig store onto an axis
+            # that has no per-axis colors — that hitchhikes peer ``k`` edits
+            # (e.g. EC ``d:red`` must not recolor contour right).
+            return
         else:
             colors = get_fig_spine_colors(fig)
     if not colors:
@@ -295,6 +558,8 @@ def finalize_spine_colors(
         _sync_mpl_tick_params_for_side(ax, side, hex_c, ts)
         _apply_side_color_once(ax, side, hex_c)
         _store_and_sync_tick_kw(ax, side, hex_c)
+    # EC dual x-axis (ions): top colors live on SecondaryAxis as well as primary.
+    _finalize_secondary_xaxis_top_color(fig, colors, sides=sides, tick_state=tick_state)
     ensure_spine_color_draw_hook(fig, ax)
     if draw:
         _refresh_canvas_after_spine_color(fig)
@@ -307,6 +572,7 @@ def finalize_spine_colors(
                 continue
             _apply_side_color_once(ax, side, hex_c)
             _sync_mpl_tick_params_for_side(ax, side, hex_c, ts)
+        _finalize_secondary_xaxis_top_color(fig, colors, sides=sides, tick_state=tick_state)
 
 
 def finalize_spine_colors_cpc(
@@ -362,7 +628,36 @@ def finalize_spine_colors_for_axes(
     *,
     draw: bool = False,
 ) -> None:
-    """Re-apply spine colors on multiple axes (e.g. operando + EC panel)."""
+    """Re-apply spine colors on multiple axes (e.g. operando + EC panel).
+
+    Uses each axis's per-axis store only — never the shared fig store — so
+    coloring one pane cannot hitchhike onto another.
+    """
+    # Register every pane first so multi-pane isolation is active.
+    for entry in axis_entries:
+        if not entry:
+            continue
+        curr_ax = entry[0] if isinstance(entry, tuple) else entry
+        if curr_ax is not None:
+            register_spine_color_axis(fig, curr_ax)
+
+    def _one(curr_ax, ts) -> None:
+        if curr_ax is None:
+            return
+        ax_store = getattr(curr_ax, "_bp_spine_side_colors", None)
+        if not isinstance(ax_store, dict) or not ax_store:
+            return
+        colors = {
+            str(k): _hex_color(v)
+            for k, v in ax_store.items()
+            if v is not None and str(k) in ("top", "bottom", "left", "right")
+        }
+        if not colors:
+            return
+        finalize_spine_colors(
+            fig, curr_ax, tick_state=ts, colors=colors, draw=False
+        )
+
     for entry in axis_entries:
         if not entry:
             continue
@@ -370,9 +665,7 @@ def finalize_spine_colors_for_axes(
             curr_ax, ts = entry[0], entry[1] if len(entry) > 1 else None
         else:
             curr_ax, ts = entry, None
-        if curr_ax is None:
-            continue
-        finalize_spine_colors(fig, curr_ax, tick_state=ts, draw=False)
+        _one(curr_ax, ts)
     if draw:
         _refresh_canvas_after_spine_color(fig)
         for entry in axis_entries:
@@ -382,9 +675,7 @@ def finalize_spine_colors_for_axes(
                 curr_ax, ts = entry[0], entry[1] if len(entry) > 1 else None
             else:
                 curr_ax, ts = entry, None
-            if curr_ax is None:
-                continue
-            finalize_spine_colors(fig, curr_ax, tick_state=ts, draw=False)
+            _one(curr_ax, ts)
 
 
 def _collect_visible_tick_line_colors(ax, side: str) -> list[str]:
@@ -415,7 +706,12 @@ def _collect_visible_tick_line_colors(ax, side: str) -> list[str]:
 
 
 def _store_and_sync_tick_kw(ax, side: str, color) -> None:
-    """Persist per-side tick color and sync axis tick kw when one side owns the axis."""
+    """Persist per-side tick color and sync axis tick kw when one side owns the axis.
+
+    Also syncs kw when *no* side is currently visible (e.g. color via ``k`` before
+    ``t``→``w2``), so newly enabled ticks inherit the stored color instead of
+    staying matplotlib default black.
+    """
     axis = _axis_for_spine_side(ax, side)
     hex_color = _hex_color(color)
     store = getattr(axis, "_bp_side_tick_colors", None)
@@ -426,7 +722,8 @@ def _store_and_sync_tick_kw(ax, side: str, color) -> None:
 
     visible = _visible_tick_sides_on_axis(ax, axis)
     active_sides = [name for name, on in visible.items() if on]
-    if len(active_sides) == 1 and active_sides[0] == side:
+    # Sole visible side, OR nothing visible yet (pending enable) → safe to set axis kw
+    if not active_sides or (len(active_sides) == 1 and active_sides[0] == side):
         for kw_name in ("_major_tick_kw", "_minor_tick_kw"):
             kw = getattr(axis, kw_name, None)
             if isinstance(kw, dict):
@@ -434,7 +731,7 @@ def _store_and_sync_tick_kw(ax, side: str, color) -> None:
                 kw["labelcolor"] = color
         _debug_spine(
             f"[DEBUG spine]   synced {side} -> axis tick kw color={hex_color} "
-            f"(sole active side on axis)"
+            f"(active={active_sides or 'none-pending'})"
         )
 
 
@@ -448,10 +745,19 @@ def _reapply_all_stored_spine_colors(fig, ax) -> None:
         finalize_spine_colors_cpc(fig, ax, ax2)
     else:
         finalize_spine_colors(fig, ax)
+    # Multi-pane (operando+EC): re-apply every registered axis store.
+    for other in list(getattr(fig, "_bp_spine_hook_axes", None) or []):
+        if other is None or other is ax:
+            continue
+        try:
+            finalize_spine_colors(fig, other, draw=False)
+        except Exception:
+            pass
 
 
 def ensure_spine_color_draw_hook(fig, ax) -> None:
     """After each canvas draw, re-apply stored spine/tick colors if mpl reset them."""
+    register_spine_color_axis(fig, ax)
     if getattr(fig, "_bp_spine_draw_cid", None) is not None:
         return
 
@@ -461,13 +767,46 @@ def ensure_spine_color_draw_hook(fig, ax) -> None:
         if getattr(fig, "_bp_spine_reapply_busy", False):
             return
         colors = _get_fig_spine_color_store(fig)
-        if not colors:
+        hook_axes = list(getattr(fig, "_bp_spine_hook_axes", None) or [])
+        if ax not in hook_axes:
+            hook_axes.append(ax)
+        if not colors and not any(
+            isinstance(getattr(a, "_bp_spine_side_colors", None), dict)
+            for a in hook_axes
+        ):
             return
         mismatched = []
-        for side, hex_c in colors.items():
-            lines = _collect_visible_tick_line_colors(ax, side)
-            if lines and any(c != _hex_color(hex_c) for c in lines):
-                mismatched.append(side)
+        multi = _multi_pane_spine_figure(fig, ax)
+        for curr in hook_axes:
+            if curr is None:
+                continue
+            curr_colors = getattr(curr, "_bp_spine_side_colors", None)
+            if not isinstance(curr_colors, dict) or not curr_colors:
+                # Multi-pane: empty per-axis store means "no colors on this pane".
+                if multi:
+                    continue
+                curr_colors = colors
+            for side, hex_c in (curr_colors or {}).items():
+                want = _hex_color(hex_c)
+                try:
+                    sp = curr.spines.get(side)
+                    if sp is not None and _hex_color(sp.get_edgecolor()) != want:
+                        mismatched.append((curr, side))
+                        break
+                except Exception:
+                    pass
+                lines = _collect_visible_tick_line_colors(curr, side)
+                if lines and any(c != want for c in lines):
+                    mismatched.append((curr, side))
+                    break
+            # Also check EC dual secondary tick lines
+            sec = getattr(fig, "_xaxis_secondary", None)
+            if sec is not None and "top" in (curr_colors or colors or {}):
+                top_c = (curr_colors or colors).get("top")
+                if top_c:
+                    sec_lines = _collect_visible_tick_line_colors(sec, "top")
+                    if sec_lines and any(c != _hex_color(top_c) for c in sec_lines):
+                        mismatched.append((sec, "top"))
         if not mismatched:
             return
         fig._bp_spine_reapply_busy = True  # type: ignore[attr-defined]
@@ -644,17 +983,40 @@ def _apply_side_color_once(ax, side: str, color) -> None:
 
     if side == "top":
         _set_tick_side_color(ax.xaxis, use_tick1=False)
+        # Prefer explicit top-title color (style/session may differ from spine).
+        title_c = getattr(ax, "_bp_top_title_color", None)
+        if title_c is None:
+            title_c = color
         try:
-            ax._stored_top_xlabel_color = color
+            ax._stored_top_xlabel_color = title_c
         except Exception:
             pass
         art = getattr(ax, "_top_xlabel_artist", None)
         if art is not None:
             try:
-                art.set_color(color)
+                art.set_color(title_c)
                 _debug_spine("[DEBUG spine]   top title (_top_xlabel_artist): set_color OK")
             except Exception as e:
                 _debug_spine(f"[DEBUG spine]   top title: {e}")
+        # CPC uses `_top_xlabel_text` for the top cycle-axis title.
+        art_txt = getattr(ax, "_top_xlabel_text", None)
+        if art_txt is not None:
+            try:
+                art_txt.set_color(title_c)
+                _debug_spine("[DEBUG spine]   top title (_top_xlabel_text): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   top title (_top_xlabel_text): {e}")
+        # SecondaryAxis / label-on-top: title is xaxis.label (not a duplicate artist).
+        try:
+            label_pos = ax.xaxis.get_label_position()
+        except Exception:
+            label_pos = "bottom"
+        if art is None or str(label_pos) == "top":
+            try:
+                ax.xaxis.label.set_color(title_c)
+                _debug_spine("[DEBUG spine]   top title (xaxis.label): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   top title (xaxis.label): {e}")
     elif side == "bottom":
         _set_tick_side_color(ax.xaxis, use_tick1=True)
         try:
@@ -711,12 +1073,128 @@ def _refresh_canvas_after_spine_color(fig) -> None:
             pass
 
 
-def set_spine_side_color(ax, side: str, color, fig=None, tick_state=None) -> None:
-    """Set color for one side: spine, ticks, labels, and axis title."""
+def _sync_ec_dual_top_color(
+    fig,
+    color,
+    *,
+    skip_ax=None,
+    tick_state=None,
+    title_color=None,
+) -> None:
+    """Keep EC dual SecondaryAxis top (spine/ticks/title) and primary top spine matched.
+
+    Called from :func:`set_spine_side_color` so style import, session load, undo,
+    and the ``k`` menu all share one path.
+
+    ``skip_ax`` only skips duplicate spine/title artist work — tick mark kw
+    on SecondaryAxis is **always** forced so GUI redraw cannot leave black marks
+    after ``k``→``w`` (which colors secax first and would otherwise skip force).
+    """
+    sec = getattr(fig, "_xaxis_secondary", None)
+    if sec is None:
+        return
+    hex_c = _hex_color(color)
+    title_hex = _hex_color(title_color) if title_color is not None else hex_c
+    try:
+        fig._bp_spine_secondary_ax = sec  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Always force SecondaryAxis tick marks/kw (survives canvas.draw rebuilds).
+    _force_ec_dual_secax_tick_colors(sec, hex_c)
+    register_spine_color_axis(fig, sec)
+    if sec is not skip_ax:
+        try:
+            sec._bp_top_title_color = title_hex  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            sec.xaxis.label.set_color(title_hex)
+        except Exception:
+            pass
+        sec_store = getattr(sec, "_bp_spine_side_colors", None)
+        if not isinstance(sec_store, dict):
+            sec_store = {}
+        sec_store["top"] = hex_c
+        sec._bp_spine_side_colors = sec_store  # type: ignore[attr-defined]
+    else:
+        # Still persist store + title color when k colored secax directly
+        try:
+            sec._bp_top_title_color = title_hex  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        sec_store = getattr(sec, "_bp_spine_side_colors", None)
+        if not isinstance(sec_store, dict):
+            sec_store = {}
+        sec_store["top"] = hex_c
+        sec._bp_spine_side_colors = sec_store  # type: ignore[attr-defined]
+    parent = getattr(sec, "_parent", None)
+    if parent is not None and parent is not skip_ax:
+        try:
+            if parent.spines.get("top") is not None:
+                parent.spines["top"].set_edgecolor(hex_c)
+        except Exception:
+            pass
+        try:
+            parent._stored_top_xlabel_color = title_hex
+        except Exception:
+            pass
+        p_store = getattr(parent, "_bp_spine_side_colors", None)
+        if not isinstance(p_store, dict):
+            p_store = {}
+        p_store["top"] = hex_c
+        parent._bp_spine_side_colors = p_store  # type: ignore[attr-defined]
+        register_spine_color_axis(fig, parent)
+
+
+def register_spine_color_axis(fig, ax) -> None:
+    """Track axes that need spine-color reapply after canvas draw (multi-pane)."""
+    if fig is None or ax is None:
+        return
+    axes = getattr(fig, "_bp_spine_hook_axes", None)
+    if not isinstance(axes, list):
+        axes = []
+    if ax not in axes:
+        axes.append(ax)
+    fig._bp_spine_hook_axes = axes  # type: ignore[attr-defined]
+    # Once isolation is active, drop shared fig store so old peer colors cannot
+    # paint an empty pane via finalize / draw-hook fallback.
+    # Never clear when registering SecondaryAxis/colorbar chrome of one pane.
+    if (
+        not _is_secondary_axis(ax)
+        and not _is_colorbar_axes(ax)
+        and _multi_pane_spine_figure(fig, ax)
+    ):
+        try:
+            fig._bp_spine_side_colors = {}  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+def set_spine_side_color(
+    ax,
+    side: str,
+    color,
+    fig=None,
+    tick_state=None,
+    *,
+    title_color=None,
+) -> None:
+    """Set color for one side: spine, ticks, labels, and axis title.
+
+    ``title_color`` (optional): top-axis title only. Defaults to ``color`` so the
+    ``k`` menu keeps spine/ticks/title matched. Style/session restore may pass a
+    distinct title when ``label_color`` ≠ ``spine_color`` (backward compatible).
+    """
     ts = _resolve_tick_state(ax, tick_state)
+    hex_c = _hex_color(color)
+    title_hex = _hex_color(title_color) if title_color is not None else hex_c
+    if side == "top":
+        try:
+            ax._bp_top_title_color = title_hex  # type: ignore[attr-defined]
+        except Exception:
+            pass
     _apply_side_color_once(ax, side, color)
     _sync_mpl_tick_params_for_side(ax, side, color, ts)
-    hex_c = _hex_color(color)
     # Per-axis store so dual-panel figures (operando+EC) do not overwrite each other.
     ax_store = getattr(ax, "_bp_spine_side_colors", None)
     if not isinstance(ax_store, dict):
@@ -724,16 +1202,36 @@ def set_spine_side_color(ax, side: str, color, fig=None, tick_state=None) -> Non
     ax_store[side] = hex_c
     ax._bp_spine_side_colors = ax_store  # type: ignore[attr-defined]
     if fig is not None:
-        store = getattr(fig, "_bp_spine_side_colors", None)
-        if not isinstance(store, dict):
-            store = {}
-        store[side] = hex_c
-        fig._bp_spine_side_colors = store  # type: ignore[attr-defined]
+        register_spine_color_axis(fig, ax)
+        # Soft fig-level fallback ONLY for single-axis figures (XY/histo/solo EC).
+        # Multi-pane (operando+EC): per-axis store is authoritative — writing the
+        # fig store lets finalize/draw-hook hitchhike colors onto the peer pane.
+        if not _multi_pane_spine_figure(fig, ax):
+            store = getattr(fig, "_bp_spine_side_colors", None)
+            if not isinstance(store, dict):
+                store = {}
+            store[side] = hex_c
+            fig._bp_spine_side_colors = store  # type: ignore[attr-defined]
+        else:
+            # Ensure stale shared entries cannot hitchhike onto peers.
+            try:
+                fig._bp_spine_side_colors = {}  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        # Dual GC/ions: coloring either primary or secondary top syncs both.
+        if side == "top":
+            _sync_ec_dual_top_color(
+                fig, hex_c, skip_ax=ax, tick_state=ts, title_color=title_hex,
+            )
         ensure_spine_color_draw_hook(fig, ax)
         _refresh_canvas_after_spine_color(fig)
         _apply_side_color_once(ax, side, color)
         _sync_mpl_tick_params_for_side(ax, side, color, ts)
         _store_and_sync_tick_kw(ax, side, color)
+        if side == "top":
+            _sync_ec_dual_top_color(
+                fig, hex_c, skip_ax=ax, tick_state=ts, title_color=title_hex,
+            )
 
 
 def apply_font_changes(ax, fig, label_text_objects: List, normalize_label_text, new_size=None, new_family=None, new_weight=None):
@@ -1459,51 +1957,46 @@ def ensure_text_visibility(fig, ax, label_text_objects: List, max_iterations=4, 
     return True
 
 
-def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args, update_labels_func):
+def resize_plot_frame(
+    fig,
+    ax,
+    y_data_list: List,
+    label_text_objects: List,
+    args,
+    update_labels_func,
+    *,
+    on_before_change=None,
+):
+    """Interactive plot-frame resize. ``on_before_change`` runs once before the first apply."""
+    _pushed = False
+
+    def _maybe_push():
+        nonlocal _pushed
+        if on_before_change is not None and not _pushed:
+            try:
+                on_before_change()
+            except Exception:
+                pass
+            _pushed = True
+
     while True:
             try:
                 fig_w_in, fig_h_in = fig.get_size_inches()
                 ax_bbox = ax.get_position()
                 cur_ax_w_in = ax_bbox.width * fig_w_in
                 cur_ax_h_in = ax_bbox.height * fig_h_in
-                print(f"Current canvas: {fig_w_in:.2f} x {fig_h_in:.2f} in")
-                print(f"Current plot frame:     {cur_ax_w_in:.2f} x {cur_ax_h_in:.2f} in (W x H)")
+                print(current_canvas_status(fig_w_in, fig_h_in))
+                print(current_plot_frame_status(cur_ax_w_in, cur_ax_h_in))
                 spec = safe_input(
-                    "Enter new plot frame size (e.g. '6 4', '6x4', 'w=6 h=4', 'scale=1.2', single width, q=back): ",
+                    colorize_prompt(plot_frame_size_prompt()),
                     cancel_on_interrupt=True,
                 ).strip().lower()
-                if not spec or spec == 'q':
+                if is_size_quit_token(spec):
                     return
-                new_w_in, new_h_in = cur_ax_w_in, cur_ax_h_in
-                if 'scale=' in spec:
-                    try:
-                        factor = float(spec.split('scale=')[1].strip())
-                        new_w_in = cur_ax_w_in * factor
-                        new_h_in = cur_ax_h_in * factor
-                    except Exception:
-                        print("Invalid scale factor.")
-                        continue
-                else:
-                    parts = spec.replace('x', ' ').split()
-                    kv = {}; numbers = []
-                    for p in parts:
-                        if '=' in p:
-                            k, v = p.split('=', 1)
-                            kv[k.strip()] = v.strip()
-                        else:
-                            numbers.append(p)
-                    if kv:
-                        if 'w' in kv: new_w_in = float(kv['w'])
-                        if 'h' in kv: new_h_in = float(kv['h'])
-                    elif len(numbers) == 2:
-                        new_w_in, new_h_in = float(numbers[0]), float(numbers[1])
-                    elif len(numbers) == 1:
-                        new_w_in = float(numbers[0])
-                        aspect = cur_ax_h_in / cur_ax_w_in if cur_ax_w_in else 1.0
-                        new_h_in = new_w_in * aspect
-                    else:
-                        print("Could not parse specification.")
-                        continue
+                parsed = parse_size_spec(spec, cur_ax_w_in, cur_ax_h_in)
+                if parsed is None:
+                    continue
+                new_w_in, new_h_in = parsed
                 req_w_in, req_h_in = new_w_in, new_h_in
                 # Apply exact requested size without any clamping
                 # Only enforce minimum size to prevent division by zero
@@ -1520,12 +2013,17 @@ def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args
                     if abs(pw - new_w_in) < tol and abs(ph - new_h_in) < tol:
                         same_axes = True
                 if same_axes and hasattr(fig, '_last_user_margins'):
+                    # No-op size: do not push a junk undo tip.
                     left, bottom, w, h = fig._last_user_margins
                     ax.set_position([left, bottom, w, h])
                     update_labels_func(ax, y_data_list, label_text_objects, args.stack)
                     fig.canvas.draw_idle()
-                    print(f"Plot frame unchanged ({new_w_in:.2f} x {new_h_in:.2f} in); layout preserved.")
+                    print(
+                        f"Plot frame unchanged ({fmt_inches_pair(new_w_in, new_h_in)}); "
+                        "layout preserved."
+                    )
                     continue
+                _maybe_push()
                 left = (1 - w_frac) / 2
                 bottom = (1 - h_frac) / 2
                 # Use ax.set_position so it works for both standalone subplots and embedded add_axes
@@ -1534,7 +2032,11 @@ def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args
                 fig._last_user_axes_inches = (new_w_in, new_h_in)
                 fig._last_user_margins = (left, bottom, w_frac, h_frac)
                 # Show the requested size (which is what was applied)
-                print(f"Plot frame set to {req_w_in:.2f} x {req_h_in:.2f} in inside canvas {fig_w_in:.2f} x {fig_h_in:.2f} in.")
+                print(
+                    plot_frame_applied_msg(
+                        req_w_in, req_h_in, canvas=(fig_w_in, fig_h_in)
+                    )
+                )
             except KeyboardInterrupt:
                 print("Canceled.")
                 return
@@ -1542,51 +2044,78 @@ def resize_plot_frame(fig, ax, y_data_list: List, label_text_objects: List, args
                 print(f"Error resizing plot frame: {e}")
 
 
-def resize_canvas(fig, ax):
+def sync_figure_geometry_caches(fig, ax) -> None:
+    """Align ``g``-menu no-op caches with the live canvas/frame.
+
+    Call after style/undo/import restores ``canvas_size`` + ``axes_fraction`` so
+    a later canvas/frame resize does not treat a stale size as "unchanged".
+    """
+    try:
+        cw, ch = fig.get_size_inches()
+        fig._last_canvas_size = (float(cw), float(ch))
+    except Exception:
+        pass
+    try:
+        pos = ax.get_position()
+        cw, ch = fig.get_size_inches()
+        fig._last_user_margins = (
+            float(pos.x0),
+            float(pos.y0),
+            float(pos.width),
+            float(pos.height),
+        )
+        fig._last_user_axes_inches = (
+            float(pos.width) * float(cw),
+            float(pos.height) * float(ch),
+        )
+    except Exception:
+        pass
+
+
+def resize_canvas(fig, ax, *, on_before_change=None):
+    """Interactive canvas resize. ``on_before_change`` runs once before the first apply."""
+    _pushed = False
+
+    def _maybe_push():
+        nonlocal _pushed
+        if on_before_change is not None and not _pushed:
+            try:
+                on_before_change()
+            except Exception:
+                pass
+            _pushed = True
+
     while True:
             try:
                 cur_w, cur_h = fig.get_size_inches()
                 bbox_before = ax.get_position()
                 frame_w_in_before = bbox_before.width * cur_w
                 frame_h_in_before = bbox_before.height * cur_h
-                print(f"Current canvas size: {cur_w:.2f} x {cur_h:.2f} in (frame {frame_w_in_before:.2f} x {frame_h_in_before:.2f} in)")
+                print(
+                    current_canvas_status(
+                        cur_w, cur_h, frame=(frame_w_in_before, frame_h_in_before)
+                    )
+                )
                 spec = safe_input(
-                    "Enter new canvas size (e.g. '8 6', '6x4', 'w=6 h=5', 'scale=1.2', q=back): ",
+                    colorize_prompt(canvas_size_prompt()),
                     cancel_on_interrupt=True,
                 ).strip().lower()
-                if not spec or spec == 'q':
+                if is_size_quit_token(spec):
                     return
-                new_w, new_h = cur_w, cur_h
-                if 'scale=' in spec:
-                    try:
-                        fct = float(spec.split('scale=')[1])
-                        new_w, new_h = cur_w * fct, cur_h * fct
-                    except Exception:
-                        print("Invalid scale factor.")
-                        continue
-                else:
-                    parts = spec.replace('x',' ').split()
-                    kv = {}; nums = []
-                    for p in parts:
-                        if '=' in p:
-                            k,v = p.split('=',1); kv[k.strip()] = v.strip()
-                        else:
-                            nums.append(p)
-                    if kv:
-                        if 'w' in kv: new_w = float(kv['w'])
-                        if 'h' in kv: new_h = float(kv['h'])
-                    elif len(nums)==2:
-                        new_w, new_h = float(nums[0]), float(nums[1])
-                    elif len(nums)==1:
-                        new_w = float(nums[0]); aspect = cur_h/cur_w if cur_w else 1.0; new_h = new_w * aspect
-                    else:
-                        print("Could not parse specification.")
-                        continue
+                parsed = parse_size_spec(spec, cur_w, cur_h)
+                if parsed is None:
+                    continue
+                new_w, new_h = parsed
                 min_size = 1.0
                 new_w = max(min_size, new_w)
                 new_h = max(min_size, new_h)
                 tol = 1e-3
                 same = hasattr(fig,'_last_canvas_size') and all(abs(a-b)<tol for a,b in zip(fig._last_canvas_size,(new_w,new_h)))
+                if same:
+                    # No-op canvas size: do not push a junk undo tip.
+                    print(f"Canvas unchanged ({fmt_inches_pair(new_w, new_h)}).")
+                    continue
+                _maybe_push()
                 fig.set_size_inches(new_w, new_h, forward=True)
                 bbox_after = ax.get_position()
                 desired_w_frac = frame_w_in_before / new_w
@@ -1606,13 +2135,18 @@ def resize_canvas(fig, ax):
                 bbox_final = ax.get_position()
                 final_frame_w_in = bbox_final.width * new_w
                 final_frame_h_in = bbox_final.height * new_h
-                if same:
-                    print(f"Canvas unchanged ({new_w:.2f} x {new_h:.2f} in). Frame {final_frame_w_in:.2f} x {final_frame_h_in:.2f} in.")
-                else:
-                    note = ""
-                    if abs(final_frame_w_in - frame_w_in_before) > 1e-3 or abs(final_frame_h_in - frame_h_in_before) > 1e-3:
-                        note = " (clamped to fit)" if final_frame_w_in < frame_w_in_before or final_frame_h_in < frame_h_in_before else ""
-                    print(f"Canvas resized to {new_w:.2f} x {new_h:.2f} in; frame preserved at {final_frame_w_in:.2f} x {final_frame_h_in:.2f} in{note} (was {frame_w_in_before:.2f} x {frame_h_in_before:.2f}).")
+                note = ""
+                if abs(final_frame_w_in - frame_w_in_before) > 1e-3 or abs(final_frame_h_in - frame_h_in_before) > 1e-3:
+                    note = " (clamped to fit)" if final_frame_w_in < frame_w_in_before or final_frame_h_in < frame_h_in_before else ""
+                print(
+                    canvas_applied_msg(
+                        new_w,
+                        new_h,
+                        frame=(final_frame_w_in, final_frame_h_in),
+                        frame_before=(frame_w_in_before, frame_h_in_before),
+                        note=note,
+                    )
+                )
                 fig.canvas.draw_idle()
             except KeyboardInterrupt:
                 print("Canceled.")
@@ -1716,17 +2250,27 @@ def restore_axes_tick_locators(ax, spacing: Optional[dict], prefixes: tuple = ('
             restore_axis_tick_locators(mpl_axis, spacing, prefix)
 
 
-def apply_wasd_minor_ticks(ax, wasd: Optional[dict], *, y_minor_mode: str = 'both') -> None:
+def apply_wasd_minor_ticks(
+    ax,
+    wasd: Optional[dict],
+    *,
+    y_minor_mode: str = 'both',
+    x_top_on_primary: bool = True,
+) -> None:
     """Apply WASD minor tick locators and visibility from a wasd_state dict.
 
     *y_minor_mode* controls which y sides receive minor tick_params:
     ``both`` (default), ``left`` (operando heatmap in dual-pane), or ``right`` (EC panel).
+
+    *x_top_on_primary*: when False (GC dual ions SecondaryAxis), top.minor is
+    not applied on this axis — caller installs minors on the SecondaryAxis.
     """
     if not wasd or not isinstance(wasd, dict):
         return
     top_m = bool(wasd.get('top', {}).get('minor', False))
     bot_m = bool(wasd.get('bottom', {}).get('minor', False))
-    if top_m or bot_m:
+    top_on_ax = bool(top_m and x_top_on_primary)
+    if top_on_ax or bot_m:
         ax.xaxis.set_minor_locator(AutoMinorLocator())
         ax.xaxis.set_minor_formatter(NullFormatter())
     else:
@@ -1734,7 +2278,7 @@ def apply_wasd_minor_ticks(ax, wasd: Optional[dict], *, y_minor_mode: str = 'bot
         ax.xaxis.set_minor_formatter(NullFormatter())
     ax.tick_params(
         axis='x', which='minor',
-        top=top_m, bottom=bot_m,
+        top=top_on_ax, bottom=bot_m,
         labeltop=False, labelbottom=False,
     )
 
@@ -1770,6 +2314,7 @@ __all__ = [
     'ensure_text_visibility',
     'resize_plot_frame',
     'resize_canvas',
+    'sync_figure_geometry_caches',
     'capture_axis_tick_locators',
     'capture_axes_tick_locators',
     'restore_axis_tick_locators',
@@ -1782,5 +2327,7 @@ __all__ = [
     'finalize_spine_colors_cpc',
     'finalize_spine_colors_for_axes',
     'get_fig_spine_colors',
+    'register_spine_color_axis',
+    'resolve_spine_dump_color',
     'set_spine_side_color',
 ]

@@ -45,6 +45,7 @@ def _finalize_operando_session_axes(fig, ax, ec_ax=None) -> None:
     r_labels = bool(ec_ts.get('r_labels', ec_ts.get('ry', False)))
     l_ticks = bool(ec_ts.get('l_ticks', ec_ts.get('ly', False)))
     l_labels = bool(ec_ts.get('l_labels', ec_ts.get('ly', False)))
+    # Ions mode is overlay-only — do not mutate WASD / tick visibility here.
     try:
         if r_ticks or r_labels:
             ec_ax.yaxis.tick_right()
@@ -80,20 +81,42 @@ def _get_fig_size(fig) -> Tuple[float, float]:
 
 def _get_geometry_snapshot(ax, ec_ax) -> Dict:
     """Collect a snapshot of current operando / EC axes geometry settings."""
+    fig = getattr(ax, "figure", None)
+    axis_mode = None
+    wavelength = None
+    if fig is not None:
+        try:
+            from .axis_units import ensure_operando_axis_mode
+            axis_mode = ensure_operando_axis_mode(fig, ax)
+        except Exception:
+            axis_mode = getattr(fig, '_operando_axis_mode', None)
+        wavelength = getattr(fig, '_operando_wl', None)
+    def _geom_label_text(obj, stored_attr: str, live_getter) -> str:
+        """Prefer ``_stored_*`` (including empty) so cleared/hidden titles round-trip."""
+        if obj is not None and hasattr(obj, stored_attr):
+            val = getattr(obj, stored_attr)
+            return "" if val is None else str(val)
+        try:
+            return live_getter() or ""
+        except Exception:
+            return ""
+
     snapshot = {
         'operando': {
             'xlim': list(ax.get_xlim()),
             'ylim': list(ax.get_ylim()),
-            'xlabel': ax.get_xlabel() or '',
-            'ylabel': ax.get_ylabel() or '',
+            'xlabel': _geom_label_text(ax, '_stored_xlabel', ax.get_xlabel),
+            'ylabel': _geom_label_text(ax, '_stored_ylabel', ax.get_ylabel),
+            'axis_mode': axis_mode,
+            'wavelength': wavelength,
         }
     }
     if ec_ax is not None:
         snapshot['ec'] = {
             'xlim': list(ec_ax.get_xlim()),
             'ylim': list(ec_ax.get_ylim()),
-            'xlabel': ec_ax.get_xlabel() or '',
-            'ylabel': ec_ax.get_ylabel() or '',
+            'xlabel': _geom_label_text(ec_ax, '_stored_xlabel', ec_ax.get_xlabel),
+            'ylabel': _geom_label_text(ec_ax, '_stored_ylabel', ec_ax.get_ylabel),
         }
     return snapshot
 
@@ -131,8 +154,11 @@ def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='highlow'):
     cbar_ax.set_xlim(0, 1)
     cbar_ax.set_ylim(vmin, vmax)
     cbar_ax.set_xticks([])
-    cbar_ax.yaxis.set_ticks_position('left')
-    cbar_ax.yaxis.set_label_position('left')
+    # Honor side attrs so layout redraw / font refresh do not force left (s/i/b).
+    ticks_left = bool(getattr(cbar_ax, '_colorbar_ticks_left', True))
+    label_left = bool(getattr(cbar_ax, '_colorbar_label_left', True))
+    cbar_ax.yaxis.set_ticks_position('left' if ticks_left else 'right')
+    cbar_ax.yaxis.set_label_position('left' if label_left else 'right')
 
     if label_mode == 'highlow':
         cbar_ax.set_yticks([])
@@ -150,7 +176,14 @@ def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='highlow'):
         fig._cbar_low_text = low_text
     else:
         cbar_ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
-        cbar_ax.tick_params(axis='y', labelsize=fontsize, left=True, labelleft=True)
+        cbar_ax.tick_params(
+            axis='y',
+            labelsize=fontsize,
+            left=ticks_left,
+            right=not ticks_left,
+            labelleft=label_left,
+            labelright=not label_left,
+        )
         for tick_label in cbar_ax.get_yticklabels():
             tick_label.set_fontfamily(fontfamily)
 
@@ -317,9 +350,24 @@ def _redraw_operando_cif_if_present(fig, ax):
     try:
         if not getattr(ax, '_operando_cif_tick_series', None):
             return
+        try:
+            from .plot import extend_operando_cif_series_for_xmax
+            extend_operando_cif_series_for_xmax(fig, ax, float(ax.get_xlim()[1]))
+        except Exception as _cif_ext_exc:
+            try:
+                print(f"Warning: operando CIF extend failed: {_cif_ext_exc}")
+            except Exception:
+                pass
         cif_series = ax._operando_cif_tick_series
         cif_hkl_map = getattr(ax, '_operando_cif_hkl_label_map', {})
-        axis_mode = getattr(fig, '_operando_axis_mode', '2theta')
+        try:
+            from .axis_units import ensure_operando_axis_mode
+            axis_mode = ensure_operando_axis_mode(fig, ax)
+        except Exception:
+            axis_mode = getattr(fig, '_operando_axis_mode', None)
+        # Unknown → titles only (never invent Q for old/custom axes)
+        if axis_mode is None:
+            axis_mode = ""
         wl = getattr(fig, '_operando_wl', None)
         show_hkl = getattr(fig, '_operando_cif_show_hkl', False)
         show_titles = getattr(fig, '_operando_cif_show_titles', True)
@@ -336,8 +384,11 @@ def _redraw_operando_cif_if_present(fig, ax):
             show_hkl=show_hkl, show_titles=show_titles, placement=placement,
             y_positions=y_positions,
         )
-    except Exception:
-        pass
+    except Exception as _cif_redraw_exc:
+        try:
+            print(f"Warning: operando CIF redraw failed: {_cif_redraw_exc}")
+        except Exception:
+            pass
 
 
 def _apply_group_layout_inches(

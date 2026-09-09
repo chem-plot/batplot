@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ...utils import (
-    convert_label_shortcuts,
-    normalize_label_text,
-    print_label_latex_tips,
+    finalize_axis_label_text,
+    print_label_math_help,
     print_recent_axis_names,
     remember_axis_name,
+    resolve_recent_axis_name,
 )
+
+_RECENT_MODE = "ec"
 
 
 def run_ec_rename_menu(
@@ -35,7 +37,6 @@ def run_ec_rename_menu(
     try:
         is_dual_xaxis = getattr(fig, "_xaxis_mode", "capacity") == "dual"
         secax = getattr(fig, "_xaxis_secondary", None) if is_dual_xaxis else None
-        print_label_latex_tips()
         while True:
             print("Rename:")
             print("  " + colorize_menu("x: x-axis (bottom)"))
@@ -44,16 +45,20 @@ def run_ec_rename_menu(
             print("  " + colorize_menu("y: y-axis"))
             if file_data:
                 print("  " + colorize_menu("f: file names (legend)"))
-            print("  " + colorize_menu("s: show recent axis names"))
+            print("  " + colorize_menu("s: show recent axis names (type a number at a label prompt to reuse one)"))
+            print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
             print("  " + colorize_menu("q: back"))
-            opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/s/q"
+            opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/s/m/q"
             sub = safe_input(colorize_prompt(f"Rename ({opts}): ")).strip().lower()
             if not sub:
                 continue
             if sub == "q":
                 break
             if sub == "s":
-                print_recent_axis_names()
+                print_recent_axis_names(mode=_RECENT_MODE)
+                continue
+            if sub == "m":
+                print_label_math_help(colorize=colorize_menu)
                 continue
             if sub == "f" and file_data:
                 _run_file_rename(
@@ -126,9 +131,15 @@ def _run_file_rename(*, fig, ax, file_data, push_state, rebuild_legend, print_fi
                 file_entry = file_data[idx]
                 current = file_entry.get("display_name", file_entry.get("filename", str(idx + 1)))
                 while True:
-                    new_name = safe_input(f"New name for this file (current: {current!r}, q=back): ").strip()
+                    new_name = safe_input(
+                        f"New name for this file (current: {current!r}, m=math help, q=back): "
+                    ).strip()
                     if not new_name or new_name.lower() == "q":
                         break
+                    if new_name.lower() == "m":
+                        print_label_math_help()
+                        continue
+                    new_name = finalize_axis_label_text(new_name)
                     push_state("rename-file")
                     apply_file_display_name(file_entry, new_name)
                     rebuild_legend(ax)
@@ -145,13 +156,22 @@ def _run_file_rename(*, fig, ax, file_data, push_state, rebuild_legend, print_fi
 
 
 def _rename_bottom_x(*, fig, ax, tick_state, push_state, safe_input, ui_position_top_xlabel, ui_position_bottom_xlabel) -> None:
+    from ..common.axis_state import primary_axis_label_text
+
     while True:
-        current = ax.get_xlabel()
-        text = safe_input(f"New X-axis label [{current}] (q=back): ")
+        current = primary_axis_label_text(ax, "x")
+        text = safe_input(f"New X-axis label [{current}] (number=recent, s=list, m=math help, q=back): ")
         if not text or text.lower() == "q":
             break
-        text = normalize_label_text(convert_label_shortcuts(text))
-        remember_axis_name(text)
+        if text.strip().lower() == "s":
+            print_recent_axis_names(mode=_RECENT_MODE)
+            continue
+        if text.strip().lower() == "m":
+            print_label_math_help()
+            continue
+        text = resolve_recent_axis_name(text, mode=_RECENT_MODE)
+        text = finalize_axis_label_text(text)
+        remember_axis_name(text, mode=_RECENT_MODE)
         push_state("rename-x")
         try:
             _freeze_layout(fig)
@@ -162,7 +182,16 @@ def _rename_bottom_x(*, fig, ax, tick_state, push_state, safe_input, ui_position
             ax.set_xlabel(text)
             ax._stored_xlabel = text
             ax._stored_xlabel_color = ax.xaxis.label.get_color()
-            ui_position_top_xlabel(ax, fig, tick_state)
+            # Dual: top title is SecondaryAxis — never create capacity duplicate
+            if getattr(fig, "_xaxis_mode", "capacity") == "dual":
+                try:
+                    from .style import reseal_ec_chrome
+
+                    reseal_ec_chrome(fig, ax, tick_state=tick_state)
+                except Exception:
+                    pass
+            else:
+                ui_position_top_xlabel(ax, fig, tick_state)
             ui_position_bottom_xlabel(ax, fig, tick_state)
             print(f"X-axis label updated to: '{text}'")
         except Exception:
@@ -175,30 +204,73 @@ def _rename_top_x(*, fig, secax, is_dual_xaxis: bool, push_state, safe_input) ->
         return
     while True:
         current = secax.get_xlabel()
-        text = safe_input(f"New top X-axis label [{current}] (q=back): ")
+        text = safe_input(f"New top X-axis label [{current}] (number=recent, s=list, m=math help, q=back): ")
         if not text or text.lower() == "q":
             break
-        text = normalize_label_text(convert_label_shortcuts(text))
-        remember_axis_name(text)
+        if text.strip().lower() == "s":
+            print_recent_axis_names(mode=_RECENT_MODE)
+            continue
+        if text.strip().lower() == "m":
+            print_label_math_help()
+            continue
+        text = resolve_recent_axis_name(text, mode=_RECENT_MODE)
+        text = finalize_axis_label_text(text)
+        remember_axis_name(text, mode=_RECENT_MODE)
         push_state("rename-tx")
         try:
+            # Preserve spine/title color across rename (set_xlabel can reset it).
+            keep_c = (
+                getattr(secax, "_stored_top_xlabel_color", None)
+                or (getattr(secax, "_bp_spine_side_colors", None) or {}).get("top")
+                or getattr(getattr(secax, "_parent", None), "_stored_top_xlabel_color", None)
+                or (getattr(fig, "_bp_spine_side_colors", None) or {}).get("top")
+                or secax.xaxis.label.get_color()
+            )
             secax.set_xlabel(text)
-            if not hasattr(secax, "_stored_xlabel"):
-                secax._stored_xlabel = text
+            secax._stored_xlabel = text
+            try:
+                secax._bp_top_title_color = keep_c if keep_c is not None else getattr(
+                    secax, "_bp_top_title_color", None
+                )
+            except Exception:
+                pass
+            if keep_c is not None:
+                try:
+                    secax.xaxis.label.set_color(keep_c)
+                    secax._stored_top_xlabel_color = keep_c
+                except Exception:
+                    pass
+            try:
+                parent = getattr(secax, "_parent", None) or getattr(fig, "axes", [None])[0]
+                from .style import reseal_ec_chrome
+
+                if parent is not None:
+                    reseal_ec_chrome(fig, parent)
+            except Exception:
+                pass
             print(f"Top X-axis label updated to: '{text}'")
         except Exception as exc:
             print(f"Error setting top x-axis label: {exc}")
 
 
 def _rename_y(*, fig, ax, tick_state, push_state, safe_input, ui_position_left_ylabel, ui_position_right_ylabel) -> str | None:
+    from ..common.axis_state import primary_axis_label_text
+
     updated = None
     while True:
-        current = ax.get_ylabel()
-        text = safe_input(f"New Y-axis label [{current}] (q=back): ")
+        current = primary_axis_label_text(ax, "y")
+        text = safe_input(f"New Y-axis label [{current}] (number=recent, s=list, m=math help, q=back): ")
         if not text or text.lower() == "q":
             break
-        text = normalize_label_text(convert_label_shortcuts(text))
-        remember_axis_name(text)
+        if text.strip().lower() == "s":
+            print_recent_axis_names(mode=_RECENT_MODE)
+            continue
+        if text.strip().lower() == "m":
+            print_label_math_help()
+            continue
+        text = resolve_recent_axis_name(text, mode=_RECENT_MODE)
+        text = finalize_axis_label_text(text)
+        remember_axis_name(text, mode=_RECENT_MODE)
         push_state("rename-y")
         try:
             _freeze_layout(fig)

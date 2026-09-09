@@ -244,6 +244,31 @@ def test_colorize_prompt_preserves_command_text():
     assert "\033[96mq\033[0m=return" in out
 
 
+def test_menu_key_block_has_dashed_separators(capsys):
+    from batplot.plot_modes.common.menu_rendering import (
+        MENU_SEPARATOR_LINE,
+        colorize_menu,
+        menu_block_end,
+        menu_block_is_open,
+    )
+
+    print("  status line outside frame")
+    print("  " + colorize_menu("1: toggle colorbar"))
+    print("  " + colorize_menu("q: back"))
+    assert menu_block_is_open()
+    colorize_prompt("Visibility & colorbar (1/q): ")
+    assert not menu_block_is_open()
+    out = capsys.readouterr().out
+    assert out.count(MENU_SEPARATOR_LINE) == 2
+    assert "status line outside frame" in out
+    assert out.index("status line outside frame") < out.index(MENU_SEPARATOR_LINE)
+    assert out.index(MENU_SEPARATOR_LINE) < out.index("toggle colorbar")
+    assert out.rindex(MENU_SEPARATOR_LINE) > out.index("toggle colorbar")
+    # idempotent close
+    menu_block_end()
+    assert capsys.readouterr().out == ""
+
+
 def test_colorize_inline_commands_highlights_common_keys():
     out = colorize_inline_commands("ly : left axis\nq: back\n'use all'")
 
@@ -284,6 +309,10 @@ def test_menu_rendering_appends_overwrite_shortcuts_and_columns(capsys):
     assert "Demo Menu" in out
     assert "\033[96mos\033[0m: overwrite session" in out
     assert colorize_menu_item("p: print") == "\033[96mp\033[0m: print"
+    # Framed by dashed separators (before title / after last key row)
+    from batplot.plot_modes.common.menu_rendering import MENU_SEPARATOR_LINE
+
+    assert out.count(MENU_SEPARATOR_LINE) >= 2
 
 
 def test_format_file_timestamp_handles_existing_and_missing_files(tmp_path):
@@ -524,6 +553,58 @@ def test_run_spine_tick_menu_dispatches_standard_toggle():
     assert ("sync", False) in calls
     assert ("apply", set()) in calls
     assert ("quit", None) in calls
+
+
+def test_run_spine_tick_menu_unknown_code_does_not_push_undo():
+    fig, ax = plt.subplots()
+    wasd = {
+        "top": {"spine": True, "ticks": False, "minor": False, "labels": False, "title": False},
+        "bottom": {"spine": True, "ticks": True, "minor": False, "labels": True, "title": True},
+        "left": {"spine": True, "ticks": True, "minor": False, "labels": True, "title": True},
+        "right": {"spine": False, "ticks": False, "minor": False, "labels": False, "title": False},
+    }
+    pushes = []
+    inputs = iter(["zzz", "q"])
+    run_spine_tick_menu(
+        fig=fig,
+        wasd=wasd,
+        safe_input=lambda _p: next(inputs),
+        colorize_prompt=lambda text: text,
+        colorize_inline_commands=lambda text: text,
+        push_state=lambda label: pushes.append(label),
+        sync_tick_state=lambda: None,
+        apply_wasd=lambda _sides: None,
+        draw=lambda: None,
+        axis_map={"x": ax.xaxis, "y": ax.yaxis},
+    )
+    assert pushes == []
+    plt.close(fig)
+
+
+def test_run_spine_tick_menu_invalid_tick_spacing_does_not_push_undo():
+    fig, ax = plt.subplots()
+    wasd = {
+        "top": {"spine": True, "ticks": False, "minor": False, "labels": False, "title": False},
+        "bottom": {"spine": True, "ticks": True, "minor": False, "labels": True, "title": True},
+        "left": {"spine": True, "ticks": True, "minor": False, "labels": True, "title": True},
+        "right": {"spine": False, "ticks": False, "minor": False, "labels": False, "title": False},
+    }
+    pushes = []
+    inputs = iter(["n", "x abc", "zzz 1", "q", "q"])
+    run_spine_tick_menu(
+        fig=fig,
+        wasd=wasd,
+        safe_input=lambda _p: next(inputs),
+        colorize_prompt=lambda text: text,
+        colorize_inline_commands=lambda text: text,
+        push_state=lambda label: pushes.append(label),
+        sync_tick_state=lambda: None,
+        apply_wasd=lambda _sides: None,
+        draw=lambda: None,
+        axis_map={"x": ax.xaxis, "y": ax.yaxis},
+    )
+    assert "tick-spacing" not in pushes
+    plt.close(fig)
 
 
 def test_run_spine_tick_menu_accepts_legacy_tick_aliases():
@@ -805,7 +886,7 @@ def test_run_font_menu_dispatches_weight_and_highlight_callbacks():
         fonts=["Arial", "Helvetica"],
     )
 
-    assert calls == [("weight", "bold"), ("highlight_toggle", None), ("highlight_fc", "yellow")]
+    assert calls == [("weight", "bold"), ("highlight_toggle", None), ("highlight_fc", "#ffff00")]
 
 
 def test_font_extras_export_apply_and_refresh():

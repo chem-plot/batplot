@@ -36,6 +36,7 @@ def run_smoothing_menu(
     safe_input: Callable[[str], str],
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
+    pop_undo: Callable[[], Any] | None = None,
 ) -> None:
     """Run the smoothing / data-reduction submenu."""
     # Bind injected callbacks to the original local names so the body below is
@@ -65,6 +66,10 @@ def run_smoothing_menu(
         if sub == 'q':
             break
         if sub == 'reset':
+            # Gate before push (parity with EC sm→r / XY d→reset).
+            if not hasattr(fig, "_original_x_data_list"):
+                print("No processed data to reset.")
+                continue
             push_state("smooth-reset")
             success, reset_count, total_points = _reset_to_original()
             if success:
@@ -72,6 +77,11 @@ def run_smoothing_menu(
                 _apply_data_changes()
             else:
                 print("No processed data to reset.")
+                if pop_undo is not None:
+                    try:
+                        pop_undo()
+                    except Exception:
+                        pass
             continue
         if sub == 'r':
             # Reduce rows submenu
@@ -196,6 +206,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were processed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except ValueError:
                         print("Invalid number.")
                     continue
@@ -266,6 +281,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were processed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except Exception:
                         print("Error processing data.")
                     continue
@@ -420,6 +440,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were processed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except (ValueError, KeyError):
                         print("Invalid input.")
                     continue
@@ -510,6 +535,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were smoothed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except ValueError:
                         print("Invalid number.")
                     continue
@@ -612,6 +642,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were smoothed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except ValueError:
                         print("Invalid number.")
                     continue
@@ -708,6 +743,11 @@ def run_smoothing_menu(
                             })
                         else:
                             print("No curves were smoothed.")
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                     except ValueError:
                         print("Invalid number.")
                     continue

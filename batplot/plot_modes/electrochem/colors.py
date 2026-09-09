@@ -18,10 +18,58 @@ from ...color_utils import (
     get_user_color_list,
     manage_user_colors,
     palette_preview,
+    prompt_screen_color,
+    blank_means_back,
     resolve_color_token,
 )
 from ...plotting import apply_curve_color
 from ..common.palettes import DEFAULT_PALETTE_ALIASES, TAB10_HEX, palette_items, resolve_palette_token, sample_colormap
+
+
+def _coerce_cycle_id(cyc) -> Optional[int]:
+    try:
+        return int(cyc)
+    except Exception:
+        return None
+
+
+def normalize_cycle_lines_keys(cycle_lines: Optional[dict]) -> dict:
+    """Force int cycle keys so old str-key pickles match live menu parsing."""
+    if not isinstance(cycle_lines, dict) or not cycle_lines:
+        return cycle_lines if isinstance(cycle_lines, dict) else {}
+    out: Dict[Any, Any] = {}
+    for k, v in cycle_lines.items():
+        ik = _coerce_cycle_id(k)
+        out[ik if ik is not None else k] = v
+    return out
+
+
+def _normalize_cycle_lines_inplace(cycle_lines: dict) -> None:
+    if not isinstance(cycle_lines, dict) or not cycle_lines:
+        return
+    items = list(cycle_lines.items())
+    if all(_coerce_cycle_id(k) == k for k, _ in items):
+        return
+    cycle_lines.clear()
+    cycle_lines.update(normalize_cycle_lines_keys(dict(items)))
+
+
+def _cycle_in(cycle_lines: dict, cyc) -> bool:
+    if cyc in cycle_lines:
+        return True
+    ik = _coerce_cycle_id(cyc)
+    if ik is not None and ik in cycle_lines:
+        return True
+    return str(cyc) in cycle_lines
+
+
+def _get_cycle_parts(cycle_lines: dict, cyc):
+    if cyc in cycle_lines:
+        return cycle_lines[cyc]
+    ik = _coerce_cycle_id(cyc)
+    if ik is not None and ik in cycle_lines:
+        return cycle_lines[ik]
+    return cycle_lines.get(str(cyc))
 
 
 def _iter_cycle_lines(cycle_lines: Dict[int, Dict[str, Optional[Any]]]):
@@ -53,9 +101,9 @@ def _cycle_sort_key(key):
 
 def _cycle_is_visible(cycle_lines: dict, cyc) -> bool:
     """True if at least one charge/discharge/CV line for this cycle is visible."""
-    if cyc not in cycle_lines:
+    parts = _get_cycle_parts(cycle_lines, cyc)
+    if parts is None:
         return False
-    parts = cycle_lines[cyc]
     if isinstance(parts, dict):
         for role in ("charge", "discharge"):
             ln = parts.get(role)
@@ -78,6 +126,52 @@ def _visible_cycle_keys(cycle_lines: dict, keys=None):
     if keys is None:
         keys = cycle_lines.keys()
     return [c for c in sorted(keys, key=_cycle_sort_key) if _cycle_is_visible(cycle_lines, c)]
+
+
+def _visible_cycle_numbers(cycle_lines: dict) -> List[int]:
+    """Sorted cycle *numbers* (ints) that currently have a visible line.
+
+    Stored in sessions/styles so reload cannot renumber a selection (e.g. 1+31
+    must never come back as 1+2).
+    """
+    out: List[int] = []
+    for cyc in _visible_cycle_keys(cycle_lines):
+        try:
+            out.append(int(cyc))
+        except Exception:
+            continue
+    return out
+
+
+def _selected_cycle_numbers_for_file(f_entry: dict) -> List[int]:
+    """Cycle ids to persist for one file entry (survives file hide).
+
+    When a file is hidden every line is forced invisible, so the live
+    ``visible`` flags are empty. Prefer the stashed ``selected_cycles`` list
+    written by the hide path; otherwise fall back to currently visible lines.
+    """
+    if not isinstance(f_entry, dict):
+        return []
+    cl = f_entry.get("cycle_lines") or {}
+    if not f_entry.get("visible", True):
+        stashed = f_entry.get("selected_cycles")
+        if stashed is not None:
+            try:
+                return sorted({int(c) for c in stashed})
+            except Exception:
+                pass
+    return _visible_cycle_numbers(cl)
+
+
+def _apply_visible_cycle_numbers(cycle_lines: dict, visible_cycles) -> None:
+    """Apply an explicit visible-cycle id list (no renumbering)."""
+    if visible_cycles is None:
+        return
+    try:
+        show = {int(c) for c in visible_cycles}
+    except Exception:
+        return
+    _set_visible_cycles(cycle_lines, show)
 
 
 def _cycle_color_listing(cycle_lines: dict, cyc) -> str:
@@ -130,12 +224,12 @@ def _print_ec_current_curves(
             if not vis:
                 continue
             any_printed = True
-            if len(vis) > _MULTI_FILE_EXPAND_MAX:
-                # Compact: one colour sample + count (file-oriented workflows)
-                print(f"  f{fi}: {_cycle_color_listing(cl, vis[0])}  {fname}  ({len(vis)} visible cycles)")
-            else:
+            # Always lead with a per-file summary row: swatch + name + count.
+            n_vis = len(vis)
+            print(f"  f{fi}: {_cycle_color_listing(cl, vis[0])}  {fname}  ({n_vis} visible cycle{'s' if n_vis != 1 else ''})")
+            if n_vis <= _MULTI_FILE_EXPAND_MAX:
                 for cyc in vis:
-                    print(f"  f{fi}/{cyc}: {_cycle_color_listing(cl, cyc)}  {fname}")
+                    print(f"      {cyc}: {_cycle_color_listing(cl, cyc)}")
     else:
         cl, acyc = target_cycle_lines_list[0]
         for cyc in _visible_cycle_keys(cl, acyc):
@@ -164,10 +258,12 @@ def _apply_colors(cycle_lines: Dict[int, Dict[str, Optional[Any]]], mapping: Dic
     
     Handles both GC mode (dict with 'charge'/'discharge' keys) and CV mode (direct Line2D).
     """
+    _normalize_cycle_lines_inplace(cycle_lines)
     for cyc, col in mapping.items():
-        if cyc not in cycle_lines:
+        parts = _get_cycle_parts(cycle_lines, cyc)
+        if parts is None:
             continue
-        for _, _, ln in _iter_cycle_lines({cyc: cycle_lines[cyc]}):
+        for _, _, ln in _iter_cycle_lines({_coerce_cycle_id(cyc) or cyc: parts}):
             try:
                 apply_curve_color(ln, col)
             except Exception:
@@ -179,13 +275,124 @@ def _set_visible_cycles(cycle_lines: Dict[int, Dict[str, Optional[Any]]], show: 
     
     Handles both GC mode (dict with 'charge'/'discharge' keys) and CV mode (direct Line2D).
     """
-    show_set = set(show)
+    _normalize_cycle_lines_inplace(cycle_lines)
+    show_set = set()
+    for c in show:
+        ik = _coerce_cycle_id(c)
+        show_set.add(ik if ik is not None else c)
     for cyc, role, ln in _iter_cycle_lines(cycle_lines):
-        vis = cyc in show_set
+        ik = _coerce_cycle_id(cyc)
+        vis = (ik if ik is not None else cyc) in show_set
         try:
             ln.set_visible(vis)
         except Exception:
             pass
+
+
+def _filter_ec_entry_by_display_mode(f_entry: dict, display_mode: str | None) -> None:
+    """Apply charge/discharge/both to a visible file's selected cycles.
+
+    Used after ``v`` re-show so ``d`` is not ignored (CPC already couples
+    visibility with display_mode).
+    """
+    mode = (display_mode or "both").strip().lower()
+    if mode not in ("charge", "discharge", "both"):
+        mode = "both"
+    if mode == "both":
+        return
+    cl = f_entry.get("cycle_lines") or {}
+    for _cyc, parts in cl.items():
+        if not isinstance(parts, dict):
+            continue
+        chg = parts.get("charge")
+        dch = parts.get("discharge")
+        cycle_on = (
+            (chg is not None and bool(chg.get_visible()))
+            or (dch is not None and bool(dch.get_visible()))
+        )
+        if not cycle_on:
+            continue
+        if chg is not None:
+            try:
+                chg.set_visible(mode in ("both", "charge"))
+            except Exception:
+                pass
+        if dch is not None:
+            try:
+                dch.set_visible(mode in ("both", "discharge"))
+            except Exception:
+                pass
+
+
+def set_ec_file_visibility(
+    f_entry: dict,
+    visible: bool,
+    *,
+    display_mode: str | None = None,
+) -> None:
+    """Show/hide one multi-file EC entry without destroying cycle selection.
+
+    Shared by interactive and batch ``v`` menus. On hide, stashes currently
+    visible cycle ids in ``selected_cycles`` then forces all lines off. On
+    show, restores that selection (or shows all if nothing was stashed —
+    backward compatible with old sessions), then reapplies ``display_mode``
+    so ``d`` (Chg/Dch) is preserved.
+
+    Re-hiding an already-hidden file does **not** rewrite ``selected_cycles``
+    (``v`` → ``a`` / hide-all would otherwise see all lines off and stash
+    ``[]``, wiping a prior 1+31 selection).
+    """
+    if not isinstance(f_entry, dict):
+        return
+    cl = f_entry.get("cycle_lines") or {}
+    if not visible:
+        # Only snapshot selection while the file is still considered visible.
+        # Already-hidden entries keep their stashed ``selected_cycles``.
+        if bool(f_entry.get("visible", True)):
+            try:
+                f_entry["selected_cycles"] = _visible_cycle_numbers(cl)
+            except Exception:
+                f_entry["selected_cycles"] = []
+        f_entry["visible"] = False
+        for _cyc, parts in cl.items():
+            if isinstance(parts, dict):
+                for role in ("charge", "discharge"):
+                    ln = parts.get(role)
+                    if ln is not None:
+                        try:
+                            ln.set_visible(False)
+                        except Exception:
+                            pass
+            elif parts is not None:
+                try:
+                    parts.set_visible(False)
+                except Exception:
+                    pass
+        return
+    f_entry["visible"] = True
+    sel = f_entry.get("selected_cycles")
+    if sel is not None:
+        try:
+            _set_visible_cycles(cl, sel)
+            _filter_ec_entry_by_display_mode(f_entry, display_mode)
+            return
+        except Exception:
+            pass
+    for _cyc, parts in cl.items():
+        if isinstance(parts, dict):
+            for role in ("charge", "discharge"):
+                ln = parts.get(role)
+                if ln is not None:
+                    try:
+                        ln.set_visible(True)
+                    except Exception:
+                        pass
+        elif parts is not None:
+            try:
+                parts.set_visible(True)
+            except Exception:
+                pass
+    _filter_ec_entry_by_display_mode(f_entry, display_mode)
 
 
 def _resolve_palette_alias(token: str, palette_map: dict) -> str:
@@ -286,48 +493,27 @@ def _parse_per_file_cycle_tokens(
             remaining.append(t)
     if not file_specs:
         return None
-    # Last remaining token may be palette
-    palette = None
-    if remaining:
-        last = remaining[-1]
-        alias = _resolve_palette_alias(last, DEFAULT_PALETTE_ALIASES) if last else last
-        try:
-            if not ensure_colormap(alias):
-                raise ValueError(alias)
-            if get_colormap(alias) is None:
-                raise ValueError(alias)
-            palette = alias
-            remaining = remaining[:-1]
-        except Exception:
-            pass
+    # Last remaining token may be palette (same rules as cycle lists)
+    remaining, palette = _split_trailing_palette(remaining)
     return (file_specs, palette)
 
 
 def _parse_fall_cycles_tokens(
     tokens: List[str], n_files: int, fig=None
 ) -> Optional[Tuple[List[int], Optional[str]]]:
-    """Parse fall:1 2 3 5 4 — show cycles 1,2,3,5 for ALL files, one color per file from palette 4.
-    Returns (cycles_list, palette) or None if not matched."""
+    """Parse ``fall:1 31`` / ``fall:2-30 1`` — cycles for ALL files.
+
+    Trailing bare ``1``..``6`` or colormap names are palette (same rules as
+    ``_split_trailing_palette``). Returns (cycles_list, palette) or None.
+    """
     if not tokens or n_files < 1:
         return None
     first = tokens[0].strip()
     if not first.lower().startswith("fall:"):
         return None
     suffix = first[5:].strip()  # after "fall:"
-    cycle_tokens = [suffix] + list(tokens[1:])
-    palette = None
-    if cycle_tokens:
-        last = cycle_tokens[-1]
-        alias = _resolve_palette_alias(last, DEFAULT_PALETTE_ALIASES) if last else last
-        try:
-            if not ensure_colormap(alias):
-                raise ValueError(alias)
-            if get_colormap(alias) is None:
-                raise ValueError(alias)
-            palette = alias
-            cycle_tokens = cycle_tokens[:-1]
-        except Exception:
-            pass
+    cycle_tokens = ([suffix] if suffix else []) + list(tokens[1:])
+    cycle_tokens, palette = _split_trailing_palette(cycle_tokens)
     cycles = []
     for t in cycle_tokens:
         for part in str(t).replace(',', ' ').split():
@@ -398,15 +584,94 @@ def _format_cycles_compact(cycles: List[int]) -> str:
     return ", ".join(parts)
 
 
+def _explicit_palette_token(token: str) -> Optional[str]:
+    """Resolve a palette name or ``N_r`` form (not bare ``1``..``6``).
+
+    Bare digits ``1``..``6`` are handled by callers (``_split_trailing_palette``,
+    ``all N``). Legacy ``p1``..``p6`` is no longer accepted — use ``1``..``6``
+    or the colormap name (``Set2``, ``viridis``, …).
+    """
+    t = (token or "").strip()
+    if not t:
+        return None
+    # Named / reversed aliases via shared resolver (e.g. tab10, 2_r, viridis)
+    alias = _resolve_palette_alias(t, DEFAULT_PALETTE_ALIASES)
+    try:
+        if not ensure_colormap(alias):
+            return None
+        if get_colormap(alias) is None:
+            return None
+        return alias
+    except Exception:
+        return None
+
+
+def _tokens_have_cycle_range(tokens: List[str]) -> bool:
+    """True if any token is a hyphen cycle range (e.g. ``2-30``).
+
+    Kept for callers/tests; trailing palette digits no longer require a range.
+    """
+    for t in tokens:
+        for piece in str(t).replace(",", " ").split():
+            if "-" in piece and piece.count("-") == 1:
+                lo, hi = piece.split("-", 1)
+                try:
+                    int(lo.strip())
+                    int(hi.strip())
+                    return True
+                except ValueError:
+                    continue
+    return False
+
+
+def _split_trailing_palette(tokens: List[str]) -> Tuple[List[str], Optional[str]]:
+    """Split ``tokens`` into (cycle_tokens, palette).
+
+    The **last** token is the palette when it is a bare digit ``1``..``6``,
+    ``N_r``, or a colormap name — and at least one preceding cycle token exists
+    (``2-30 1``, ``1 5 10 3``, ``1-3 viridis``).
+
+    Plain cycle selection without recoloring uses no trailing palette digit
+    (``1 31``, ``1-2``, ``5 10 20``). Prefer a range alone (``1-2``) when you
+    need cycles whose ids collide with palette digits.
+    """
+    if not tokens:
+        return [], None
+    last = tokens[-1]
+    head = tokens[:-1]
+    # Last digit 1-6 = palette whenever cycles precede it (user-facing rule).
+    allow_bare_numeric_palette = bool(head)
+    low = last.lower()
+    bare_digit_alias = last in DEFAULT_PALETTE_ALIASES
+    digit_r_alias = low.endswith("_r") and low[:-2] in DEFAULT_PALETTE_ALIASES
+
+    palette = None
+    if bare_digit_alias and allow_bare_numeric_palette:
+        palette = DEFAULT_PALETTE_ALIASES[last]
+    elif digit_r_alias:
+        palette = _explicit_palette_token(last)
+    elif not last.isdigit() and not bare_digit_alias:
+        palette = _explicit_palette_token(last)
+
+    if palette:
+        return head, palette
+    return list(tokens), None
+
+
 def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], dict, Optional[str], bool]:
     """Classify and parse tokens for the cycle command.
 
-    Returns a tuple: (mode, cycles, mapping, palette)
-      - mode: 'map' for explicit mappings like 1:red, 'palette' for numbers + cmap,
-              'numbers' for numbers only.
-      - cycles: list of cycle indices (integers); supports hyphen ranges (e.g. ``2-30``) and commas.
-      - mapping: dict for 'map' mode only, empty otherwise
-      - palette: colormap name for 'palette' mode else None
+    Color-setting forms:
+      1. ``palette`` — cycle list + last token = palette (digit ``1``..``6`` or
+         colormap name), e.g. ``2-30 1``, ``1 5 10 3``, ``1-3 viridis``.
+      2. ``map`` — per-cycle ``N:color`` (name, ``#hex``, or plain saved index);
+         multiple entries allowed, e.g. ``1:red 2:4 5:#00B006``.
+      3. ``palette`` + ``use_all`` — ``all <palette>`` (``all 3``, ``all viridis``).
+
+    Non-color: ``numbers`` (cycle ids alone, or bare ``all``) only changes
+    visibility / keeps current colors — kept for BC, not advertised as a color mode.
+
+    Returns ``(mode, cycles, mapping, palette, use_all)``.
     """
     if not tokens:
         return ("numbers", [], {}, None, False)
@@ -415,16 +680,17 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
     if len(tokens) == 1 and tokens[0].lower() == 'all':
         return ("numbers", [], {}, None, True)
     if len(tokens) == 2 and tokens[0].lower() == 'all':
-        alias = _resolve_palette_alias(tokens[1], DEFAULT_PALETTE_ALIASES)
-        try:
-            if not ensure_colormap(alias):
-                raise ValueError(alias)
-            if get_colormap(alias) is None:
-                raise ValueError(alias)
-            return ("palette", [], {}, alias, True)
-        except Exception:
-            # Unknown palette -> still select all, no recolor
-            return ("numbers", [], {}, None, True)
+        # all <palette>: bare 1-6 and names
+        last = tokens[1]
+        palette = None
+        if last in DEFAULT_PALETTE_ALIASES:
+            palette = DEFAULT_PALETTE_ALIASES[last]
+        else:
+            palette = _explicit_palette_token(last)
+        if palette:
+            return ("palette", [], {}, palette, True)
+        # Unknown palette -> still select all, no recolor
+        return ("numbers", [], {}, None, True)
 
     # Check explicit mapping mode first
     if any(":" in t for t in tokens):
@@ -443,46 +709,26 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
                 cycles.append(cyc)
         return ("map", cycles, mapping, None, False)
 
-    # If last token is a valid colormap or number (1-5) -> palette mode
-    last = tokens[-1]
-
-    # Check if last token is a known numeric palette shortcut
-    if last in DEFAULT_PALETTE_ALIASES:
-        palette = DEFAULT_PALETTE_ALIASES[last]
-        num_tokens = tokens[:-1]
-        cycles = _expand_cycle_number_tokens(num_tokens)
+    head, palette = _split_trailing_palette(tokens)
+    if palette:
+        cycles = _expand_cycle_number_tokens(head)
         return ("palette", cycles, {}, palette, False)
-    alias = _resolve_palette_alias(last, DEFAULT_PALETTE_ALIASES)
-    if alias != last:
-        try:
-            if not ensure_colormap(alias):
-                raise ValueError(alias)
-            if get_colormap(alias) is None:
-                raise ValueError(alias)
-            palette = alias
-            num_tokens = tokens[:-1]
-            cycles = _expand_cycle_number_tokens(num_tokens)
-            return ("palette", cycles, {}, palette, False)
-        except Exception:
-            pass
 
-    # Check if last token is a valid colormap name
-    try:
-        if not ensure_colormap(last):
-            raise ValueError(last)
-        if get_colormap(last) is None:
-            raise ValueError(last)
-        palette = last
-        num_tokens = tokens[:-1]
-        cycles = _expand_cycle_number_tokens(num_tokens)
-        return ("palette", cycles, {}, palette, False)
-    except Exception:
-        pass
-
-    # Numbers only (supports ranges, e.g. 2-30)
+    # Numbers only (supports ranges, e.g. 2-30) — includes lists like 1 31
     cycles = _expand_cycle_number_tokens(tokens)
     return ("numbers", cycles, {}, None, False)
 
+
+
+def _print_ec_palette_choices(colorize_menu: Callable[[str], str]) -> None:
+    """Print the recommended-palette list with previews (shared by prompts/help)."""
+    print("Recommended palettes for scientific publications:")
+    rec_palettes = palette_items(DEFAULT_PALETTE_ALIASES.values())
+    for idx, (name, desc) in enumerate(rec_palettes, 1):
+        bar = palette_preview(name)
+        print("  " + colorize_menu(f"{idx}: {name} - {desc}"))
+        if bar:
+            print(f"      {bar}")
 
 
 def run_ec_cycles_menu(
@@ -517,110 +763,143 @@ def run_ec_cycles_menu(
     apply_nice_ticks: Callable[[], Any],
     curves_status_fn: Callable[[], None] | None = None,
 ) -> None:
-    # Cycles/colors: multi-file defaults to all visible files; type fall viridis etc. directly
-    while True:
-        if is_multi_file:
-            target_cycle_lines_list = [(f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys())) for f in file_data if f.get('visible', True)]
-            if not target_cycle_lines_list:
-                print("No visible files.")
-                print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+    from ..common.menu_rendering import menu_block_begin
+
+    # Simple model: single-file shows the color menu directly; multi-file first
+    # asks which file to edit (by number), then shows the exact same
+    # single-file menu for that file. q returns to the file picker.
+
+    def _edit_one_file(cl: dict, acyc: list, header: Optional[str] = None) -> None:
+        """Single-file color menu for one file's cycles (GC, CV, dQ/dV)."""
+        _normalize_cycle_lines_inplace(cl)
+        while True:
+            menu_block_begin(force_new=True)
+            if header:
+                print(header)
+            n_visible_cycles = len(_visible_cycle_keys(cl, acyc))
+            if n_visible_cycles == len(acyc):
+                print(f"Visible cycles: {n_visible_cycles}")
+            else:
+                print(f"Visible cycles: {n_visible_cycles} (of {len(acyc)} total)")
+            print()
+            print("How to set color:")
+            # Highlight only the typed examples (cyan when ANSI menus enabled).
+            from ..common.menu_rendering import ansi_menu_enabled
+
+            def _ex(sample: str) -> str:
+                if ansi_menu_enabled():
+                    return f"\033[96m{sample}\033[0m"
+                return sample
+
+            print("  1) Cycles + palette number as LAST token (digit 1-6 or name):")
+            print(
+                "       e.g. "
+                f"{_ex('2-30 1')}   |   {_ex('1 5 10 3')}   |   {_ex('1-3 viridis')}"
+            )
+            print("  2) Colon per cycle (multiple entries allowed):")
+            print(
+                "       name / #hex / saved index:  e.g. "
+                f"{_ex('1:red')} {_ex('5:#00B006')} {_ex('2:4')}"
+            )
+            print("  3) all + palette:")
+            print(
+                "       e.g. "
+                f"{_ex('all 1')}   |   {_ex('all 3')}   |   {_ex('all viridis')}"
+            )
+            print()
+            _print_ec_palette_choices(colorize_menu)
+            print("  " + colorize_menu("Palette digits: 1=tab10  2=Set2  3=Dark2  4=viridis  5=plasma  6=rainbow"))
+            user_colors = get_user_color_list(fig)
+            if user_colors:
+                print("\nSaved colors (use with colon form as number):")
+                for idx, color in enumerate(user_colors, 1):
+                    print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
+                print("  " + colorize_menu("u: edit saved colors"))
+            print("  " + colorize_menu("v: show current colors"))
+            print("  " + colorize_menu("e: pick color from screen"))
+            print("  " + colorize_menu("q: back"))
+            line = safe_input(colorize_prompt("Selection: ")).strip()
+            if line.lower() == 'q' or blank_means_back(line):
                 break
-        else:
-            target_cycle_lines_list = [(cycle_lines, all_cycles)]
-        if curves_status_fn is not None:
-            curves_status_fn()
-        elif is_multi_file:
-            print_file_list(file_data, current_file_idx)
-            n_visible_cycles = 0
-            for f in file_data:
-                if not f.get("visible", True):
-                    continue
-                n_visible_cycles += len(_visible_cycle_keys(f.get("cycle_lines") or {}))
-            if n_visible_cycles == len(all_cycles):
-                print(f"Visible cycles: {n_visible_cycles}")
+            if line.lower() == 'v':
+                _print_ec_current_curves(
+                    target_cycle_lines_list=[(cl, acyc)],
+                    is_multi_file=False,
+                    file_data=file_data,
+                )
+                continue
+            if line.lower() == 'u':
+                manage_user_colors(fig)
+                continue
+            if line.lower() == 'e':
+                prompt_screen_color(fig)
+                continue
+            tokens = line.replace(',', ' ').split()
+            mode, cycles, mapping, palette, use_all = parse_cycle_tokens(tokens, fig)
+            if use_all:
+                existing = list(_visible_cycle_keys(cl, acyc))
+                ignored: List[int] = []
             else:
-                print(f"Visible cycles: {n_visible_cycles} (of {len(all_cycles)} total)")
-            _print_ec_current_curves(
-                target_cycle_lines_list=target_cycle_lines_list,
-                is_multi_file=is_multi_file,
-                file_data=file_data,
-            )
-        else:
-            cl0, acyc0 = target_cycle_lines_list[0]
-            n_visible_cycles = len(_visible_cycle_keys(cl0, acyc0))
-            if n_visible_cycles == len(all_cycles):
-                print(f"Visible cycles: {n_visible_cycles}")
-            else:
-                print(f"Visible cycles: {n_visible_cycles} (of {len(all_cycles)} total)")
-            _print_ec_current_curves(
-                target_cycle_lines_list=target_cycle_lines_list,
-                is_multi_file=is_multi_file,
-                file_data=file_data,
-            )
-        _C, _R = "\033[96m", "\033[0m"
-        if is_multi_file:
-            print(f"  {_C}fall viridis{_R}  = palette to all files (one color per file)")
-            print(f"  {_C}fall:1 2 3 5 4{_R}  = cycles 1,2,3,5 for ALL files, one color per file (palette 4)")
-            print(f"  {_C}f1-5 viridis{_R}  = files 1–5  |  {_C}f1 f3 f5 4{_R}  = files 1,3,5 (4=viridis)")
-            print(f"  {_C}f1:1,5,10 f2:2,4,6 viridis{_R}  = per-file cycles (file 1: 1,5,10; file 2: 2,4,6)")
-        print("Enter one of:")
-        print(colorize_inline_commands("  - per-curve: e.g. 1:red 5:#00B006"))
-        print(colorize_inline_commands("  - cycle numbers + palette: e.g. 2-30 1 (cycles 2–30, palette 1/tab10)  OR  1 5 10 viridis"))
-        print(colorize_inline_commands("  - all cycles + palette: e.g. all viridis  OR  all 3"))
-        print("\nRecommended palettes for scientific publications:")
-        rec_palettes = palette_items(DEFAULT_PALETTE_ALIASES.values())
-        for idx, (name, desc) in enumerate(rec_palettes, 1):
-            bar = palette_preview(name)
-            print("  " + colorize_menu(f"{idx}: {name} - {desc}"))
-            if bar:
-                print(f"      {bar}")
-        print("  " + colorize_menu("Enter palette name OR number"))
-        user_colors = get_user_color_list(fig)
-        if user_colors:
-            print("\nSaved colors (use number or u# in mappings):")
-            for idx, color in enumerate(user_colors, 1):
-                print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
-            print("  " + colorize_menu("u: edit saved colors before assigning"))
-        print("  " + colorize_menu("q: back"))
-        line = safe_input(colorize_prompt("Selection: ")).strip()
-        if not line or line.lower() == 'q':
-            break
-        if line.lower() == 'u':
-            manage_user_colors(fig)
-            continue
-        tokens_raw = line.split()
-        tokens = line.replace(',', ' ').split()
-        all_ignored = []
-        # Check fall:1 2 3 5 4 — cycles for ALL files, one color per file (multi-file only)
-        fall_cycles_result = None
-        if is_multi_file and len(tokens) >= 1:
-            fall_cycles_result = parse_fall_cycles_tokens(tokens, len(file_data), fig)
-        if fall_cycles_result is not None:
-            sel_cycles, fc_palette = fall_cycles_result
-            push_state("cycles/colors")
-            n_visible = len(target_cycle_lines_list)
-            if fc_palette and fc_palette.lower() in ('tab10', '1'):
-                file_colors = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                              for i in range(n_visible)]
-            else:
-                try:
-                    cmap = get_colormap(fc_palette) if fc_palette else None
-                except Exception:
-                    cmap = None
-                if cmap is not None:
-                    file_colors = [cmap(t) for t in np.linspace(0.08, 0.88, n_visible)] if n_visible > 1 else [cmap(0.55)]
+                existing = [c for c in cycles if _cycle_in(cl, c)]
+                ignored = [c for c in cycles if not _cycle_in(cl, c)]
+            if not existing:
+                print("No matching cycles; nothing changed.")
+                if ignored:
+                    print("Ignored cycles:", ", ".join(str(c) for c in sorted(set(ignored))))
+                continue
+            # Palette: validate colormap before push (reject must not dirty undo / visibility).
+            cols = None
+            if mode == 'palette':
+                if palette and palette.lower() in ('tab10', '1'):
+                    cols = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
+                            for i in range(len(existing))]
                 else:
-                    file_colors = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                                  for i in range(n_visible)]
-            for idx, (cl, acyc) in enumerate(target_cycle_lines_list):
-                show = [c for c in sel_cycles if c in cl]
-                set_visible_cycles(cl, show)
-                if show and idx < len(file_colors):
-                    col = file_colors[idx]
-                    apply_colors(cl, {c: col for c in show})
-                apply_curve_linewidth(fig, cl)
-                if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                    apply_stored_smooth_settings(cl, fig)
+                    try:
+                        cmap = get_colormap(palette) if palette else None
+                    except Exception:
+                        cmap = None
+                    if cmap is None:
+                        print(f"Unknown colormap '{palette}'.")
+                        continue
+                    cols = sample_colormap(cmap, len(existing), pair=(0.15, 0.85), span=(0.08, 0.88))
+            push_state("cycles/colors")
+            # Update visibility only when explicitly selecting cycles —
+            # "all" recolors currently visible cycles without un-hiding.
+            if not use_all:
+                set_visible_cycles(cl, existing)
+                # Keep multi-file stash in sync so old sessions re-save like new ones.
+                try:
+                    for f_entry in (file_data or []):
+                        if f_entry.get("cycle_lines") is cl:
+                            f_entry["selected_cycles"] = [
+                                int(c) for c in existing if _coerce_cycle_id(c) is not None
+                            ]
+                            break
+                except Exception:
+                    pass
+            if mode == 'map' and mapping:
+                mapping2 = {c: mapping[c] for c in existing if c in mapping}
+                apply_colors(cl, mapping2)
+                if mapping2:
+                    print("Applied manual colors:")
+                    for cyc, col in mapping2.items():
+                        print(f"  Cycle {cyc}: {format_color_listing(col)}")
+            elif mode == 'palette' and cols:
+                apply_colors(cl, {c: col for c, col in zip(existing, cols)})
+                try:
+                    preview = color_bar([mcolors.to_hex(col) for col in cols])
+                except Exception:
+                    preview = ""
+                if preview:
+                    palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
+                    cc = _format_cycles_compact(cycles) if (not use_all and cycles) else ""
+                    cyc_suff = f" — cycles {cc}" if cc else ""
+                    print(f"Palette '{palette_display}' applied{cyc_suff}: {preview}")
+            # mode == 'numbers': visibility-only selection; no recoloring.
+            apply_curve_linewidth(fig, cl)
+            if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
+                apply_stored_smooth_settings(cl, fig)
+            # Re-apply display mode so re-shown cycles keep charge/discharge visibility
             dm = getattr(fig, '_ec_display_mode', 'both')
             apply_display_mode(dm)
             rebuild_legend(ax)
@@ -629,231 +908,70 @@ def run_ec_cycles_menu(
                 fig.canvas.draw()
             except Exception:
                 fig.canvas.draw_idle()
-            fc_display = fc_palette or 'tab10'
-            if fc_palette and fc_palette.lower() in ('tab10', '1'):
-                fc_display = 'tab10'
-            print(f"fall: cycles {sel_cycles} for all files (palette: {fc_display}, one color per file)")
+            if ignored:
+                print("Ignored cycles:", ", ".join(str(c) for c in sorted(set(ignored))))
+
+    if not is_multi_file:
+        _edit_one_file(cycle_lines, all_cycles)
+        return
+
+    # Multi-file: file picker → the same single-file menu per chosen file.
+    while True:
+        menu_block_begin(force_new=True)
+        visible_entries = [f for f in file_data if f.get('visible', True)]
+        if not visible_entries:
+            print("No visible files.")
+            print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+            break
+        if curves_status_fn is not None:
+            # Counts only by default (colors behind ``v``).
+            curves_status_fn()
         else:
-            # Check per-file cycle selection (multi-file only): f1:1,5,10 f2:2,4,6 viridis
-            per_file_result = None
-            if is_multi_file and len(tokens_raw) >= 1:
-                per_file_result = parse_per_file_cycle_tokens(tokens_raw, len(file_data), fig)
-            if per_file_result is not None:
-                file_to_cycles, pf_palette = per_file_result
-                push_state("cycles/colors")
-                # Collect valid file selections first so palette colors can be assigned
-                # consistently across files (f1..fN), not per-cycle within each file.
-                selected_file_items = []
-                for fidx_1based, sel_cycles in sorted(file_to_cycles.items()):
-                    if 1 <= fidx_1based <= len(file_data):
-                        f_entry = file_data[fidx_1based - 1]
-                        if not f_entry.get('visible', True):
-                            continue
-                        cl = f_entry.get('cycle_lines') or {}
-                        acyc = sorted(cl.keys())
-                        if not acyc:
-                            continue
-                        show = list(acyc) if not sel_cycles else [c for c in sel_cycles if c in cl]
-                        set_visible_cycles(cl, show)
-                        if not show:
-                            continue
-                        selected_file_items.append((fidx_1based, cl, show))
-
-                n_selected_files = len(selected_file_items)
-                file_palette_cols = []
-                if n_selected_files > 0:
-                    if pf_palette and pf_palette.lower() in ('tab10', '1'):
-                        file_palette_cols = [
-                            mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                            for i in range(n_selected_files)
-                        ]
-                    elif pf_palette:
-                        try:
-                                    cmap = get_colormap(pf_palette)
-                        except Exception:
-                            cmap = None
-                        if cmap is not None:
-                            file_palette_cols = (
-                                [cmap(0.55)] if n_selected_files == 1 else
-                                [cmap(t) for t in np.linspace(0.08, 0.88, n_selected_files)]
-                            )
-                        else:
-                            file_palette_cols = [
-                                mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                                for i in range(n_selected_files)
-                            ]
-
-                for idx, (fidx_1based, cl, show) in enumerate(selected_file_items):
-                    if file_palette_cols:
-                        # Palette in per-file syntax means one color per file.
-                        col = file_palette_cols[idx]
-                        apply_colors(cl, {c: col for c in show})
-                    else:
-                        # No palette: keep per-cycle tab10 fallback inside each file.
-                        cols = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                                for i in range(len(show))]
-                        apply_colors(cl, {c: col for c, col in zip(show, cols)})
-                        apply_curve_linewidth(fig, cl)
-                        if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                            apply_stored_smooth_settings(cl, fig)
-                dm = getattr(fig, '_ec_display_mode', 'both')
-                apply_display_mode(dm)
-                rebuild_legend(ax)
-                apply_nice_ticks()
+            print_file_list(file_data, current_file_idx)
+        print("  " + colorize_menu(f"1-{len(file_data)}: edit colors of that file"))
+        print("  " + colorize_menu("v: show current colors"))
+        print("  " + colorize_menu("q: back"))
+        sel = safe_input(colorize_prompt("File number: ")).strip()
+        if sel.lower() == 'q' or blank_means_back(sel):
+            break
+        if sel.lower() == 'v':
+            shown = False
+            if curves_status_fn is not None:
                 try:
-                    fig.canvas.draw()
-                except Exception:
-                    fig.canvas.draw_idle()
-                pf_display = pf_palette or 'tab10'
-                if pf_palette and pf_palette.lower() in ('tab10', '1'):
-                    pf_display = 'tab10'
-                print(f"Per-file cycles applied (palette: {pf_display}): "
-                      + ", ".join(f"f{i}:{','.join(map(str, c)) if c else 'all'}" for i, c in sorted(file_to_cycles.items())))
-            else:
-                # Check file-palette mode (multi-file only): f1-5 viridis, fall viridis
-                file_palette_result = None
-                if is_multi_file and len(tokens) >= 2:
-                    file_palette_result = parse_file_palette_tokens(tokens, len(file_data), fig)
-                if file_palette_result is not None:
-                    file_indices, fp_palette = file_palette_result
-                    target_cycle_lines_list = [(file_data[i]['cycle_lines'], sorted((file_data[i].get('cycle_lines') or {}).keys())) for i in file_indices]
-                    push_state("cycles/colors")
-                    n_files = len(target_cycle_lines_list)
-                    if fp_palette and fp_palette.lower() in ('tab10', '1'):
-                        cols = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)]) for i in range(n_files)]
-                    else:
-                        try:
-                                    cmap = get_colormap(fp_palette) if fp_palette else None
-                        except Exception:
-                            cmap = None
-                        if cmap is None:
-                            print(f"Unknown colormap '{fp_palette}'.")
-                            continue
-                        else:
-                            cols = [cmap(t) for t in np.linspace(0.08, 0.88, n_files)] if n_files > 1 else [cmap(0.55)]
-                    for idx, (cl, acyc) in enumerate(target_cycle_lines_list):
-                        if idx < len(cols):
-                            col = cols[idx]
-                            mapping = {c: col for c in acyc}
-                            apply_colors(cl, mapping)
-                            set_visible_cycles(cl, list(acyc))
-                        apply_curve_linewidth(fig, cl)
-                    if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                        for cl, _ in target_cycle_lines_list:
-                            apply_stored_smooth_settings(cl, fig)
-                    dm = getattr(fig, '_ec_display_mode', 'both')
-                    apply_display_mode(dm)
-                    rebuild_legend(ax)
-                    apply_nice_ticks()
-                    try:
-                        fig.canvas.draw()
-                    except Exception:
-                        fig.canvas.draw_idle()
-                    try:
-                        preview = color_bar([mcolors.to_hex(col) for col in cols])
-                        print(f"Palette '{fp_palette}' applied to files {[i+1 for i in file_indices]}: {preview}")
-                    except Exception:
-                        print(f"Palette '{fp_palette}' applied to files {[i+1 for i in file_indices]}.")
-                else:
-                    mode, cycles, mapping, palette, use_all = parse_cycle_tokens(tokens, fig)
-                    push_state("cycles/colors")
-                    all_ignored = []
-                    # Apply to each target file
-                    for cl, acyc in target_cycle_lines_list:
-                        # Filter to existing cycles in this target
-                        if use_all:
-                            existing = list(acyc)
-                            ignored = []
-                        else:
-                            existing = [c for c in cycles if c in cl]
-                            ignored = [c for c in cycles if c not in cl]
-                            all_ignored.extend(ignored)
-                        if not existing and mode != 'numbers':
-                            continue
-                        if not existing:
-                            print("No valid cycles provided; keeping current visibility.")
-                        # Update visibility
-                        if existing:
-                            set_visible_cycles(cl, existing)
-                        # Apply coloring by mode
-                        if mode == 'map' and mapping:
-                            mapping2 = {c: mapping[c] for c in existing if c in mapping}
-                            apply_colors(cl, mapping2)
-                            if mapping2 and cl is target_cycle_lines_list[0][0]:
-                                print("Applied manual colors:")
-                                for cyc, col in mapping2.items():
-                                    print(f"  Cycle {cyc}: {format_color_listing(col)}")
-                        elif mode == 'palette' and existing:
-                            # ====================================================================
-                            # APPLY COLOR PALETTE TO ELECTROCHEMISTRY CYCLES
-                            # ====================================================================
-                            #
-                            # This applies a colormap to selected cycles in EC mode (GC, CV, dQ/dV).
-                            #
-                            # HOW IT WORKS:
-                            # Similar to XY mode, but works with cycles instead of individual files.
-                            # Each cycle gets a different color sampled from the colormap.
-                            #
-                            # Example with 10 cycles and 'viridis':
-                            #   Cycle 1 → dark purple
-                            #   Cycle 2 → purple-blue
-                            #   Cycle 3 → blue
-                            #   ...
-                            #   Cycle 10 → bright yellow
-                            #
-                            # This creates a visual progression showing how the battery changes
-                            # over multiple cycles (degradation, capacity fade, etc.)
-                            # ====================================================================
-                            #
-                            # Special handling for Tab10 (default palette) to match hardcoded colors exactly
-                            if palette and palette.lower() in ('tab10', '1'):
-                                # Use the exact hardcoded Tab10 colors to match default behavior
-                                n = len(existing)
-                                cols = [mcolors.to_rgba(TAB10_HEX[i % len(TAB10_HEX)])
-                                        for i in range(n)]
-                            else:
-                                try:
-                                            cmap = get_colormap(palette) if palette else None
-                                except Exception:
-                                    cmap = None
-                                if cmap is None:
-                                    print(f"Unknown colormap '{palette}'.")
-                                    cols = []
-                                else:
-                                    n = len(existing)
-                                    cols = sample_colormap(cmap, n, pair=(0.15, 0.85), span=(0.08, 0.88))
-                            if cols:
-                                apply_colors(cl, {c: col for c, col in zip(existing, cols)})
-                                try:
-                                    preview = color_bar([mcolors.to_hex(col) for col in cols])
-                                except Exception:
-                                    preview = ""
-                                if preview and cl is target_cycle_lines_list[0][0]:
-                                    palette_display = 'tab10 (default)' if palette and palette.lower() in ('tab10', '1') else palette
-                                    cc = _format_cycles_compact(cycles) if (not use_all and cycles) else ""
-                                    cyc_suff = f" — cycles {cc}" if cc else ""
-                                    print(f"Palette '{palette_display}' applied{cyc_suff}: {preview}")
-                        elif mode == 'numbers' and existing:
-                            pass
-                        # Reapply curve linewidth and smooth for this target
-                        apply_curve_linewidth(fig, cl)
-                        if is_dqdv and hasattr(fig, '_dqdv_smooth_settings'):
-                            apply_stored_smooth_settings(cl, fig)
-
-                    # Re-apply display mode so newly added cycles get correct charge/discharge visibility
-                    dm = getattr(fig, '_ec_display_mode', 'both')
-                    apply_display_mode(dm)
-
-                    # Rebuild legend and redraw (once after all targets)
-                    rebuild_legend(ax)
-                    apply_nice_ticks()
-                    try:
-                        fig.canvas.draw()
-                    except Exception:
-                        fig.canvas.draw_idle()
-
-                    if all_ignored:
-                        print("Ignored cycles:", ", ".join(str(c) for c in sorted(set(all_ignored))))
-
+                    curves_status_fn(colors=True)  # type: ignore[call-arg]
+                    shown = True
+                except TypeError:
+                    shown = False
+            if not shown:
+                _print_ec_current_curves(
+                    target_cycle_lines_list=[
+                        (f['cycle_lines'], sorted((f.get('cycle_lines') or {}).keys()))
+                        for f in visible_entries
+                    ],
+                    is_multi_file=True,
+                    file_data=file_data,
+                )
+            continue
+        try:
+            fidx = int(sel.lstrip('fF'))
+        except ValueError:
+            print(f"Enter a file number (1-{len(file_data)}), v, or q.")
+            continue
+        if not (1 <= fidx <= len(file_data)):
+            print(f"File must be 1-{len(file_data)}.")
+            continue
+        f_entry = file_data[fidx - 1]
+        cl = f_entry.get('cycle_lines') or {}
+        if not cl:
+            print("That file has no cycles to color.")
+            continue
+        if not f_entry.get('visible', True):
+            print("Note: this file is currently hidden; color edits show once it is visible.")
+        fname = f_entry.get('display_name') or f_entry.get('filename') or f"file {fidx}"
+        _edit_one_file(
+            cl,
+            sorted(cl.keys(), key=_cycle_sort_key),
+            header=f"Editing colors — file {fidx}: {fname}",
+        )
 
 __all__ = ["run_ec_cycles_menu"]

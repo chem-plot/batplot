@@ -24,6 +24,17 @@ def resolve_path_token(token: str) -> str:
         return token
     if ":" not in token:
         return token
+    try:
+        from .plot_modes.common.sources import split_path_token
+
+        base, rest = split_path_token(token)
+        if rest:
+            tail = rest[-1]
+            if tail.strip().lower() == "q" or _is_float(tail):
+                if os.path.isfile(base):
+                    return base
+    except Exception:
+        pass
     base, tail = token.rsplit(":", 1)
     if tail.strip().lower() != "q":
         try:
@@ -36,6 +47,14 @@ def resolve_path_token(token: str) -> str:
     if m and os.path.isfile(m.group(1)):
         return m.group(1)
     return token
+
+
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
 
 
 # -----------------------------------------------------------------------------

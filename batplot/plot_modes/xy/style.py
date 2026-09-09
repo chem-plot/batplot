@@ -18,7 +18,7 @@ from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, Nu
 
 from ...utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename, _colorize_option_keys
 from ...plotting import apply_curve_color
-from ...color_utils import color_block, get_colormap
+from ...color_utils import color_block, format_color_listing, get_colormap
 from .spines import apply_xy_spine_specs
 from ...ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
@@ -30,10 +30,14 @@ from ...ui import (
     capture_axes_tick_locators,
     restore_axes_tick_locators,
     finalize_spine_colors,
+    resolve_spine_dump_color,
+    sync_figure_geometry_caches,
 )
 from ..common.axis_state import capture_axis_wasd_state
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
-from ..common.spines import current_tick_width
+from ..common.line_dash import capture_dash_pattern, clear_dash_pattern, restore_dash_pattern
+from ..common.axis_state import primary_axis_label_text
+from ..common.spines import current_tick_width, set_primary_axis_title
 from ..common.terminal import safe_input
 
 
@@ -112,25 +116,8 @@ def _color_to_hex(value):
 
 
 def _get_primary_axis_text(ax, axis: str) -> str:
-    if axis == 'x':
-        label = ax.xaxis.label
-        stored_attr = '_stored_xlabel'
-    else:
-        label = ax.yaxis.label
-        stored_attr = '_stored_ylabel'
-    text = ''
-    try:
-        text = label.get_text()
-    except Exception:
-        text = ''
-    if not text and hasattr(ax, stored_attr):
-        try:
-            stored = getattr(ax, stored_attr)
-            if stored:
-                text = stored
-        except Exception:
-            text = ''
-    return text or ''
+    """Store-aware primary label text (shared with session/undo dump)."""
+    return primary_axis_label_text(ax, axis)
 
 
 def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
@@ -138,8 +125,9 @@ def _get_duplicate_axis_text(ax, artist_attr: str, fallback: str = '') -> str:
     if hasattr(ax, override_attr):
         try:
             override_val = getattr(ax, override_attr)
-            if override_val:
-                return override_val
+            # Keep intentional empty override (do not fall back to bottom/left text).
+            if override_val is not None:
+                return str(override_val)
         except Exception:
             pass
     art = getattr(ax, artist_attr, None)
@@ -528,18 +516,22 @@ def print_style_info(
     # ---- Spines ---
     print("\n--- Spines ---")
     for name, spn in ax.spines.items():
-        print(f"  {name:<6} lw={spn.get_linewidth()} color={spn.get_edgecolor()} visible={spn.get_visible()}")
+        try:
+            col_disp = format_color_listing(spn.get_edgecolor())
+        except Exception:
+            col_disp = spn.get_edgecolor()
+        print(f"  {name:<6} lw={spn.get_linewidth()} color={col_disp} visible={spn.get_visible()}")
 
     try:
         x_color = ax.xaxis.get_tick_params().get('color', 'black')
         y_color = ax.yaxis.get_tick_params().get('color', 'black')
-        print(f"Tick colors: X={x_color} Y={y_color}")
+        print(f"Tick colors: X={format_color_listing(x_color)} Y={format_color_listing(y_color)}")
     except Exception:
         pass
     try:
         x_label_color = ax.xaxis.label.get_color()
         y_label_color = ax.yaxis.label.get_color()
-        print(f"Label colors: X={x_label_color} Y={y_label_color}")
+        print(f"Label colors: X={format_color_listing(x_label_color)} Y={format_color_listing(y_label_color)}")
     except Exception:
         pass
 
@@ -567,12 +559,10 @@ def print_style_info(
                 if len(ent) < 6:
                     continue
                 lab, fname, _pq, _wl, _qm, col = ent[0], ent[1], ent[2], ent[3], ent[4], ent[5]
-                try:
-                    ch = mcolors.to_hex(mcolors.to_rgba(col))
-                except Exception:
-                    ch = str(col)
-                hb = color_block(ch) if ch else ""
-                print(f"  {i + 1}: {lab}  ({os.path.basename(fname)})  {hb} {ch}")
+                print(
+                    f"  {i + 1}: {format_color_listing(col)}  {lab}  "
+                    f"({os.path.basename(fname)})"
+                )
             hkl_state = None
             _bp_module = sys.modules.get('__main__')
             if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
@@ -609,8 +599,7 @@ def print_style_info(
         if ln is None:
             continue
         col_val = ln.get_color()
-        col_hex = _color_to_hex(col_val)
-        col_disp = f"{color_block(col_hex)} {col_hex}" if col_hex else str(col_val)
+        col_disp = format_color_listing(col_val)
         lw = ln.get_linewidth()
         ls = ln.get_linestyle()
         mk = ln.get_marker()
@@ -648,6 +637,7 @@ def export_style_config(
     show_cif_titles: Optional[bool] = None,
     overwrite_path: Optional[str] = None,
     force_kind: Optional[str] = None,
+    cif_hkl_label_map: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Export style configuration after displaying a summary and prompting the user.
     
@@ -655,7 +645,6 @@ def export_style_config(
     """
     try:
         fw, fh = fig.get_size_inches()
-        sp = fig.subplotpars
 
         def axis_tick_width(axis, which):
             # Tick width lives in the axis tick params (marker edge width), not
@@ -668,7 +657,9 @@ def export_style_config(
         frame_w_in = bbox.width * fw
         frame_h_in = bbox.height * fh
         
-        wasd_state = capture_axis_wasd_state(ax, tick_state=tick_state)
+        from .spines import capture_xy_wasd_state
+
+        wasd_state = capture_xy_wasd_state(ax, fig, tick_state)
         
         cfg = {
             "version": 2,
@@ -678,11 +669,13 @@ def export_style_config(
                 "frame_size": [frame_w_in, frame_h_in],
                 "axes_fraction": [bbox.x0, bbox.y0, bbox.width, bbox.height],
             },
+            # Live axes position (not fig.subplotpars) so ``g``/set_position frames
+            # survive psg import when axes_fraction is absent in older readers.
             "margins": {
-                "left": sp.left,
-                "right": sp.right,
-                "bottom": sp.bottom,
-                "top": sp.top,
+                "left": float(bbox.x0),
+                "right": float(bbox.x0 + bbox.width),
+                "bottom": float(bbox.y0),
+                "top": float(bbox.y0 + bbox.height),
             },
             "font": {
                 "size": plt.rcParams.get("font.size"),
@@ -703,7 +696,7 @@ def export_style_config(
             "spines": {
                 name: {
                     "linewidth": spn.get_linewidth(),
-                    "color": spn.get_edgecolor(),
+                    "color": resolve_spine_dump_color(ax, name, fig),
                     "visible": spine_vis.get(name, True),
                 }
                 for name, spn in ax.spines.items()
@@ -728,6 +721,7 @@ def export_style_config(
                     "color": _color_to_hex(ln.get_color()),
                     "linewidth": ln.get_linewidth(),
                     "linestyle": ln.get_linestyle(),
+                    "dash_pattern": capture_dash_pattern(ln),
                     "marker": ln.get_marker(),
                     "markersize": ln.get_markersize(),
                     "markerfacecolor": _color_to_hex(ln.get_markerfacecolor()),
@@ -741,11 +735,19 @@ def export_style_config(
             }
         bottom_label_text = _get_primary_axis_text(ax, 'x')
         left_label_text = _get_primary_axis_text(ax, 'y')
+        right_label_text = _get_duplicate_axis_text(ax, '_right_ylabel_artist', left_label_text)
+        ax2_xy = getattr(fig, '_xy_ax2', None)
+        if ax2_xy is not None:
+            try:
+                # Keep intentional empty twin ylabel (do not `or` fallback).
+                right_label_text = ax2_xy.get_ylabel()
+            except Exception:
+                pass
         axis_title_texts = {
             "top_x": _get_duplicate_axis_text(ax, '_top_xlabel_artist', bottom_label_text),
             "bottom_x": bottom_label_text,
             "left_y": left_label_text,
-            "right_y": _get_duplicate_axis_text(ax, '_right_ylabel_artist', left_label_text),
+            "right_y": right_label_text,
         }
         cfg["axis_titles"] = {
             "top_x": bool(getattr(ax, "_top_xlabel_on", False)),
@@ -781,14 +783,23 @@ def export_style_config(
         # Save stack/legend anchor preferences
         cfg["stack_label_at_bottom"] = getattr(fig, '_stack_label_at_bottom', False)
         cfg["label_anchor_left"] = getattr(fig, '_label_anchor_left', False)
-        # Save CIF title visibility
+        # Save CIF title visibility (arg → fig attr fallback for batch / reopened sessions)
         if show_cif_titles is not None:
             cfg["show_cif_titles"] = bool(show_cif_titles)
-        # Save CIF hkl label visibility (read from __main__ module if available)
+        elif hasattr(fig, "_bp_show_cif_titles"):
+            try:
+                cfg["show_cif_titles"] = bool(fig._bp_show_cif_titles)
+            except Exception:
+                pass
+        # Save CIF hkl label visibility from this figure first (__main__ is process-global
+        # and can lag / collide across batch panels or prior sessions).
         try:
-            _bp_module = sys.modules.get('__main__')
-            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
-                cfg["show_cif_hkl"] = bool(getattr(_bp_module, 'show_cif_hkl', False))
+            if hasattr(fig, "_bp_show_cif_hkl"):
+                cfg["show_cif_hkl"] = bool(fig._bp_show_cif_hkl)
+            else:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                    cfg["show_cif_hkl"] = bool(getattr(_bp_module, 'show_cif_hkl', False))
         except Exception:
             pass
         if cif_tick_series:
@@ -809,13 +820,36 @@ def export_style_config(
                 o2.append(0.0)
             cfg["cif_stack_y_offsets"] = o2
             try:
-                _bp_module = sys.modules.get('__main__')
-                if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
-                    vis = list(getattr(_bp_module, 'cif_set_visible') or [])
-                    if len(vis) == len(cif_tick_series):
-                        cfg["cif_set_visible"] = [bool(v) for v in vis]
+                vis = None
+                if hasattr(fig, "_bp_cif_set_visible"):
+                    vis = list(getattr(fig, "_bp_cif_set_visible") or [])
+                else:
+                    _bp_module = sys.modules.get('__main__')
+                    if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
+                        vis = list(getattr(_bp_module, 'cif_set_visible') or [])
+                if isinstance(vis, list) and len(vis) == len(cif_tick_series):
+                    cfg["cif_set_visible"] = [bool(v) for v in vis]
             except Exception:
                 pass
+            # Full CIF block (files/labels/colors always; peak data added for .bpsg below)
+            def _json_color(c):
+                try:
+                    if isinstance(c, (list, tuple)) and len(c) >= 3:
+                        return [float(c[0]), float(c[1]), float(c[2])] + (
+                            [float(c[3])] if len(c) > 3 else []
+                        )
+                except Exception:
+                    pass
+                try:
+                    return str(mcolors.to_hex(c, keep_alpha=False)).lower()
+                except Exception:
+                    return c
+
+            cfg["cif"] = {
+                "labels": [str(e[0]) for e in cif_tick_series],
+                "files": [str(e[1]) for e in cif_tick_series],
+                "colors": [_json_color(e[5]) for e in cif_tick_series],
+            }
         palette_history = getattr(fig, '_curve_palette_history', None)
         serialized_palettes = serialize_curve_palette_history(fig)
         if serialized_palettes:
@@ -866,22 +900,121 @@ def export_style_config(
         if exp_choice == 'ps':
             cfg['kind'] = 'xy_style'
             default_ext = '.bps'
+            # Style-only: strip canvas/frame hitchhikers (parity with EC/CPC/histo).
+            try:
+                fig_block = cfg.get('figure') if isinstance(cfg.get('figure'), dict) else {}
+                for _k in ('size', 'frame_size', 'axes_fraction'):
+                    fig_block.pop(_k, None)
+                cfg.pop('margins', None)
+                # Curve offsets / dual-y layout are geometry — not style-only ``p``.
+                cfg.pop('right_y_curve_indices', None)
+                cfg.pop('txaxis', None)
+                for entry in (cfg.get('lines') or []):
+                    if isinstance(entry, dict):
+                        entry.pop('offset', None)
+            except Exception:
+                pass
         elif exp_choice == 'psg':
             cfg['kind'] = 'xy_style_geom'
+            try:
+                from .axis_units import get_xy_axis_mode
+                _geom_axis_mode = get_xy_axis_mode(fig)
+            except Exception:
+                _geom_axis_mode = getattr(fig, '_xy_axis_mode', None)
             # Add geometry information
+            _cif_init = getattr(ax, '_cif_initial_ylim', None)
+            _ax2_geom = getattr(fig, '_xy_ax2', None)
             cfg['geometry'] = {
-                'xlabel': ax.get_xlabel() or '',
-                'ylabel': ax.get_ylabel() or '',
+                'xlabel': primary_axis_label_text(ax, 'x'),
+                'ylabel': primary_axis_label_text(ax, 'y'),
                 'xlim': list(ax.get_xlim()),
                 'ylim': list(ax.get_ylim()),
+                # Twin y limits (dual-y / --ry); older .bpsg omit (BC → leave twin).
+                'ylim_right': (
+                    list(map(float, _ax2_geom.get_ylim()))
+                    if _ax2_geom is not None else None
+                ),
                 # Store the x/y ranges that the current data was normalized to
                 'norm_xlim': list(getattr(ax, '_norm_xlim', ax.get_xlim())),
                 'norm_ylim': list(getattr(ax, '_norm_ylim', ax.get_ylim())),
+                # CIF row layout reference (same role as session cif_initial_ylim)
+                'cif_initial_ylim': (
+                    [float(_cif_init[0]), float(_cif_init[1])]
+                    if isinstance(_cif_init, (list, tuple)) and len(_cif_init) == 2
+                    else None
+                ),
+                # Optional; older .bpsg omit these (BC). Used with Options ``u``.
+                'axis_mode': _geom_axis_mode,
+                'wavelength': (
+                    getattr(fig, '_xy_wavelength', None)
+                    if getattr(fig, '_xy_wavelength', None) is not None
+                    else getattr(args, 'wl', None)
+                ),
+                'dual_wl_display': bool(getattr(fig, '_xy_dual_wl_display', False)),
+                'file_wavelength_info': list(getattr(fig, '_xy_file_wavelength_info', None) or []),
             }
             default_ext = '.bpsg'
         else:
             print(f"Unknown option: {exp_choice}")
             return
+
+        # Embed full peak data on style+geometry so p/i/batch-undo can restore
+        # CIF sets (including empty → clear after first interactive add).
+        # Style-only (.bps) keeps files/labels only when series is non-empty.
+        if exp_choice == "psg" and cif_tick_series is not None:
+            def _json_peaks(peaks):
+                try:
+                    return [float(v) for v in list(peaks)]
+                except Exception:
+                    return list(peaks) if peaks is not None else []
+
+            def _json_color2(c):
+                try:
+                    if isinstance(c, (list, tuple)) and len(c) >= 3:
+                        return [float(c[0]), float(c[1]), float(c[2])] + (
+                            [float(c[3])] if len(c) > 3 else []
+                        )
+                except Exception:
+                    pass
+                try:
+                    return str(mcolors.to_hex(c, keep_alpha=False)).lower()
+                except Exception:
+                    return c
+
+            if not isinstance(cfg.get("cif"), dict):
+                cfg["cif"] = {
+                    "labels": [str(e[0]) for e in cif_tick_series],
+                    "files": [str(e[1]) for e in cif_tick_series],
+                    "colors": [_json_color2(e[5]) for e in cif_tick_series],
+                }
+            cfg["cif"]["tick_series"] = [
+                [
+                    str(e[0]),
+                    str(e[1]),
+                    _json_peaks(e[2]),
+                    (None if e[3] is None else float(e[3])),
+                    (None if e[4] is None else float(e[4])),
+                    _json_color2(e[5]),
+                ]
+                for e in cif_tick_series
+            ]
+            hkl_src = cif_hkl_label_map
+            if hkl_src is None:
+                hkl_src = getattr(fig, "_batplot_cif_hkl_label_map", None)
+            if hkl_src is None:
+                try:
+                    _bp_module = sys.modules.get("__main__")
+                    if _bp_module is not None:
+                        hkl_src = getattr(_bp_module, "cif_hkl_label_map", None)
+                except Exception:
+                    hkl_src = None
+            try:
+                cfg["cif"]["hkl_label_map"] = {
+                    str(k): {str(qk): str(qv) for qk, qv in dict(v).items()}
+                    for k, v in dict(hkl_src or {}).items()
+                }
+            except Exception:
+                cfg["cif"]["hkl_label_map"] = {}
         
         # If overwrite_path is provided, use it directly
         if overwrite_path:
@@ -985,7 +1118,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             cfg = json.load(f)
     except Exception as e:
         print(f"Could not read config: {e}")
-        return
+        return False
+    kind = cfg.get("kind", "") if isinstance(cfg, dict) else ""
+    if kind and kind not in ("xy_style", "xy_style_geom"):
+        print(f"Not an XY style file (kind={kind!r}).")
+        return False
     # Enforce compatibility between style/geometry ro state and current figure ro state.
     # Styles saved from a plot using --ro (swapped x/y) must not be applied to a non-ro plot, and vice versa.
     file_ro = bool(cfg.get("ro_active", False))
@@ -996,14 +1133,17 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         else:
             print("Warning: Style/geometry file was saved without --ro; current plot was created with --ro.")
         print("Not applying style/geometry to avoid corrupting axis orientation.")
-        return
+        return False
 
     try:
-        right_raw = cfg.get("right_y_curve_indices")
-        if right_raw is not None:
-            right_indices = frozenset(int(i) for i in right_raw)
-            use_top_x = bool(cfg.get("txaxis", False))
-            _apply_xy_dual_y_layout(fig, ax, right_indices, use_top_x)
+        # Dual-y / --ry is structural geometry. Style-only ``xy_style`` / ``.bps``
+        # must not rebuild twins (ps vs psg). Legacy files without kind still apply.
+        if kind != "xy_style":
+            right_raw = cfg.get("right_y_curve_indices")
+            if right_raw is not None:
+                right_indices = frozenset(int(i) for i in right_raw)
+                use_top_x = bool(cfg.get("txaxis", False))
+                _apply_xy_dual_y_layout(fig, ax, right_indices, use_top_x)
     except Exception as e:
         print(f"Warning: Could not restore dual y-axis layout: {e}")
 
@@ -1046,7 +1186,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
     except Exception:
         pass
     try:
-        figure_cfg = cfg.get("figure", {})
+        # Canvas/frame geometry belongs to style+geometry (``.bpsg`` / ``xy_style_geom``).
+        # Style-only (``.bps`` / ``xy_style``) must not resize the figure (parity with operando/histo).
+        kind_for_canvas = str(cfg.get("kind", "") or "")
+        apply_canvas_geom = (kind_for_canvas == "xy_style_geom")
+        figure_cfg = cfg.get("figure", {}) if apply_canvas_geom else {}
         # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
         axes_frac = figure_cfg.get("axes_fraction")
         frame_size = figure_cfg.get("frame_size")
@@ -1057,8 +1201,9 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 fw = float(sz[0])
                 fh = float(sz[1])
                 if not keep_canvas_fixed:
-                    # Use forward=False to prevent automatic subplot adjustment that can shift the plot
-                    fig.set_size_inches(fw, fh, forward=False)
+                    # forward=True: undo/import must resize the GUI window
+                    # (parity with live g→c). axes_fraction is restored next.
+                    fig.set_size_inches(fw, fh, forward=True)
                 # No message needed when canvas is fixed - this is normal behavior
             except Exception as e:
                 print(f"Warning: could not parse figure size: {e}")
@@ -1080,7 +1225,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 left = (1 - w_frac) / 2
                 bottom = (1 - h_frac) / 2
                 ax.set_position([left, bottom, w_frac, h_frac])
-            else:
+            elif apply_canvas_geom:
+                # Style-only (``.bps`` / ``xy_style``) must not relocate axes via margins.
                 margins = cfg.get("margins")
                 if isinstance(margins, dict) and margins:
                     adjust_kwargs = {}
@@ -1092,6 +1238,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         except Exception as e:
             if _style_debug:
                 print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
+        if apply_canvas_geom:
+            sync_figure_geometry_caches(fig, ax)
         if _style_debug:
             try:
                 ylim0, ylim1 = ax.get_ylim()
@@ -1204,11 +1352,17 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         if wasd:
             # Apply WASD state (20 parameters)
             try:
-                # Apply spines from wasd
+                # Apply spines from wasd (twin-aware for --ry / --txaxis).
+                from .spines import set_xy_spine_visible, sync_xy_twin_wasd
+
                 for side in ('top', 'bottom', 'left', 'right'):
                     side_cfg = wasd.get(side, {})
-                    if 'spine' in side_cfg and side in ax.spines:
-                        ax.spines[side].set_visible(bool(side_cfg['spine']))
+                    if 'spine' in side_cfg:
+                        try:
+                            set_xy_spine_visible(fig, ax, side, bool(side_cfg['spine']))
+                        except Exception:
+                            if side in ax.spines:
+                                ax.spines[side].set_visible(bool(side_cfg['spine']))
                 
                 # Apply ticks and labels
                 top_cfg = wasd.get('top', {})
@@ -1243,6 +1397,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                               left=bool(left_cfg.get('minor', False)),
                               right=bool(right_cfg.get('minor', False)),
                               labelleft=False, labelright=False)
+                # Dual-Y (--ry / --txaxis): sync twin tick chrome (CPC parity).
+                try:
+                    sync_xy_twin_wasd(ax, fig, wasd)
+                except Exception:
+                    pass
                 
                 # Apply titles
                 ax._top_xlabel_on = bool(top_cfg.get('title', False))
@@ -1261,6 +1420,20 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 tick_state['mbx'] = bool(bot_cfg.get('minor', False))
                 tick_state['mly'] = bool(left_cfg.get('minor', False))
                 tick_state['mry'] = bool(right_cfg.get('minor', False))
+                try:
+                    from ..common.spines import sync_tick_state_from_wasd
+                    sync_tick_state_from_wasd(
+                        tick_state,
+                        {
+                            'top': top_cfg, 'bottom': bot_cfg,
+                            'left': left_cfg, 'right': right_cfg,
+                        },
+                        tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+                        label_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+                    )
+                    ax._saved_tick_state = dict(tick_state)
+                except Exception:
+                    pass
                 
             except Exception as e:
                 print(f"Warning: Could not apply WASD tick visibility: {e}")
@@ -1362,8 +1535,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             if "linestyle" in entry:
                 try:
                     ln.set_linestyle(entry["linestyle"])
+                    clear_dash_pattern(ln)
                 except Exception:
                     pass
+            if entry.get("dash_pattern"):
+                restore_dash_pattern(ln, entry["dash_pattern"])
             if "marker" in entry:
                 try:
                     ln.set_marker(entry["marker"])
@@ -1405,7 +1581,13 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             # Restore offset if available
             # Use current displayed y and current offset to get baseline, then apply file offset.
             # (orig_y can be wrong in stacked sessions—e.g. already offset—so we derive baseline here.)
-            if "offset" in entry and offsets_list is not None and x_data_list is not None:
+            # Offsets are geometry (``o`` / ``psg``). Style-only ``ps`` must not move curves.
+            if (
+                kind == "xy_style_geom"
+                and "offset" in entry
+                and offsets_list is not None
+                and x_data_list is not None
+            ):
                 try:
                     offset_val = float(entry["offset"])
                     if idx < len(offsets_list) and idx < len(y_data_list) and idx < len(x_data_list):
@@ -1448,9 +1630,79 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         else:
             if hasattr(fig, '_curve_palette_history'):
                 delattr(fig, '_curve_palette_history')
-        # CIF tick sets (labels & colors)
+        # CIF tick sets — prefer full embedded series (interactive add → psg),
+        # else legacy index/label/color patches (``cif_ticks``).
+        cif_block = cfg.get("cif") or {}
         cif_cfg = cfg.get("cif_ticks", [])
-        if cif_cfg and cif_tick_series is not None:
+        # Key present (including empty list) means replace — required for batch
+        # undo after the first CIF add. Missing key = legacy style, leave series.
+        if isinstance(cif_block, dict) and "tick_series" in cif_block:
+            embedded = cif_block.get("tick_series") or []
+            restored = []
+            for e in embedded:
+                try:
+                    lab = str(e[0])
+                    fname = str(e[1])
+                    peaksQ = list(e[2]) if e[2] is not None else []
+                    wl = None if e[3] is None else float(e[3])
+                    qmax_sim = None if e[4] is None else float(e[4])
+                    color = e[5]
+                    restored.append((lab, fname, peaksQ, wl, qmax_sim, color))
+                except Exception:
+                    continue
+            if cif_tick_series is not None:
+                cif_tick_series[:] = restored
+            try:
+                fig._batplot_cif_tick_series = (
+                    cif_tick_series if cif_tick_series is not None else list(restored)
+                )
+            except Exception:
+                pass
+            hkl_emb = cif_block.get("hkl_label_map")
+            try:
+                restored_hkl = {}
+                if hkl_emb is not None:
+                    for k, v in dict(hkl_emb).items():
+                        inner = {}
+                        for qk, qv in dict(v).items():
+                            try:
+                                inner[float(qk)] = str(qv)
+                            except Exception:
+                                inner[qk] = str(qv)
+                        restored_hkl[str(k)] = inner
+                if cif_hkl_label_map is not None:
+                    cif_hkl_label_map.clear()
+                    cif_hkl_label_map.update(restored_hkl)
+                    live_hkl = cif_hkl_label_map
+                else:
+                    live_hkl = restored_hkl
+                fig._batplot_cif_hkl_label_map = live_hkl  # type: ignore[attr-defined]
+                _bp_module = sys.modules.get("__main__")
+                if _bp_module is not None:
+                    setattr(_bp_module, "cif_hkl_label_map", live_hkl)
+            except Exception:
+                pass
+            # Ensure a redraw helper exists when style brings the first CIF set
+            # (or clears the last one via empty tick_series).
+            try:
+                from .cif import ensure_xy_cif_draw_installed
+                from .axis_units import get_xy_axis_mode
+                _mode_guess = get_xy_axis_mode(fig)
+                if _mode_guess not in ("2theta", "Q", "d"):
+                    use_2th_guess = any(
+                        (isinstance(e, (list, tuple)) and len(e) > 3 and e[3] is not None)
+                        for e in restored
+                    )
+                else:
+                    use_2th_guess = _mode_guess == "2theta"
+                ensure_xy_cif_draw_installed(
+                    fig, ax, use_2th=use_2th_guess,
+                    cif_hkl_label_map=cif_hkl_label_map,
+                    y_data_list=y_data_list,
+                )
+            except Exception:
+                pass
+        elif cif_cfg and cif_tick_series is not None:
             for entry in cif_cfg:
                 idx = entry.get("index")
                 if idx is None:
@@ -1460,6 +1712,54 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     lab_new = entry.get("label", lab)
                     color_new = entry.get("color", color_old)
                     cif_tick_series[idx] = (lab_new, fname, peaksQ, wl, qmax_sim, color_new)
+        # Style-only: files/labels present but no live series → try reload from disk
+        elif (
+            isinstance(cif_block, dict)
+            and cif_block.get("files")
+            and (cif_tick_series is not None)
+            and (not cif_tick_series)
+        ):
+            try:
+                from .cif import append_xy_cif_file
+                files = list(cif_block.get("files") or [])
+                labels_cif = list(cif_block.get("labels") or [])
+                colors_cif = list(cif_block.get("colors") or [])
+                # Infer 2θ vs Q/d from live fig mode, then axis label / args.
+                from .axis_units import get_xy_axis_mode
+                _mode_reload = get_xy_axis_mode(fig)
+                xl = ax.get_xlabel() or ""
+                xl_l = xl.lower()
+                if _mode_reload in ("2theta", "Q", "d"):
+                    use_2th_reload = _mode_reload == "2theta"
+                else:
+                    use_2th_reload = (
+                        ("2θ" in xl) or ("2theta" in xl_l) or ("2th" in xl_l)
+                        or (str(getattr(args, "xaxis", "") or "").lower() in ("2theta", "2th", "tth"))
+                    )
+                    if ("q (" in xl_l) or xl_l.strip().startswith("q ") or xl_l == "q":
+                        use_2th_reload = False
+                    if ("d (" in xl_l) or xl_l.strip().startswith("d "):
+                        use_2th_reload = False
+                default_wl = getattr(args, "wl", None) or getattr(fig, "_xy_wavelength", None)
+                for i, fpath in enumerate(files):
+                    if not fpath or not os.path.isfile(str(fpath)):
+                        continue
+                    append_xy_cif_file(
+                        fig, ax, str(fpath), redraw=False,
+                        use_2th=use_2th_reload,
+                        default_wl=default_wl,
+                        y_data_list=y_data_list,
+                    )
+                # Re-apply labels/colors from style metadata
+                for i, ent in enumerate(list(cif_tick_series)):
+                    lab, fname, peaksQ, wl, qmax_sim, color = ent
+                    if i < len(labels_cif) and labels_cif[i]:
+                        lab = str(labels_cif[i])
+                    if i < len(colors_cif) and colors_cif[i] is not None:
+                        color = colors_cif[i]
+                    cif_tick_series[i] = (lab, fname, peaksQ, wl, qmax_sim, color)
+            except Exception:
+                pass
         if "cif_stack_y_offsets" in cfg and cif_tick_series is not None:
             try:
                 raw_o = cfg.get("cif_stack_y_offsets") or []
@@ -1556,8 +1856,12 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         # Note: We don't restore original_x_data_list/original_y_data_list or pre_derivative data from style files
         # as style files are for styling only, and the data would be specific
         # to the dataset. Session files (pickle) store this data instead.
-        # Redraw CIF ticks after applying changes
-        if ((cif_cfg and cif_tick_series is not None) or "show_cif_titles" in cfg or "show_cif_hkl" in cfg
+        # Redraw CIF ticks after applying changes (including empty tick_series clear)
+        _cif_full = isinstance(cif_block, dict) and (
+            "tick_series" in cif_block or bool(cif_block.get("files"))
+        )
+        if ((cif_cfg and cif_tick_series is not None) or _cif_full
+                or "show_cif_titles" in cfg or "show_cif_hkl" in cfg
                 or "cif_set_visible" in cfg
                 or "cif_stack_y_offsets" in cfg):
             if hasattr(ax, "_cif_draw_func"):
@@ -1653,24 +1957,124 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         if kind == 'xy_style_geom' and 'geometry' in cfg:
             try:
                 geom = cfg.get('geometry', {})
-                if 'xlabel' in geom and geom['xlabel']:
-                    ax.set_xlabel(geom['xlabel'])
-                if 'ylabel' in geom and geom['ylabel']:
-                    ax.set_ylabel(geom['ylabel'])
-                
-                # Restore normalization ranges (if saved)
-                if 'norm_xlim' in geom and isinstance(geom['norm_xlim'], list) and len(geom['norm_xlim']) == 2:
-                    ax._norm_xlim = tuple(geom['norm_xlim'])
-                if 'norm_ylim' in geom and isinstance(geom['norm_ylim'], list) and len(geom['norm_ylim']) == 2:
+                geom_mode = geom.get('axis_mode')
+                try:
+                    from .axis_units import get_xy_axis_mode
+                    cur_mode = get_xy_axis_mode(fig, ax=ax)
+                except Exception:
+                    cur_mode = getattr(fig, '_xy_axis_mode', None)
+                # Skip XRD xlim/xlabel unless live mode matches (never silent-convert).
+                # Known non-XRD (energy/r/…) vs XRD style → mismatch.
+                # Unknown live mode → adopt style axis_mode metadata only, then apply geom.
+                _xrd = ("2theta", "Q", "d")
+                if geom_mode in _xrd:
+                    if cur_mode in _xrd:
+                        axis_mismatch = geom_mode != cur_mode
+                    elif cur_mode in ("r", "energy", "k", "rft", "other"):
+                        axis_mismatch = True
+                    else:
+                        axis_mismatch = False
+                        try:
+                            from .axis_units import set_xy_axis_mode
+                            set_xy_axis_mode(
+                                fig,
+                                geom_mode,
+                                wavelength=geom.get("wavelength"),
+                            )
+                            cur_mode = geom_mode
+                        except Exception:
+                            pass
+                else:
+                    axis_mismatch = False
+
+                # Labels: key presence (including intentional empty); skip xlabel on axis mismatch.
+                if not axis_mismatch:
+                    if 'xlabel' in geom and geom['xlabel'] is not None:
+                        from ...utils import finalize_axis_label_text
+
+                        _xl = finalize_axis_label_text(str(geom['xlabel']))
+                        ax.set_xlabel(_xl)
+                        try:
+                            ax._stored_xlabel = _xl
+                        except Exception:
+                            pass
+                    if 'ylabel' in geom and geom['ylabel'] is not None:
+                        from ...utils import finalize_axis_label_text
+
+                        _yl = finalize_axis_label_text(str(geom['ylabel']))
+                        ax.set_ylabel(_yl)
+                        try:
+                            ax._stored_ylabel = _yl
+                        except Exception:
+                            pass
+
+                # Restore wavelength / dual-wl metadata when compatible (does not convert data)
+                if not axis_mismatch:
+                    if geom.get('wavelength') is not None:
+                        try:
+                            fig._xy_wavelength = float(geom['wavelength'])  # type: ignore[attr-defined]
+                        except (TypeError, ValueError):
+                            pass
+                    # Missing keys (old .bpsg) clear live dual-wl state — BC defaults
+                    if 'dual_wl_display' in geom:
+                        try:
+                            fig._xy_dual_wl_display = bool(geom.get('dual_wl_display'))  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            fig._xy_dual_wl_display = False  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    if isinstance(geom.get('file_wavelength_info'), list):
+                        try:
+                            fig._xy_file_wavelength_info = list(geom['file_wavelength_info'])  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    elif 'file_wavelength_info' not in geom:
+                        try:
+                            fig._xy_file_wavelength_info = []  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+
+                # Restore normalization ranges (if saved). Accept list or tuple
+                # (JSON uses lists; in-memory/session-shaped snaps may use tuples).
+                if 'norm_ylim' in geom and isinstance(geom['norm_ylim'], (list, tuple)) and len(geom['norm_ylim']) == 2:
                     ax._norm_ylim = tuple(geom['norm_ylim'])
-                
-                # Restore display limits
-                if 'xlim' in geom and isinstance(geom['xlim'], list) and len(geom['xlim']) == 2:
-                    ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
-                if 'ylim' in geom and isinstance(geom['ylim'], list) and len(geom['ylim']) == 2:
+                if not axis_mismatch:
+                    if 'norm_xlim' in geom and isinstance(geom['norm_xlim'], (list, tuple)) and len(geom['norm_xlim']) == 2:
+                        ax._norm_xlim = tuple(geom['norm_xlim'])
+                    # Restore display limits
+                    if 'xlim' in geom and isinstance(geom['xlim'], (list, tuple)) and len(geom['xlim']) == 2:
+                        ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
+                elif geom_mode:
+                    print(
+                        f"Warning: style axis_mode={geom_mode} ≠ current {cur_mode}; "
+                        "skipping xlim/xlabel (use Options u to convert data first)."
+                    )
+                if 'ylim' in geom and isinstance(geom['ylim'], (list, tuple)) and len(geom['ylim']) == 2:
                     if _style_debug:
                         print(f"[style-import check] Applying geometry ylim=({geom['ylim'][0]}, {geom['ylim'][1]})")
                     ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
+                # Twin y limits after dual-y layout (older .bpsg omit → leave twin).
+                try:
+                    yr = geom.get('ylim_right')
+                    ax2_ylim = getattr(fig, '_xy_ax2', None)
+                    if (
+                        ax2_ylim is not None
+                        and isinstance(yr, (list, tuple))
+                        and len(yr) == 2
+                    ):
+                        ax2_ylim.set_ylim(float(yr[0]), float(yr[1]))
+                except Exception:
+                    pass
+                # CIF layout reference (optional; older .bpsg omit)
+                try:
+                    _cif_geom = geom.get('cif_initial_ylim')
+                    if isinstance(_cif_geom, (list, tuple)) and len(_cif_geom) == 2:
+                        ax._cif_initial_ylim = (float(_cif_geom[0]), float(_cif_geom[1]))
+                except Exception:
+                    pass
                 print("Applied geometry (labels and limits)")
             except Exception as e:
                 print(f"Warning: Could not apply geometry: {e}")
@@ -1718,10 +2122,26 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 pass
             at_cfg = cfg.get("axis_titles", {})
             title_texts = cfg.get("axis_title_texts", {})
-            bottom_text = title_texts.get("bottom_x")
-            left_text = title_texts.get("left_y")
-            top_text = title_texts.get("top_x")
-            right_text = title_texts.get("right_y")
+            from ...utils import finalize_axis_label_text
+
+            def _fin_title(v):
+                if v is None:
+                    return None
+                return finalize_axis_label_text(str(v))
+
+            bottom_text = _fin_title(title_texts.get("bottom_x"))
+            left_text = _fin_title(title_texts.get("left_y"))
+            top_text = _fin_title(title_texts.get("top_x"))
+            right_text = _fin_title(title_texts.get("right_y"))
+            # Preserve key presence: missing keys stay None; empty string clears.
+            if "bottom_x" not in title_texts:
+                bottom_text = None
+            if "left_y" not in title_texts:
+                left_text = None
+            if "top_x" not in title_texts:
+                top_text = None
+            if "right_y" not in title_texts:
+                right_text = None
             if bottom_text is not None:
                 ax._stored_xlabel = bottom_text
             if left_text is not None:
@@ -1732,25 +2152,22 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 elif hasattr(ax, '_top_xlabel_text_override'):
                     delattr(ax, '_top_xlabel_text_override')
             if right_text is not None:
-                if right_text:
-                    ax._right_ylabel_text_override = right_text
-                elif hasattr(ax, '_right_ylabel_text_override'):
-                    delattr(ax, '_right_ylabel_text_override')
+                # Empty twin ylabel is intentional — keep override / twin in sync.
+                ax._right_ylabel_text_override = str(right_text)
             # Top X duplicate via artist
             ax._top_xlabel_on = bool(at_cfg.get("top_x", False))
             try:
                 _ui_position_top_xlabel(ax, fig, tick_state)
             except Exception:
                 pass
-            # Bottom X presence
-            if not at_cfg.get("has_bottom_x", True):
-                ax.xaxis.label.set_visible(False)
-            else:
-                ax.xaxis.label.set_visible(True)
-                if bottom_text is not None:
-                    ax.set_xlabel(bottom_text)
-                elif not ax.get_xlabel() and hasattr(ax, "_stored_xlabel"):
-                    ax.set_xlabel(ax._stored_xlabel)
+            # Bottom X presence (store/clear text + visibility)
+            if bottom_text is not None:
+                ax._stored_xlabel = bottom_text
+            set_primary_axis_title(
+                ax, "x",
+                on=bool(at_cfg.get("has_bottom_x", True)),
+                stored_attr="_stored_xlabel",
+            )
             # Always re-position bottom xlabel to consume pending pad or set deterministic pad
             try:
                 _ui_position_bottom_xlabel(ax, fig, tick_state)
@@ -1762,15 +2179,21 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 _ui_position_right_ylabel(ax, fig, tick_state)
             except Exception:
                 pass
-            # Left Y presence
-            if not at_cfg.get("has_left_y", True):
-                ax.yaxis.label.set_visible(False)
-            else:
-                ax.yaxis.label.set_visible(True)
-                if left_text is not None:
-                    ax.set_ylabel(left_text)
-                elif not ax.get_ylabel() and hasattr(ax, "_stored_ylabel"):
-                    ax.set_ylabel(ax._stored_ylabel)
+            # Left Y presence (store/clear text + visibility)
+            if left_text is not None:
+                ax._stored_ylabel = left_text
+            set_primary_axis_title(
+                ax, "y",
+                on=bool(at_cfg.get("has_left_y", True)),
+                stored_attr="_stored_ylabel",
+            )
+            # Twin right-y axis label (--ry): keep ax2 ylabel in sync with style texts
+            try:
+                ax2_apply = getattr(fig, "_xy_ax2", None)
+                if ax2_apply is not None and right_text is not None:
+                    ax2_apply.set_ylabel(str(right_text))
+            except Exception:
+                pass
             # Always re-position left ylabel to consume pending pad or set deterministic pad
             try:
                 _ui_position_left_ylabel(ax, fig, tick_state)
@@ -1847,6 +2270,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 print(f"[DEBUG] Exception in axis title toggle: {e}")
     except Exception as e:
         print(f"Error applying config: {e}")
+        return False
+    return True
 
 
 __all__ = [

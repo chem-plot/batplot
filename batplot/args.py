@@ -158,6 +158,7 @@ def _print_general_help() -> None:
         "  [Electrochemistry]\n"
         "    batplot --gc file.mpt --mass 7.0 --i       # GC from .mpt\n"
         "    batplot --gc file.csv --i                 # GC from .csv\n"
+        "    batplot --gc --cum file.csv --i           # GC cumulative capacity (end-to-end)\n"
         "    batplot --dqdv file.csv --i               # dQ/dV\n"
         "    batplot --cv file.mpt --i                 # Cyclic voltammetry\n"
         "    batplot --cpc file.csv --mass 3.52 --i     # Capacity per cycle\n\n"
@@ -172,6 +173,8 @@ def _print_general_help() -> None:
         "Features:\n"
         "  • Interactive (--i): styling, ranges, fonts, export, sessions\n"
         "  • XRD wavelength: --wl 1.54 or file.xye:1.5406 for Q conversion\n"
+        "  • XRD axis units (interactive): Options u converts 2θ ↔ Q ↔ d (XY + operando; needs λ for 2θ)\n"
+        "  • CIF phase ticks: add .cif (or file.cif:wl); ticks follow the current axis (2θ / Q / d)\n"
         "  • X-axis range: --xrange min max\n"
         "  • Save figure: --out filename (default .svg)\n"
         "  • Save session: --save (choose folder + name; default stem for single file / --all batch)\n"
@@ -181,12 +184,14 @@ def _print_general_help() -> None:
         "More help:\n"
         "  batplot --v       # Version and release info (with option to show full release notes)\n"
         "  batplot --showcol FILE [FILE...]   # Preview column names + first 10 values per column\n"
+        "  batplot FILE --strip-header N       # Remove first N lines; write to stripped/ subfolder\n"
+        "  batplot FOLDER --strip-header N --ext .xy   # Same for a folder (comma-separated exts ok)\n"
         "  batplot --h          # This help\n"
         "  batplot --h xy       # XY file plotting guide\n"
         "  batplot --h ec       # Electrochemistry (GC/dQdV/CV/CPC) guide\n"
         "  batplot --h op       # Operando contour guide (also: batplot --help contour)\n"
         "  batplot --h histo    # Histogram mode guide (.csv/.txt column data)\n"
-        "  batplot --m        # Open the illustrated PDF manual\n\n"
+        "  batplot --m        # Open online user manual (https://chem-plot.github.io/batplot/)\n\n"
 
         "Contact & Updates:\n"
         "  Subscribe to batplot-lab@kjemi.uio.no for updates\n"
@@ -195,6 +200,7 @@ def _print_general_help() -> None:
         "  Email: tianda@uio.no\n"
         "  Personal page: https://www.mn.uio.no/kjemi/english/people/aca/tianda/\n"
         "  GitHub: https://github.com/chem-plot/batplot\n"
+        "  User manual: https://chem-plot.github.io/batplot/\n"
         "  Kindly cite Tian's github page if the plot is used for publication\n"
         )
     _print_help(msg)
@@ -204,11 +210,26 @@ def _print_xy_help() -> None:
     msg = (
         "XY plots (XRD/PDF/XAS and many more)\n\n"
         "Supported files: .xye .xy .qye .dat .csv .gr .nor .chik .chir .txt .brml .raw .xrdml .rasx and other formats. CIF overlays supported.\n\n"
-        "Axis detection: .qye→Q, .gr→r, .nor→energy, .chik→k, .chir→r, else use --xaxis (Q, 2theta, r, k, energy, time or user defined).\n"
+        "Axis detection: .qye→Q, .gr→r, .nor→energy, .chik→k, .chir→r; XRD vendor/\n"
+        "  file:wl / --wl imply Q or 2θ as documented. Otherwise (e.g. batplot file.xy)\n"
+        "  cols 1–2 plot with labels X / Y — use --xaxis (Q, 2theta, d, r, k, energy, time\n"
+        "  or a custom name) when you want a typed axis.\n"
         "If mixing 2θ data in Q, give wavelength per-file (file.xye:1.5406) or global flag --wl.\n"
         "A wavelength can be converted into a different wave length by file.xye:1.54:0.709.\n"
         "For electrochemistry CSV/MPT time-potential plots, use --xaxis time.\n\n"
+        "Interactive XRD axis units (Options u):\n"
+        "  In --i, press u to convert the plotted XRD axis among 2θ ↔ Q ↔ d (XRD data only).\n"
+        "  Conversions involving 2θ need λ (--wl, file:wl, or prompt). CIF ticks stay Bragg-aligned.\n"
+        "  Not for PDF (.gr), XAS (.nor/.chik/.chir), or other non-diffraction axes.\n"
+        "  Example: batplot data.xye:0.709 --xaxis 2theta --i   then u → q  (uses λ=0.709 Å).\n\n"
+        "CIF phase ticks:\n"
+        "  Add .cif files on the command line (optional :wl for 2θ). Peaks are stored in Q and\n"
+        "  drawn in the current domain (2θ / Q / d). In --i use cif to add/reorder/hide ticks;\n"
+        "  after Options u, ticks redraw in the new units. Example:\n"
+        "    batplot scan.xye:1.54 phase.cif --i\n"
+        "    batplot scan.xye phase.cif:0.709 --xaxis 2theta --wl 0.709 --i\n\n"
         "Examples:\n"
+        "  batplot file.xy --i                                  # Quick plot cols 1–2 as X/Y\n"
         "  batplot file.xy file2.xye --xaxis 2theta --i         # Plot XRD data in 2theta space\n"
         "  batplot file1.xye:1.5406 file2.txt:0.709 --i         # Plot XRD data in different wavelengths in q space\n"
         "  batplot data1.xye data2.xye --wl 1.54 --i            # Same Wavelength for Q conversion\n"
@@ -220,11 +241,13 @@ def _print_xy_help() -> None:
         "  batplot file1.xy file2.xy --1d --stack --i           # First derivative\n"
         "  batplot allfiles --i                                 # All files in directory\n"
         "  batplot allfiles --xaxis 2theta --xrange 10 80       # All with axis and range\n"
-        "  batplot --all --xaxis 2theta --xrange 10 80          # Batch: export each file → Figures/\n"
+        "  batplot --all                                       # Batch: each file → Figures/ (X/Y default)\n"
+        "  batplot --all --xaxis 2theta --xrange 10 80          # Batch with typed XRD axis\n"
         "  batplot file1.xy file2.xye --xaxis 2theta style.bps  # Style + export\n\n"
         "Tips and options:\n"
         "[XY plot]\n"
         "  --i            : open interactive menu for styling, ranges, fonts, export, sessions\n"
+        "                   (XRD: Options u = convert axis 2θ ↔ Q ↔ d; cif = phase tick overlay)\n"
         "  --delta <float>           : spacing between curves, e.g. --delta 0.1\n"
         "  --norm                    : normalize intensity to 0-1 range. Stack mode (--stack) auto-normalizes\n"
         "  --chik                    : EXAFS χ(k) plot (sets labels to k (Å⁻¹) vs χ(k))\n"
@@ -236,26 +259,38 @@ def _print_xy_help() -> None:
         "  --xrange <min> <max>      : set x-axis range, e.g. --xrange 0 10\n"
         "  --out <filename>          : save figure to file, e.g. --out file.svg\n"
         "  --save                    : save .pkl session (prompt folder + name; no --i menu)\n"
-        "  --xaxis <type>            : set x-axis type (Q, 2theta, r, k, energy, rft, time, or user defined)\n"
-        "                              Q and q are equivalent (case-insensitive). e.g. --xaxis 2theta, --xaxis Q, --xaxis time\n"
+        "  --xaxis <type>            : set x-axis type (Q, 2theta, d, r, k, energy, rft, time, or user defined)\n"
+        "                              Q and q are equivalent (case-insensitive). e.g. --xaxis 2theta, --xaxis Q, --xaxis d\n"
         "  --ro                      : swap x and y axes (exchange x and y values before plotting)\n"
         "                              e.g. --xaxis time --ro plots time as y-axis and potential as x-axis\n"
         "  --wl <float>              : set wavelength for Q conversion for all files, e.g. --wl 1.5406\n"
-        "  --convert <from> <to>     : convert XRD data and export to 'converted' subfolder:\n"
-        "                              - <wl1> <wl2>  : convert 2θ from wavelength1 to wavelength2\n"
-        "                              - <wl> q or Q  : convert 2θ (with wavelength) to Q space (q and Q equivalent)\n"
-        "                              - q or Q <wl>  : convert Q space to 2θ (with wavelength)\n"
-        "                              Works with --readcol for custom column layout (per-file, per-ext, or global):\n"
+        "  --strip-header <N>        : remove the first N lines from text file(s) and export copies\n"
+        "                              into a 'stripped/' subfolder next to each input (originals untouched).\n"
+        "                              Single file:  batplot data.txt --strip-header 5\n"
+        "                              Folder:       batplot /path/to/folder --strip-header 3 --ext .xy\n"
+        "                              Multiple exts: batplot folder --strip-header 2 --ext .xy,.dat,.txt\n"
+        "                              (--ext required for folders; optional filter when listing files)\n"
+        "  --convert <from> <to>     : convert XRD x-axis and export to a 'converted/' subfolder:\n"
+        "                              Units: q|Q, d|D, 2theta|2th|tth  (or a numeric wavelength = 2θ at that λ)\n"
+        "                              - <wl1> <wl2>     : 2θ(λ1) → 2θ(λ2)\n"
+        "                              - <wl> q          : 2θ(λ) → Q\n"
+        "                              - q <wl>          : Q → 2θ(λ)\n"
+        "                              - q d / d q       : Q ↔ d (no λ needed)\n"
+        "                              - <wl> d / d <wl> : 2θ(λ) ↔ d\n"
+        "                              - 2theta q --wl λ : same as `<wl> q` (explicit unit names)\n"
+        "                              Folder of .xy → Q (writes folder/converted/*.qye):\n"
+        "                                batplot /path/to/folder --ext .xy --convert 0.26 q\n"
+        "                              Choose input / output extensions:\n"
+        "                                --ext .xy            : only convert this extension in a folder\n"
+        "                                --convert-ext .qye   : force output extension (default: .qye for Q, .xy otherwise)\n"
+        "                              With --readcol:\n"
         "                                batplot data.csv --readcol 3 4 --convert 1.54 q\n"
-        "                                batplot f1.txt --readcol 2 3 f2.txt --readcol 5 6 --convert 1.54 q\n"
-        "                              Directory: pass a folder to convert all .xy/.xye/.qye/.dat/.csv/.txt files:\n"
-        "                                batplot /path/to/folder --convert 0.25448 1.54\n"
-        "                              Batch in current folder: use allfiles token (non-convertible files are skipped):\n"
-        "                                batplot allfiles --convert q 1.54\n"
         "                              Examples:\n"
         "                                batplot file.xye --convert 1.54 0.25\n"
         "                                batplot file.xye --convert 1.54 q\n"
+        "                                batplot file.qye --convert q d\n"
         "                                batplot file.qye --convert Q 1.54\n"
+        "                                batplot allfiles --ext xy --convert 2theta q --wl 1.5406 --convert-ext qye\n"
         "  File wavelength syntax   : specify wavelength(s) per file using colon syntax:\n"
         "                              - file:wl          : single wavelength (for Q conversion or CIF 2theta calculation)\n"
         "                              - file:wl1:wl2     : dual wavelength (convert 2theta→Q using wl1, then Q→2theta using wl2)\n"
@@ -305,6 +340,7 @@ def _print_ec_help() -> None:
         "GC from supported .csv: specific capacity read directly when available; use --mass for\n"
         "  Neware absolute-capacity files (Cycle Index / Step Index / DataPoint format).\n"
         "  batplot --gc file.csv\n"
+        "  batplot --gc --cum file.csv --i        # Cumulative capacity (charge/discharge end-to-end)\n"
         "  batplot --gc file.csv --mass 3.52       # Neware absolute-capacity CSV\n\n"
         "Per-file mass: repeat --mass once per file that needs it, in file order.\n"
         "  batplot f1.mpt --mass 6.5 f2.csv f3.mpt --mass 7.0 --gc\n"
@@ -413,7 +449,7 @@ def _print_op_help() -> None:
         "Standard XY files:\n"
         "  • Folder should contain .xy/.xye/.qye/.dat files.\n"
         "  • Intensity scale is auto-adjusted between min/max values.\n"
-        "  • If no .qye present, provide --xaxis 2theta or set --wl for Q conversion.\n"
+        "  • Default axis is 2θ when no .qye; use --xaxis Q or --wl for Q conversion.\n"
         "  • If a .mpt file is present, a side panel is added for dual-panel mode (time/potential/temp/etc.).\n"
         "  • Without a .mpt file, operando-only mode shows the contour plot alone.\n"
         "  • --1d / --2d: plot the first derivative (dy/dx) of each scan as a contour plot.\n\n"
@@ -426,6 +462,9 @@ def _print_op_help() -> None:
         "Interactive (--i): menu has (Styles), (Operando), (Side Panel), (Options) columns.\n"
         "Resize axes/canvas, change colormap, set intensity range (oz), side-panel options,\n"
         "geometry tweaks, toggle spines/ticks/labels, print/export/import style, save session.\n"
+        "XRD only — Options u: convert contour X among 2θ ↔ Q ↔ d (needs λ for 2θ; CIF ticks follow).\n"
+        "CIF: add .cif on the command line or via the CIF submenu; ticks stay Bragg-aligned after u.\n"
+        "  Example: batplot folder phase.cif --operando --xaxis 2theta --wl 0.709 --i\n"
         "Session save without menu: --save (combined operando plot — session name required).\n"
     )
     _print_help(msg)
@@ -442,6 +481,14 @@ def _add_help_and_entry_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--strip-header",
+        type=int,
+        metavar="N",
+        dest="strip_header",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--manual", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
 
@@ -455,7 +502,26 @@ def _add_xy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--errors", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--xaxis", type=str, help=argparse.SUPPRESS)
     parser.add_argument("--convert", nargs=2, metavar=("FROM", "TO"), 
-                        help="Convert XRD data: wavelength-to-wavelength (e.g., 1.54 0.25), wavelength-to-Q (e.g., 1.54 q), or Q-to-wavelength (e.g., q 1.54). Exports to 'converted' subfolder.")
+                        help="Convert XRD data among 2θ/Q/d (or λ1→λ2 for 2θ). Exports to 'converted' subfolder.")
+    parser.add_argument(
+        "--ext",
+        type=str,
+        default=None,
+        metavar="EXT",
+        help=(
+            "With --convert or --strip-header: only process files with this extension "
+            "(e.g. .xy or xy). For --strip-header, comma-separated lists are allowed "
+            "(e.g. .xy,.dat,.txt)."
+        ),
+    )
+    parser.add_argument(
+        "--convert-ext",
+        type=str,
+        default=None,
+        metavar="EXT",
+        dest="convert_ext",
+        help="With --convert: output file extension (e.g. .qye or qye). Default: .qye for Q, .xy otherwise.",
+    )
     parser.add_argument("--extract-brml-scans", nargs="?", const="", metavar="OUT_DIR",
                         help="Extract each XRD scan from .brml file to separate .xy files. Optional OUT_DIR (default: <brml_stem>_scans).")
     parser.add_argument("--wl", type=float, help=argparse.SUPPRESS)
@@ -495,6 +561,11 @@ def _add_interactive_export_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_electrochem_arguments(parser: argparse.ArgumentParser) -> None:
     """Register electrochemistry mode arguments."""
     parser.add_argument("--gc", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--cum",
+        action="store_true",
+        help="With --gc: plot cumulative (throughput) capacity — charge/discharge laid end-to-end.",
+    )
     parser.add_argument("--mass", type=parse_mass_mg_from_cli, action='append', help=argparse.SUPPRESS)
     parser.add_argument("--dqdv", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--cv", action="store_true", help=argparse.SUPPRESS)
@@ -787,23 +858,27 @@ def parse_args(argv=None):
     # weren't in the parser yet when we built it
     ns, _unknown = parser.parse_known_args(argv)
     if getattr(ns, "manual", False):
-        manual_url = "https://github.com/chem-plot/batplot/blob/main/batplot_user_manual.pdf"
+        manual_url = "https://chem-plot.github.io/batplot/"
         try:
             opened = webbrowser.open(manual_url)
             if _HAS_RICH and _console:
                 if opened:
-                    _console.print("\n[green]Opened PDF manual in browser[/green]")
+                    _console.print("\n[green]Opened user manual in browser[/green]")
                 else:
-                    _console.print(f"\n[yellow]Manual PDF:[/yellow] {manual_url}")
+                    _console.print(f"\n[yellow]User manual:[/yellow] {manual_url}")
             else:
-                print("\nOpened PDF manual in browser" if opened else f"\nManual PDF: {manual_url}")
+                print(
+                    "\nOpened user manual in browser"
+                    if opened
+                    else f"\nUser manual: {manual_url}"
+                )
         except Exception as exc:  # pragma: no cover - best effort
             if _HAS_RICH and _console:
                 _console.print(f"\n[red]Failed to open manual:[/red] {exc}")
-                _console.print(f"[yellow]Manual PDF:[/yellow] {manual_url}")
+                _console.print(f"[yellow]User manual:[/yellow] {manual_url}")
             else:
                 print(f"\nFailed to open manual: {exc}")
-                print(f"Manual PDF: {manual_url}")
+                print(f"User manual: {manual_url}")
         sys.exit(0)
     
     topic = getattr(ns, 'help', None)

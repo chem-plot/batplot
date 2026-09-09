@@ -81,25 +81,29 @@ def _store_legend_title(fig, ax, fallback: str = "Cycle"):
     """Persist the current legend title on the figure for later rebuilds."""
     try:
         leg = ax.get_legend()
-        text = ""
         if leg is not None:
             title_artist = leg.get_title()
+            # Keep intentional empty titles (do not coerce "" → fallback).
+            text = ""
             if title_artist is not None:
-                text = title_artist.get_text() or ""
-        if text:
+                raw = title_artist.get_text()
+                text = "" if raw is None else str(raw)
             fig._ec_legend_title = text
-        elif not getattr(fig, '_ec_legend_title', None):
+        elif not hasattr(fig, '_ec_legend_title') or getattr(fig, '_ec_legend_title', None) is None:
             fig._ec_legend_title = fallback
     except Exception:
-        if not getattr(fig, '_ec_legend_title', None):
+        if not hasattr(fig, '_ec_legend_title') or getattr(fig, '_ec_legend_title', None) is None:
             fig._ec_legend_title = fallback
 
 
 def _get_legend_title(fig, default: str = "Cycle") -> str:
+    """Return stored legend title; empty string is valid (not replaced by default)."""
     try:
-        title = getattr(fig, '_ec_legend_title')
-        if isinstance(title, str) and title:
-            return title
+        if hasattr(fig, '_ec_legend_title'):
+            title = getattr(fig, '_ec_legend_title')
+            if title is None:
+                return default
+            return str(title)
     except Exception:
         pass
     return default

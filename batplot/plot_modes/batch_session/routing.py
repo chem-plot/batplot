@@ -15,6 +15,7 @@ from ..._mpl_backend import (
 from .load import BatchLoadResult, load_batch_panels
 from .common import set_all_panel_figure_titles
 from .menu_cpc import run_cpc_batch_menu
+from .menu_dqdv_2d import run_dqdv_2d_batch_menu
 from .menu_ec import run_ec_batch_menu
 from .menu_histo import run_histo_batch_menu
 from .menu_operando import run_operando_batch_menu
@@ -38,13 +39,10 @@ def _run_batch_menu(result: BatchLoadResult) -> None:
         run_cpc_batch_menu(panels)
     elif kind == "operando_ec":
         run_operando_batch_menu(panels)
+    elif kind == "dqdv_2d_contour":
+        run_dqdv_2d_batch_menu(panels)
     elif kind == "histo":
         run_histo_batch_menu(panels)
-    elif kind == "dqdv_2d_contour":
-        print(
-            "Batch session mode does not support dQ/dV 2D contour (.pkl kind=dqdv_2d_contour).\n"
-            "Open a single contour session instead, or use the 2d command from --dqdv interactive mode."
-        )
     else:
         print(f"Batch session mode not implemented for: {kind}")
 

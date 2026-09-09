@@ -67,6 +67,47 @@ def test_standalone_contour_reload_import_path(tmp_path):
         plt.close(fig)
 
 
+def test_dqdv_2d_snapshot_persists_source_for_ox_rebuild():
+    """Source cycle arrays must round-trip so ox can widen after .pkl reload."""
+    from batplot.plot_modes.electrochem.dqdv_2d import (
+        _DqdvArrayLine,
+        update_dqdv_2d_potential_window,
+    )
+
+    fig, ax, im, cbar = _tiny_contour_fig()
+    try:
+        v = np.linspace(1.0, 4.0, 41)
+        dq = np.sin(v)
+        fig._dqdv_2d_file_data = [
+            {
+                "filename": "cell.csv",
+                "display_name": "cell",
+                "visible": True,
+                "cycle_lines": {
+                    1: {
+                        "charge": _DqdvArrayLine(v, dq),
+                        "discharge": _DqdvArrayLine(v, -dq),
+                    }
+                },
+            }
+        ]
+        snap = build_dqdv_2d_snapshot(
+            fig, ax, im, 2.0, 3.0, ["a", "b", "c"], "dQ/dV", cbar
+        )
+        assert snap is not None
+        assert snap.get("source_file_data")
+        restored = restore_dqdv_2d_companion_figure(snap)
+        assert restored is not None
+        cfig, cax, cim, _cbar = restored
+        assert getattr(cfig, "_dqdv_2d_file_data", None)
+        assert update_dqdv_2d_potential_window(cfig, cax, cim, 1.5, 3.5) is True
+        assert abs(float(cfig._dqdv_2d_v_lo) - 1.5) < 1e-9
+        assert abs(float(cfig._dqdv_2d_v_hi) - 3.5) < 1e-9
+        plt.close(cfig)
+    finally:
+        plt.close(fig)
+
+
 def test_os_on_contour_writes_dqdv_2d_kind_not_operando(tmp_path, monkeypatch):
     """``os`` after contour ``s`` must overwrite with kind=dqdv_2d_contour."""
     fig, ax, im, cbar = _tiny_contour_fig()

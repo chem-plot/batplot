@@ -12,6 +12,7 @@ from typing import Any, Callable, List
 import numpy as np  # type: ignore[import]
 
 from ...plotting import update_labels
+from .full_data import ensure_full_covers_x_window, full_matches_display, try_heal_full_from_label_sources
 
 
 def _xy_truly_processed(fig: Any) -> bool:
@@ -48,6 +49,106 @@ def _set_orig_y_at(orig_y: List[Any], i: int, arr: Any) -> None:
             pass
 
 
+def _sync_xy_twin_xlim(fig: Any, ax: Any) -> None:
+    """Keep ``--txaxis`` twin x-window aligned after primary ``set_xlim``."""
+    ax2 = getattr(fig, "_xy_ax2", None)
+    if ax2 is None or not bool(getattr(fig, "_xy_use_top_x", False)):
+        return
+    try:
+        ax2.set_xlim(ax.get_xlim())
+    except Exception:
+        pass
+
+
+def _autoscale_xy_right_y(fig: Any) -> None:
+    """Autoscale twin Y after left-axis y edits (``--ry``).
+
+    Prefer ``autoscale(axis='y')`` over ``autoscale_view`` alone — after a
+    manual ``set_ylim``, ``autoscale_view`` can leave the twin stuck.
+    """
+    ax2 = getattr(fig, "_xy_ax2", None)
+    if ax2 is None:
+        return
+    try:
+        ax2.relim()
+        ax2.autoscale(enable=True, axis="y")
+    except Exception:
+        try:
+            ax2.relim()
+            ax2.autoscale_view(scalex=False, scaley=True)
+        except Exception:
+            pass
+
+
+def relim_xy_twins(fig: Any, ax: Any, *, scalex: bool = False, scaley: bool = True) -> None:
+    """Relim/autoscale primary + ``--ry`` twin after data mutators."""
+    try:
+        ax.relim()
+        if scaley:
+            ax.autoscale(enable=True, axis="y")
+        if scalex:
+            ax.autoscale(enable=True, axis="x")
+        if not (scalex or scaley):
+            ax.autoscale_view(scalex=False, scaley=False)
+    except Exception:
+        try:
+            ax.relim()
+            ax.autoscale_view(scalex=scalex, scaley=scaley)
+        except Exception:
+            pass
+    if scaley:
+        _autoscale_xy_right_y(fig)
+
+
+def _y_minmax_for_indices(y_data_list: List[Any], indices) -> tuple[float | None, float | None]:
+    all_min = None
+    all_max = None
+    for i, arr in enumerate(y_data_list):
+        if indices is not None and i not in indices:
+            continue
+        try:
+            if getattr(arr, "size", 0):
+                mn = float(arr.min())
+                mx = float(arr.max())
+                all_min = mn if all_min is None else min(all_min, mn)
+                all_max = mx if all_max is None else max(all_max, mx)
+        except Exception:
+            continue
+    return all_min, all_max
+
+
+def _heal_full_if_needed_for_window(
+    *,
+    fig: Any,
+    args: Any,
+    labels: List[str],
+    x_data_list: List[Any],
+    orig_y: List[Any],
+    x_full_list: List[Any],
+    raw_y_full_list: List[Any],
+    new_min: float,
+    new_max: float,
+) -> None:
+    """Restore cropped session full buffers from source files before expand."""
+    try:
+        ensure_full_covers_x_window(
+            fig=fig,
+            labels=labels,
+            x_full_list=x_full_list,
+            raw_y_full_list=raw_y_full_list,
+            new_min=float(new_min),
+            new_max=float(new_max),
+            axis_mode=getattr(fig, "_xy_axis_mode", None) or getattr(args, "xaxis", None),
+            x_display_list=x_data_list,
+            y_display_list=orig_y,
+        )
+    except Exception as exc:
+        try:
+            print(f"Warning: could not restore full X data from source files: {exc}")
+        except Exception:
+            pass
+
+
 def _refilter_curves_from_full(
     *,
     args: Any,
@@ -61,8 +162,21 @@ def _refilter_curves_from_full(
     new_min: float,
     new_max: float,
     _line: Callable[[int], Any],
+    fig: Any = None,
 ) -> None:
     """Slice curves from untrimmed ``x_full_list`` / ``raw_y_full_list`` into [new_min, new_max]."""
+    if fig is not None:
+        _heal_full_if_needed_for_window(
+            fig=fig,
+            args=args,
+            labels=labels,
+            x_data_list=x_data_list,
+            orig_y=orig_y,
+            x_full_list=x_full_list,
+            raw_y_full_list=raw_y_full_list,
+            new_min=new_min,
+            new_max=new_max,
+        )
     for i in range(len(labels)):
         xf = x_full_list[i] if i < len(x_full_list) else x_data_list[i]
         yf_raw = (
@@ -162,6 +276,7 @@ def run_x_range_menu(
                         new_min = current_xlim[0]
                         new_max = new_upper
                         ax.set_xlim(new_min, new_max)
+                        _sync_xy_twin_xlim(fig, ax)
                         # Re-filter data from original processed data if available
                         data_is_processed = _xy_truly_processed(fig)
                         if data_is_processed and _full_processed_covers(fig, new_min, new_max):
@@ -194,7 +309,7 @@ def run_x_range_menu(
                                 x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
                                 offsets_list=offsets_list, x_full_list=x_full_list,
                                 raw_y_full_list=raw_y_full_list, new_min=new_min, new_max=new_max,
-                                _line=_line,
+                                _line=_line, fig=fig,
                             )
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -202,13 +317,13 @@ def run_x_range_menu(
                         try:
                             if hasattr(ax, '_cif_extend_func'):
                                 ax._cif_extend_func(ax.get_xlim()[1])
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick extend failed: {_exc}")
                         try:
                             if hasattr(ax, '_cif_draw_func'):
                                 ax._cif_draw_func()
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick redraw failed: {_exc}")
                         fig.canvas.draw()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                     continue
@@ -229,6 +344,7 @@ def run_x_range_menu(
                         new_min = new_lower
                         new_max = current_xlim[1]
                         ax.set_xlim(new_min, new_max)
+                        _sync_xy_twin_xlim(fig, ax)
                         data_is_processed = _xy_truly_processed(fig)
                         if data_is_processed and _full_processed_covers(fig, new_min, new_max):
                             for i in range(len(labels)):
@@ -259,7 +375,7 @@ def run_x_range_menu(
                                 x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
                                 offsets_list=offsets_list, x_full_list=x_full_list,
                                 raw_y_full_list=raw_y_full_list, new_min=new_min, new_max=new_max,
-                                _line=_line,
+                                _line=_line, fig=fig,
                             )
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
@@ -267,20 +383,33 @@ def run_x_range_menu(
                         try:
                             if hasattr(ax, '_cif_extend_func'):
                                 ax._cif_extend_func(ax.get_xlim()[1])
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick extend failed: {_exc}")
                         try:
                             if hasattr(ax, '_cif_draw_func'):
                                 ax._cif_draw_func()
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick redraw failed: {_exc}")
                         fig.canvas.draw()
                         print(f"X range updated: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                     continue
                 if rng.lower() == 'a':
                     # Auto: restore full X span from full/processed buffers
-                    push_state("xrange-auto")
                     try:
+                        # Cropped .pkl: heal from sources before measuring the auto span
+                        if full_matches_display(x_full_list, x_data_list):
+                            try_heal_full_from_label_sources(
+                                fig=fig,
+                                labels=labels,
+                                x_full_list=x_full_list,
+                                raw_y_full_list=raw_y_full_list,
+                                axis_mode=getattr(fig, "_xy_axis_mode", None)
+                                or getattr(args, "xaxis", None),
+                                session_path=getattr(fig, "_last_session_save_path", None),
+                                source_files=getattr(fig, "_xy_source_files", None),
+                                x_display_list=x_data_list,
+                                y_display_list=orig_y,
+                            )
                         data_is_processed = _xy_truly_processed(fig)
                         if (
                             data_is_processed
@@ -303,6 +432,7 @@ def run_x_range_menu(
                         else:
                             print("No original data available.")
                             continue
+                        push_state("xrange-auto")
                         if data_is_processed and _full_processed_covers(fig, new_min, new_max):
                             for i in range(len(labels)):
                                 if i >= len(fig._full_processed_x_data_list):
@@ -332,44 +462,54 @@ def run_x_range_menu(
                                 x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
                                 offsets_list=offsets_list, x_full_list=x_full_list,
                                 raw_y_full_list=raw_y_full_list, new_min=new_min, new_max=new_max,
-                                _line=_line,
+                                _line=_line, fig=fig,
                             )
                         ax.set_xlim(new_min, new_max)
+                        _sync_xy_twin_xlim(fig, ax)
                         ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                         try:
                             if hasattr(ax, '_cif_extend_func'):
                                 ax._cif_extend_func(ax.get_xlim()[1])
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick extend failed: {_exc}")
                         try:
                             if hasattr(ax, '_cif_draw_func'):
                                 ax._cif_draw_func()
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            print(f"Warning: CIF tick redraw failed: {_exc}")
                         fig.canvas.draw()
                         print(f"X range restored to original: {ax.get_xlim()[0]:.6g} to {ax.get_xlim()[1]:.6g}")
                     except Exception as e:
                         print(f"Error during auto restore: {e}")
                     continue
-                push_state("xrange")
                 if rng.lower() == 'full':
                     # Use full data if available, otherwise use current processed data
                     if x_full_list and all(xf.size > 0 for xf in x_full_list):
                         new_min = min(xf.min() for xf in x_full_list if xf.size)
                         new_max = max(xf.max() for xf in x_full_list if xf.size)
                     else:
-                        new_min = min(xd.min() for xd in x_data_list if xd.size)
-                        new_max = max(xd.max() for xd in x_data_list if xd.size)
+                        try:
+                            new_min = min(xd.min() for xd in x_data_list if xd.size)
+                            new_max = max(xd.max() for xd in x_data_list if xd.size)
+                        except ValueError:
+                            print("No data to compute full X range.")
+                            continue
                 else:
                     parts = rng.split()
                     if len(parts) != 2:
                         print("Need exactly two numbers for X range (or w/s/a/full/q).")
                         continue
-                    new_min, new_max = map(float, parts)
+                    try:
+                        new_min, new_max = map(float, parts)
+                    except ValueError:
+                        print("Need exactly two numbers for X range (or w/s/a/full/q).")
+                        continue
                     if new_min > new_max:
                         new_min, new_max = new_max, new_min
+                push_state("xrange")
                 ax.set_xlim(new_min, new_max)
+                _sync_xy_twin_xlim(fig, ax)
                 data_is_processed = _xy_truly_processed(fig)
 
                 if data_is_processed and _full_processed_covers(fig, new_min, new_max):
@@ -415,7 +555,7 @@ def run_x_range_menu(
                         x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
                         offsets_list=offsets_list, x_full_list=x_full_list,
                         raw_y_full_list=raw_y_full_list, new_min=new_min, new_max=new_max,
-                        _line=_line,
+                        _line=_line, fig=fig,
                     )
                 ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
                 update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
@@ -423,13 +563,13 @@ def run_x_range_menu(
                 try:
                     if hasattr(ax, '_cif_extend_func'):
                         ax._cif_extend_func(ax.get_xlim()[1])
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    print(f"Warning: CIF tick extend failed: {_exc}")
                 try:
                     if hasattr(ax, '_cif_draw_func'):
                         ax._cif_draw_func()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    print(f"Warning: CIF tick redraw failed: {_exc}")
                 fig.canvas.draw()
             except Exception as e:
                 print(f"Error setting X-axis range: {e}")
@@ -504,58 +644,83 @@ def run_y_range_menu(
                 if rng == 's':
                     continue
                 if rng == 'a':
-                    # Auto: restore original range from y_data_list
-                    push_state("yrange-auto")
+                    # Auto: restore original range from y_data_list (split --ry).
                     if y_data_list:
-                        all_min = None
-                        all_max = None
-                        for arr in y_data_list:
-                            if arr.size:
-                                mn = float(arr.min())
-                                mx = float(arr.max())
-                                all_min = mn if all_min is None else min(all_min, mn)
-                                all_max = mx if all_max is None else max(all_max, mx)
+                        right_idx = set(getattr(fig, "_xy_right_y_curve_indices", None) or [])
+                        left_idx = set(range(len(y_data_list))) - right_idx if right_idx else None
+                        all_min, all_max = _y_minmax_for_indices(y_data_list, left_idx)
                         if all_min is None or all_max is None:
                             print("No original data available.")
                             continue
+                        push_state("yrange-auto")
                         ax.set_ylim(all_min, all_max)
                         ax.relim()
                         ax.autoscale_view(scalex=False, scaley=True)
+                        if right_idx:
+                            rmin, rmax = _y_minmax_for_indices(y_data_list, right_idx)
+                            ax2 = getattr(fig, "_xy_ax2", None)
+                            if ax2 is not None and rmin is not None and rmax is not None:
+                                ax2.set_ylim(rmin, rmax)
+                        else:
+                            _autoscale_xy_right_y(fig)
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                         fig.canvas.draw_idle()
                         print(f"Y range restored to original: {ax.get_ylim()[0]:.6g} to {ax.get_ylim()[1]:.6g}")
                     else:
                         print("No original data available.")
                     continue
-                push_state("yrange")
                 if rng == 'auto':
+                    push_state("yrange")
                     ax.relim()
                     ax.autoscale_view(scalex=False, scaley=True)
+                    _autoscale_xy_right_y(fig)
+                    update_labels(
+                        ax,
+                        y_data_list,
+                        label_text_objects,
+                        args.stack,
+                        getattr(fig, '_stack_label_at_bottom', False),
+                    )
+                    fig.canvas.draw_idle()
+                    ymin, ymax = ax.get_ylim()
+                    print(f"Y range set to auto ({float(ymin)}, {float(ymax)})")
+                    continue
+                if rng == 'full':
+                    right_idx = set(getattr(fig, "_xy_right_y_curve_indices", None) or [])
+                    left_idx = set(range(len(y_data_list))) - right_idx if right_idx else None
+                    all_min, all_max = _y_minmax_for_indices(y_data_list, left_idx)
+                    if all_min is None or all_max is None:
+                        print("No data to compute full Y range.")
+                        continue
+                    y_min, y_max = all_min, all_max
+                    if right_idx:
+                        rmin, rmax = _y_minmax_for_indices(y_data_list, right_idx)
+                        ax2 = getattr(fig, "_xy_ax2", None)
+                        if ax2 is not None and rmin is not None and rmax is not None:
+                            push_state("yrange")
+                            ax.set_ylim(y_min, y_max)
+                            ax2.set_ylim(rmin, rmax)
+                            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
+                            fig.canvas.draw_idle()
+                            ymin, ymax = ax.get_ylim()
+                            print(f"Y range set to ({float(ymin)}, {float(ymax)})")
+                            continue
                 else:
-                    if rng == 'full':
-                        all_min = None
-                        all_max = None
-                        for arr in y_data_list:
-                            if arr.size:
-                                mn = float(arr.min())
-                                mx = float(arr.max())
-                                all_min = mn if all_min is None else min(all_min, mn)
-                                all_max = mx if all_max is None else max(all_max, mx)
-                        if all_min is None or all_max is None:
-                            print("No data to compute full Y range.")
-                            continue
-                        y_min, y_max = all_min, all_max
-                    else:
-                        parts = rng.split()
-                        if len(parts) != 2:
-                            print("Need exactly two numbers for Y range.")
-                            continue
+                    parts = rng.split()
+                    if len(parts) != 2:
+                        print("Need exactly two numbers for Y range.")
+                        continue
+                    try:
                         y_min, y_max = map(float, parts)
-                        if y_min == y_max:
-                            print("Warning: min == max; expanding slightly.")
-                            eps = abs(y_min)*1e-6 if y_min != 0 else 1e-6
-                            y_min -= eps
-                            y_max += eps
+                    except ValueError:
+                        print("Need exactly two numbers for Y range.")
+                        continue
+                    if y_min == y_max:
+                        print("Warning: min == max; expanding slightly.")
+                        eps = abs(y_min)*1e-6 if y_min != 0 else 1e-6
+                        y_min -= eps
+                        y_max += eps
+                push_state("yrange")
                 ax.set_ylim(y_min, y_max)
                 update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                 fig.canvas.draw_idle()

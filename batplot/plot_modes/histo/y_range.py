@@ -8,11 +8,13 @@ from .plot import HistoState, histo_auto_ylim, histo_current_ylim
 
 
 def _set_ylim(state: HistoState, ymin: float, ymax: float) -> None:
-    if ymin == ymax:
-        eps = abs(ymin) * 1e-6 if ymin != 0 else 1e-6
-        ymin -= eps
-        ymax += eps
-    state.style.ylim = (float(ymin), float(ymax))
+    # Prompt advertises "either order" — always store lo <= hi.
+    lo, hi = (float(ymin), float(ymax)) if ymin <= ymax else (float(ymax), float(ymin))
+    if lo == hi:
+        eps = abs(lo) * 1e-6 if lo != 0 else 1e-6
+        lo -= eps
+        hi += eps
+    state.style.ylim = (lo, hi)
 
 
 def run_histo_y_range_menu(

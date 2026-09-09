@@ -21,12 +21,14 @@ from matplotlib.ticker import (  # type: ignore[import-untyped]
     NullLocator,
 )
 
-from ...utils import _confirm_overwrite
+from ...utils import _confirm_overwrite, ensure_exact_case_filename
 from ...ui import (
     set_spine_side_color as _set_spine_side_color,
     finalize_spine_colors_cpc,
 )
 from ..common.font_extras import apply_session_font_cfg, merge_session_font_dump
+from ..common.axis_state import capture_axis_wasd_state, primary_axis_label_text
+from ..common.spines import set_primary_axis_title, sync_tick_state_from_wasd
 from ..common.session_helpers import (
     _try_extract_version_from_pickle,
     _package_versions_stamp,
@@ -37,6 +39,8 @@ from ..common.session_helpers import (
     _apply_axes_bbox,
     _capture_session_tick_locator,
     _restore_session_tick_locator,
+    capture_last_figure_export_path,
+    restore_last_figure_export_path,
 )
 
 
@@ -53,7 +57,7 @@ def dump_cpc_session(
     sc_eff,
     file_data=None,
     skip_confirm: bool = False,
-):
+) -> bool:
     """Serialize CPC plot including scatter data, styles, axes, and legend position.
 
     Stores arrays for charge/discharge capacities and efficiency vs cycle number,
@@ -63,7 +67,18 @@ def dump_cpc_session(
     Args:
         file_data: Optional list of multi-file data dictionaries
         skip_confirm: If True, skip overwrite confirmation (already handled by caller).
+
+    Returns:
+        True if the pickle was written successfully, else False.
     """
+    if skip_confirm:
+        target = filename
+    else:
+        target = _confirm_overwrite(filename)
+        if not target:
+            print("CPC session save canceled.")
+            return False
+
     try:
         fig_w, fig_h = map(float, fig.get_size_inches())
         dpi = int(fig.dpi)
@@ -81,6 +96,15 @@ def dump_cpc_session(
         x_c, y_c = _scatter_xy(sc_charge)
         x_d, y_d = _scatter_xy(sc_discharge)
         x_e, y_e = _scatter_xy(sc_eff)
+        # Never-shrink masters (xlim/ylim are view-only; keep explicit full copies).
+        from ..common.session_data_guarantee import install_cpc_series_master, install_scatter_xy_master
+
+        x_c_full, y_c_full = install_cpc_series_master(fig, "charge", x_c, y_c)
+        x_d_full, y_d_full = install_cpc_series_master(fig, "discharge", x_d, y_d)
+        x_e_full, y_e_full = install_cpc_series_master(fig, "efficiency", x_e, y_e)
+        install_scatter_xy_master(sc_charge, x_c_full, y_c_full)
+        install_scatter_xy_master(sc_discharge, x_d_full, y_d_full)
+        install_scatter_xy_master(sc_eff, x_e_full, y_e_full)
         
         # Colors and sizes (for hollow markers use edgecolor)
         def _color_and_hollow(sc):
@@ -131,18 +155,20 @@ def dump_cpc_session(
         frame_w_in = bbox.width * fig_w
         frame_h_in = bbox.height * fig_h
         
-        # Save spines state for both ax and ax2
+        # Save spines state for both ax and ax2 (prefer stored k colors)
+        from ...ui import resolve_spine_dump_color
+
         spines_state = {}
         for name, sp in ax.spines.items():
             spines_state[f'ax_{name}'] = {
                 'linewidth': sp.get_linewidth(),
-                'color': sp.get_edgecolor(),
+                'color': resolve_spine_dump_color(ax, name, fig),
                 'visible': sp.get_visible(),
             }
         for name, sp in ax2.spines.items():
             spines_state[f'ax2_{name}'] = {
                 'linewidth': sp.get_linewidth(),
-                'color': sp.get_edgecolor(),
+                'color': resolve_spine_dump_color(ax2, name, fig),
                 'visible': sp.get_visible(),
             }
         
@@ -167,84 +193,60 @@ def dump_cpc_session(
             'ry_minor': _current_tick_length(ax2.yaxis, 'minor'),
         }
         
-        # Subplot margins
-        sp = fig.subplotpars
+        # Prefer live axes position (``g`` / set_position) over fig.subplotpars.
         subplot_margins = {
-            'left': float(sp.left),
-            'right': float(sp.right),
-            'bottom': float(sp.bottom),
-            'top': float(sp.top),
+            'left': float(bbox.x0),
+            'right': float(bbox.x0 + bbox.width),
+            'bottom': float(bbox.y0),
+            'top': float(bbox.y0 + bbox.height),
         }
         
-        # Capture WASD state: start from figure attr when present, then reconcile with
-        # current axes + saved tick keys so every save path stays accurate.
-        wasd_state_raw = getattr(fig, '_cpc_wasd_state', None)
-        wasd_state: Dict[str, Any] = wasd_state_raw if isinstance(wasd_state_raw, dict) else {}
+        # Capture WASD from on-screen artists (ax + ax2 twin) so stale
+        # ``_cpc_wasd_state`` / ``_saved_tick_state`` cannot re-enable hidden labels.
         ts = dict(getattr(ax, '_saved_tick_state', {}) or {})
-        def _merged_side(side_name, default_ticks, default_labels, default_spine, default_minor):
-            side_state = wasd_state.get(side_name, {})
-            s = side_state if isinstance(side_state, dict) else {}
-            alias_map = {'top': 'tx', 'bottom': 'bx', 'left': 'ly', 'right': 'ry'}
-            prefix_map = {'top': 't', 'bottom': 'b', 'left': 'l', 'right': 'r'}
-            pref = prefix_map[side_name]
-            tick_default = bool(s.get('ticks', default_ticks))
-            label_default = bool(s.get('labels', default_labels))
-            return {
-                'spine': bool(s.get('spine', default_spine)),
-                'ticks': bool(ts.get(f'{pref}_ticks', ts.get(alias_map[side_name], tick_default))),
-                'minor': bool(ts.get(f'm{pref}x' if pref in ('t', 'b') else f'm{pref}y',
-                                     s.get('minor', default_minor))),
-                'labels': bool(ts.get(f'{pref}_labels', ts.get(alias_map[side_name], label_default))),
-                'title': bool(s.get('title', True)),
-            }
-        wasd_state = {
-            'top': _merged_side(
-                'top',
-                default_ticks=False,
-                default_labels=False,
-                default_spine=bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False),
-                default_minor=False,
-            ),
-            'bottom': _merged_side(
-                'bottom',
-                default_ticks=True,
-                default_labels=True,
-                default_spine=bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else True),
-                default_minor=False,
-            ),
-            'left': _merged_side(
-                'left',
-                default_ticks=True,
-                default_labels=True,
-                default_spine=bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else True),
-                default_minor=False,
-            ),
-            'right': _merged_side(
-                'right',
-                default_ticks=True,
-                default_labels=True,
-                default_spine=bool(ax2.spines.get('right').get_visible() if ax2.spines.get('right') else True),
-                default_minor=False,
-            ),
-        }
-        # Titles and spines should reflect current figure at save time.
-        wasd_state['top']['title'] = bool(
-            getattr(ax, '_top_xlabel_text', None) and getattr(ax, '_top_xlabel_text').get_visible()
+        wasd_state = capture_axis_wasd_state(
+            ax,
+            tick_state=ts,
+            use_actual_major_visibility=True,
+            right_axis=ax2,
         )
-        wasd_state['bottom']['title'] = bool(ax.get_xlabel())
-        wasd_state['left']['title'] = bool(ax.get_ylabel())
-        wasd_state['right']['title'] = bool(ax2.yaxis.get_label().get_text()) and bool(sc_eff.get_visible())
-        wasd_state['top']['spine'] = bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False)
-        wasd_state['bottom']['spine'] = bool(ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else True)
-        wasd_state['left']['spine'] = bool(ax.spines.get('left').get_visible() if ax.spines.get('left') else True)
-        wasd_state['right']['spine'] = bool(ax2.spines.get('right').get_visible() if ax2.spines.get('right') else True)
+        def _label_visible(lbl):
+            # Title on/off is visibility; empty text must not force title off.
+            try:
+                return bool(lbl.get_visible())
+            except Exception:
+                return bool(lbl.get_text()) if hasattr(lbl, 'get_text') else False
+
+        # Prefer explicit WASD flag (artist may be missing while title is ON).
+        wasd_state['top']['title'] = bool(getattr(ax, '_top_xlabel_on', False))
+        wasd_state['bottom']['title'] = _label_visible(ax.xaxis.label)
+        wasd_state['left']['title'] = _label_visible(ax.yaxis.label)
+        wasd_state['right']['title'] = _label_visible(ax2.yaxis.label)
+        sync_tick_state_from_wasd(
+            ts,
+            wasd_state,
+            tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': True},
+            label_defaults={'top': False, 'bottom': True, 'left': True, 'right': True},
+        )
+        ax._saved_tick_state = dict(ts)
+        fig._cpc_wasd_state = wasd_state
         
-        # Capture stored title texts
+        def _series_label(sc, default_val: str) -> str:
+            """Artist legend label; keep intentional empty; default only if missing."""
+            try:
+                lab = sc.get_label()
+            except Exception:
+                return default_val
+            if lab is None:
+                return default_val
+            return str(lab)
+
+        # Capture title texts (visibility-aware for primary; top is duplicate artist)
         stored_titles = {
-            'xlabel': getattr(ax, '_stored_xlabel', ax.get_xlabel()),
-            'ylabel': getattr(ax, '_stored_ylabel', ax.get_ylabel()),
+            'xlabel': primary_axis_label_text(ax, 'x'),
+            'ylabel': primary_axis_label_text(ax, 'y'),
             'top_xlabel': getattr(ax, '_stored_top_xlabel', ''),
-            'right_ylabel': getattr(ax2, '_stored_ylabel', ax2.get_ylabel()),
+            'right_ylabel': primary_axis_label_text(ax2, 'y'),
         }
         # Title offsets
         title_offsets = {
@@ -273,9 +275,9 @@ def dump_cpc_session(
                 'spines': spines_state,
             },
             'axis': {
-                'xlabel': ax.get_xlabel(),
-                'ylabel_left': ax.get_ylabel(),
-                'ylabel_right': ax2.get_ylabel(),
+                'xlabel': primary_axis_label_text(ax, 'x'),
+                'ylabel_left': primary_axis_label_text(ax, 'y'),
+                'ylabel_right': primary_axis_label_text(ax2, 'y'),
                 'xlim': tuple(map(float, ax.get_xlim())),
                 'ylim_left': tuple(map(float, ax.get_ylim())),
                 'ylim_right': tuple(map(float, ax2.get_ylim())),
@@ -286,33 +288,36 @@ def dump_cpc_session(
             'series': (lambda ch=_color_and_hollow(sc_charge), dh=_color_and_hollow(sc_discharge), ef=_color_and_hollow(sc_eff): {
                 'charge': {
                     'x': x_c, 'y': y_c,
+                    'x_full': x_c_full, 'y_full': y_c_full,
                     'color': ch[0],
                     'hollow': ch[1],
                     'size': _size_of(sc_charge, 32.0),
                     'alpha': (float(sc_charge.get_alpha()) if sc_charge.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_charge, 'get_visible', lambda: True)()),
-                    'label': getattr(sc_charge, 'get_label', lambda: 'Charge capacity')() or 'Charge capacity',
-                    'marker': 's',  # CPC default: square for capacity
+                    'label': _series_label(sc_charge, 'Charge capacity'),
+                    'marker': (getattr(sc_charge, 'get_marker', lambda: 's')() or 's'),
                 },
                 'discharge': {
                     'x': x_d, 'y': y_d,
+                    'x_full': x_d_full, 'y_full': y_d_full,
                     'color': dh[0],
                     'hollow': dh[1],
                     'size': _size_of(sc_discharge, 32.0),
                     'alpha': (float(sc_discharge.get_alpha()) if sc_discharge.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_discharge, 'get_visible', lambda: True)()),
-                    'label': getattr(sc_discharge, 'get_label', lambda: 'Discharge capacity')() or 'Discharge capacity',
-                    'marker': 's',  # CPC default: square for capacity
+                    'label': _series_label(sc_discharge, 'Discharge capacity'),
+                    'marker': (getattr(sc_discharge, 'get_marker', lambda: 's')() or 's'),
                 },
                 'efficiency': {
                     'x': x_e, 'y': y_e,
+                    'x_full': x_e_full, 'y_full': y_e_full,
                     'color': ef[0] or '#2ca02c',
                     'hollow': ef[1],
                     'size': _size_of(sc_eff, 40.0),
                     'alpha': (float(sc_eff.get_alpha()) if sc_eff.get_alpha() is not None else None),
                     'visible': bool(getattr(sc_eff, 'get_visible', lambda: True)()),
-                    'label': getattr(sc_eff, 'get_label', lambda: 'Coulombic efficiency')() or 'Coulombic efficiency',
-                    'marker': '^',  # CPC default: triangle for efficiency
+                    'label': _series_label(sc_eff, 'Coulombic efficiency'),
+                    'marker': (getattr(sc_eff, 'get_marker', lambda: '^')() or '^'),
                 },
             })(),
             'legend': {
@@ -324,6 +329,12 @@ def dump_cpc_session(
                 ),
                 'title': getattr(fig, '_cpc_legend_title', None),
             },
+            # Compact multi-file legend display order (h→ra); 0-based indices into multi_files.
+            'legend_file_order': (
+                list(getattr(fig, '_cpc_legend_file_order', None) or [])
+                if (file_data is not None and len(file_data) > 1)
+                else None
+            ),
             'wasd_state': wasd_state,
             'tick_widths': tick_widths,
             'tick_lengths': tick_lengths,
@@ -332,13 +343,25 @@ def dump_cpc_session(
             'tick_locator_state_ax2': _capture_session_tick_locator(ax2),
             'stored_titles': stored_titles,
             'title_offsets': title_offsets,
-            'font': merge_session_font_dump(fig, include_mathtext=False),
+            'font': merge_session_font_dump(fig),
             'grid': ax.xaxis._gridOnMajor if hasattr(ax.xaxis, '_gridOnMajor') else (
                 any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()) if hasattr(ax, 'get_xgridlines') else False
             ),
             'display_mode': getattr(fig, '_cpc_display_mode', 'both'),
+            # Single-file invert flag (multi-file also stores per-entry flags).
+            # Old pickles omit this key → load defaults False; Y arrays still win.
+            'eff_inverted': bool(
+                file_data[0].get('eff_inverted', False)
+                if (file_data and isinstance(file_data, list) and len(file_data) > 0)
+                else getattr(fig, '_cpc_eff_inverted', False)
+            ),
+            'is_epc': bool(getattr(fig, '_cpc_is_epc', False)),
             'spine_colors_auto': bool(getattr(fig, '_cpc_spine_auto', False)),
+            # Explicit dict (matches style dump); figure.spines colors remain BC fallback.
+            'spine_colors': dict(getattr(fig, '_cpc_spine_colors', {}) or {}),
             'ro_active': bool(getattr(fig, '_ro_active', False)),
+            # Last exported figure path so 'oe' works after reopening the session.
+            'last_figure_export_path': capture_last_figure_export_path(fig),
         }
         
         # Add multi-file data if available
@@ -366,23 +389,34 @@ def dump_cpc_session(
                     except Exception:
                         return default_val
                 def _label_of(sc, default_val=""):
-                    try:
-                        return sc.get_label() or default_val
-                    except Exception:
-                        return default_val
+                    return _series_label(sc, default_val)
                 sc_ch = f.get('sc_charge', sc_charge)
                 sc_dh = f.get('sc_discharge', sc_discharge)
                 sc_ef = f.get('sc_eff', sc_eff)
                 ch_col, ch_hollow = _color_and_hollow(sc_ch)
                 dh_col, dh_hollow = _color_and_hollow(sc_dh)
                 ef_col, ef_hollow = _color_and_hollow(sc_ef)
+                from ..common.session_data_guarantee import install_scatter_xy_master
+
+                _ch_xy = _scatter_xy(sc_ch)
+                _dh_xy = _scatter_xy(sc_dh)
+                _ef_xy = _scatter_xy(sc_ef)
+                _ch_xf, _ch_yf = install_scatter_xy_master(sc_ch, _ch_xy[0], _ch_xy[1])
+                _dh_xf, _dh_yf = install_scatter_xy_master(sc_dh, _dh_xy[0], _dh_xy[1])
+                _ef_xf, _ef_yf = install_scatter_xy_master(sc_ef, _ef_xy[0], _ef_xy[1])
                 file_info = {
                     'filename': f.get('filename', 'unknown'),
                     'display_name': f.get('display_name', f.get('filename', 'unknown')),
+                    # Optional BC fields (interactive add); ignored by older loaders.
+                    'filepath': f.get('filepath'),
+                    'mass_mg': f.get('mass_mg'),
                     'visible': f.get('visible', True),
+                    'eff_inverted': bool(f.get('eff_inverted', False)),
                     'charge': {
-                        'x': np.array(_scatter_xy(sc_ch)[0]),
-                        'y': np.array(_scatter_xy(sc_ch)[1]),
+                        'x': np.array(_ch_xy[0]),
+                        'y': np.array(_ch_xy[1]),
+                        'x_full': np.array(_ch_xf),
+                        'y_full': np.array(_ch_yf),
                         'color': ch_col,
                         'hollow': ch_hollow,
                         'size': _size_of(sc_ch, 32.0),
@@ -392,8 +426,10 @@ def dump_cpc_session(
                         'visible': _visible_of(sc_ch),
                     },
                     'discharge': {
-                        'x': np.array(_scatter_xy(sc_dh)[0]),
-                        'y': np.array(_scatter_xy(sc_dh)[1]),
+                        'x': np.array(_dh_xy[0]),
+                        'y': np.array(_dh_xy[1]),
+                        'x_full': np.array(_dh_xf),
+                        'y_full': np.array(_dh_yf),
                         'color': dh_col,
                         'hollow': dh_hollow,
                         'size': _size_of(sc_dh, 32.0),
@@ -403,8 +439,10 @@ def dump_cpc_session(
                         'visible': _visible_of(sc_dh),
                     },
                     'efficiency': {
-                        'x': np.array(_scatter_xy(sc_ef)[0]),
-                        'y': np.array(_scatter_xy(sc_ef)[1]),
+                        'x': np.array(_ef_xy[0]),
+                        'y': np.array(_ef_xy[1]),
+                        'x_full': np.array(_ef_xf),
+                        'y_full': np.array(_ef_yf),
                         'color': ef_col,
                         'hollow': ef_hollow,
                         'size': _size_of(sc_ef, 40.0),
@@ -416,20 +454,20 @@ def dump_cpc_session(
                 }
                 multi_files.append(file_info)
             meta['multi_files'] = multi_files
-        
-        if skip_confirm:
-            target = filename
-        else:
-            target = _confirm_overwrite(filename)
-            if not target:
-                print("CPC session save canceled.")
-                return
+
+        target = ensure_exact_case_filename(target)
         meta['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(meta, f)
+        try:
+            fig._last_session_save_path = os.path.abspath(target)
+        except Exception:
+            pass
         print(f"CPC session saved to {target}")
+        return True
     except Exception as e:
         print(f"Error saving CPC session: {e}")
+        return False
 
 
 def load_cpc_session(filename: str):
@@ -486,6 +524,8 @@ def load_cpc_session(filename: str):
             fig._last_session_save_path = os.path.abspath(filename)
         except Exception:
             pass
+        # Seed last figure export path so 'oe' overwrite is available immediately
+        restore_last_figure_export_path(fig, sess, session_filename=filename)
         # Disable auto layout
         try:
             fig.set_layout_engine('none')
@@ -500,42 +540,65 @@ def load_cpc_session(filename: str):
             fig._ro_active = bool(sess.get('ro_active', False))
         except Exception:
             pass
-        # Fonts
         try:
-            f = sess.get('font', {})
-            if f.get('chain'):
-                plt.rcParams['font.family'] = 'sans-serif'
-                plt.rcParams['font.sans-serif'] = f['chain']
-            if f.get('size'):
-                plt.rcParams['font.size'] = f['size']
+            if 'is_epc' in sess:
+                fig._cpc_is_epc = bool(sess.get('is_epc'))
         except Exception:
             pass
-        # Labels and limits
+        # Fonts (is-not-None; do not skip size=0 via truthiness)
+        try:
+            from ..common.font_extras import sync_font_rcparams_from_cfg
+            sync_font_rcparams_from_cfg(sess.get('font', {}))
+        except Exception:
+            pass
+        # Labels and limits (key presence: empty string clears; missing key → defaults for BC)
         ax_meta = sess.get('axis', {})
         try:
-            ax.set_xlabel(ax_meta.get('xlabel') or 'Cycle number')
-            ax.set_ylabel(ax_meta.get('ylabel_left') or r'Specific Capacity (mAh g$^{-1}$)')
-            ax2.set_ylabel(ax_meta.get('ylabel_right') or 'Efficiency (%)')
-            if ax_meta.get('xlim'): ax.set_xlim(*ax_meta['xlim'])
-            if ax_meta.get('ylim_left'): ax.set_ylim(*ax_meta['ylim_left'])
-            if ax_meta.get('ylim_right'): ax2.set_ylim(*ax_meta['ylim_right'])
+            xlabel = (
+                ax_meta['xlabel'] if 'xlabel' in ax_meta
+                else 'Cycle number'
+            )
+            ylabel_left = (
+                ax_meta['ylabel_left'] if 'ylabel_left' in ax_meta
+                else r'Specific Capacity (mAh g$^{-1}$)'
+            )
+            ylabel_right = (
+                ax_meta['ylabel_right'] if 'ylabel_right' in ax_meta
+                else 'Efficiency (%)'
+            )
+            ax.set_xlabel('' if xlabel is None else str(xlabel))
+            ax.set_ylabel('' if ylabel_left is None else str(ylabel_left))
+            # Infer EPC for older sessions that lack is_epc.
+            if not hasattr(fig, '_cpc_is_epc') or getattr(fig, '_cpc_is_epc', None) is None:
+                ylab = str(ylabel_left or '').lower()
+                fig._cpc_is_epc = ('energy' in ylab) or ('mwh' in ylab)
+            ax2.set_ylabel('' if ylabel_right is None else str(ylabel_right))
+            _xlim = ax_meta.get('xlim')
+            if isinstance(_xlim, (list, tuple)) and len(_xlim) == 2:
+                ax.set_xlim(float(_xlim[0]), float(_xlim[1]))
+            _yl = ax_meta.get('ylim_left')
+            if isinstance(_yl, (list, tuple)) and len(_yl) == 2:
+                ax.set_ylim(float(_yl[0]), float(_yl[1]))
+            _yr = ax_meta.get('ylim_right')
+            if isinstance(_yr, (list, tuple)) and len(_yr) == 2:
+                ax2.set_ylim(float(_yr[0]), float(_yr[1]))
             # Label pads
             try:
                 lp = ax_meta.get('x_labelpad')
                 if lp is not None:
-                    ax.set_xlabel(ax_meta.get('xlabel') or 'Cycle number', labelpad=float(lp))
+                    ax.set_xlabel(ax.get_xlabel(), labelpad=float(lp))
             except Exception:
                 pass
             try:
                 lp = ax_meta.get('y_left_labelpad')
                 if lp is not None:
-                    ax.set_ylabel(ax_meta.get('ylabel_left') or r'Specific Capacity (mAh g$^{-1}$)', labelpad=float(lp))
+                    ax.set_ylabel(ax.get_ylabel(), labelpad=float(lp))
             except Exception:
                 pass
             try:
                 lp = ax_meta.get('y_right_labelpad')
                 if lp is not None:
-                    ax2.set_ylabel(ax_meta.get('ylabel_right') or 'Efficiency (%)', labelpad=float(lp))
+                    ax2.set_ylabel(ax2.get_ylabel(), labelpad=float(lp))
             except Exception:
                 pass
         except Exception:
@@ -545,13 +608,23 @@ def load_cpc_session(filename: str):
         ch = sr.get('charge', {})
         dh = sr.get('discharge', {})
         ef = sr.get('efficiency', {})
+        try:
+            from ..common.session_data_guarantee import install_cpc_series_master
+
+            for _role, _rec in (("charge", ch), ("discharge", dh), ("efficiency", ef)):
+                _xf = _rec.get("x_full", _rec.get("x"))
+                _yf = _rec.get("y_full", _rec.get("y"))
+                install_cpc_series_master(fig, _role, _xf, _yf)
+        except Exception:
+            pass
         def _mk_sc(axX, rec, default_marker='o'):
             x_val = rec.get('x')
             x = np.asarray(x_val if x_val is not None else [], float)
             y_val = rec.get('y')
             y = np.asarray(y_val if y_val is not None else [], float)
             col = rec.get('color') or 'tab:blue'
-            s = float(rec.get('size', 32.0) or 32.0)
+            _sz = rec.get('size', 32.0)
+            s = float(32.0 if _sz is None else _sz)
             alpha = rec.get('alpha', None)
             marker = rec.get('marker', default_marker)
             lab = rec.get('label') or ''
@@ -563,6 +636,14 @@ def load_cpc_session(filename: str):
                 sc = axX.scatter(x, y, color=col, s=s, alpha=alpha, marker=marker, label=lab, zorder=3)
             try:
                 sc.set_visible(bool(rec.get('visible', True)))
+            except Exception:
+                pass
+            try:
+                from ..common.session_data_guarantee import install_scatter_xy_master
+
+                xf = rec.get('x_full', x)
+                yf = rec.get('y_full', y)
+                install_scatter_xy_master(sc, xf, yf)
             except Exception:
                 pass
             return sc
@@ -598,7 +679,10 @@ def load_cpc_session(filename: str):
                 file_data.append({
                     'filename': finfo.get('filename', f'File {idx+1}'),
                     'display_name': finfo.get('display_name', finfo.get('filename', f'File {idx+1}')),
+                    'filepath': finfo.get('filepath'),
+                    'mass_mg': finfo.get('mass_mg'),
                     'visible': vis_file,
+                    'eff_inverted': bool(finfo.get('eff_inverted', False)),
                     'sc_charge': sc_ch,
                     'sc_discharge': sc_dh,
                     'sc_eff': sc_ef,
@@ -610,6 +694,10 @@ def load_cpc_session(filename: str):
             sc_eff = file_data[0]['sc_eff']
             try:
                 fig._cpc_is_multi_file = True
+            except Exception:
+                pass
+            try:
+                fig._cpc_eff_inverted = bool(file_data[0].get('eff_inverted', False))
             except Exception:
                 pass
             # Restore display_mode (charge/discharge/both)
@@ -645,6 +733,12 @@ def load_cpc_session(filename: str):
                 fig._cpc_is_multi_file = False
             except Exception:
                 pass
+            # Y arrays already store the displayed (possibly inverted) values —
+            # restore the flag only; do not flip again.
+            try:
+                fig._cpc_eff_inverted = bool(sess.get('eff_inverted', False))
+            except Exception:
+                pass
             # Restore display_mode for single-file
             dm = sess.get('display_mode', 'both')
             if dm in ('charge', 'discharge', 'both'):
@@ -655,7 +749,8 @@ def load_cpc_session(filename: str):
                 except Exception:
                     pass
         
-        # Restore spines state (version 2+)
+        # Restore spines state (version 2+): lw/visible now; COLORS after WASD
+        # so tick_state exists and right-axis ticks on ax2 recolor correctly.
         try:
             if not hasattr(fig, '_cpc_spine_colors') or not isinstance(fig._cpc_spine_colors, dict):
                 fig._cpc_spine_colors = {}
@@ -669,11 +764,7 @@ def load_cpc_session(filename: str):
                         sp = ax.spines[name]
                         if 'linewidth' in props:
                             sp.set_linewidth(props['linewidth'])
-                        if 'color' in props:
-                            try:
-                                _set_spine_side_color(ax, name, props['color'], fig=fig)
-                            except Exception:
-                                pass
+                        if 'color' in props and props['color'] is not None:
                             fig._cpc_spine_colors[name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])
@@ -683,14 +774,16 @@ def load_cpc_session(filename: str):
                         sp = ax2.spines[name]
                         if 'linewidth' in props:
                             sp.set_linewidth(props['linewidth'])
-                        if 'color' in props:
-                            try:
-                                _set_spine_side_color(ax2, name, props['color'], fig=fig)
-                            except Exception:
-                                pass
+                        if 'color' in props and props['color'] is not None:
                             fig._cpc_spine_colors['right' if name == 'right' else name] = props['color']
                         if 'visible' in props:
                             sp.set_visible(props['visible'])
+            # Prefer explicit spine_colors dict when present (style-parity / newer dumps).
+            explicit = sess.get('spine_colors')
+            if isinstance(explicit, dict) and explicit:
+                for spine_name, color in explicit.items():
+                    if spine_name in ('top', 'bottom', 'left', 'right') and color is not None:
+                        fig._cpc_spine_colors[spine_name] = color
         except Exception:
             pass
         
@@ -733,17 +826,9 @@ def load_cpc_session(filename: str):
         except Exception:
             pass
         
-        # Restore subplot margins/frame size (version 2+)
+        # Prefer exact axes_bbox (XY parity). Margins/frame only when bbox absent.
         try:
             fig_meta = sess.get('figure', {})
-            margins = fig_meta.get('subplot_margins', {})
-            if margins is not None and isinstance(margins, dict):
-                fig.subplots_adjust(
-                    left=margins.get('left', 0.125),
-                    right=margins.get('right', 0.9),
-                    bottom=margins.get('bottom', 0.11),
-                    top=margins.get('top', 0.88)
-                )
             axes_bbox = fig_meta.get('axes_bbox')
             applied_axes_bbox = _apply_axes_bbox(ax, axes_bbox)
             if applied_axes_bbox:
@@ -751,29 +836,39 @@ def load_cpc_session(filename: str):
                     ax2.set_position(ax.get_position())
                 except Exception:
                     pass
-
-            # Restore exact frame size if stored (for precision)
-            frame_size = fig_meta.get('frame_size')
-            if (not applied_axes_bbox) and frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
-                target_w_in, target_h_in = map(float, frame_size)
-                # Get current canvas size
-                canvas_w_in, canvas_h_in = fig.get_size_inches()
-                # Calculate needed fractions to achieve exact frame size
-                if canvas_w_in > 0 and canvas_h_in > 0:
-                    # Get current position to preserve centering
-                    bbox = ax.get_position()
-                    center_x = (bbox.x0 + bbox.x1) / 2.0
-                    center_y = (bbox.y0 + bbox.y1) / 2.0
-                    # Calculate new fractions
-                    new_w_frac = target_w_in / canvas_w_in
-                    new_h_frac = target_h_in / canvas_h_in
-                    # Reposition to maintain centering
-                    new_left = center_x - new_w_frac / 2.0
-                    new_right = center_x + new_w_frac / 2.0
-                    new_bottom = center_y - new_h_frac / 2.0
-                    new_top = center_y + new_h_frac / 2.0
-                    # Apply
-                    fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
+            else:
+                margins = fig_meta.get('subplot_margins', {})
+                if isinstance(margins, dict) and margins:
+                    fig.subplots_adjust(
+                        left=margins.get('left', 0.125),
+                        right=margins.get('right', 0.9),
+                        bottom=margins.get('bottom', 0.11),
+                        top=margins.get('top', 0.88),
+                    )
+                frame_size = fig_meta.get('frame_size')
+                if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+                    target_w_in, target_h_in = map(float, frame_size)
+                    canvas_w_in, canvas_h_in = fig.get_size_inches()
+                    if canvas_w_in > 0 and canvas_h_in > 0:
+                        bbox_live = ax.get_position()
+                        center_x = (bbox_live.x0 + bbox_live.x1) / 2.0
+                        center_y = (bbox_live.y0 + bbox_live.y1) / 2.0
+                        new_w_frac = target_w_in / canvas_w_in
+                        new_h_frac = target_h_in / canvas_h_in
+                        new_left = center_x - new_w_frac / 2.0
+                        new_right = center_x + new_w_frac / 2.0
+                        new_bottom = center_y - new_h_frac / 2.0
+                        new_top = center_y + new_h_frac / 2.0
+                        fig.subplots_adjust(
+                            left=new_left,
+                            right=new_right,
+                            bottom=new_bottom,
+                            top=new_top,
+                        )
+                        try:
+                            ax2.set_position(ax.get_position())
+                        except Exception:
+                            pass
         except Exception:
             pass
         
@@ -813,14 +908,26 @@ def load_cpc_session(filename: str):
                     ax2.tick_params(axis='y',
                                     right=wasd_state['right'].get('ticks', True),
                                     labelright=wasd_state['right'].get('labels', True))
-                # Axis title visibility
+                # Axis titles: store/clear text + visibility (match interactive t).
                 try:
                     if 'bottom' in wasd_state:
-                        ax.xaxis.label.set_visible(bool(wasd_state['bottom'].get('title', True)))
+                        set_primary_axis_title(
+                            ax, "x",
+                            on=bool(wasd_state['bottom'].get('title', True)),
+                            stored_attr="_stored_xlabel",
+                        )
                     if 'left' in wasd_state:
-                        ax.yaxis.label.set_visible(bool(wasd_state['left'].get('title', True)))
+                        set_primary_axis_title(
+                            ax, "y",
+                            on=bool(wasd_state['left'].get('title', True)),
+                            stored_attr="_stored_ylabel",
+                        )
                     if 'right' in wasd_state:
-                        ax2.yaxis.label.set_visible(bool(wasd_state['right'].get('title', True)))
+                        set_primary_axis_title(
+                            ax2, "y",
+                            on=bool(wasd_state['right'].get('title', True)),
+                            stored_attr="_stored_ylabel",
+                        )
                 except Exception:
                     pass
                 
@@ -850,23 +957,41 @@ def load_cpc_session(filename: str):
                     ax2.yaxis.set_minor_locator(NullLocator())
                     ax2.yaxis.set_minor_formatter(NullFormatter())
                 ax2.tick_params(axis='y', which='minor', right=right_m, left=False)
-                # Store tick_state on axes for interactive menu
-                tick_state = {}
-                for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
-                    s = wasd_state.get(side_key, {})
-                    tick_state[f'{prefix}_ticks'] = bool(s.get('ticks', side_key in ('bottom', 'left')))
-                    tick_state[f'{prefix}_labels'] = bool(s.get('labels', side_key in ('bottom', 'left')))
-                    tick_state[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
-                # Legacy keys
-                tick_state['bx'] = tick_state.get('b_ticks', True)
-                tick_state['tx'] = tick_state.get('t_ticks', False)
-                tick_state['ly'] = tick_state.get('l_ticks', True)
-                tick_state['ry'] = tick_state.get('r_ticks', True)  # CPC has right axis
-                tick_state['mbx'] = tick_state.get('mbx', False)
-                tick_state['mtx'] = tick_state.get('mtx', False)
-                tick_state['mly'] = tick_state.get('mly', False)
-                tick_state['mry'] = tick_state.get('mry', False)
+                # Store tick_state on axes — match dump (legacy = ticks AND labels).
+                from ..common.spines import wasd_to_tick_state
+
+                tick_state = wasd_to_tick_state(
+                    wasd_state,
+                    tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': True},
+                    label_defaults={'top': False, 'bottom': True, 'left': True, 'right': True},
+                )
                 ax._saved_tick_state = tick_state
+        except Exception:
+            pass
+
+        # Apply spine COLORS after WASD/tick_state so ticks match (old+new pkl).
+        try:
+            colors = getattr(fig, "_cpc_spine_colors", None) or {}
+            if isinstance(colors, dict) and colors:
+                ts = getattr(ax, "_saved_tick_state", None)
+                axes_map = {
+                    "top": [ax, ax2],
+                    "bottom": [ax, ax2],
+                    "left": [ax],
+                    "right": [ax2],
+                }
+                for spine_name, color in colors.items():
+                    if spine_name not in axes_map or color is None:
+                        continue
+                    for curr_ax in axes_map[spine_name]:
+                        if curr_ax is None or spine_name not in curr_ax.spines:
+                            continue
+                        try:
+                            _set_spine_side_color(
+                                curr_ax, spine_name, color, fig=fig, tick_state=ts
+                            )
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -947,13 +1072,23 @@ def load_cpc_session(filename: str):
                 
                 # Create top xlabel text if it was visible
                 wasd = sess.get('wasd_state') or {}
-                if wasd.get('top', {}).get('title') and ax._stored_top_xlabel:
+                if wasd.get('top', {}).get('title') and isinstance(ax._stored_top_xlabel, str):
                     ax._top_xlabel_text = ax.text(0.5, 1.02, ax._stored_top_xlabel,
                                                    transform=ax.transAxes,
                                                    ha='center', va='bottom',
                                                    fontsize=ax.xaxis.label.get_fontsize(),
                                                    fontfamily=ax.xaxis.label.get_fontfamily())
                     ax._top_xlabel_on = True
+                    top_c = (
+                        (getattr(fig, "_cpc_spine_colors", None) or {}).get("top")
+                        or getattr(ax, "_stored_top_xlabel_color", None)
+                    )
+                    if top_c is not None:
+                        try:
+                            ax._top_xlabel_text.set_color(top_c)
+                            ax._stored_top_xlabel_color = top_c
+                        except Exception:
+                            pass
         except Exception:
             pass
         
@@ -962,15 +1097,30 @@ def load_cpc_session(filename: str):
             leg_meta = sess.get('legend', {})
             xy_in = leg_meta.get('xy_in')
             vis = bool(leg_meta.get('visible', True))
-            if 'title' in leg_meta and leg_meta.get('title'):
+            if 'title' in leg_meta:
                 try:
-                    fig._cpc_legend_title = str(leg_meta.get('title'))
+                    title_val = leg_meta.get('title')
+                    fig._cpc_legend_title = "" if title_val is None else str(title_val)
                 except Exception:
                     pass
             try:
                 fig._cpc_legend_xy_in = (float(xy_in[0]), float(xy_in[1])) if xy_in is not None else None
             except Exception:
                 fig._cpc_legend_xy_in = None
+            legend_file_order = sess.get('legend_file_order')
+            if (
+                legend_file_order
+                and file_data
+                and isinstance(legend_file_order, (list, tuple))
+                and len(legend_file_order) == len(file_data)
+            ):
+                try:
+                    from .legend_order import ensure_cpc_legend_file_order
+
+                    fig._cpc_legend_file_order = list(legend_file_order)
+                    ensure_cpc_legend_file_order(fig, file_data)
+                except Exception:
+                    fig._cpc_legend_file_order = list(legend_file_order)
             from .legend import _rebuild_legend
             _rebuild_legend(ax, ax2, file_data, preserve_position=True)
             if not vis:

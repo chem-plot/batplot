@@ -22,7 +22,12 @@ from batplot.plot_modes.batch_session.batch_commands import (
 )
 from batplot.plot_modes.batch_session.batch_io import parse_panel_selection, prompt_panel_indices
 from batplot.plot_modes.batch_session.common import SyncUndoStacks, session_figure_title, set_panel_figure_title
-from batplot.plot_modes.batch_session.kinds import detect_session_kind, kind_label
+from batplot.plot_modes.batch_session.kinds import (
+    batch_profile_from_dict,
+    detect_session_kind,
+    kind_label,
+    validate_batch_profiles,
+)
 from batplot.plot_modes.batch_session.batch_menu_helpers import (
     batch_io_menu_options,
     summarize_values,
@@ -110,8 +115,258 @@ def test_validate_mixed_kind_fails(tmp_path, capsys):
     assert kind is None
     out = capsys.readouterr().out
     assert "same plot mode" in out
+    assert "Error:" in out
     assert kind_label("cpc") in out
     assert kind_label("xy") in out
+
+
+def _write_pkl(path: Path, payload: dict) -> str:
+    path.write_bytes(pickle.dumps(payload))
+    return str(path)
+
+
+def test_batch_profile_ec_gc_vs_dqdv():
+    gc = batch_profile_from_dict(
+        {
+            "kind": "ec_gc",
+            "mode": False,
+            "multi_file": False,
+            "axis": {"xlabel": "Specific Capacity (mAh g$^{-1}$)", "ylabel": "Potential (V)"},
+        }
+    )
+    dq = batch_profile_from_dict(
+        {
+            "kind": "ec_gc",
+            "mode": True,
+            "multi_file": False,
+            "axis": {"xlabel": "Potential (V)", "ylabel": "dQm/dV"},
+        }
+    )
+    assert gc is not None and dq is not None
+    assert gc.kind == dq.kind == "ec_gc"
+    assert gc.subtype != dq.subtype
+    assert "GC" in gc.label and "dQ/dV" in dq.label
+
+
+def test_batch_profile_ec_cv_vs_gc():
+    cv = batch_profile_from_dict(
+        {
+            "kind": "ec_gc",
+            "mode": False,
+            "multi_file": False,
+            "axis": {"xlabel": "Potential (V)", "ylabel": "Current (mA)"},
+        }
+    )
+    gc = batch_profile_from_dict(
+        {
+            "kind": "ec_gc",
+            "mode": False,
+            "multi_file": False,
+            "axis": {"xlabel": "Specific Capacity (mAh g$^{-1}$)", "ylabel": "Potential (V)"},
+        }
+    )
+    # Li/Li+ must not be mistaken for a Current (I/...) axis.
+    gc_li = batch_profile_from_dict(
+        {
+            "kind": "ec_gc",
+            "mode": False,
+            "multi_file": True,
+            "axis": {
+                "xlabel": "Specific Capacity (mAh g$^{-1}$)",
+                "ylabel": r"Potential vs Li/Li$^{\mathrm{+}}$",
+            },
+        }
+    )
+    assert cv is not None and gc is not None and gc_li is not None
+    assert cv.subtype[0] == "cv"
+    assert gc.subtype[0] == "gc"
+    assert gc_li.subtype == ("gc", "multi-file")
+
+
+def test_batch_profile_xy_stack_dual_overlay():
+    overlay = batch_profile_from_dict(
+        {"version": 1, "x_data": [[1]], "y_data": [[1]], "args_subset": {"stack": False}}
+    )
+    stack = batch_profile_from_dict(
+        {"version": 1, "x_data": [[1]], "y_data": [[1]], "args_subset": {"stack": True}}
+    )
+    dual = batch_profile_from_dict(
+        {
+            "version": 1,
+            "x_data": [[1], [2]],
+            "y_data": [[1], [2]],
+            "args_subset": {"stack": False},
+            "right_y_curve_indices": [1],
+        }
+    )
+    assert overlay is not None and stack is not None and dual is not None
+    assert overlay.subtype == ("overlay",)
+    assert stack.subtype == ("stack",)
+    assert dual.subtype == ("dual-y",)
+
+
+def test_validate_ec_gc_vs_dqdv_warns_and_aborts(tmp_path, capsys):
+    a = _write_pkl(
+        tmp_path / "gc.pkl",
+        {"kind": "ec_gc", "mode": False, "multi_file": False, "axis": {"xlabel": "Capacity", "ylabel": "V"}},
+    )
+    b = _write_pkl(
+        tmp_path / "dq.pkl",
+        {"kind": "ec_gc", "mode": True, "multi_file": False, "axis": {"xlabel": "V", "ylabel": "dQ/dV"}},
+    )
+    kind, _profiles, err = validate_batch_profiles([a, b])
+    assert err == 1 and kind is None
+    out = capsys.readouterr().out
+    assert "Warning:" in out
+    assert "subtype" in out.lower() or "layout" in out.lower()
+    assert load_batch_panels([a, b]) == 1
+
+
+def test_validate_ec_single_vs_multi_warns(tmp_path, capsys):
+    a = _write_pkl(
+        tmp_path / "single.pkl",
+        {"kind": "ec_gc", "mode": False, "multi_file": False, "axis": {"xlabel": "Capacity", "ylabel": "V"}},
+    )
+    b = _write_pkl(
+        tmp_path / "multi.pkl",
+        {
+            "kind": "ec_gc",
+            "mode": False,
+            "multi_file": True,
+            "file_data": [{"filename": "a.csv"}, {"filename": "b.csv"}],
+            "axis": {"xlabel": "Capacity", "ylabel": "V"},
+        },
+    )
+    kind, _profiles, err = validate_batch_profiles([a, b])
+    assert err == 1 and kind is None
+    out = capsys.readouterr().out
+    assert "Warning:" in out
+    assert "single-file" in out and "multi-file" in out
+
+
+def test_validate_xy_stack_vs_overlay_warns(tmp_path, capsys):
+    a = _write_pkl(
+        tmp_path / "a.pkl",
+        {"version": 1, "x_data": [[1]], "y_data": [[1]], "args_subset": {"stack": False}},
+    )
+    b = _write_pkl(
+        tmp_path / "b.pkl",
+        {"version": 1, "x_data": [[1]], "y_data": [[1]], "args_subset": {"stack": True}},
+    )
+    kind, _profiles, err = validate_batch_profiles([a, b])
+    assert err == 1 and kind is None
+    assert "Warning:" in capsys.readouterr().out
+
+
+def test_validate_operando_with_without_ec_warns(tmp_path, capsys):
+    a = _write_pkl(
+        tmp_path / "op_only.pkl",
+        {"kind": "operando_ec", "version": 2, "ec": None},
+    )
+    b = _write_pkl(
+        tmp_path / "op_ec.pkl",
+        {"kind": "operando_ec", "version": 2, "ec": {"time_h": [0.0, 1.0], "mode": "time"}},
+    )
+    kind, _profiles, err = validate_batch_profiles([a, b])
+    assert err == 1 and kind is None
+    out = capsys.readouterr().out
+    assert "Warning:" in out
+    assert "EC panel" in out
+
+
+def test_validate_cpc_single_vs_multi_warns(tmp_path, capsys):
+    a = _write_pkl(tmp_path / "a.pkl", {"kind": "cpc", "version": 2, "multi_files": [{"n": 1}]})
+    b = _write_pkl(
+        tmp_path / "b.pkl",
+        {"kind": "cpc", "version": 2, "multi_files": [{"n": 1}, {"n": 2}]},
+    )
+    kind, _profiles, err = validate_batch_profiles([a, b])
+    assert err == 1 and kind is None
+    assert "Warning:" in capsys.readouterr().out
+
+
+def test_validate_matching_ec_multi_ok(tmp_path):
+    payload = {
+        "kind": "ec_gc",
+        "mode": False,
+        "multi_file": True,
+        "file_data": [{"filename": "a.csv"}, {"filename": "b.csv"}],
+        "axis": {"xlabel": "Capacity", "ylabel": "V"},
+    }
+    a = _write_pkl(tmp_path / "a.pkl", payload)
+    b = _write_pkl(tmp_path / "b.pkl", dict(payload))
+    kind, profiles, err = validate_batch_profiles([a, b])
+    assert err is None and kind == "ec_gc"
+    assert len(profiles) == 2
+
+
+def _make_contour_pkl(path: Path, *, v_lo: float = 2.0, v_hi: float = 3.5) -> str:
+    from batplot.plot_modes.electrochem.dqdv_2d import build_dqdv_2d_snapshot
+
+    fig, ax = plt.subplots()
+    Z = np.linspace(0, 1, 12).reshape(3, 4)
+    im = ax.imshow(Z, origin="lower", aspect="auto", cmap="viridis")
+    cbar = fig.colorbar(im, ax=ax, fraction=0.05)
+    fig._is_dqdv_2d_contour = True
+    fig._dqdv_2d_v_lo = v_lo
+    fig._dqdv_2d_v_hi = v_hi
+    fig._dqdv_2d_v_lo_orig = v_lo
+    fig._dqdv_2d_v_hi_orig = v_hi
+    fig._dqdv_2d_row_labels = ["a", "b", "c"]
+    fig._dqdv_2d_zlabel = "dQ/dV"
+    im._operando_cmap_name = "viridis"
+    snap = build_dqdv_2d_snapshot(
+        fig, ax, im, v_lo, v_hi, ["a", "b", "c"], "dQ/dV", cbar
+    )
+    assert snap is not None
+    path.write_bytes(pickle.dumps(snap))
+    plt.close(fig)
+    return str(path)
+
+
+def test_load_batch_dqdv_2d_contour_ok(tmp_path):
+    a = _make_contour_pkl(tmp_path / "a.pkl")
+    b = _make_contour_pkl(tmp_path / "b.pkl", v_lo=2.1, v_hi=3.6)
+    result = load_batch_panels([a, b])
+    assert not isinstance(result, int)
+    assert result.kind == "dqdv_2d_contour"
+    assert len(result.panels) == 2
+    for panel in result.panels:
+        assert getattr(panel.fig, "_is_dqdv_2d_contour", False) is True
+        assert panel.ec_ax is None
+        plt.close(panel.fig)
+
+
+def test_batch_dqdv_2d_save_keeps_contour_kind(tmp_path):
+    from batplot.plot_modes.batch_session.dqdv_2d_batch_helpers import save_dqdv_2d_panel
+
+    a = _make_contour_pkl(tmp_path / "a.pkl")
+    result = load_batch_panels([a, _make_contour_pkl(tmp_path / "b.pkl")])
+    assert not isinstance(result, int)
+    panel = result.panels[0]
+    out = tmp_path / "saved.pkl"
+    save_dqdv_2d_panel(panel, str(out))
+    with open(out, "rb") as fh:
+        sess = pickle.load(fh)
+    assert sess.get("kind") == "dqdv_2d_contour"
+    assert "Z" in sess
+    for panel in result.panels:
+        plt.close(panel.fig)
+
+
+def test_batch_dqdv_2d_pisb_roundtrip(tmp_path):
+    from batplot.plot_modes.batch_session.batch_panel_state import verify_panel_pisb_roundtrip
+
+    a = _make_contour_pkl(tmp_path / "a.pkl")
+    b = _make_contour_pkl(tmp_path / "b.pkl")
+    result = load_batch_panels([a, b])
+    assert not isinstance(result, int)
+    try:
+        verify_panel_pisb_roundtrip(result.panels[0], "dqdv_2d_contour", sub="ps")
+        verify_panel_pisb_roundtrip(result.panels[0], "dqdv_2d_contour", sub="psg")
+    finally:
+        for panel in result.panels:
+            plt.close(panel.fig)
 
 
 def test_append_batch_io_shortcuts_session_only():
@@ -240,28 +495,65 @@ def test_prompt_style_source_index_single_panel():
 
 def test_run_batch_overwrite_sessions_uses_loaded_path(tmp_path, monkeypatch):
     saved: list[tuple[str, str]] = []
+    prompts: list[str] = []
 
     class Panel:
         def __init__(self, path: str):
             self.path = path
             self.fig = type("F", (), {})()
 
-    p1 = Panel(str(tmp_path / "one.pkl"))
-    p2 = Panel(str(tmp_path / "two.pkl"))
+    p1_path = tmp_path / "one.pkl"
+    p2_path = tmp_path / "two.pkl"
+    p1_path.write_bytes(b"x")
+    p2_path.write_bytes(b"y")
+    p1 = Panel(str(p1_path))
+    p2 = Panel(str(p2_path))
+    # Batch load seeds last-save to the loaded path — must still ask once, not twice.
+    p1.fig._last_session_save_path = str(p1_path)
+    p2.fig._last_session_save_path = str(p2_path)
 
     def _save(panel, path):
         saved.append((panel.path, path))
 
-    monkeypatch.setattr(
-        "batplot.plot_modes.batch_session.batch_commands.confirm_previous_path",
-        lambda *a, **k: None,
-    )
+    def _input(prompt, **_k):
+        prompts.append(prompt)
+        return "y"
+
     monkeypatch.setattr(
         "batplot.plot_modes.batch_session.batch_commands.safe_input",
-        lambda *a, **k: "y",
+        _input,
     )
     run_batch_overwrite_sessions([p1, p2], _save)
     assert saved == [(p1.path, p1.path), (p2.path, p2.path)]
+    assert len(prompts) == 2  # one confirm per panel, not two
+
+
+def test_run_batch_overwrite_sessions_decline_asks_once(tmp_path, monkeypatch, capsys):
+    prompts: list[str] = []
+
+    class Panel:
+        def __init__(self, path: str):
+            self.path = path
+            self.fig = type("F", (), {})()
+
+    pkl = tmp_path / "one.pkl"
+    pkl.write_bytes(b"x")
+    panel = Panel(str(pkl))
+    panel.fig._last_session_save_path = str(pkl)
+
+    def _input(prompt, **_k):
+        prompts.append(prompt)
+        return "q"
+
+    monkeypatch.setattr(
+        "batplot.plot_modes.batch_session.batch_commands.safe_input",
+        _input,
+    )
+    saved: list[str] = []
+    run_batch_overwrite_sessions([panel], lambda _p, path: saved.append(path))
+    assert saved == []
+    assert len(prompts) == 1
+    assert "Overwrite loaded session" not in "".join(prompts)
 
 
 def test_append_batch_io_shortcuts_figure_overwrite():
@@ -563,7 +855,13 @@ def test_operando_export_includes_panel_gaps():
     data = np.random.rand(10, 10)
     im = ax.imshow(data)
     cbar = fig.colorbar(im, ax=ax)
-    cfg, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "ps")
+    # Style-only (ps / p→ps): must NOT embed geometry so import does not resize.
+    cfg_ps, ext_ps = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "ps")
+    assert ext_ps == ".bps"
+    assert not (cfg_ps.get("geometry") or {})
+    assert "canvas_size" not in (cfg_ps.get("figure") or {})
+    # Style+geometry (psg): must include panel gap / width inches for p/i/s/b.
+    cfg, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "psg")
     geom = cfg.get("geometry") or {}
     assert "cb_w_in" in geom
     assert "cb_gap_in" in geom
@@ -609,7 +907,7 @@ def test_xy_style_import_restores_dual_y_layout(tmp_path, fake_args):
         {},
         [0.0, 0.0],
         overwrite_path=str(style_path),
-        force_kind="ps",
+        force_kind="psg",
     )
     cfg = json.loads(style_path.read_text(encoding="utf-8"))
     cfg["right_y_curve_indices"] = [1]
@@ -655,7 +953,10 @@ def test_operando_export_includes_colorbar_side_and_custom_labels():
     assert cfg["colorbar"]["label_left"] is True
     assert cfg["operando"]["custom_labels"]["x"] == "Op X"
     assert cfg["ec"]["custom_labels"]["y_time"] == "Time (h)"
-    assert cfg["ec"]["saved_time_ylim"] == [0.0, 12.0]
+    # Style-only must not hitchhike view/limit bookkeeping.
+    assert cfg["ec"]["saved_time_ylim"] is None
+    cfg_g, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "psg")
+    assert cfg_g["ec"]["saved_time_ylim"] == [0.0, 12.0]
     plt.close(fig)
 
 

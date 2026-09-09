@@ -128,6 +128,19 @@ def apply_wasd_spines(
             spine.set_visible(bool(state["spine"]))
 
 
+def _ensure_minor_locator(axis: Any) -> None:
+    """Enable minor ticks without wiping custom Auto/MultipleLocator from ``n``/``m``."""
+    try:
+        loc = axis.get_minor_locator()
+    except Exception:
+        loc = None
+    if isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+        axis.set_minor_formatter(NullFormatter())
+        return
+    axis.set_minor_locator(AutoMinorLocator())
+    axis.set_minor_formatter(NullFormatter())
+
+
 def apply_wasd_tick_params(
     ax: Any,
     wasd: Mapping[str, Mapping[str, object]] | None,
@@ -178,10 +191,16 @@ def apply_wasd_tick_params(
 
     top_minor = bool((wasd.get("top", {}) or {}).get("minor", False))
     bottom_minor = bool((wasd.get("bottom", {}) or {}).get("minor", False))
+    # Only sides in x_sides own this axis's minor locator. Dual EC passes
+    # x_sides=('bottom',) so top.minor must not enable the primary locator
+    # (ions SecondaryAxis installs its own locator separately).
     if any(side in x_sides for side in ("top", "bottom")):
-        if top_minor or bottom_minor:
-            ax.xaxis.set_minor_locator(AutoMinorLocator())
-            ax.xaxis.set_minor_formatter(NullFormatter())
+        x_minor_enabled = (
+            ("top" in x_sides and top_minor)
+            or ("bottom" in x_sides and bottom_minor)
+        )
+        if x_minor_enabled:
+            _ensure_minor_locator(ax.xaxis)
         else:
             ax.xaxis.set_minor_locator(NullLocator())
             ax.xaxis.set_minor_formatter(NullFormatter())
@@ -194,8 +213,7 @@ def apply_wasd_tick_params(
             or ("right" in active_y_sides and right_minor)
         )
         if side_minor_enabled:
-            ax.yaxis.set_minor_locator(AutoMinorLocator())
-            ax.yaxis.set_minor_formatter(NullFormatter())
+            _ensure_minor_locator(ax.yaxis)
         else:
             ax.yaxis.set_minor_locator(NullLocator())
             ax.yaxis.set_minor_formatter(NullFormatter())
@@ -275,12 +293,67 @@ def legacy_tick_state_to_flat(
 
 
 def sync_legacy_tick_keys(tick_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-    """Mirror explicit ``*_ticks`` keys into legacy ``bx/tx/ly/ry`` keys."""
-    tick_state["bx"] = bool(tick_state.get("b_ticks", True))
-    tick_state["tx"] = bool(tick_state.get("t_ticks", False))
-    tick_state["ly"] = bool(tick_state.get("l_ticks", True))
-    tick_state["ry"] = bool(tick_state.get("r_ticks", False))
+    """Mirror split keys into legacy ``bx/tx/ly/ry`` as ticks AND labels.
+
+    Must match :func:`wasd_to_tick_state` (dump/session contract). Older code that
+    set legacy from ``*_ticks`` alone caused dump≠load when labels were off.
+    """
+    tick_state["bx"] = bool(tick_state.get("b_ticks", True)) and bool(
+        tick_state.get("b_labels", True)
+    )
+    tick_state["tx"] = bool(tick_state.get("t_ticks", False)) and bool(
+        tick_state.get("t_labels", False)
+    )
+    tick_state["ly"] = bool(tick_state.get("l_ticks", True)) and bool(
+        tick_state.get("l_labels", True)
+    )
+    tick_state["ry"] = bool(tick_state.get("r_ticks", False)) and bool(
+        tick_state.get("r_labels", False)
+    )
     return tick_state
+
+
+def set_primary_axis_title(
+    ax: Any,
+    axis: str,
+    *,
+    on: bool,
+    stored_attr: str,
+) -> None:
+    """Show/hide a primary axis title; keep text in ``stored_attr`` when hiding.
+
+    Session/style capture uses ``label.get_visible()`` for WASD title state, so
+    hide must set visibility False (clearing text alone is not enough).
+    """
+    axis = str(axis).lower()
+    if axis == "x":
+        getter = ax.get_xlabel
+        setter = ax.set_xlabel
+        label = ax.xaxis.label
+    elif axis == "y":
+        getter = ax.get_ylabel
+        setter = ax.set_ylabel
+        label = ax.yaxis.label
+    else:
+        raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
+    if on:
+        if hasattr(ax, stored_attr) and isinstance(getattr(ax, stored_attr), str):
+            setter(getattr(ax, stored_attr))
+        try:
+            label.set_visible(True)
+        except Exception:
+            pass
+        return
+    if not hasattr(ax, stored_attr):
+        try:
+            setattr(ax, stored_attr, getter())
+        except Exception:
+            setattr(ax, stored_attr, "")
+    setter("")
+    try:
+        label.set_visible(False)
+    except Exception:
+        pass
 
 
 def apply_flat_tick_params(ax: Any, tick_state: Mapping[str, object]) -> None:
@@ -410,7 +483,9 @@ def _minor_locator_text(axis: Any) -> str:
     loc = axis.get_minor_locator()
     if isinstance(loc, AutoMinorLocator):
         try:
-            ndivs = getattr(loc, "_ndivs", None)
+            ndivs = getattr(loc, "ndivs", None)
+            if ndivs is None:
+                ndivs = getattr(loc, "_ndivs", None)
             return f"{ndivs - 1}/interval" if ndivs is not None else "auto"
         except Exception:
             return "auto"
@@ -511,16 +586,38 @@ def run_spine_tick_menu(
     print_state: Optional[Callable[[], None]] = None,
     extra_help_lines: Optional[Sequence[str]] = None,
     extra_command_handler: Optional[Callable[[str], bool]] = None,
+    after_locator_edit: Optional[Callable[[], None]] = None,
+    direction_axes_provider: Optional[Callable[[], Sequence[Any]]] = None,
+    length_axes_provider: Optional[Callable[[], Sequence[Any]]] = None,
 ) -> None:
     """Run the common interactive spine/tick command loop.
 
     Modes provide ``apply_wasd`` for their unique axis-title behavior and can
     choose which axes are affected by direction/length/spacing commands.
+    ``after_locator_edit`` runs after successful ``n``/``m`` edits (EC dual sync).
+    ``direction_axes_provider`` / ``length_axes_provider`` rebuild live axis lists
+    (so dual SecondaryAxis is not stale if mode changed mid-menu).
     """
     axis_map = dict(axis_map or {})
     direction_axes = list(direction_axes or [])
     length_axes = list(length_axes or direction_axes)
     side_aliases = dict(side_aliases or {})
+
+    def _live_direction_axes() -> list:
+        if direction_axes_provider is not None:
+            try:
+                return [a for a in direction_axes_provider() if a is not None]
+            except Exception:
+                pass
+        return list(direction_axes)
+
+    def _live_length_axes() -> list:
+        if length_axes_provider is not None:
+            try:
+                return [a for a in length_axes_provider() if a is not None]
+            except Exception:
+                pass
+        return list(length_axes)
 
     def _resolve_side(side: str) -> str:
         return side_aliases.get(side, side)
@@ -531,9 +628,12 @@ def run_spine_tick_menu(
         else:
             _draw_figure(fig)
 
+    from .menu_rendering import menu_block_begin
+
     cyan = "\033[96m"
     reset = "\033[0m"
     axis_examples = _format_axis_map(axis_map) or "x  y  all"
+    menu_block_begin(force_new=True)
     print("\033[1mToggle spines>\033[0m")
     print(f"  Side keys       : {cyan}w{reset}=top  {cyan}a{reset}=left  {cyan}s{reset}=bottom  {cyan}d{reset}=right")
     print(f"  What to toggle  : {cyan}1{reset}=spine line  {cyan}2{reset}=major ticks  {cyan}3{reset}=minor ticks  {cyan}4{reset}=labels  {cyan}5{reset}=axis title")
@@ -575,7 +675,7 @@ def run_spine_tick_menu(
             current_dir = getattr(fig, "_tick_direction", "out")
             new_dir = "in" if current_dir == "out" else "out"
             setattr(fig, "_tick_direction", new_dir)
-            for axis_owner in direction_axes:
+            for axis_owner in _live_direction_axes():
                 axis_owner.tick_params(axis="both", which="both", direction=new_dir)
             print(f"Tick direction: {new_dir}")
             _draw()
@@ -583,7 +683,8 @@ def run_spine_tick_menu(
         if cmd == "l":
             while True:
                 try:
-                    sample_owner = length_axes[0] if length_axes else None
+                    live_len = _live_length_axes()
+                    sample_owner = live_len[0] if live_len else None
                     current_major = (
                         sample_owner.xaxis.get_major_ticks()[0].tick1line.get_markersize()
                         if sample_owner is not None and sample_owner.xaxis.get_major_ticks()
@@ -599,7 +700,7 @@ def run_spine_tick_menu(
                         continue
                     new_minor = new_major * 0.7
                     push_state("tick-length")
-                    for axis_owner in length_axes:
+                    for axis_owner in _live_length_axes():
                         axis_owner.tick_params(axis="both", which="major", length=new_major)
                         axis_owner.tick_params(axis="both", which="minor", length=new_minor)
                     if not hasattr(fig, "_tick_lengths"):
@@ -621,11 +722,32 @@ def run_spine_tick_menu(
             for key, axis in axis_map.items():
                 current = _minor_locator_text(axis) if is_minor else _locator_spacing_text(axis.get_major_locator())
                 print(f"  {cyan}{key}{reset} : {current}")
+            # Dual EC: also show SecondaryAxis (top) spacing when present
+            sec_list = getattr(fig, "_xaxis_secondary", None)
+            if (
+                getattr(fig, "_xaxis_mode", None) == "dual"
+                and sec_list is not None
+                and "x" in axis_map
+            ):
+                try:
+                    tx_cur = (
+                        _minor_locator_text(sec_list.xaxis)
+                        if is_minor
+                        else _locator_spacing_text(sec_list.xaxis.get_major_locator())
+                    )
+                    print(
+                        f"  {cyan}tx{reset} : {tx_cur}  "
+                        f"(top / dual — follows x via a-menu scale)"
+                    )
+                except Exception:
+                    pass
             prompt = (
                 "Minor ticks per interval (pairs like x 4, all 0, x auto; q=back): "
                 if is_minor
                 else "Major tick spacing (pairs like x 0.5, all 1, x auto; q=back): "
             )
+            if getattr(fig, "_xaxis_mode", None) == "dual":
+                print("  Note: x = bottom-axis units (capacity or ions per a-menu / swap); top follows.")
             while True:
                 raw = safe_input(colorize_prompt(prompt)).strip().lower()
                 if not raw or raw == "q":
@@ -637,60 +759,86 @@ def run_spine_tick_menu(
                 if len(parts) % 2 != 0:
                     print("Unpaired token at end; use axis/value pairs.")
                     continue
-                push_state("tick-minor-count" if is_minor else "tick-spacing")
+                # Validate all pairs before push/apply — unknown/invalid must not junk undo.
+                planned: list[tuple[list[Any], str]] = []
+                valid = True
                 for index in range(0, len(parts), 2):
                     axis_key, value = parts[index], parts[index + 1]
                     axes = list(axis_map.values()) if axis_key == "all" else [axis_map.get(axis_key)]
                     axes = [axis for axis in axes if axis is not None]
                     if not axes:
                         print(f"Unknown axis '{axis_key}'. Use {', '.join(axis_map)} or all.")
+                        valid = False
                         break
+                    if is_minor:
+                        if value not in ("auto", "0"):
+                            try:
+                                count = int(value)
+                                if count < 0:
+                                    print("Count must be 0 or positive.")
+                                    valid = False
+                                    break
+                            except ValueError:
+                                print(f"Invalid value '{value}'.")
+                                valid = False
+                                break
+                    else:
+                        if value != "auto":
+                            try:
+                                spacing = float(value)
+                                if spacing <= 0:
+                                    print("Spacing must be positive.")
+                                    valid = False
+                                    break
+                            except ValueError:
+                                print(f"Invalid value '{value}'.")
+                                valid = False
+                                break
+                    planned.append((axes, value))
+                if not valid or not planned:
+                    continue
+                push_state("tick-minor-count" if is_minor else "tick-spacing")
+                edited = False
+                for axes, value in planned:
                     for axis in axes:
                         if is_minor:
                             if value == "auto":
                                 axis.set_minor_locator(AutoMinorLocator())
                                 print(f"Set {axis.axis_name} minor ticks to auto.")
+                                edited = True
                             elif value == "0":
                                 axis.set_minor_locator(NullLocator())
                                 print(f"Disabled {axis.axis_name} minor ticks.")
+                                edited = True
                             else:
-                                try:
-                                    count = int(value)
-                                    if count < 0:
-                                        print("Count must be 0 or positive.")
-                                        break
-                                    axis.set_minor_locator(AutoMinorLocator(count + 1))
-                                    print(f"Set {axis.axis_name} to {count} minor tick(s) per major interval.")
-                                except ValueError:
-                                    print(f"Invalid value '{value}'.")
-                                    break
+                                count = int(value)
+                                axis.set_minor_locator(AutoMinorLocator(count + 1))
+                                print(f"Set {axis.axis_name} to {count} minor tick(s) per major interval.")
+                                edited = True
                         else:
                             if value == "auto":
                                 axis.set_major_locator(AutoLocator())
                                 axis.set_minor_locator(AutoMinorLocator())
                                 print(f"Set {axis.axis_name} to auto spacing.")
+                                edited = True
                             else:
+                                spacing = float(value)
+                                axis.set_major_locator(MultipleLocator(spacing))
+                                axis.set_minor_locator(MultipleLocator(spacing / 5))
                                 try:
-                                    spacing = float(value)
-                                    if spacing <= 0:
-                                        print("Spacing must be positive.")
-                                        break
-                                    axis.set_major_locator(MultipleLocator(spacing))
-                                    axis.set_minor_locator(MultipleLocator(spacing / 5))
-                                    try:
-                                        axis.set_major_formatter(ScalarFormatter())
-                                    except Exception:
-                                        pass
-                                    print(f"Set {axis.axis_name} spacing: {spacing}")
-                                except ValueError:
-                                    print(f"Invalid value '{value}'.")
-                                    break
+                                    axis.set_major_formatter(ScalarFormatter())
+                                except Exception:
+                                    pass
+                                print(f"Set {axis.axis_name} spacing: {spacing}")
+                                edited = True
+                if edited and after_locator_edit is not None:
+                    try:
+                        after_locator_edit()
+                    except Exception:
+                        pass
                 _draw()
             continue
 
-        push_state("wasd-toggle")
-        changed = False
-        changed_sides = set()
         side_map = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
         prop_map = {"1": "spine", "2": "ticks", "3": "minor", "4": "labels", "5": "title"}
         legacy_aliases = {
@@ -717,37 +865,47 @@ def run_spine_tick_menu(
             "rt": ("right", "title"),
         }
         combined_tick_label_aliases = {"bx": "bottom", "tx": "top", "ly": "left", "ry": "right"}
+        # Resolve tokens first so unknown-only input never creates a junk undo frame.
+        planned_toggles: list[tuple[str, str | None]] = []
+        # (side, prop) with prop=None means combined tick+label toggle
+        unknown_parts: list[str] = []
         for part in cmd.split():
             if part in combined_tick_label_aliases:
                 side = _resolve_side(combined_tick_label_aliases[part])
+                planned_toggles.append((side, None))
+                continue
+            if part in legacy_aliases:
+                side, prop = legacy_aliases[part]
+                planned_toggles.append((_resolve_side(side), prop))
+                continue
+            if len(part) == 2:
+                raw_side = side_map.get(part[0])
+                side = _resolve_side(raw_side) if raw_side is not None else None
+                prop = prop_map.get(part[1])
+                if side is not None and prop is not None:
+                    planned_toggles.append((side, prop))
+                    continue
+            unknown_parts.append(part)
+        for part in unknown_parts:
+            print(f"Unknown code: {part}")
+        if not planned_toggles:
+            continue
+        push_state("wasd-toggle")
+        changed_sides = set()
+        for side, prop in planned_toggles:
+            if prop is None:
                 state = wasd.setdefault(side, {})
                 new_value = not (bool(state.get("ticks", False)) or bool(state.get("labels", False)))
                 state["ticks"] = new_value
                 state["labels"] = new_value
-                changed = True
                 changed_sides.add(side)
-                continue
-            if part in legacy_aliases:
-                side, prop = legacy_aliases[part]
-                side = _resolve_side(side)
-            elif len(part) == 2:
-                raw_side = side_map.get(part[0])
-                side = _resolve_side(raw_side) if raw_side is not None else None
-                prop = prop_map.get(part[1])
             else:
-                side = None
-                prop = None
-            if side is None or prop is None:
-                print(f"Unknown code: {part}")
-                continue
-            wasd.setdefault(side, {})[prop] = not bool(wasd.get(side, {}).get(prop, False))
-            changed = True
-            if prop in ("labels", "title"):
-                changed_sides.add(side)
-        if changed:
-            sync_tick_state()
-            apply_wasd(changed_sides)
-            _draw()
+                wasd.setdefault(side, {})[prop] = not bool(wasd.get(side, {}).get(prop, False))
+                if prop in ("labels", "title"):
+                    changed_sides.add(side)
+        sync_tick_state()
+        apply_wasd(changed_sides)
+        _draw()
 
 
 __all__ = [
@@ -763,6 +921,7 @@ __all__ = [
     "keep_yaxis_label_on_side",
     "legacy_tick_state_to_flat",
     "parse_frame_tick_widths",
+    "set_primary_axis_title",
     "side_minor_key",
     "sync_legacy_tick_keys",
     "sync_tick_state_from_wasd",

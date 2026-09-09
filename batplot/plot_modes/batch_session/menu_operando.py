@@ -11,16 +11,21 @@ from ...session import dump_operando_session
 from ..common.batch_font import run_batch_font_menu
 from ..common.files import confirm_previous_path
 from ..common.fonts import collect_operando_font_artists
-from ..common.menu_rendering import colorize_menu_item as _colorize_menu, print_menu_columns, prompt_menu_key
+from ..common.menu_rendering import colorize_menu as _colorize_menu, print_menu_columns, prompt_menu_key
 from ..common.terminal import (
     colorize_inline_commands,
     colorize_prompt,
     colorize_single_key_inline_commands,
     safe_input,
 )
-from ..operando.colors import apply_operando_colormap, run_operando_colormap_menu
+from ..operando.colors import apply_operando_colormap, run_operando_cif_color_menu, run_operando_colormap_menu
 from ..operando.grid import run_ec_grid_menu
-from ..operando.ions_axis import install_ec_ions_y_display, restore_ec_time_y_display
+from ..operando.ions_axis import (
+    clear_ec_ion_overlays,
+    install_ec_ions_y_display,
+    place_ec_ion_segment_labels,
+    restore_ec_time_y_display,
+)
 from ..operando.labels import run_operando_ec_rename_menu, run_operando_rename_menu
 from ..operando.layout import _update_custom_colorbar
 from ..operando.layout_menu import run_operando_batch_size_menu
@@ -45,13 +50,30 @@ from .batch_menu_io import (
     batch_quit_or_save_all,
     batch_save_sessions,
 )
-from .common import SyncUndoStacks, draw_panels, print_batch_header, set_all_panel_figure_titles
+from .common import (
+    SyncUndoStacks,
+    draw_panels,
+    make_style_import_prepare,
+    print_batch_header,
+    set_all_panel_figure_titles,
+)
 from .load import OperandoPanel
 from .operando_batch_helpers import (
     apply_frame_tick_widths_all,
+    apply_operando_cif_colors_only,
+    apply_operando_colormap_only,
+    apply_operando_ec_curve_only,
+    apply_operando_ec_grid_only,
+    apply_operando_ec_labels_only,
+    apply_operando_ions_only,
+    apply_operando_labels_only,
+    apply_operando_spine_colors_only,
+    apply_operando_visibility_only,
+    apply_operando_wasd_chrome_only,
     edit_ref_then_sync,
     noop_snapshot,
     reverse_y_all,
+    run_operando_batch_spine_color_menu,
     run_operando_batch_spine_menu,
     set_clim_all,
     set_ec_xlim_all,
@@ -68,6 +90,7 @@ def _print_operando_batch_menu(panels: List[OperandoPanel]) -> None:
         "el: EC curve style" if has_ec else None,
         "v: toggle colorbar/ec" if has_ec else "v: toggle colorbar",
         "t: spines/ticks",
+        "k: spine colors",
         "l: line widths",
         "f: font",
         "g: size",
@@ -77,17 +100,17 @@ def _print_operando_batch_menu(panels: List[OperandoPanel]) -> None:
         "ox: X range",
         "oy: Y range",
         "oz: intensity range",
-        "or: rename labels",
+        "or: rename",
         "c: CIF ticks",
         "pk: peak search",
     ]
     col3 = []
     if has_ec:
         col3 = [
-            "et: EC time range",
-            "ex: EC X range",
-            "ey: y axis type",
-            "er: rename EC labels",
+            "et: time range",
+            "ex: x range",
+            "ey: ion labels (time Y)",
+            "er: rename",
             "eg: grid",
         ]
     col4 = batch_options_menu_column(panels)
@@ -139,7 +162,7 @@ def _restore_panel(panel: OperandoPanel, cfg: dict) -> None:
 
 
 def _save_operando_panel(panel: OperandoPanel, path: str) -> None:
-    dump_operando_session(
+    ok = dump_operando_session(
         path,
         fig=panel.fig,
         ax=panel.ax,
@@ -148,6 +171,8 @@ def _save_operando_panel(panel: OperandoPanel, path: str) -> None:
         ec_ax=panel.ec_ax,
         skip_confirm=True,
     )
+    if not ok:
+        raise RuntimeError(f"Failed to save operando session to {path}")
 
 
 def _export_operando_panel(panel: OperandoPanel, path: str) -> None:
@@ -188,9 +213,14 @@ def _run_batch_ey_menu(ref: OperandoPanel, panels: List[OperandoPanel], undo: Sy
             if sub == "q":
                 break
             if sub == "t":
+                clear_ec_ion_overlays(ec_ax)
                 restore_ec_time_y_display(ec_ax)
+                try:
+                    setattr(ec_ax, "_ions_abs", None)
+                except Exception:
+                    pass
                 ec_ax._ec_y_mode = "time"
-                print("EC Y axis: time")
+                print("EC Y axis: time (ion labels cleared)")
                 try:
                     ref.fig.canvas.draw_idle()
                 except Exception:
@@ -249,23 +279,37 @@ def _run_batch_ey_menu(ref: OperandoPanel, panels: List[OperandoPanel], undo: Sy
                     mass_g = float(params["mass_mg"]) / 1000.0
                     t = np.asarray(time_h, dtype=float)
                     i_mA = np.asarray(current_mA, dtype=float)
+                    v = np.asarray(getattr(ec_ax, "_ec_voltage_v", None), dtype=float)
                     if t.size < 2 or i_mA.size != t.size:
                         print("EC time/current arrays invalid.")
                         break
-                    dt_h = np.diff(t, prepend=t[0])
-                    dt_h[0] = 0.0
-                    # Match style_apply ions integration (capacity via current*dt).
-                    cap_mAh = np.cumsum(i_mA * dt_h)  # mA * h = mAh
-                    cap_mAh_g = cap_mAh / max(mass_g, 1e-30)
-                    ions_delta = cap_mAh_g / float(params["cap_per_ion_mAh_g"])
+                    dt = np.diff(t)
+                    cap_increments = np.empty_like(t)
+                    cap_increments[0] = 0.0
+                    if t.size > 1:
+                        cap_increments[1:] = 0.5 * (i_mA[:-1] + i_mA[1:]) * dt
+                    cap_mAh = np.cumsum(cap_increments)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        cap_mAh_g = np.where(mass_g > 0, cap_mAh / mass_g, np.nan)
+                        ions_delta = np.where(
+                            float(params["cap_per_ion_mAh_g"]) > 0,
+                            cap_mAh_g / float(params["cap_per_ion_mAh_g"]),
+                            np.nan,
+                        )
                     if params.get("material") == "anode":
                         ions_delta = -ions_delta
                     ions_abs = float(params["start_ions"]) + ions_delta
                     ec_ax._ion_params = dict(params)
                     ec_ax._ions_abs = ions_abs
                     ec_ax._ec_y_mode = "ions"
+                    # Keep time spine; only add ion count labels (same as interactive).
                     install_ec_ions_y_display(ec_ax, t, ions_abs, save_prev=True)
-                    print("EC Y axis: ions (params will sync to all panels).")
+                    place_ec_ion_segment_labels(
+                        ec_ax, t, ions_abs,
+                        voltage=v if v.size == t.size else None,
+                        current_mA=i_mA,
+                    )
+                    print("Ion labels added (Y spine stays time; syncs to all panels).")
                     try:
                         ref.fig.canvas.draw_idle()
                     except Exception:
@@ -280,7 +324,7 @@ def _run_batch_ey_menu(ref: OperandoPanel, panels: List[OperandoPanel], undo: Sy
         panels,
         undo=undo,
         capture_panel=_capture_panel,
-        apply_cfg=_apply_operando_cfg,
+        apply_cfg=apply_operando_ions_only,
         draw_all=lambda: draw_panels(panels),
         edit_fn=_edit,
     )
@@ -363,7 +407,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_colormap_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=_edit_cmap,
             )
@@ -385,7 +429,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_ec_curve_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_line_style_menu(
                     fig=ref.fig,
@@ -404,7 +448,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_visibility_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_visibility_menu(
                     fig=ref.fig,
@@ -427,7 +471,18 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_wasd_chrome_only,
+                draw_all=lambda: draw_panels(panels),
+            )
+            continue
+
+        if cmd == "k":
+            run_operando_batch_spine_color_menu(
+                ref,
+                panels,
+                undo=undo,
+                capture_panel=_capture_panel,
+                apply_cfg=apply_operando_spine_colors_only,
                 draw_all=lambda: draw_panels(panels),
             )
             continue
@@ -442,8 +497,19 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 if not inp or inp == "q":
                     break
                 try:
+                    # Dry-parse first so invalid input does not create a junk undo level.
+                    from ..common.spines import parse_frame_tick_widths
+
+                    parse_frame_tick_widths(
+                        inp, single_minor_scale=1.0, paired_minor_scale=1.0
+                    )
                     _push_all(undo, panels)
-                    fw, tw, _mw = apply_frame_tick_widths_all(panels, inp)
+                    try:
+                        fw, tw, _mw = apply_frame_tick_widths_all(panels, inp)
+                    except Exception:
+                        # Restore then drop tip (discard-only leaves cracked panels).
+                        undo.undo_all(lambda i, snap: _restore_panel(panels[i], snap))
+                        raise
                     draw_panels(panels)
                     print(f"Applied frame={fw:.2f}, ticks={tw:.2f} to all plots.")
                 except ValueError:
@@ -507,7 +573,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_labels_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_operando_rename_menu(
                     fig=ref.fig,
@@ -566,7 +632,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_ec_labels_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_operando_ec_rename_menu(
                     fig=ref.fig,
@@ -585,7 +651,7 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_operando_cfg,
+                apply_cfg=apply_operando_ec_grid_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_grid_menu(
                     fig=ref.fig,
@@ -610,7 +676,9 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                 path_prompt="Import operando style path (.bps/.bpsg, q=cancel): ",
                 load_style=lambda path: _load_style_file(path) or None,
                 apply_style=lambda panel, cfg: _apply_operando_cfg(panel, cfg),
-                prepare=lambda _indices: _push_all(undo, panels),
+                prepare=make_style_import_prepare(
+                    undo, panels, _capture_panel, _restore_panel
+                ),
                 on_applied=_on_style_imported,
             )
             continue
@@ -700,40 +768,157 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                     safe_input=safe_input,
                     colorize_menu=_colorize_menu,
                     colorize_prompt=colorize_prompt,
+                    fig=getattr(ref, "fig", None),
+                    ax=getattr(ref, "ax", None),
                 )
             except Exception as exc:
                 print(f"Peak search failed: {exc}")
             draw_panels(panels)
             continue
 
-        # Tier C: CIF ticks — sync style flags from ref when CIF artists exist
+        # Tier C: CIF ticks — add sets / sync display flags across panels
         if cmd == "c":
+            print("CIF (applied to ALL plots):")
+            print("  " + _colorize_menu("a: add CIF file(s)"))
+            print("  " + _colorize_menu("c: CIF colors (per set / palette, e=screen pick)"))
+            print("  " + _colorize_menu("h: toggle HKL labels"))
+            print("  " + _colorize_menu("t: toggle CIF titles"))
+            print("  " + _colorize_menu("q: back"))
+            sub = safe_input(colorize_prompt("CIF (a/c/h/t/q): "), cancel_on_interrupt=True).strip().lower()
+            if not sub or sub == "q":
+                continue
+            if sub == "a":
+                from ...utils import _ask_files_dialog, _parse_typed_path_list
+                from ..operando.plot import append_operando_cif_file
+
+                # One multi-select picker; typed path only if dialog empty.
+                print("Select CIF file(s)… (cancel to return)")
+                try:
+                    picked = _ask_files_dialog(
+                        filetypes=(".cif", ".CIF"),
+                        title="Select CIF file(s)",
+                        multiple=True,
+                    )
+                except Exception:
+                    picked = []
+                if not picked:
+                    line = safe_input(
+                        colorize_prompt(
+                            "No file selected. Type CIF path(s) (quote if spaces), q=back: "
+                        ),
+                        cancel_on_interrupt=True,
+                    ).strip()
+                    if not line or line.lower() == "q":
+                        continue
+                    picked = _parse_typed_path_list(line)
+                    if not picked:
+                        print("No file selected.")
+                        continue
+                wl_suffix = ""
+                # Optional wavelength when any panel uses 2θ axes (once for all picks).
+                if any(getattr(p.fig, "_operando_axis_mode", None) == "2theta" for p in panels):
+                    wl_hint = safe_input(
+                        colorize_prompt(
+                            "Wavelength Å for 2θ (Enter=session default, q=cancel): "
+                        ),
+                        cancel_on_interrupt=True,
+                    ).strip()
+                    if wl_hint.lower() == "q":
+                        continue
+                    if wl_hint:
+                        try:
+                            wl_val = float(wl_hint)
+                        except ValueError:
+                            print("Invalid wavelength; using session default.")
+                        else:
+                            if wl_val > 0 and wl_val == wl_val:
+                                wl_suffix = f":{wl_hint}"
+                            else:
+                                print("Wavelength must be > 0; using session default.")
+                _push_all(undo, panels)
+                n_ok = 0
+                for token_base in picked:
+                    token = f"{token_base}{wl_suffix}"
+                    for p in panels:
+                        try:
+                            append_operando_cif_file(p.fig, p.ax, token, redraw=True)
+                            n_ok += 1
+                        except Exception as exc:
+                            print(f"  Plot {os.path.basename(p.path)}: {exc}")
+                expected = len(picked) * len(panels)
+                if n_ok < expected:
+                    # All-or-nothing: partial success left divergent panels.
+                    undo.undo_all(lambda i, snap: _restore_panel(panels[i], snap))
+                    if n_ok == 0:
+                        print("CIF add failed on all plots.")
+                    else:
+                        print(
+                            f"CIF add incomplete ({n_ok}/{expected}); "
+                            "restored all plots."
+                        )
+                else:
+                    draw_panels(panels)
+                    print(
+                        f"Added {len(picked)} CIF file(s) "
+                        f"({n_ok} panel-add(s) across {len(panels)} plot(s))."
+                    )
+                continue
             has_cif = any(
                 bool(getattr(p.ax, "_operando_cif_tick_series", None)) for p in panels
             )
             if not has_cif:
-                print("No CIF tick data on these sessions; nothing to edit.")
+                print("No CIF tick data on these sessions; use a to add.")
                 continue
-            print("CIF: toggling show HKL / titles on ALL plots that have CIF data.")
-            print("  " + _colorize_menu("h: toggle HKL labels"))
-            print("  " + _colorize_menu("t: toggle CIF titles"))
-            print("  " + _colorize_menu("q: back"))
-            sub = safe_input(colorize_prompt("CIF (h/t/q): "), cancel_on_interrupt=True).strip().lower()
-            if not sub or sub == "q":
+            if sub == "c":
+                ref_series = list(getattr(ref.ax, "_operando_cif_tick_series", None) or [])
+                if not ref_series:
+                    print("Reference plot has no CIF sets; add CIF on all plots first.")
+                    continue
+
+                def _edit_cif_colors() -> None:
+                    def _redraw(series):
+                        ref.ax._operando_cif_tick_series = list(series)
+                        from ..operando.layout import _redraw_operando_cif_if_present
+
+                        _redraw_operando_cif_if_present(ref.fig, ref.ax)
+
+                    run_operando_cif_color_menu(
+                        fig=ref.fig,
+                        ax=ref.ax,
+                        cif_series=ref_series,
+                        safe_input=safe_input,
+                        push_state=noop_snapshot,
+                        redraw=_redraw,
+                        colorize_prompt=colorize_prompt,
+                    )
+
+                edit_ref_then_sync(
+                    ref,
+                    panels,
+                    undo=undo,
+                    capture_panel=_capture_panel,
+                    apply_cfg=apply_operando_cif_colors_only,
+                    draw_all=lambda: draw_panels(panels),
+                    edit_fn=_edit_cif_colors,
+                )
                 continue
             if sub not in ("h", "t"):
                 print("Unknown option.")
                 continue
             _push_all(undo, panels)
+            # Broadcast ref's toggled target to all CIF panels (do not flip each
+            # independently — that keeps disagreeing panels forever diverged).
+            if sub == "h":
+                target = not bool(getattr(ref.fig, "_operando_cif_show_hkl", False))
+            else:
+                target = not bool(getattr(ref.fig, "_operando_cif_show_titles", True))
             for p in panels:
                 if not getattr(p.ax, "_operando_cif_tick_series", None):
                     continue
                 if sub == "h":
-                    cur = bool(getattr(p.fig, "_operando_cif_show_hkl", False))
-                    p.fig._operando_cif_show_hkl = not cur  # type: ignore[attr-defined]
+                    p.fig._operando_cif_show_hkl = target  # type: ignore[attr-defined]
                 else:
-                    cur = bool(getattr(p.fig, "_operando_cif_show_titles", True))
-                    p.fig._operando_cif_show_titles = not cur  # type: ignore[attr-defined]
+                    p.fig._operando_cif_show_titles = target  # type: ignore[attr-defined]
                 try:
                     from ..operando.layout import _redraw_operando_cif_if_present
 
@@ -742,6 +927,18 @@ def run_operando_batch_menu(panels: List[OperandoPanel]) -> None:
                     pass
             draw_panels(panels)
             print("CIF display flags updated on panels that have CIF data.")
+            continue
+
+        if cmd == "u":
+            # Interactive XRD axis-units remesh; batch has no safe all-panel sync.
+            from ..common.menu_rendering import format_batch_key_unavailable
+
+            print(
+                format_batch_key_unavailable(
+                    "u",
+                    "axis-unit remesh is per-plot (no safe all-panel sync); use ox/oy for ranges",
+                )
+            )
             continue
 
         print(f"Unknown command: {cmd!r}")

@@ -186,7 +186,7 @@ def save_xy_session(
     from .session import dump_session
 
     tick_state = default_flat_tick_state()
-    dump_session(
+    ok = dump_session(
         target,
         fig=fig,
         ax=ax,
@@ -207,7 +207,8 @@ def save_xy_session(
         show_cif_titles=show_cif_titles,
         skip_confirm=True,
     )
-    fig._last_session_save_path = os.path.abspath(target)
+    if not ok:
+        raise RuntimeError(f"Failed to save XY session to {target}")
 
 
 @contextmanager

@@ -30,6 +30,12 @@ class SyncUndoStacks:
                 if len(self._stacks[i]) > 40:
                     self._stacks[i].pop(0)
 
+    def pop_indices(self, indices: List[int]) -> None:
+        """Drop the latest frame for each index (failed import cleanup)."""
+        for i in indices:
+            if 0 <= i < len(self._stacks) and len(self._stacks[i]) > 1:
+                self._stacks[i].pop()
+
     def can_undo(self) -> bool:
         """True when at least one panel has more than the baseline snapshot (index 0)."""
         return any(len(s) > 1 for s in self._stacks)
@@ -47,12 +53,51 @@ class SyncUndoStacks:
                 restore_fn(i, snap)
                 restored += 1
             except Exception as exc:
+                # Keep panel stacks aligned: a failed restore must not drop the
+                # only copy of that undo level (otherwise later ``b`` desyncs).
+                stack.append(snap)
                 print(f"Undo failed for panel {i + 1}: {exc}")
         if restored:
             print(f"Undo: restored {restored} panel(s).")
             return True
         print("Undo failed.")
         return False
+
+
+def make_style_import_prepare(
+    undo: SyncUndoStacks,
+    panels: Sequence[Any],
+    capture_panel: Callable[[Any], Any],
+    restore_panel: Callable[[Any, Any], None] | None = None,
+) -> Callable[[List[int]], None]:
+    """Build a ``prepare`` callback that can roll back skipped import frames.
+
+    When ``restore_panel`` is provided, skipped/failed panels are fully restored
+    from the pre-import tip before the tip is dropped (discard-only would leave
+    a half-applied panel with no ``b`` recovery).
+    """
+
+    def prepare(indices: List[int]) -> None:
+        undo.push_indices(indices, [capture_panel(panels[i]) for i in indices])
+
+    def pop_skipped(skipped: List[int]) -> None:
+        for i in skipped:
+            if not (0 <= i < len(undo._stacks)):
+                continue
+            stack = undo._stacks[i]
+            if len(stack) <= 1:
+                continue
+            snap = stack.pop()
+            if restore_panel is None:
+                continue
+            try:
+                restore_panel(panels[i], snap)
+            except Exception as exc:
+                stack.append(snap)
+                print(f"Import rollback failed for panel {i + 1}: {exc}")
+
+    prepare.pop_skipped = pop_skipped  # type: ignore[attr-defined]
+    return prepare
 
 
 def set_all_panel_figure_titles(panels: Sequence[Any]) -> None:

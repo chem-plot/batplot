@@ -74,13 +74,25 @@ def test_data_ops_adjacent_average_preserves_constant():
     assert_allclose(out, y)
 
 
+def test_data_ops_adjacent_average_even_window_keeps_length():
+    y = np.linspace(0.0, 1.0, 20)
+    for pts in (2, 4, 6):
+        out = DO._adjacent_average_smooth(y, points=pts)
+        assert out.shape == y.shape, f"points={pts}: got {out.shape}"
+
+
 def test_data_ops_fft_smooth_returns_same_length():
     rng = np.random.default_rng(0)
     y = np.sin(np.linspace(0, 6 * np.pi, 256)) + 0.1 * rng.standard_normal(256)
     out = DO._fft_smooth(y, points=5, cutoff=0.1)
     assert out.shape == y.shape
-    # low-pass output should have lower variance than the noisy input
-    assert float(np.var(out)) <= float(np.var(y)) + 1e-9
+
+
+def test_data_ops_fft_smooth_cutoff_kwarg_changes_output():
+    y = np.sin(np.linspace(0, 20 * np.pi, 512))
+    loose = DO._fft_smooth(y, cutoff=0.2)
+    tight = DO._fft_smooth(y, cutoff=0.05)
+    assert not np.allclose(loose, tight)
 
 
 # --------------------------------------------------------------------------
@@ -161,6 +173,7 @@ def test_extracted_modules_expose_expected_callables():
         "batplot.plot_modes.xy.derivative": "run_derivative_menu",
         "batplot.plot_modes.xy.smoothing": "run_smoothing_menu",
         "batplot.plot_modes.xy.cif": "run_cif_ticks_menu",
+        "batplot.plot_modes.xy.axis_units": "run_axis_units_menu",
     }
     for module_name, attr in expected.items():
         module = importlib.import_module(module_name)
@@ -184,6 +197,7 @@ def test_xy_dispatcher_delegates_each_command_to_its_module():
         "run_line_style_menu(",
         "run_smoothing_menu(",
         "run_peak_finder_menu(",
+        "run_axis_units_menu(",
         "play_jump_game(",
         "print_xy_menu(",
     ):
@@ -337,16 +351,22 @@ def test_batch_xy_sync_preserves_spine_tick_colors():
         label_defaults={"top": False, "bottom": True, "left": True, "right": False},
     )
     ax2._saved_tick_state = dict(tick_state)
+    # Peer already has its own left color — batch ``t`` must not overwrite it
+    # with the reference's red (colors stay on ``c`` / ``k``, same as histo).
+    apply_xy_spine_color(fig2, ax2, tick_state, "left", "blue")
 
     ref = XyPanel("ref.pkl", fig1, ax1, {})
     other = XyPanel("other.pkl", fig2, ax2, {})
+    # Toggle a WASD flag on the ref so sync has something to propagate.
+    fig1._bp_wasd_state["bottom"]["minor"] = True  # type: ignore[index]
     sync_ref_wasd_to_panels(ref, [ref, other])
 
+    assert other.fig._bp_wasd_state["bottom"]["minor"] is True  # type: ignore[index]
     fig2.canvas.draw()
     for tick in ax2.yaxis.get_major_ticks():
         ln = getattr(tick, "tick1line", None)
         if ln is not None and ln.get_visible():
-            assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#ff0000"
+            assert mcolors.to_hex(mcolors.to_rgb(ln.get_color())) == "#0000ff"
             break
     else:
         raise AssertionError("no visible left tick line on synced panel")

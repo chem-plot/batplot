@@ -201,9 +201,12 @@ def _prepare_allfiles_directory(target_dir: str, args, use_relative_paths: bool 
             print(f"  - {uf}")
         if len(unknown_ext_files) > 5:
             print(f"  ... and {len(unknown_ext_files) - 5} more")
-        print("These will be read as 2-column (x, y) data.")
-        if not args.xaxis:
-            print("Tip: Use --xaxis to specify the x-axis type (e.g., --xaxis 2theta, --xaxis Q, --xaxis r)")
+        print("These will be read as 2-column (x, y) data with labels X / Y by default.")
+        if not args.xaxis and getattr(args, "wl", None) is None:
+            print(
+                "Tip: Optional --xaxis / --wl for typed axes "
+                "(e.g. --xaxis 2theta, --xaxis Q); omit them for quick X/Y plots."
+            )
 
     print(f"Found {len(all_xy_files)} files to plot together")
     args.files = all_xy_files
@@ -267,9 +270,19 @@ def _run_convert_route(args) -> int | None:
         print("Error: --convert requires file(s) or a directory to convert")
         return 1
 
+    from .converters import normalize_extension
     from .utils import natural_sort_key
 
-    convert_ext = {'.xy', '.xye', '.qye', '.dat', '.csv', '.txt'}
+    default_exts = {".xy", ".xye", ".qye", ".dat", ".csv", ".txt"}
+    # Optional --ext filters which files in a folder (or among listed files) to convert.
+    ext_filter = normalize_extension(getattr(args, "ext", None))
+    if ext_filter:
+        convert_ext = {ext_filter}
+    else:
+        convert_ext = set(default_exts)
+
+    out_ext = normalize_extension(getattr(args, "convert_ext", None))
+
     expanded = []
     for p in args.files:
         if os.path.isfile(p):
@@ -277,7 +290,8 @@ def _run_convert_route(args) -> int | None:
             if ext in convert_ext:
                 expanded.append(p)
             else:
-                print(f"Warning: Skipping non-convertible file: {p}")
+                want = ext_filter or "supported XRD text"
+                print(f"Warning: Skipping file (extension filter {want}): {p}")
         elif os.path.isdir(p):
             for f in sorted(os.listdir(p), key=natural_sort_key):
                 fp = os.path.join(p, f)
@@ -286,11 +300,18 @@ def _run_convert_route(args) -> int | None:
         else:
             print(f"Warning: Not a file or directory: {p}")
     if not expanded:
-        print("Error: No convertible files found (.xy, .xye, .qye, .dat, .csv, .txt)")
+        shown = ", ".join(sorted(convert_ext))
+        print(f"Error: No convertible files found (looking for: {shown})")
         return 1
 
     from_param, to_param = args.convert
-    convert_xrd_data(expanded, from_param, to_param, args=args)
+    convert_xrd_data(
+        expanded,
+        from_param,
+        to_param,
+        args=args,
+        out_ext=out_ext,
+    )
     return 0
 
 
@@ -355,6 +376,12 @@ def batplot_main() -> int:  # type: ignore
         Exit code: 0 for success, non-zero for error
         (Follows Unix convention: 0 = success, non-zero = error)
     """
+    # Defense in depth: also install when called without cli.main().
+    try:
+        from .plot_modes.common.terminal import install_safe_builtins
+        install_safe_builtins()
+    except Exception:
+        pass
     # ====================================================================
     # STEP 1: PARSE COMMAND-LINE ARGUMENTS
     # ====================================================================
@@ -396,6 +423,16 @@ def batplot_main() -> int:  # type: ignore
 
         return run_showcol(args.files)
 
+    # --strip-header: remove leading lines and write copies to stripped/, then exit
+    if getattr(args, "strip_header", None) is not None:
+        from .strip_header import run_strip_header
+
+        return run_strip_header(
+            args.files or [],
+            args.strip_header,
+            ext=getattr(args, "ext", None),
+        )
+
     # ====================================================================
     # STEP 2: VALIDATE INPUT
     # ====================================================================
@@ -414,6 +451,9 @@ def batplot_main() -> int:  # type: ignore
         getattr(args, 'histo', False),  # Histogram mode
         getattr(args, 'all', None) is not None,  # Batch mode flag
         getattr(args, 'convert', None) is not None,  # Conversion mode
+        getattr(args, 'canvas', False),  # Canvas combine mode
+        getattr(args, 'extract_brml_scans', None) is not None,  # BRML scan extract
+        getattr(args, 'strip_header', None) is not None,  # Header strip utility
     ])
     
     # If no files AND no special flags, nothing to do
@@ -422,12 +462,37 @@ def batplot_main() -> int:  # type: ignore
         print("Use 'batplot --v' for version and release info, 'batplot --h' for CLI help, or 'batplot --m' to open the user manual.")
         return 0  # Exit successfully (not an error, just nothing to do)
 
+    # --extract-brml-scans: extract each XRD scan from .brml to .xy files, then exit
+    if getattr(args, "extract_brml_scans", None) is not None:
+        from .readers_xrd import extract_bruker_brml_scans
+
+        brml_files = [f for f in (args.files or []) if str(f).lower().endswith(".brml")]
+        if not brml_files:
+            print("batplot --extract-brml-scans: provide at least one .brml file.")
+            return 1
+        out_opt = getattr(args, "extract_brml_scans", "")
+        status = 0
+        for brml in brml_files:
+            try:
+                stem = os.path.splitext(os.path.basename(brml))[0]
+                out_dir = out_opt if out_opt else f"{stem}_scans"
+                if not os.path.isabs(out_dir):
+                    out_dir = os.path.join(os.path.dirname(os.path.abspath(brml)) or ".", out_dir)
+                scans = extract_bruker_brml_scans(brml, out_dir=out_dir)
+                print(f"Extracted {len(scans)} scan(s) from {brml} → {out_dir}")
+            except Exception as exc:
+                print(f"Error extracting {brml}: {exc}")
+                status = 1
+        return status
+
     from ._mpl_backend import ensure_gui_backend
 
     ensure_gui_backend(args)
 
-    # Histogram mode (tabular CSV/TXT)
-    if getattr(args, 'histo', False):
+    # Histogram mode (tabular CSV/TXT) — after convert so --histo --convert still converts
+    # (convert is handled below after allfiles expansion when both flags appear).
+    # Prefer convert when both are set.
+    if getattr(args, 'histo', False) and getattr(args, 'convert', None) is None:
         from .plot_modes.histo.routing import handle_histo_mode
         return handle_histo_mode(args)
 
@@ -521,6 +586,8 @@ def batplot_main() -> int:  # type: ignore
     # Normal XY interactive menu is imported from batplot.plot_modes.xy.interactive as `interactive_menu`.
 
     # Galvanostatic cycling mode check: .mpt or supported .csv file with --gc flag
+    if getattr(args, 'cum', False) and not getattr(args, 'gc', False):
+        print("Warning: --cum applies only with --gc (cumulative capacity); ignoring --cum.")
     if getattr(args, 'gc', False):
         from .plot_modes.electrochem.routing import handle_gc_mode
         return handle_gc_mode(args)
@@ -550,20 +617,32 @@ def batplot_main() -> int:  # type: ignore
     if len(args.files) == 1:
         sole = args.files[0]
         if sole.lower() == 'all':
-            batch_process(os.getcwd(), args)
-            exit()
+            if getattr(args, "interactive", False):
+                _prepare_allfiles_directory(os.getcwd(), args, use_relative_paths=True)
+                # Continue to interactive multi-file plotting
+            else:
+                batch_process(os.getcwd(), args)
+                raise SystemExit(0)
         elif sole.lower() == 'allfiles':
             _prepare_allfiles_directory(os.getcwd(), args, use_relative_paths=True)
             # Continue to normal plotting mode with all files
         elif os.path.isdir(sole):
-            batch_process(os.path.abspath(sole), args)
-            exit()
+            if getattr(args, "interactive", False):
+                _prepare_allfiles_directory(os.path.abspath(sole), args, use_relative_paths=False)
+                # Continue to interactive multi-file plotting of directory contents
+            else:
+                batch_process(os.path.abspath(sole), args)
+                raise SystemExit(0)
 
     # --- XY Batch Mode: check for --all flag for XY files ---
     # Handle --all flag for XY batch processing (consistent with EC batch mode)
     if not ec_mode_active and getattr(args, 'all', None) is not None:
-        batch_process(os.getcwd(), args)
-        exit()
+        if getattr(args, "interactive", False):
+            # --all --i: expand cwd files into interactive session instead of SVG batch
+            _prepare_allfiles_directory(os.getcwd(), args, use_relative_paths=True)
+        else:
+            batch_process(os.getcwd(), args)
+            raise SystemExit(0)
 
     # ---------------- Canvas mode: combine multiple .pkl sessions ----------------
     canvas_status = _run_canvas_route(args)

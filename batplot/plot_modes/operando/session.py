@@ -24,19 +24,24 @@ from ...ui import (
 )
 from ..common.font_extras import apply_session_font_cfg, merge_session_font_dump
 from ..common.interactive_state import build_saved_tick_state
+from ..common.line_dash import capture_dash_pattern, restore_dash_pattern
 from ..common.axis_state import (
     capture_axis_spines_and_tick_widths,
     capture_axis_wasd_state,
 )
+from ..common.axis_state import primary_axis_label_text
 from ..common.session_helpers import (
     _try_extract_version_from_pickle,
     _package_versions_stamp,
     _get_current_numpy_version,
+    _artist_linewidth,
     _current_tick_width,
     _current_tick_length,
     _apply_session_tick_lengths,
     _capture_session_tick_locator,
     _restore_session_tick_locator,
+    capture_last_figure_export_path,
+    restore_last_figure_export_path,
 )
 
 
@@ -51,7 +56,7 @@ def dump_operando_session(
     cbar,    # Colorbar object
     ec_ax=None,
     skip_confirm: bool = False,
-) -> None:
+) -> bool:
     """Serialize the current operando+EC interactive session to a pickle file.
 
     Captures enough state to reconstruct the figure layout, operando image,
@@ -59,7 +64,18 @@ def dump_operando_session(
     
     Args:
         skip_confirm: If True, skip overwrite confirmation (already handled by caller).
+
+    Returns:
+        True if the pickle was written successfully, else False.
     """
+    if skip_confirm:
+        target = filename
+    else:
+        target = _confirm_overwrite(filename)
+        if not target:
+            print("Session save canceled.")
+            return False
+
     try:
         # Figure & inches geometry
         fig_w, fig_h = map(float, fig.get_size_inches())
@@ -87,7 +103,23 @@ def dump_operando_session(
         arr = im.get_array()
         # Use masked arrays to preserve NaNs if present
         data = np.array(arr)  # preserves mask where possible
+        # Never-shrink master Z (view clim/xlim must not be the only copy).
+        from ..common.session_data_guarantee import install_operando_array_master
+
+        data_master = install_operando_array_master(fig, data)
         extent = tuple(map(float, im.get_extent())) if hasattr(im, 'get_extent') else None
+        extent_master = getattr(fig, '_operando_extent_master', None)
+        if extent_master is None and extent is not None:
+            try:
+                fig._operando_extent_master = tuple(extent)
+                extent_master = tuple(extent)
+            except Exception:
+                extent_master = extent
+        elif extent_master is not None:
+            try:
+                extent_master = tuple(map(float, extent_master))
+            except Exception:
+                extent_master = extent
         # Get colormap name: first check if we stored it explicitly, otherwise try to get from colormap object
         cmap_name = getattr(im, '_operando_cmap_name', None)
         if cmap_name is None:
@@ -107,8 +139,9 @@ def dump_operando_session(
         except Exception:
             _ylp = 0.0
         op_labels = {
-            'xlabel': ax.get_xlabel(),
-            'ylabel': ax.get_ylabel(),
+            # Prefer _stored_* when title hidden (hide→s→show must keep text).
+            'xlabel': primary_axis_label_text(ax, 'x'),
+            'ylabel': primary_axis_label_text(ax, 'y'),
             'xlim': tuple(map(float, ax.get_xlim())),
             'ylim': tuple(map(float, ax.get_ylim())),
             'x_labelpad': _xlp,
@@ -196,8 +229,11 @@ def dump_operando_session(
                 try:
                     line_style = {
                         'color': ln.get_color(),
-                        'linewidth': float(ln.get_linewidth() or 1.0),
+                        'linewidth': _artist_linewidth(ln),
                         'linestyle': ln.get_linestyle() or '-',
+                        'dash_pattern': capture_dash_pattern(ln),
+                        'marker': ln.get_marker(),
+                        'markersize': ln.get_markersize(),
                         'alpha': ln.get_alpha(),
                     }
                 except Exception:
@@ -209,6 +245,7 @@ def dump_operando_session(
                 use_actual_major_visibility=True,
                 use_right_ylabel_position=True,
             )
+            # Ions mode is overlay-only — dump WASD exactly as captured.
             ec_spines, ec_ticks = capture_axis_spines_and_tick_widths(ec_ax, _current_tick_width)
             ec_tick_lengths = _capture_tick_lengths(ec_ax)
             
@@ -247,6 +284,7 @@ def dump_operando_session(
                 },
                 'tick_locator_state': _capture_session_tick_locator(ec_ax),
                 'title_offsets': ec_title_offsets,
+                'stored_xlabel': getattr(ec_ax, '_stored_xlabel', None),
                 'stored_ylabel': getattr(ec_ax, '_stored_ylabel', None),  # Save hidden ylabel text
                 'visible': bool(ec_ax.get_visible()),
                 'grid': dict(getattr(ec_ax, '_ec_grid', None) or {}),
@@ -256,6 +294,25 @@ def dump_operando_session(
         cb_h_offset = getattr(cbar.ax, '_cb_h_offset_in', 0.0)
         ec_h_offset = getattr(ec_ax, '_ec_h_offset_in', 0.0) if ec_ax is not None else None
         
+        # Resolve axis mode for dump: prefer live attr, else infer from xlabel.
+        # Never invent ``2theta`` for Energy/PDF/unknown sessions.
+        try:
+            from .axis_units import ensure_operando_axis_mode, infer_operando_axis_mode_from_xlabel
+            _axis_mode_dump = ensure_operando_axis_mode(fig, ax)
+            if _axis_mode_dump is None:
+                _axis_mode_dump = infer_operando_axis_mode_from_xlabel(ax.get_xlabel())
+        except Exception:
+            _axis_mode_dump = getattr(fig, '_operando_axis_mode', None)
+        cb_ticks_left = True
+        cb_label_left = True
+        try:
+            cb_ticks_left = any(
+                getattr(tick, 'tick1line', None) and tick.tick1line.get_visible()
+                for tick in cbar.ax.yaxis.get_major_ticks()
+            )
+            cb_label_left = (cbar.ax.yaxis.get_label_position() == 'left')
+        except Exception:
+            pass
         sess = {
             'kind': 'operando_ec',
             'version': 2,
@@ -272,7 +329,10 @@ def dump_operando_session(
             },
             'operando': {
                 'array': data,
+                # BC: older loaders ignore; expand / remesh recovery uses this.
+                'array_master': np.array(data_master, copy=True),
                 'extent': extent,
+                'extent_master': extent_master,
                 'cmap': cmap_name,
                 'clim': clim,
                 'origin': origin,
@@ -288,50 +348,59 @@ def dump_operando_session(
                 },
                 'tick_locator_state': _capture_session_tick_locator(ax),
                 'title_offsets': op_title_offsets,
+                'stored_xlabel': getattr(ax, '_stored_xlabel', None),
                 'stored_ylabel': getattr(ax, '_stored_ylabel', None),  # Save hidden ylabel text
+                # Always persist XRD axis mode / λ (even without CIF) for Options ``u`` BC
+                'axis_mode': str(_axis_mode_dump) if _axis_mode_dump is not None else None,
+                'wl': getattr(fig, '_operando_wl', None),
             },
             'colorbar': {
                 'label': cb_label,
                 'clim': cb_clim,
                 'visible': bool(cbar.ax.get_visible()),
                 'label_mode': getattr(fig, '_colorbar_label_mode', 'highlow'),
+                # Match p/i/b: tick/label side is part of ``v`` visibility chrome.
+                'ticks_left': bool(cb_ticks_left),
+                'label_left': bool(cb_label_left),
             },
             'ec': ec_state,
             'font': merge_session_font_dump(fig),
         }
-        # CIF tick labels for operando (if present)
-        if getattr(ax, '_operando_cif_tick_series', None):
+        # CIF: dump whenever the interactive attr exists (including empty list)
+        # so a cleared CIF round-trips via ``s`` (undo/psg parity).
+        if hasattr(ax, '_operando_cif_tick_series'):
             sess['cif'] = {
-                'tick_series': list(ax._operando_cif_tick_series),
-                'hkl_label_map': dict(getattr(ax, '_operando_cif_hkl_label_map', {})),
+                'tick_series': list(ax._operando_cif_tick_series or []),
+                'hkl_label_map': dict(getattr(ax, '_operando_cif_hkl_label_map', {}) or {}),
                 'show_hkl': bool(getattr(fig, '_operando_cif_show_hkl', False)),
                 'show_titles': bool(getattr(fig, '_operando_cif_show_titles', True)),
                 'placement': str(getattr(fig, '_operando_cif_placement', 'below')),
-                'y_positions': list(getattr(fig, '_operando_cif_y_positions', [])),
+                'y_positions': list(getattr(fig, '_operando_cif_y_positions', []) or []),
                 'colormap': getattr(fig, '_operando_cif_colormap', None),
                 'highlight': bool(getattr(fig, '_operando_cif_highlight', False)),
                 'title_font': dict(getattr(fig, '_operando_cif_title_font', None) or {}),
                 'title_visible': list(getattr(fig, '_operando_cif_title_visible', None) or []),
                 'set_visible': list(getattr(fig, '_operando_cif_set_visible', None) or []),
-                'axis_mode': str(getattr(fig, '_operando_axis_mode', '2theta')),
+                'axis_mode': str(_axis_mode_dump) if _axis_mode_dump is not None else None,
                 'wl': getattr(fig, '_operando_wl', None),
             }
-        if skip_confirm:
-            target = filename
-        else:
-            target = _confirm_overwrite(filename)
-            if not target:
-                print("Session save canceled.")
-                return
+        # Last exported figure path so 'oe' works after reopening the session.
+        sess['last_figure_export_path'] = capture_last_figure_export_path(fig)
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
         target = ensure_exact_case_filename(target)
-        
+
         sess['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
+        try:
+            fig._last_session_save_path = os.path.abspath(target)
+        except Exception:
+            pass
         print(f"Operando session saved to {target}")
+        return True
     except Exception as e:  # pragma: no cover - defensive path
         print(f"Error saving operando session: {e}")
+        return False
 
 
 def load_operando_session(filename: str):
@@ -389,6 +458,8 @@ def load_operando_session(filename: str):
         fig._last_session_save_path = os.path.abspath(filename)
     except Exception:
         pass
+    # Seed last figure export path so 'oe' overwrite is available immediately
+    restore_last_figure_export_path(fig, sess, session_filename=filename)
     # Disable automatic layout adjustments to preserve saved geometry
     try:
         fig.set_layout_engine('none')
@@ -433,9 +504,33 @@ def load_operando_session(filename: str):
                    cmap=cmap_name, interpolation=op.get('interpolation', 'nearest'))
     # Store the colormap name explicitly so it can be retrieved reliably when saving
     setattr(im, '_operando_cmap_name', cmap_name)
-    if op.get('clim'):
+    # Restore never-shrink master Z / extent (BC: missing keys → use live array).
+    try:
+        from ..common.session_data_guarantee import install_operando_array_master
+
+        master = op.get('array_master')
+        if master is not None:
+            install_operando_array_master(fig, master)
+        else:
+            install_operando_array_master(fig, op.get('array'))
+        em = op.get('extent_master') or extent
+        if em is not None and getattr(fig, '_operando_extent_master', None) is None:
+            fig._operando_extent_master = tuple(map(float, em))
+    except Exception:
+        pass
+    # Restore XRD axis mode / wavelength (Options ``u``). Do NOT infer yet —
+    # xlabel is applied below; premature ensure() used to stamp false 2θ.
+    try:
+        if op.get('axis_mode') is not None:
+            fig._operando_axis_mode = str(op.get('axis_mode'))
+        if 'wl' in op:
+            fig._operando_wl = op.get('wl')
+    except Exception:
+        pass
+    _clim = op.get('clim')
+    if isinstance(_clim, (list, tuple)) and len(_clim) == 2:
         try:
-            im.set_clim(*op['clim'])
+            im.set_clim(float(_clim[0]), float(_clim[1]))
         except Exception:
             pass
     
@@ -485,30 +580,70 @@ def load_operando_session(filename: str):
     # Restore labels and labelpad (respecting WASD title state)
     # Bottom xlabel: restore if title is True (default) or if no WASD state
     bottom_title_on = op_wasd.get('bottom', {}).get('title', True) if op_wasd else True
+    labels_block_x = op.get('labels') or {}
+    if 'xlabel' in labels_block_x:
+        saved_xlabel = '' if labels_block_x.get('xlabel') is None else str(labels_block_x.get('xlabel'))
+    else:
+        saved_xlabel = ''
+    # Prefer explicit stored_xlabel (additive BC key) over live dump text.
+    stored_x_dump = op.get('stored_xlabel')
+    if isinstance(stored_x_dump, str):
+        saved_xlabel = stored_x_dump
     if bottom_title_on:
-        ax.set_xlabel(op['labels'].get('xlabel') or '')
+        ax.set_xlabel(saved_xlabel)
         try:
-            lp = op['labels'].get('x_labelpad')
+            ax.xaxis.label.set_visible(True)
+        except Exception:
+            pass
+        try:
+            lp = labels_block_x.get('x_labelpad')
             if lp is not None:
                 ax.set_xlabel(ax.get_xlabel(), labelpad=float(lp))
         except Exception:
             pass
     else:
+        if isinstance(saved_xlabel, str):
+            try:
+                ax._stored_xlabel = saved_xlabel
+            except Exception:
+                pass
         ax.set_xlabel('')  # Hidden by user via s5
-    
-    # Left ylabel: restore if title is True (default) or if saved text exists
-    left_title_on = op_wasd.get('left', {}).get('title', True) if op_wasd else True
-    saved_ylabel = (op['labels'].get('ylabel') or '').strip()
-    if left_title_on or saved_ylabel:
-        ax.set_ylabel(saved_ylabel or 'Scan index')
         try:
-            lp = op['labels'].get('y_labelpad')
+            ax.xaxis.label.set_visible(False)
+        except Exception:
+            pass
+    
+    # Left ylabel: restore if title is True (default). Preserve intentional "".
+    # Only invent "Scan index" when the ylabel key is missing (very old sessions).
+    left_title_on = op_wasd.get('left', {}).get('title', True) if op_wasd else True
+    labels_block = op.get('labels') or {}
+    if 'ylabel' in labels_block:
+        saved_ylabel = '' if labels_block.get('ylabel') is None else str(labels_block.get('ylabel'))
+    else:
+        saved_ylabel = 'Scan index' if left_title_on else ''
+    if left_title_on:
+        ax.set_ylabel(saved_ylabel)
+        try:
+            ax.yaxis.label.set_visible(True)
+        except Exception:
+            pass
+        try:
+            lp = labels_block.get('y_labelpad')
             if lp is not None:
                 ax.set_ylabel(ax.get_ylabel(), labelpad=float(lp))
         except Exception:
             pass
     else:
+        if isinstance(saved_ylabel, str):
+            try:
+                ax._stored_ylabel = saved_ylabel
+            except Exception:
+                pass
         ax.set_ylabel('')  # Hidden by user via a5
+        try:
+            ax.yaxis.label.set_visible(False)
+        except Exception:
+            pass
     
     try:
         ax.set_xlim(*op['labels']['xlim'])
@@ -517,8 +652,35 @@ def load_operando_session(filename: str):
         pass
     # Persist custom labels
     setattr(ax, '_custom_labels', dict(op.get('custom_labels', {'x': None, 'y': None})))
+
+    # Infer axis mode for old sessions AFTER xlabel is restored (key is ``xlabel``).
+    try:
+        if getattr(fig, '_operando_axis_mode', None) is None:
+            from .axis_units import infer_operando_axis_mode_from_xlabel, ensure_operando_axis_mode
+            xlab = None
+            try:
+                labs = op.get('labels') or {}
+                xlab = labs.get('xlabel') if isinstance(labs, dict) else None
+            except Exception:
+                xlab = None
+            if not xlab:
+                try:
+                    xlab = ax.get_xlabel()
+                except Exception:
+                    xlab = None
+            if xlab:
+                inferred = infer_operando_axis_mode_from_xlabel(str(xlab))
+                if inferred:
+                    fig._operando_axis_mode = inferred
+            if getattr(fig, '_operando_axis_mode', None) is None:
+                ensure_operando_axis_mode(fig, ax)
+    except Exception:
+        pass
     
-    # Restore stored ylabel if present (for cases where ylabel was hidden with a5)
+    # Restore stored titles if present (hidden via WASD s5/a5).
+    stored_xlabel = op.get('stored_xlabel')
+    if stored_xlabel is not None:
+        setattr(ax, '_stored_xlabel', stored_xlabel)
     stored_ylabel = op.get('stored_ylabel')
     if stored_ylabel is not None:
         setattr(ax, '_stored_ylabel', stored_ylabel)
@@ -564,7 +726,13 @@ def load_operando_session(filename: str):
                         pass
                 if 'color' in props and props['color'] is not None:
                     try:
-                        _set_spine_side_color(ax, name, props['color'], fig=fig)
+                        _set_spine_side_color(
+                            ax,
+                            name,
+                            props['color'],
+                            fig=fig,
+                            tick_state=getattr(ax, "_saved_tick_state", None),
+                        )
                     except Exception:
                         pass
         except Exception:
@@ -574,10 +742,14 @@ def load_operando_session(filename: str):
     op_tick_widths = op.get('ticks', {}).get('widths', {})
     if op_tick_widths:
         try:
-            if op_tick_widths.get('x_major'): ax.tick_params(axis='x', which='major', width=op_tick_widths['x_major'])
-            if op_tick_widths.get('x_minor'): ax.tick_params(axis='x', which='minor', width=op_tick_widths['x_minor'])
-            if op_tick_widths.get('y_major'): ax.tick_params(axis='y', which='major', width=op_tick_widths['y_major'])
-            if op_tick_widths.get('y_minor'): ax.tick_params(axis='y', which='minor', width=op_tick_widths['y_minor'])
+            if op_tick_widths.get('x_major') is not None:
+                ax.tick_params(axis='x', which='major', width=op_tick_widths['x_major'])
+            if op_tick_widths.get('x_minor') is not None:
+                ax.tick_params(axis='x', which='minor', width=op_tick_widths['x_minor'])
+            if op_tick_widths.get('y_major') is not None:
+                ax.tick_params(axis='y', which='major', width=op_tick_widths['y_major'])
+            if op_tick_widths.get('y_minor') is not None:
+                ax.tick_params(axis='y', which='minor', width=op_tick_widths['y_minor'])
         except Exception:
             pass
     _apply_session_tick_lengths(fig, [ax], op.get('ticks', {}).get('lengths'))
@@ -591,10 +763,15 @@ def load_operando_session(filename: str):
 
     # Colorbar
     cbar = _Colorbar(cbar_ax, im)
-    cbar.ax.yaxis.set_ticks_position('left')
-    cbar.ax.yaxis.set_label_position('left')
     try:
         cb_meta = sess.get('colorbar', {})
+        # Default left (historical); honor saved side when present (p/i/b parity).
+        ticks_left = bool(cb_meta.get('ticks_left', True))
+        label_left = bool(cb_meta.get('label_left', True))
+        setattr(cbar.ax, '_colorbar_ticks_left', ticks_left)
+        setattr(cbar.ax, '_colorbar_label_left', label_left)
+        cbar.ax.yaxis.set_ticks_position('left' if ticks_left else 'right')
+        cbar.ax.yaxis.set_label_position('left' if label_left else 'right')
         label_text = cb_meta.get('label')
         label_mode = cb_meta.get('label_mode', 'highlow')
         # Set label on the colorbar's axes for better compatibility
@@ -602,13 +779,18 @@ def load_operando_session(filename: str):
             cbar.ax.set_ylabel(label_text or '')
         except Exception:
             cbar.set_label(label_text or '')
-        if cb_meta.get('clim'):
+        _cb_clim = cb_meta.get('clim')
+        if isinstance(_cb_clim, (list, tuple)) and len(_cb_clim) == 2:
             try:
-                im.set_clim(*cb_meta['clim'])
+                im.set_clim(float(_cb_clim[0]), float(_cb_clim[1]))
             except Exception:
                 pass
         # Persist custom colorbar attributes for interactive mode
-        setattr(cbar.ax, '_colorbar_label', label_text or (cbar.ax.get_ylabel() or 'Intensity'))
+        setattr(
+            cbar.ax,
+            '_colorbar_label',
+            label_text if label_text is not None else (cbar.ax.get_ylabel() or 'Intensity'),
+        )
         setattr(cbar.ax, '_colorbar_label_mode', label_mode)
         setattr(cbar.ax, '_colorbar_im', im)
         setattr(fig, '_colorbar_label_mode', label_mode)
@@ -618,7 +800,11 @@ def load_operando_session(filename: str):
         except Exception:
             pass
     except Exception:
-        pass
+        try:
+            cbar.ax.yaxis.set_ticks_position('left')
+            cbar.ax.yaxis.set_label_position('left')
+        except Exception:
+            pass
 
     # Optional EC panel
     ec_ax = None
@@ -632,20 +818,36 @@ def load_operando_session(filename: str):
             # Apply saved style or defaults
             st = (ec.get('line_style') or {})
             color = st.get('color', 'tab:blue')
-            lw = float(st.get('linewidth', 1.0) or 1.0)
+            _lw = st.get('linewidth', 1.0)
+            lw = float(1.0 if _lw is None else _lw)
             ls = st.get('linestyle', '-') or '-'
             alpha = st.get('alpha', None)
             ln, = ec_ax.plot(vv, th, lw=lw, color=color, linestyle=ls, alpha=alpha)
+            restore_dash_pattern(ln, st.get('dash_pattern'))
+            try:
+                marker = st.get('marker')
+                if marker not in (None, 'None', '', ' '):
+                    ln.set_marker(marker)
+                    if st.get('markersize') is not None:
+                        ln.set_markersize(float(st['markersize']))
+                    ln.set_markerfacecolor(color)
+                    ln.set_markeredgecolor(color)
+            except Exception:
+                pass
             setattr(ec_ax, '_ec_line', ln)
         
         # Stash arrays for interactivity
         setattr(ec_ax, '_ec_time_h', th)
         setattr(ec_ax, '_ec_voltage_v', vv)
         setattr(ec_ax, '_ec_current_mA', ec.get('curr_mA'))
-        # Limits
+        # Limits (key-shaped; do not skip valid limits via truthiness)
         try:
-            if ec.get('xlim'): ec_ax.set_xlim(*ec['xlim'])
-            if ec.get('ylim'): ec_ax.set_ylim(*ec['ylim'])
+            _ex = ec.get('xlim')
+            if isinstance(_ex, (list, tuple)) and len(_ex) == 2:
+                ec_ax.set_xlim(float(_ex[0]), float(_ex[1]))
+            _ey = ec.get('ylim')
+            if isinstance(_ey, (list, tuple)) and len(_ey) == 2:
+                ec_ax.set_ylim(float(_ey[0]), float(_ey[1]))
         except Exception:
             pass
         # Ticks/labels on right
@@ -704,7 +906,8 @@ def load_operando_session(filename: str):
                         if bool(left_state.get('ticks')) or bool(left_state.get('labels')):
                             right_ticks = True
                             right_labels = True
-                    
+                    # Ions mode is overlay-only — never rewrite right tick/label WASD.
+
                     ec_ax.tick_params(axis='y',
                                      left=left_ticks,
                                      right=right_ticks,
@@ -733,10 +936,29 @@ def load_operando_session(filename: str):
         
         # Set xlabel (respecting WASD title state for bottom)
         bottom_title_on = ec_wasd.get('bottom', {}).get('title', True) if ec_wasd else True
-        if bottom_title_on:
-            ec_ax.set_xlabel((ec.get('custom_labels') or {}).get('x') or 'Potential (V)')
+        _ecl = ec.get('custom_labels') if isinstance(ec.get('custom_labels'), dict) else {}
+        if isinstance(ec.get('stored_xlabel'), str):
+            _ec_xlab = ec.get('stored_xlabel')
+        elif 'x' in _ecl and _ecl['x'] is not None:
+            _ec_xlab = str(_ecl['x'])
         else:
+            _ec_xlab = 'Potential (V)'
+        if bottom_title_on:
+            ec_ax.set_xlabel(_ec_xlab)
+            try:
+                ec_ax.xaxis.label.set_visible(True)
+            except Exception:
+                pass
+        else:
+            try:
+                ec_ax._stored_xlabel = _ec_xlab
+            except Exception:
+                pass
             ec_ax.set_xlabel('')  # Hidden by user via s5
+            try:
+                ec_ax.xaxis.label.set_visible(False)
+            except Exception:
+                pass
         
         # Handle ions mode
         mode = ec.get('mode', 'time')
@@ -747,6 +969,12 @@ def load_operando_session(filename: str):
                 t = np.asarray(th, float)
                 ions_abs = ec.get('ions_abs')
                 ion_params = ec.get('ion_params')
+                # Always restore params for ey / ion menus (even when ions_abs is present).
+                if isinstance(ion_params, dict) and ion_params:
+                    try:
+                        ec_ax._ion_params = dict(ion_params)
+                    except Exception:
+                        pass
                 if ions_abs is None and ion_params and t is not None:
                     # Fallback: recompute ions from params
                     i_mA = np.asarray(ec.get('curr_mA'), float)
@@ -768,45 +996,88 @@ def load_operando_session(filename: str):
                     if ions_abs_arr.size != t_arr.size:
                         raise ValueError("stored ions array length does not match EC time array")
                     setattr(ec_ax, '_ions_abs', ions_abs_arr)
-                    from .ions_axis import install_ec_ions_y_display  # lazy: avoid operando→session cycle
+                    from .ions_axis import (  # lazy: avoid operando→session cycle
+                        install_ec_ions_y_display,
+                        restore_ec_time_y_display,
+                        restore_ion_overlays_from_state,
+                    )
+                    # Strip legacy ion tick remapping; keep time spine as-is.
+                    restore_ec_time_y_display(ec_ax)
                     install_ec_ions_y_display(ec_ax, t_arr, ions_abs_arr)
-                    # Label (custom if set) - respect WASD right title state
+                    # Axis title stays time (ions are overlay tags only).
                     right_title_on = ec_wasd.get('right', {}).get('title', True) if ec_wasd else True
                     if right_title_on:
-                        lab = (ec_ax._custom_labels.get('y_ions') if getattr(ec_ax, '_custom_labels', {}).get('y_ions') else 'Number of ions')
-                        ec_ax.set_ylabel(lab)
+                        _cl = getattr(ec_ax, '_custom_labels', None) or {}
+                        # Keep intentional empty; only default when key is absent.
+                        lab = (
+                            str(_cl['y_time'])
+                            if 'y_time' in _cl and _cl['y_time'] is not None
+                            else 'Time (h)'
+                        )
+                        # Legacy dumps stored "Number of ions" as ylabel — normalize.
+                        try:
+                            cur = (ec_ax.get_ylabel() or '').strip().lower()
+                        except Exception:
+                            cur = ''
+                        if cur in ('', 'number of ions', 'ions'):
+                            ec_ax.set_ylabel(lab)
+                        try:
+                            from ..common.spines import keep_yaxis_label_on_side
+                            keep_yaxis_label_on_side(ec_ax, 'right', visible=True)
+                        except Exception:
+                            pass
                     else:
                         ec_ax.set_ylabel('')  # Hidden by user via d5
-                    ec_ax._ion_guides = []
-                    for y_guide in ec.get('ion_guides', []) or []:
                         try:
-                            ec_ax._ion_guides.append(ec_ax.axhline(y=float(y_guide), color='0.7', linestyle='--', linewidth=0.8, alpha=0.5, zorder=0))
+                            from ..common.spines import keep_yaxis_label_on_side
+                            keep_yaxis_label_on_side(ec_ax, 'right', visible=False)
                         except Exception:
                             pass
-                    ec_ax._ion_annots = []
-                    for ann in ec.get('ion_annots', []) or []:
-                        try:
-                            txt = ec_ax.annotate(str(ann.get('text', '')), xy=tuple(ann.get('xy', (0.0, 0.0))), xytext=(0, 4), textcoords='offset points',
-                                                 ha='right', va='bottom', fontsize=9,
-                                                 bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='0.7', alpha=0.8))
-                            ec_ax._ion_annots.append(txt)
-                        except Exception:
-                            pass
+                    restore_ion_overlays_from_state(
+                        ec_ax,
+                        ion_guides=ec.get('ion_guides', []) or [],
+                        ion_annots=ec.get('ion_annots', []) or [],
+                    )
             except Exception:
                 pass
         else:
             # Time mode label - respect WASD right title state
             right_title_on = ec_wasd.get('right', {}).get('title', True) if ec_wasd else True
             if right_title_on:
-                lab = (ec_ax._custom_labels.get('y_time') if getattr(ec_ax, '_custom_labels', {}).get('y_time') else 'Time (h)')
+                _cl = getattr(ec_ax, '_custom_labels', None) or {}
+                lab = (
+                    str(_cl['y_time'])
+                    if 'y_time' in _cl and _cl['y_time'] is not None
+                    else 'Time (h)'
+                )
                 try:
                     ec_ax.set_ylabel(lab)
                 except Exception:
                     pass
+                try:
+                    from ..common.spines import keep_yaxis_label_on_side
+                    keep_yaxis_label_on_side(ec_ax, 'right', visible=True)
+                except Exception:
+                    pass
             else:
                 ec_ax.set_ylabel('')  # Hidden by user via d5
+                try:
+                    from ..common.spines import keep_yaxis_label_on_side
+                    keep_yaxis_label_on_side(ec_ax, 'right', visible=False)
+                except Exception:
+                    pass
+            # Keep ion params available for switching to ions via ey after reload.
+            ion_params = ec.get('ion_params')
+            if isinstance(ion_params, dict) and ion_params:
+                try:
+                    ec_ax._ion_params = dict(ion_params)
+                except Exception:
+                    pass
         
         # Restore stored ylabel if present (for cases where ylabel was hidden)
+        stored_xlabel = ec.get('stored_xlabel')
+        if stored_xlabel is not None:
+            setattr(ec_ax, '_stored_xlabel', stored_xlabel)
         stored_ylabel = ec.get('stored_ylabel')
         if stored_ylabel is not None:
             setattr(ec_ax, '_stored_ylabel', stored_ylabel)
@@ -846,7 +1117,13 @@ def load_operando_session(filename: str):
                                 pass
                         if 'color' in props and props['color'] is not None:
                             try:
-                                _set_spine_side_color(ec_ax, name, props['color'], fig=fig)
+                                _set_spine_side_color(
+                                    ec_ax,
+                                    name,
+                                    props['color'],
+                                    fig=fig,
+                                    tick_state=getattr(ec_ax, "_saved_tick_state", None),
+                                )
                             except Exception:
                                 pass
                 except Exception:
@@ -856,10 +1133,14 @@ def load_operando_session(filename: str):
             ec_tick_widths = ec.get('ticks', {}).get('widths', {})
             if ec_tick_widths:
                 try:
-                    if ec_tick_widths.get('x_major'): ec_ax.tick_params(axis='x', which='major', width=ec_tick_widths['x_major'])
-                    if ec_tick_widths.get('x_minor'): ec_ax.tick_params(axis='x', which='minor', width=ec_tick_widths['x_minor'])
-                    if ec_tick_widths.get('y_major'): ec_ax.tick_params(axis='y', which='major', width=ec_tick_widths['y_major'])
-                    if ec_tick_widths.get('y_minor'): ec_ax.tick_params(axis='y', which='minor', width=ec_tick_widths['y_minor'])
+                    if ec_tick_widths.get('x_major') is not None:
+                        ec_ax.tick_params(axis='x', which='major', width=ec_tick_widths['x_major'])
+                    if ec_tick_widths.get('x_minor') is not None:
+                        ec_ax.tick_params(axis='x', which='minor', width=ec_tick_widths['x_minor'])
+                    if ec_tick_widths.get('y_major') is not None:
+                        ec_ax.tick_params(axis='y', which='major', width=ec_tick_widths['y_major'])
+                    if ec_tick_widths.get('y_minor') is not None:
+                        ec_ax.tick_params(axis='y', which='minor', width=ec_tick_widths['y_minor'])
                 except Exception:
                     pass
             _apply_session_tick_lengths(fig, [ec_ax], ec.get('ticks', {}).get('lengths'))
@@ -929,16 +1210,10 @@ def load_operando_session(filename: str):
     except Exception:
         pass
 
-    # Apply saved fonts and trigger a refresh redraw
+    # Apply saved fonts (is-not-None; do not skip size=0 via truthiness)
     try:
-        f = sess.get('font', {})
-        if f.get('chain'):
-            plt.rcParams['font.family'] = 'sans-serif'
-            plt.rcParams['font.sans-serif'] = f['chain']
-        if f.get('size'):
-            plt.rcParams['font.size'] = f['size']
-        if f.get('mathtext_fontset'):
-            plt.rcParams['mathtext.fontset'] = f['mathtext_fontset']
+        from ..common.font_extras import sync_font_rcparams_from_cfg
+        sync_font_rcparams_from_cfg(sess.get('font', {}))
     except Exception:
         pass
 
@@ -975,35 +1250,64 @@ def load_operando_session(filename: str):
     except Exception:
         pass
 
-    # Restore CIF tick labels (operando) if present
+    # Restore CIF tick labels (operando). Key present + empty series clears (b/psg parity).
     try:
-        cif = sess.get('cif')
-        if cif and cif.get('tick_series'):
-            ax._operando_cif_tick_series = cif['tick_series']
-            ax._operando_cif_hkl_label_map = cif.get('hkl_label_map', {})
-            fig._operando_cif_show_hkl = bool(cif.get('show_hkl', False))
-            fig._operando_cif_show_titles = bool(cif.get('show_titles', True))
-            fig._operando_cif_placement = str(cif.get('placement', 'below'))
-            fig._operando_cif_y_positions = list(cif.get('y_positions', []) or [])
-            fig._operando_cif_colormap = cif.get('colormap')
-            fig._operando_cif_highlight = bool(cif.get('highlight', False))
-            fig._operando_cif_title_font = dict(cif.get('title_font') or {})
-            fig._operando_cif_title_visible = list(cif.get('title_visible') or [])
-            fig._operando_cif_set_visible = list(cif.get('set_visible') or [])
-            fig._operando_axis_mode = str(cif.get('axis_mode', '2theta'))
-            fig._operando_wl = cif.get('wl')
-            ax_pos = ax.get_position()
-            y_base = ax_pos.ymin - 0.02 if fig._operando_cif_placement == 'below' else ax_pos.ymax + 0.02
-            dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
-            while len(fig._operando_cif_y_positions) < len(ax._operando_cif_tick_series):
-                fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+        if 'cif' in sess:
+            cif = sess.get('cif') or {}
             from .plot import _draw_operando_cif_ticks
-            _draw_operando_cif_ticks(ax, fig, ax._operando_cif_tick_series, ax._operando_cif_hkl_label_map,
-                                    axis_mode=fig._operando_axis_mode, wl=fig._operando_wl,
-                                    show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
-                                    placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions)
-    except Exception:
-        pass
+            _cif_mode = getattr(fig, '_operando_axis_mode', None)
+            if cif.get('axis_mode') is not None:
+                fig._operando_axis_mode = str(cif.get('axis_mode'))
+                _cif_mode = fig._operando_axis_mode
+            elif _cif_mode is None:
+                try:
+                    from .axis_units import ensure_operando_axis_mode
+                    _cif_mode = ensure_operando_axis_mode(fig, ax)
+                except Exception:
+                    _cif_mode = None
+            if _cif_mode is None:
+                _cif_mode = ""  # titles only; never invent Q
+            if 'wl' in cif:
+                fig._operando_wl = cif.get('wl')
+            tick_series = list(cif.get('tick_series') or [])
+            if not tick_series:
+                ax._operando_cif_tick_series = []
+                ax._operando_cif_hkl_label_map = {}
+                fig._operando_cif_y_positions = []
+                fig._operando_cif_title_visible = []
+                fig._operando_cif_set_visible = []
+                _draw_operando_cif_ticks(
+                    ax, fig, [], {}, axis_mode=_cif_mode, wl=getattr(fig, '_operando_wl', None),
+                    show_hkl=False, show_titles=False, placement='below', y_positions=[],
+                )
+            else:
+                ax._operando_cif_tick_series = tick_series
+                ax._operando_cif_hkl_label_map = cif.get('hkl_label_map', {}) or {}
+                fig._operando_cif_show_hkl = bool(cif.get('show_hkl', False))
+                fig._operando_cif_show_titles = bool(cif.get('show_titles', True))
+                fig._operando_cif_placement = str(cif.get('placement', 'below'))
+                fig._operando_cif_y_positions = list(cif.get('y_positions', []) or [])
+                fig._operando_cif_colormap = cif.get('colormap')
+                fig._operando_cif_highlight = bool(cif.get('highlight', False))
+                fig._operando_cif_title_font = dict(cif.get('title_font') or {})
+                fig._operando_cif_title_visible = list(cif.get('title_visible') or [])
+                fig._operando_cif_set_visible = list(cif.get('set_visible') or [])
+                ax_pos = ax.get_position()
+                y_base = ax_pos.ymin - 0.02 if fig._operando_cif_placement == 'below' else ax_pos.ymax + 0.02
+                dy = -0.025 if fig._operando_cif_placement == 'below' else 0.025
+                while len(fig._operando_cif_y_positions) < len(ax._operando_cif_tick_series):
+                    fig._operando_cif_y_positions.append(y_base + len(fig._operando_cif_y_positions) * dy)
+                _draw_operando_cif_ticks(
+                    ax, fig, ax._operando_cif_tick_series, ax._operando_cif_hkl_label_map,
+                    axis_mode=_cif_mode, wl=fig._operando_wl,
+                    show_hkl=fig._operando_cif_show_hkl, show_titles=fig._operando_cif_show_titles,
+                    placement=fig._operando_cif_placement, y_positions=fig._operando_cif_y_positions,
+                )
+    except Exception as _cif_restore_exc:
+        try:
+            print(f"Warning: operando CIF restore failed: {_cif_restore_exc}")
+        except Exception:
+            pass
 
     try:
         fig._operando_session_loaded = True
@@ -1051,6 +1355,10 @@ def load_operando_session(filename: str):
             ec_ax,
             artists=collect_operando_font_artists(fig, ax, ec_ax, cbar),
         )
+        if ec_ax is not None:
+            from .ions_axis import restyle_ec_ion_annotations
+
+            restyle_ec_ion_annotations(ec_ax)
     except Exception:
         pass
     return fig, ax, im, cbar, ec_ax

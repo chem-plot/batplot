@@ -103,10 +103,16 @@ def _load_panel_session(path: str) -> Optional[Tuple[str, Any, Dict[str, Any]]]:
                 return None
             fig, ax, menu_kwargs = res
             return ('xy', (fig, ax, menu_kwargs), {'menu_kwargs': menu_kwargs})
+        if kind == 'histo':
+            from .plot_modes.histo.session import load_histo_session
+            res = load_histo_session(path)
+            if not res:
+                return None
+            return ('histo', res, {})
     except Exception as e:
         print(f"  Error loading {path}: {e}")
         return None
-    print(f"  {path}: unknown session format (supported: XY/1D, EC/GC/CV/dQdV, CPC/EPC, operando)")
+    print(f"  {path}: unknown session format (supported: XY/1D, EC/GC/CV/dQdV, CPC/EPC, operando, histo)")
     return None
 
 
@@ -158,7 +164,11 @@ def _default_positions_from_sizes(
 
 def _print_canvas_menu(panels: List[Tuple[str, str]]):
     """Print canvas menu with panel numbers and filenames."""
-    print("\n\033[1mCanvas Interactive Menu:\033[0m")
+    from batplot.plot_modes.common.menu_rendering import menu_block_begin, menu_block_end
+
+    print()
+    menu_block_begin(force_new=True)
+    print("\033[1mCanvas Interactive Menu:\033[0m")
     for i, (_, path) in enumerate(panels):
         name = os.path.basename(path)
         print(f"  \033[93m{i+1}\033[0m: {name}")
@@ -167,6 +177,7 @@ def _print_canvas_menu(panels: List[Tuple[str, str]]):
     print("  1-9: edit panel • p: insert image • t: add text • Backspace: delete selected annotation")
     print("  e: export • s: save (includes images/text) • q q: quit")
     print("  (Click canvas first for keys; orange box = picture or text overlay)")
+    menu_block_end()
 
 
 def _event_to_figure_coords(fig, event) -> Optional[Tuple[float, float]]:
@@ -664,6 +675,10 @@ def run_canvas_mode(pkl_paths: List[str]) -> None:
             elif kind == 'xy':
                 fig, ax, menu_kwargs = data
                 interactive_menu(fig, ax, **normalize_xy_menu_kwargs({**menu_kwargs, 'canvas_mode': True}))
+            elif kind == 'histo':
+                from .plot_modes.histo.interactive import histo_interactive_menu
+                fig, ax, state = data
+                histo_interactive_menu(fig, ax, state)
         except Exception as e:
             print(f"Panel menu failed: {e}")
         finally:

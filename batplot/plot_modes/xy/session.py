@@ -6,6 +6,7 @@ Moved from :mod:`batplot.session`. Shared helpers come from
 
 from __future__ import annotations
 
+import copy
 import os
 import pickle
 import sys
@@ -38,8 +39,20 @@ from ...ui import (
 from ...plotting import apply_curve_color, update_labels
 from ..common.sources import resolve_xy_source_files
 from ..common.font_extras import apply_session_font_cfg, merge_session_font_dump
+from ..common.line_dash import capture_dash_pattern, restore_dash_pattern
 from ..common.axis_state import (
     capture_axis_wasd_state,
+    primary_axis_label_text,
+)
+from .full_data import (
+    copy_array_list,
+    full_matches_display,
+    install_master_full,
+    source_candidates_from_labels,
+    sync_live_full_lists,
+    try_heal_full_from_label_sources,
+    upgrade_originals_from_full,
+    warn_if_full_looks_cropped,
 )
 from ..common.session_helpers import (
     _try_extract_version_from_pickle,
@@ -51,7 +64,10 @@ from ..common.session_helpers import (
     _apply_axes_bbox,
     _capture_session_tick_locator,
     _restore_session_tick_locator,
+    capture_last_figure_export_path,
+    restore_last_figure_export_path,
 )
+from ..common.spines import set_primary_axis_title
 
 
 def _capture_xy_axis_style_for_session(ax) -> Dict[str, Any]:
@@ -110,25 +126,7 @@ def _grid_enabled(ax) -> bool:
 
 def _get_primary_axis_label(ax, axis: str) -> str:
     """Get primary axis label text, falling back to stored value when hidden."""
-    if axis == 'x':
-        label = ax.xaxis.label
-        stored_attr = '_stored_xlabel'
-    else:
-        label = ax.yaxis.label
-        stored_attr = '_stored_ylabel'
-    text = ''
-    try:
-        text = label.get_text() or ''
-    except Exception:
-        text = ''
-    if not text and hasattr(ax, stored_attr):
-        try:
-            stored = getattr(ax, stored_attr)
-            if stored:
-                text = stored
-        except Exception:
-            text = ''
-    return text or ''
+    return primary_axis_label_text(ax, axis)
 
 
 def _get_duplicate_axis_label(ax, which: str, fallback: str = '') -> str:
@@ -142,8 +140,9 @@ def _get_duplicate_axis_label(ax, which: str, fallback: str = '') -> str:
     if hasattr(ax, override_attr):
         try:
             override_val = getattr(ax, override_attr)
-            if override_val:
-                return override_val
+            # Keep intentional empty override (do not fall back to primary text).
+            if override_val is not None:
+                return str(override_val)
         except Exception:
             pass
     artist = getattr(ax, artist_attr, None)
@@ -181,7 +180,7 @@ def dump_session(
     show_cif_hkl: bool | None = None,
     show_cif_titles: bool | None = None,
     skip_confirm: bool = False,
-) -> None:
+) -> bool:
     """
     Save current interactive session to a pickle file.
     
@@ -231,16 +230,32 @@ def dump_session(
         show_cif_hkl: Whether to show CIF hkl labels
         show_cif_titles: Whether to show CIF titles
         skip_confirm: If True, skip overwrite confirmation dialog
-    """
 
-    # Infer axis mode string
-    if getattr(args, 'xaxis', None) in ("Q", "2theta", "r", "energy", "k", "rft"):
+    Returns:
+        True if the pickle was written successfully, else False.
+    """
+    # Confirm before mutating live tick/full buffers (cancel must not crack plot).
+    if skip_confirm:
+        target = filename
+    else:
+        target = _confirm_overwrite(filename)
+        if not target:
+            print("Session save canceled.")
+            return False
+
+    # Infer axis mode string (prefer live fig mode from Options ``u``)
+    _fig_mode = getattr(fig, "_xy_axis_mode", None)
+    if _fig_mode in ("Q", "2theta", "d", "r", "energy", "k", "rft"):
+        axis_mode_session = _fig_mode
+    elif getattr(args, 'xaxis', None) in ("Q", "2theta", "d", "r", "energy", "k", "rft"):
         axis_mode_session = args.xaxis
     else:
         # Best-effort inference from labels/units already set on axes
         xl = (ax.get_xlabel() or "").lower()
-        if "q (" in xl:
+        if "q (" in xl or xl.strip() == "q" or xl.startswith("q "):
             axis_mode_session = "Q"
+        elif "d (" in xl or xl.strip().startswith("d ") or r"d ($\mathrm{\AA}$)" in (ax.get_xlabel() or ""):
+            axis_mode_session = "d"
         elif "$2\\theta$" in xl or "2" in xl and "theta" in xl:
             axis_mode_session = "2theta"
         elif xl.startswith("r ") or xl.startswith("r ("):
@@ -262,11 +277,13 @@ def dump_session(
     frame_w_in = bbox.width * fw
     frame_h_in = bbox.height * fh
 
-    # Save spines state
+    # Save spines state (prefer stored k colors over live edgecolor)
+    from ...ui import resolve_spine_dump_color
+
     spines_state = {
         name: {
             'linewidth': sp.get_linewidth(),
-            'color': sp.get_edgecolor(),
+            'color': resolve_spine_dump_color(ax, name, fig),
             'visible': sp.get_visible(),
         } for name, sp in ax.spines.items()
     }
@@ -301,17 +318,92 @@ def dump_session(
         'y_minor': _tick_length(ax.yaxis, 'minor'),
     }
 
-    sp = fig.subplotpars
+    # Prefer live axes position (``g`` / set_position) over fig.subplotpars,
+    # which can stay stale after frame resize and then fight axes_bbox on load.
     subplot_margins = {
-        'left': float(sp.left),
-        'right': float(sp.right),
-        'bottom': float(sp.bottom),
-        'top': float(sp.top),
+        'left': float(bbox.x0),
+        'right': float(bbox.x0 + bbox.width),
+        'bottom': float(bbox.y0),
+        'top': float(bbox.y0 + bbox.height),
     }
     
-    wasd_state = capture_axis_wasd_state(ax)
+    # Read major tick/label visibility from the on-screen artists so the saved
+    # session always matches the figure even if bookkeeping drifted; the live
+    # tick_state passed by the caller supplies minor-tick flags and fallbacks.
+    # Dump uses a copy so caller tick_state is not rewritten on ``s``.
+    tick_state_dump = dict(tick_state) if isinstance(tick_state, dict) else {}
+    from .spines import capture_xy_wasd_state
+
+    wasd_state = capture_xy_wasd_state(ax, fig, tick_state_dump)
+    # Keep flat tick_state in the pickle aligned with on-screen WASD truth.
+    try:
+        from ..common.spines import sync_tick_state_from_wasd
+        sync_tick_state_from_wasd(
+            tick_state_dump,
+            wasd_state,
+            tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+            label_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+        )
+        ax._saved_tick_state = dict(tick_state_dump)
+    except Exception:
+        pass
 
     try:
+        # Prefer longest available full buffers (master / originals / live full).
+        # Never persist a display crop as "full" when a wider backup exists.
+        full_x, full_y = sync_live_full_lists(
+            fig,
+            list(x_full_list) if x_full_list is not None else list(x_data_list),
+            list(raw_y_full_list) if raw_y_full_list is not None else list(orig_y),
+            x_data_list=x_data_list,
+            y_fallback_list=orig_y,
+        )
+        # If buffers still look cropped, heal from source files BEFORE writing.
+        if full_matches_display(full_x, x_data_list):
+            try:
+                heal_x = list(full_x)
+                heal_y = list(full_y)
+                _src_for_heal = [str(f) for f in (getattr(args, "files", None) or [])]
+                if try_heal_full_from_label_sources(
+                    fig=fig,
+                    labels=labels,
+                    x_full_list=heal_x,
+                    raw_y_full_list=heal_y,
+                    axis_mode=getattr(fig, "_xy_axis_mode", None),
+                    session_path=filename,
+                    source_files=_src_for_heal,
+                    x_display_list=x_data_list,
+                    y_display_list=orig_y,
+                ):
+                    full_x, full_y = sync_live_full_lists(
+                        fig,
+                        heal_x,
+                        heal_y,
+                        x_data_list=x_data_list,
+                        y_fallback_list=orig_y,
+                    )
+            except Exception as _heal_exc:
+                try:
+                    print(f"Warning: could not heal full XY buffers before save: {_heal_exc}")
+                except Exception:
+                    pass
+        if isinstance(x_full_list, list) and isinstance(raw_y_full_list, list):
+            try:
+                x_full_list[:] = full_x
+                raw_y_full_list[:] = full_y
+            except Exception:
+                pass
+        upgrade_originals_from_full(fig, full_x, full_y)
+        # Final never-shrink install so the pickle master keys cannot lag live lists.
+        install_master_full(fig, full_x, full_y, force=False)
+        warn_if_full_looks_cropped(
+            full_x,
+            x_data_list,
+            norm_xlim=getattr(ax, "_norm_xlim", None),
+        )
+        source_files = [str(f) for f in (getattr(args, "files", None) or [])]
+        if not source_files:
+            source_files = source_candidates_from_labels(labels)
         sess = {
             'kind': 'xy',
             'version': 3,
@@ -320,10 +412,11 @@ def dump_session(
             'orig_y': [np.array(a) for a in orig_y],
             # Persist full untrimmed XY data so x-range edits remain reversible
             # after saving/reloading a .pkl, including Bruker .raw/.brml sessions.
-            'x_full_data': ([np.array(a) for a in x_full_list]
-                            if x_full_list is not None else [np.array(a) for a in x_data_list]),
-            'raw_y_full_data': ([np.array(a) for a in raw_y_full_list]
-                                if raw_y_full_list is not None else [np.array(a) for a in orig_y]),
+            'x_full_data': copy_array_list(full_x),
+            'raw_y_full_data': copy_array_list(full_y),
+            # Explicit master backup (BC: older loaders ignore this key).
+            'master_x_full_data': copy_array_list(full_x),
+            'master_y_full_data': copy_array_list(full_y),
             'offsets': list(offsets_list),
             'labels': list(labels),
             # Processed data (for smooth/reduce operations)
@@ -355,6 +448,7 @@ def dump_session(
                     'color': ln.get_color(),
                     'linewidth': ln.get_linewidth(),
                     'linestyle': ln.get_linestyle(),
+                    'dash_pattern': capture_dash_pattern(ln),
                     'alpha': ln.get_alpha(),
                     'marker': ln.get_marker(),
                     'markersize': ln.get_markersize(),
@@ -369,15 +463,33 @@ def dump_session(
             'delta': float(delta),
             'label_layout': label_layout,
             'axis_mode': axis_mode_session,
+            # Optional; older sessions omit these (BC). Used for 2θ ↔ Q ↔ d.
+            'wavelength': (
+                getattr(fig, "_xy_wavelength", None)
+                if getattr(fig, "_xy_wavelength", None) is not None
+                else getattr(args, "wl", None)
+            ),
+            # Dual-wl remapped 2θ (λ₂) display — older sessions omit (BC → False)
+            'dual_wl_display': bool(getattr(fig, "_xy_dual_wl_display", False)),
+            # Dual-wl λ1/λ2 pairs for Options ``u`` / crosshair after reload
+            'file_wavelength_info': list(getattr(fig, "_xy_file_wavelength_info", None) or []),
             'axis': {
-                'xlabel': ax.get_xlabel(),
-                'ylabel': ax.get_ylabel(),
+                'xlabel': primary_axis_label_text(ax, 'x'),
+                'ylabel': primary_axis_label_text(ax, 'y'),
                 'xlim': ax.get_xlim(),
                 'ylim': ax.get_ylim(),
                 'norm_xlim': getattr(ax, '_norm_xlim', None),  # x-range used for normalization
                 'norm_ylim': getattr(ax, '_norm_ylim', None),  # y-range used for normalization
                 **{k: v for k, v in _capture_xy_axis_style_for_session(ax).items()},
             },
+            # Twin y limits (dual-y / --ry); older sessions omit (BC → autoscale).
+            'ylim_right': (
+                tuple(map(float, getattr(fig, '_xy_ax2').get_ylim()))
+                if getattr(fig, '_xy_ax2', None) is not None
+                else None
+            ),
+            # Attribute-only rotation marker (style/undo parity); older sessions omit.
+            'rotation_angle': float(getattr(ax, '_rotation_angle', 0.0) or 0.0),
             'figure': {
                 'size': tuple(map(float, fig.get_size_inches())),
                 'dpi': int(fig.dpi),
@@ -392,7 +504,7 @@ def dump_session(
                 'spines': spines_state,
             },
             'wasd_state': wasd_state,
-            'tick_state': dict(tick_state),
+            'tick_state': dict(tick_state_dump),
             'tick_widths': tick_widths,
             'tick_lengths': tick_lengths,
             'tick_direction': getattr(fig, '_tick_direction', 'out'),
@@ -402,13 +514,16 @@ def dump_session(
                 'stack': bool(getattr(args, 'stack', False)),
                 'autoscale': bool(getattr(args, 'autoscale', False)),
                 'norm': bool(getattr(args, 'norm', False)),
-                'files': [str(f) for f in (getattr(args, 'files', None) or [])],
+                'files': list(source_files),
             },
-            'source_files': [str(f) for f in (getattr(args, 'files', None) or [])],
+            'source_files': list(source_files),
             'cif_tick_series': [tuple(t) for t in (cif_tick_series or [])],
             'cif_hkl_map': {k: [tuple(v) for v in val] for k, val in (cif_hkl_map or {}).items()},
             'cif_hkl_label_map': {k: dict(v) for k, v in (cif_hkl_label_map or {}).items()},
-            'show_cif_hkl': bool(show_cif_hkl),
+            'show_cif_hkl': bool(
+                show_cif_hkl if show_cif_hkl is not None
+                else getattr(fig, '_bp_show_cif_hkl', False)
+            ),
             'show_cif_titles': bool(show_cif_titles) if show_cif_titles is not None else True,
             'cif_stack_y_offsets': list(getattr(fig, '_bp_cif_stack_y_offsets', []) or []),
             # CIF row layout reference range. Without it, each save/load cycle
@@ -417,14 +532,18 @@ def dump_session(
             'cif_initial_ylim': (tuple(map(float, getattr(ax, '_cif_initial_ylim')))
                                  if hasattr(ax, '_cif_initial_ylim') else None),
         }
-        # 1D XY: per-set CIF visibility (__main__.cif_set_visible), same as undo snapshots
+        # 1D XY: per-set CIF visibility — prefer figure attrs (batch), then __main__.
         try:
             if cif_tick_series:
-                _m = sys.modules.get("__main__")
-                if _m is not None and hasattr(_m, "cif_set_visible"):
-                    _vis = list(getattr(_m, "cif_set_visible") or [])
-                    if len(_vis) == len(list(cif_tick_series or [])):
-                        sess["cif_set_visible"] = [bool(v) for v in _vis]
+                _vis = None
+                if hasattr(fig, "_bp_cif_set_visible"):
+                    _vis = list(getattr(fig, "_bp_cif_set_visible") or [])
+                else:
+                    _m = sys.modules.get("__main__")
+                    if _m is not None and hasattr(_m, "cif_set_visible"):
+                        _vis = list(getattr(_m, "cif_set_visible") or [])
+                if isinstance(_vis, list) and len(_vis) == len(list(cif_tick_series or [])):
+                    sess["cif_set_visible"] = [bool(v) for v in _vis]
         except Exception:
             pass
         sess['axis_titles'] = {
@@ -444,7 +563,8 @@ def dump_session(
         right_y_text = _get_duplicate_axis_label(ax, 'right', _get_primary_axis_label(ax, 'y'))
         ax2_xy = getattr(fig, '_xy_ax2', None)
         if ax2_xy is not None:
-            right_y_text = ax2_xy.get_ylabel() or right_y_text
+            # Keep intentional empty twin ylabel (do not `or` fallback).
+            right_y_text = ax2_xy.get_ylabel()
         sess['axis_title_texts'] = {
             'bottom_x': _get_primary_axis_label(ax, 'x'),
             'left_y': _get_primary_axis_label(ax, 'y'),
@@ -460,22 +580,23 @@ def dump_session(
         sess['label_anchor_left'] = bool(getattr(fig, '_label_anchor_left', False))
         # Save grid state
         sess['grid'] = _grid_enabled(ax)
-        if skip_confirm:
-            target = filename
-        else:
-            target = _confirm_overwrite(filename)
-            if not target:
-                print("Session save canceled.")
-                return
+        # Last exported figure path so 'oe' works after reopening the session.
+        sess['last_figure_export_path'] = capture_last_figure_export_path(fig)
         # Ensure exact case is preserved (important for macOS case-insensitive filesystem)
         target = ensure_exact_case_filename(target)
-        
+
         sess['package_versions'] = _package_versions_stamp()
         with open(target, 'wb') as f:
             pickle.dump(sess, f)
+        try:
+            fig._last_session_save_path = os.path.abspath(target)
+        except Exception:
+            pass
         print(f"Session saved to {target}")
+        return True
     except Exception as e:  # pragma: no cover - defensive path
         print(f"Error saving session: {e}")
+        return False
 
 def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  # pyright: ignore[reportGeneralTypeIssues]
     """Load an XY/1D session (sessions with 'version' and 'x_data' but no 'kind').
@@ -531,6 +652,8 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             fig._last_session_save_path = os.path.abspath(filename)
         except Exception:
             pass
+        # Seed last figure export path so 'oe' overwrite is available immediately
+        restore_last_figure_export_path(fig, sess, session_filename=filename)
         try:
             fig.set_layout_engine('none')
         except AttributeError:
@@ -550,20 +673,21 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
 
         wasd_loaded = sess.get('wasd_state')
         if wasd_loaded and isinstance(wasd_loaded, dict):
-            tick_state: Dict[str, Any] = {}
-            for side_key, prefix in [('top', 't'), ('bottom', 'b'), ('left', 'l'), ('right', 'r')]:
-                s = wasd_loaded.get(side_key, {})
-                tick_state[f'{prefix}_ticks'] = bool(s.get('ticks', side_key in ('bottom', 'left')))
-                tick_state[f'{prefix}_labels'] = bool(s.get('labels', side_key in ('bottom', 'left')))
-                tick_state[f'm{prefix}x' if prefix in 'tb' else f'm{prefix}y'] = bool(s.get('minor', False))
-            tick_state['bx'] = tick_state.get('b_ticks', True)
-            tick_state['tx'] = tick_state.get('t_ticks', False)
-            tick_state['ly'] = tick_state.get('l_ticks', True)
-            tick_state['ry'] = tick_state.get('r_ticks', False)
-            tick_state['mbx'] = tick_state.get('mbx', False)
-            tick_state['mtx'] = tick_state.get('mtx', False)
-            tick_state['mly'] = tick_state.get('mly', False)
-            tick_state['mry'] = tick_state.get('mry', False)
+            from ..common.spines import wasd_to_tick_state
+
+            # Match dump: side defaults + legacy bx/tx/ly/ry = ticks AND labels.
+            tick_state = wasd_to_tick_state(
+                wasd_loaded,
+                tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+                label_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+            )
+            # Prefer exact dumped tick_state when present (session fidelity).
+            dumped_ts = sess.get('tick_state')
+            if isinstance(dumped_ts, dict):
+                # Empty dict is authoritative; non-empty overlays WASD-derived keys.
+                tick_state = dict(dumped_ts) if not dumped_ts else {**tick_state, **dict(dumped_ts)}
+            # Batch WASD sync reads this figure attribute (EC/CPC/histo parity).
+            fig._bp_wasd_state = copy.deepcopy(wasd_loaded)
         else:
             tick_state = sess.get('tick_state', {
                 'bx': True, 'tx': False, 'ly': True, 'ry': False,
@@ -578,8 +702,9 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
 
         original_x_data_list = sess.get('original_x_data_list')
         original_y_data_list = sess.get('original_y_data_list')
-        saved_x_full_data = sess.get('x_full_data')
-        saved_raw_y_full_data = sess.get('raw_y_full_data')
+        # Prefer explicit master backup when present (newer saves); fall back to x_full_data.
+        saved_x_full_data = sess.get('master_x_full_data') or sess.get('x_full_data')
+        saved_raw_y_full_data = sess.get('master_y_full_data') or sess.get('raw_y_full_data')
         smooth_settings = sess.get('smooth_settings')
         if original_x_data_list is not None:
             fig._original_x_data_list = [np.array(a) for a in original_x_data_list]
@@ -589,6 +714,9 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             fig._original_y_data_list = [np.array(a) for a in original_y_data_list]
         elif saved_raw_y_full_data is not None:
             fig._original_y_data_list = [np.array(a) for a in saved_raw_y_full_data]
+        # Seed master early so later per-curve appends can upgrade against it.
+        if saved_x_full_data is not None and saved_raw_y_full_data is not None:
+            install_master_full(fig, saved_x_full_data, saved_raw_y_full_data, force=True)
         full_processed_x_data_list = sess.get('full_processed_x_data_list')
         full_processed_y_data_list = sess.get('full_processed_y_data_list')
         if full_processed_x_data_list is not None:
@@ -622,11 +750,24 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
         ax2_loaded = None
         for i in range(n_curves):
             x_arr = np.asarray(x_loaded[i], dtype=float).flatten()
-            off = offsets_saved[i] if i < len(offsets_saved) else 0.0
+            off = float(offsets_saved[i]) if i < len(offsets_saved) else 0.0
+            y_arr_full = (
+                np.asarray(y_loaded[i], dtype=float).flatten()
+                if i < len(y_loaded)
+                else np.array([], dtype=float)
+            )
             if orig_loaded and i < len(orig_loaded):
                 base = np.asarray(orig_loaded[i], dtype=float).flatten()
+                # Backward compat: older sessions saved offset-included orig_y
+                # (same as y_data). Strip the offset once so reload does not double it.
+                if (
+                    abs(off) > 0.0
+                    and base.size == y_arr_full.size
+                    and y_arr_full.size > 0
+                    and np.allclose(base, y_arr_full, equal_nan=True, rtol=0.0, atol=1e-9)
+                ):
+                    base = base - off
             else:
-                y_arr_full = np.asarray(y_loaded[i], dtype=float).flatten() if i < len(y_loaded) else np.array([], dtype=float)
                 base = y_arr_full - off
             if x_arr.size != base.size:
                 min_len = min(x_arr.size, base.size)
@@ -659,6 +800,40 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 y_full_arr = y_full_arr[:min_len_full]
             x_full_list.append(x_full_arr)
             raw_y_full_list.append(y_full_arr)
+        # Heal live full lists from master/originals if a prior save stored a crop
+        # as x_full_data while a longer backup still exists in the session.
+        sync_live_full_lists(
+            fig,
+            x_full_list,
+            raw_y_full_list,
+            x_data_list=x_data_list,
+            y_fallback_list=orig_y,
+        )
+        if full_matches_display(x_full_list, x_data_list):
+            try_heal_full_from_label_sources(
+                fig=fig,
+                labels=sess.get("labels") or [],
+                x_full_list=x_full_list,
+                raw_y_full_list=raw_y_full_list,
+                axis_mode=sess.get("axis_mode"),
+                session_path=filename,
+                source_files=sess.get("source_files") or (sess.get("args_subset") or {}).get("files"),
+                x_display_list=x_data_list,
+                y_display_list=orig_y,
+            )
+        # Same tip as dump when heal could not widen cropped full buffers.
+        if full_matches_display(x_full_list, x_data_list):
+            warn_if_full_looks_cropped(
+                x_full_list,
+                x_data_list,
+                norm_xlim=sess.get("axis", {}).get("xlim") if isinstance(sess.get("axis"), dict) else None,
+            )
+        upgrade_originals_from_full(fig, x_full_list, raw_y_full_list)
+        try:
+            _sf = sess.get("source_files") or (sess.get("args_subset") or {}).get("files") or []
+            fig._xy_source_files = [str(f) for f in list(_sf)]
+        except Exception:
+            pass
         offsets_list[:] = offsets_saved if offsets_saved else [0.0] * n_curves
 
         try:
@@ -704,6 +879,8 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                         ln.set_linestyle(st['linestyle'])
                     except Exception:
                         pass
+                if st.get('dash_pattern'):
+                    restore_dash_pattern(ln, st['dash_pattern'])
                 if 'alpha' in st and st['alpha'] is not None:
                     ln.set_alpha(st['alpha'])
                 if 'marker' in st and st['marker'] is not None:
@@ -768,6 +945,11 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             ax.set_xlim(*axis_cfg['xlim'])
         if 'ylim' in axis_cfg:
             ax.set_ylim(*axis_cfg['ylim'])
+        try:
+            if sess.get('rotation_angle') is not None:
+                ax._rotation_angle = float(sess.get('rotation_angle') or 0.0)
+        except Exception:
+            pass
         # Restore the CIF layout reference range saved by dump_session so CIF
         # tick rows land exactly where they were before saving (no y drift).
         try:
@@ -795,48 +977,65 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                     spn = ax.spines.get(name)
                     if spn:
                         spn.set_visible(bool(vis))
-            spm = fig_cfg.get('subplot_margins')
-            if spm and all(k in spm for k in ('left', 'right', 'bottom', 'top')):
-                fig.subplots_adjust(left=spm['left'], right=spm['right'], bottom=spm['bottom'], top=spm['top'])
-                try:
-                    fig._skip_initial_text_visibility = True
-                except Exception:
-                    pass
-            frame_size = fig_cfg.get('frame_size')
-            if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
-                target_w_in, target_h_in = map(float, frame_size)
-                canvas_w_in, canvas_h_in = fig.get_size_inches()
-                if canvas_w_in > 0 and canvas_h_in > 0:
-                    bbox = ax.get_position()
-                    center_x = (bbox.x0 + bbox.x1) / 2.0
-                    center_y = (bbox.y0 + bbox.y1) / 2.0
-                    new_w_frac = target_w_in / canvas_w_in
-                    new_h_frac = target_h_in / canvas_h_in
-                    new_left = center_x - new_w_frac / 2.0
-                    new_right = center_x + new_w_frac / 2.0
-                    new_bottom = center_y - new_h_frac / 2.0
-                    new_top = center_y + new_h_frac / 2.0
-                    fig.subplots_adjust(left=new_left, right=new_right, bottom=new_bottom, top=new_top)
+            # Prefer exact axes_bbox (already applied earlier). Fallbacks only
+            # when bbox is missing — matches EC loader and avoids overwriting
+            # a live set_position frame with stale subplotpars / re-center.
+            axes_bbox_cfg = fig_cfg.get('axes_bbox')
+            has_axes_bbox = isinstance(axes_bbox_cfg, dict) and all(
+                k in axes_bbox_cfg for k in ('left', 'right', 'bottom', 'top')
+            )
+            if not has_axes_bbox:
+                spm = fig_cfg.get('subplot_margins')
+                if spm and all(k in spm for k in ('left', 'right', 'bottom', 'top')):
+                    fig.subplots_adjust(
+                        left=spm['left'],
+                        right=spm['right'],
+                        bottom=spm['bottom'],
+                        top=spm['top'],
+                    )
                     try:
                         fig._skip_initial_text_visibility = True
                     except Exception:
                         pass
+                frame_size = fig_cfg.get('frame_size')
+                if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
+                    target_w_in, target_h_in = map(float, frame_size)
+                    canvas_w_in, canvas_h_in = fig.get_size_inches()
+                    if canvas_w_in > 0 and canvas_h_in > 0:
+                        bbox_live = ax.get_position()
+                        center_x = (bbox_live.x0 + bbox_live.x1) / 2.0
+                        center_y = (bbox_live.y0 + bbox_live.y1) / 2.0
+                        new_w_frac = target_w_in / canvas_w_in
+                        new_h_frac = target_h_in / canvas_h_in
+                        new_left = center_x - new_w_frac / 2.0
+                        new_right = center_x + new_w_frac / 2.0
+                        new_bottom = center_y - new_h_frac / 2.0
+                        new_top = center_y + new_h_frac / 2.0
+                        fig.subplots_adjust(
+                            left=new_left,
+                            right=new_right,
+                            bottom=new_bottom,
+                            top=new_top,
+                        )
+                        try:
+                            fig._skip_initial_text_visibility = True
+                        except Exception:
+                            pass
         except Exception:
             pass
 
-        font_cfg = sess.get('font', {})
-        if font_cfg.get('chain'):
-            plt.rcParams['font.family'] = 'sans-serif'
-            plt.rcParams['font.sans-serif'] = font_cfg['chain']
-        if font_cfg.get('size'):
-            plt.rcParams['font.size'] = font_cfg['size']
-        if font_cfg.get('mathtext_fontset'):
-            plt.rcParams['mathtext.fontset'] = font_cfg['mathtext_fontset']
+        from ..common.font_extras import sync_font_rcparams_from_cfg
+        sync_font_rcparams_from_cfg(sess.get('font', {}))
 
-        saved_tick = sess.get('tick_state', {})
-        for k, v in saved_tick.items():
-            if k in tick_state:
-                tick_state[k] = v
+        # Only merge the flat saved tick_state when no WASD state exists (very
+        # old sessions). When wasd_state is present it is the on-screen truth
+        # captured at save time; the flat dict may be a stale bookkeeping copy
+        # and merging it back re-enabled labels the user had hidden.
+        if not (wasd_loaded and isinstance(wasd_loaded, dict)):
+            saved_tick = sess.get('tick_state', {})
+            for k, v in saved_tick.items():
+                if k in tick_state:
+                    tick_state[k] = v
         try:
             ax._saved_tick_state = dict(tick_state)
         except Exception:
@@ -856,19 +1055,8 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             pass
 
         try:
-            tl = sess.get('tick_lengths', {})
-            if tl.get('x_major') is not None or tl.get('y_major') is not None:
-                major_len = tl.get('x_major') or tl.get('y_major')
-                ax.tick_params(axis='both', which='major', length=major_len)
-                if not hasattr(fig, '_tick_lengths'):
-                    fig._tick_lengths = {}
-                fig._tick_lengths['major'] = major_len
-            if tl.get('x_minor') is not None or tl.get('y_minor') is not None:
-                minor_len = tl.get('x_minor') or tl.get('y_minor')
-                ax.tick_params(axis='both', which='minor', length=minor_len)
-                if not hasattr(fig, '_tick_lengths'):
-                    fig._tick_lengths = {}
-                fig._tick_lengths['minor'] = minor_len
+            # Prefer is-not-None (do not discard intentional 0.0 via ``or``).
+            _apply_session_tick_lengths(fig, [ax], sess.get('tick_lengths', {}))
         except Exception:
             pass
 
@@ -914,19 +1102,45 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 bottom_title_on = wasd.get('bottom', {}).get('title', True)
                 if bottom_title_on:
                     ax.set_xlabel(stored_xlabel)
+                    try:
+                        ax.xaxis.label.set_visible(True)
+                    except Exception:
+                        pass
                 else:
                     ax.set_xlabel('')
-                    if stored_xlabel:
+                    # Keep intentional empty stored titles.
+                    if isinstance(stored_xlabel, str):
                         setattr(ax, '_stored_xlabel', stored_xlabel)
+                    try:
+                        ax.xaxis.label.set_visible(False)
+                    except Exception:
+                        pass
                 left_title_on = wasd.get('left', {}).get('title', True)
                 if left_title_on:
                     ax.set_ylabel(stored_ylabel)
+                    try:
+                        ax.yaxis.label.set_visible(True)
+                    except Exception:
+                        pass
                 else:
                     ax.set_ylabel('')
-                    if stored_ylabel:
+                    if isinstance(stored_ylabel, str):
                         setattr(ax, '_stored_ylabel', stored_ylabel)
+                    try:
+                        ax.yaxis.label.set_visible(False)
+                    except Exception:
+                        pass
                 setattr(ax, '_top_xlabel_on', wasd.get('top', {}).get('title', False))
                 setattr(ax, '_right_ylabel_on', wasd.get('right', {}).get('title', False))
+                # Keep fig attr synced after late WASD apply (batch parity).
+                fig._bp_wasd_state = copy.deepcopy(wasd)
+                # Dual-Y (--ry / --txaxis): apply right/top chrome on twin ax2.
+                try:
+                    from .spines import sync_xy_twin_wasd
+
+                    sync_xy_twin_wasd(ax, fig, wasd)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1005,6 +1219,7 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 while len(vlist) < len(cif_tick_series):
                     vlist.append(True)
                 vlist = vlist[: len(cif_tick_series)]
+                fig._bp_cif_set_visible = list(vlist)  # type: ignore[attr-defined]
                 _m = sys.modules.get("__main__")
                 if _m is not None:
                     setattr(_m, "cif_set_visible", vlist)
@@ -1012,19 +1227,101 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             pass
 
         axis_mode_restored = sess.get('axis_mode', 'unknown')
+        # Old sessions may store "unknown"; infer from restored xlabel before interactive
+        if axis_mode_restored in (None, "", "unknown"):
+            try:
+                from .axis_units import infer_xy_axis_mode_from_xlabel
+                xl_src = sess.get('axis', {}).get('xlabel') or ax.get_xlabel() or ""
+                inferred = infer_xy_axis_mode_from_xlabel(str(xl_src))
+                if inferred in ("Q", "2theta", "d", "r", "energy", "k", "rft"):
+                    axis_mode_restored = inferred
+            except Exception:
+                pass
         use_Q = axis_mode_restored == 'Q'
         use_r = axis_mode_restored == 'r'
         use_E = axis_mode_restored == 'energy'
         use_k = axis_mode_restored == 'k'
         use_rft = axis_mode_restored == 'rft'
         use_2th = axis_mode_restored == '2theta'
+
+        # Build args *before* CIF draw / axis-mode restore so closures can see it.
+        # (Previously args_minimal was created after _session_cif_draw → NameError
+        # on cif→a redraw, silently swallowed, so added CIFs never appeared.)
+        args_subset = sess.get('args_subset', {})
+        source_files = resolve_xy_source_files(
+            args=None,
+            labels=labels_list,
+            cif_tick_series=cif_tick_series,
+            fig=fig,
+            args_subset=args_subset,
+            session=sess,
+        )
+        _wl_sess = sess.get("wavelength")
+        try:
+            _wl_sess_f = float(_wl_sess) if _wl_sess is not None else None
+        except (TypeError, ValueError):
+            _wl_sess_f = None
+        Args = type('Args', (), {
+            'stack': saved_stack,
+            'autoscale': bool(args_subset.get('autoscale', True)),
+            'norm': bool(args_subset.get('norm', False)),
+            'files': source_files,
+            'xaxis': axis_mode_restored if axis_mode_restored not in (None, "", "unknown") else None,
+            'wl': _wl_sess_f,
+        })
+        args = Args()
+        args_minimal = args
+
+        try:
+            from .axis_units import set_xy_axis_mode
+            if axis_mode_restored in ("Q", "2theta", "d"):
+                set_xy_axis_mode(
+                    fig,
+                    axis_mode_restored,
+                    wavelength=sess.get("wavelength", getattr(args, "wl", None)),
+                )
+                try:
+                    fig._xy_dual_wl_display = bool(sess.get("dual_wl_display", False))
+                except Exception:
+                    pass
+                try:
+                    _fwi = sess.get("file_wavelength_info") or []
+                    fig._xy_file_wavelength_info = list(_fwi) if isinstance(_fwi, list) else []
+                except Exception:
+                    pass
+                try:
+                    setattr(args, "xaxis", axis_mode_restored)
+                    if sess.get("wavelength") is not None:
+                        setattr(args, "wl", float(sess["wavelength"]))
+                except Exception:
+                    pass
+            elif axis_mode_restored in ("r", "energy", "k", "rft"):
+                try:
+                    setattr(args, "xaxis", axis_mode_restored)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         x_label = ax.get_xlabel() or 'X'
 
         def _update_tick_visibility_local():
-            ax.tick_params(axis='x', bottom=tick_state['bx'], top=tick_state['tx'],
-                          labelbottom=tick_state['bx'], labeltop=tick_state['tx'])
-            ax.tick_params(axis='y', left=tick_state['ly'], right=tick_state['ry'],
-                          labelleft=tick_state['ly'], labelright=tick_state['ry'])
+            # Prefer split tick/label keys; legacy combined keys (bx/tx/ly/ry)
+            # remain as fallback for very old sessions. Using only the legacy
+            # keys here used to re-show labels that were hidden with ticks kept.
+            ax.tick_params(
+                axis='x',
+                bottom=tick_state.get('b_ticks', tick_state.get('bx', True)),
+                top=tick_state.get('t_ticks', tick_state.get('tx', False)),
+                labelbottom=tick_state.get('b_labels', tick_state.get('bx', True)),
+                labeltop=tick_state.get('t_labels', tick_state.get('tx', False)),
+            )
+            ax.tick_params(
+                axis='y',
+                left=tick_state.get('l_ticks', tick_state.get('ly', True)),
+                right=tick_state.get('r_ticks', tick_state.get('ry', False)),
+                labelleft=tick_state.get('l_labels', tick_state.get('ly', True)),
+                labelright=tick_state.get('r_labels', tick_state.get('ry', False)),
+            )
             if tick_state.get('mbx') or tick_state.get('mtx'):
                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
@@ -1044,7 +1341,9 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
         stack_label_bottom = bool(sess.get('stack_label_at_bottom', False))
         update_labels(ax, y_data_list, label_text_objects, saved_stack, stack_label_bottom)
 
-        if cif_tick_series:
+        # Always install CIF draw helpers (empty series draws nothing) so
+        # interactive ``cif`` → ``a`` works after loading a CIF-less session.
+        if True:  # keep indent block; helpers always registered
             def _session_q_to_2theta(peaksQ, wl):
                 if wl is None:
                     return []
@@ -1055,14 +1354,30 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                         out.append(np.degrees(2 * np.arcsin(s)))
                 return out
 
-            def _session_ensure_wavelength(default_wl=1.5406):
-                for _lab, _fname, _peaks, _wl, _qmax, _color in cif_tick_series:
-                    if _wl is not None:
-                        return _wl
-                return default_wl
+            def _session_ensure_wavelength():
+                from .axis_units import resolve_cif_draw_wavelength
+                return resolve_cif_draw_wavelength(
+                    fig=fig,
+                    args=args,
+                    cif_series=cif_tick_series,
+                    axis_mode="2theta",
+                )
 
             def _session_cif_draw():
-                if not cif_tick_series:
+                series_draw = getattr(fig, '_batplot_cif_tick_series', None)
+                if series_draw is None:
+                    series_draw = cif_tick_series
+                if not series_draw:
+                    for art in getattr(ax, '_cif_tick_art', []):
+                        try:
+                            art.remove()
+                        except Exception:
+                            pass
+                    ax._cif_tick_art = []
+                    try:
+                        fig.canvas.draw_idle()
+                    except Exception:
+                        pass
                     return
                 try:
                     prev_xlim = ax.get_xlim()
@@ -1082,15 +1397,16 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                             show_titles_local = bool(getattr(_bp_module, 'show_cif_titles', show_titles_local))
                     except Exception:
                         pass
-                    show_hkl_local = False
+                    show_hkl_local = bool(show_cif_hkl)
                     try:
-                        _bp_module = sys.modules.get('__main__')
-                        if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
-                            show_hkl_local = bool(getattr(_bp_module, 'show_cif_hkl', False))
+                        if hasattr(fig, '_bp_show_cif_hkl'):
+                            show_hkl_local = bool(getattr(fig, '_bp_show_cif_hkl', show_hkl_local))
+                        else:
+                            _bp_module = sys.modules.get('__main__')
+                            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                                show_hkl_local = bool(getattr(_bp_module, 'show_cif_hkl', show_hkl_local))
                     except Exception:
                         pass
-                    if not show_hkl_local:
-                        show_hkl_local = bool(show_cif_hkl)
                     _stacked_xy = bool(saved_stack or len(y_data_list) > 1)
                     if _stacked_xy:
                         global_min = min(float(a.min()) for a in y_data_list if len(a)) if y_data_list else fixed_ylim[0]
@@ -1105,7 +1421,7 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                         stacked_or_multi_y=_stacked_xy,
                     )
                     _cif_bottom_m = xy_cif_stack_bottom_margin_yr(fixed_yr, show_titles=show_titles_local)
-                    needed_min = base - (len(cif_tick_series) - 1) * spacing - _cif_bottom_m
+                    needed_min = base - (len(series_draw) - 1) * spacing - _cif_bottom_m
                     if not show_titles_local:
                         ylim_draw = tuple(prev_ylim)
                     elif needed_min >= prev_ylim[0]:
@@ -1124,20 +1440,36 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                         except Exception:
                             pass
                     new_art = []
-                    wl_any = _session_ensure_wavelength()
-                    for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_tick_series):
+                    hkl_maps = getattr(fig, '_batplot_cif_hkl_label_map', None) or cif_hkl_label_map
+                    from .axis_units import (
+                        domain_peak_to_Q,
+                        get_xy_axis_mode,
+                        peaks_Q_to_domain,
+                    )
+                    axis_mode_draw = get_xy_axis_mode(
+                        fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+                        use_2th=bool(use_2th),
+                        xaxis=getattr(args, "xaxis", None) if args is not None else None,
+                        ax=ax,
+                    )
+                    # λ only needed for 2θ placement; skip on Q/d so Cu Kα note is not noisy.
+                    wl_any = _session_ensure_wavelength() if axis_mode_draw == "2theta" else None
+                    xrd_draw = axis_mode_draw in ("2theta", "Q", "d")
+                    for i, (lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(series_draw):
                         y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
                         tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
-                        if use_2th:
-                            wl_use = wl if wl is not None else wl_any
-                            domain_peaks = _session_q_to_2theta(peaksQ, wl_use)
+                        if not xrd_draw:
+                            domain_peaks = []
                         else:
-                            domain_peaks = peaksQ
+                            wl_use = wl if wl is not None else (
+                                wl_any if axis_mode_draw == "2theta" else None
+                            )
+                            domain_peaks = peaks_Q_to_domain(peaksQ, axis_mode_draw, wl_use)
                         xlow, xhigh = ax.get_xlim()
                         domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
                         label_map = {}
                         if show_hkl_local:
-                            label_map = cif_hkl_label_map.get(fname, {})
+                            label_map = (hkl_maps or {}).get(fname, {})
                         if show_hkl_local and len(domain_peaks) > 4000:
                             show_hkl_local = False
                             label_map = {}
@@ -1145,11 +1477,14 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                             ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                             new_art.append(ln)
                             if show_hkl_local:
-                                if use_2th and (wl or wl_any):
-                                    theta = np.radians(p / 2.0)
-                                    Qp = 4 * np.pi * np.sin(theta) / (wl if wl is not None else wl_any)
-                                else:
-                                    Qp = p
+                                Qp = domain_peak_to_Q(
+                                    p, axis_mode_draw,
+                                    wl if wl is not None else (
+                                        wl_any if axis_mode_draw == "2theta" else None
+                                    ),
+                                )
+                                if Qp is None:
+                                    continue
                                 Qp_rounded = round(Qp, 6)
                                 lbl = label_map.get(Qp_rounded)
                                 if lbl:
@@ -1165,20 +1500,56 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                     ax._cif_tick_art = new_art
                     ax.set_xlim(prev_xlim)
                     fig.canvas.draw_idle()
+                except Exception as _cif_draw_exc:
+                    try:
+                        print(f"Warning: CIF tick redraw failed: {_cif_draw_exc}")
+                    except Exception:
+                        pass
+
+            try:
+                fig._batplot_cif_tick_series = cif_tick_series
+                fig._batplot_cif_hkl_label_map = cif_hkl_label_map
+                fig._bp_show_cif_hkl = bool(show_cif_hkl)
+                fig._bp_show_cif_titles = bool(show_cif_titles)
+            except Exception:
+                pass
+
+            def _session_cif_extend(xmax_domain):
+                from .cif import extend_xy_cif_series_for_xmax
+                suspended = False
+                try:
+                    _m = sys.modules.get("__main__")
+                    if _m is not None:
+                        suspended = bool(getattr(_m, "cif_extend_suspended", False))
                 except Exception:
                     pass
+                if extend_xy_cif_series_for_xmax(
+                    fig, ax, float(xmax_domain), use_2th=bool(use_2th), suspended=suspended,
+                ):
+                    try:
+                        _session_cif_draw()
+                    except Exception as exc:
+                        print(f"Warning: CIF tick redraw failed: {exc}")
 
-            ax._cif_extend_func = lambda xmax: None
+            ax._cif_extend_func = _session_cif_extend
             ax._cif_draw_func = _session_cif_draw
-            ax._cif_draw_func()
+            if cif_tick_series:
+                ax._cif_draw_func()
 
         titles = sess.get('axis_titles', {})
-        title_texts = sess.get('axis_title_texts', {})
+        title_texts = sess.get('axis_title_texts', {}) if isinstance(sess.get('axis_title_texts'), dict) else {}
         title_offsets = sess.get('title_offsets', {})
-        bottom_text = title_texts.get('bottom_x') or title_texts.get('bottom')
-        left_text = title_texts.get('left_y') or title_texts.get('left')
-        top_text = title_texts.get('top_x') or title_texts.get('top')
-        right_text = title_texts.get('right_y') or title_texts.get('right')
+
+        def _title_text(primary: str, legacy: str):
+            # Prefer primary key even when value is ""; fall back to legacy only if absent.
+            if primary in title_texts:
+                return title_texts.get(primary)
+            return title_texts.get(legacy)
+
+        bottom_text = _title_text('bottom_x', 'bottom')
+        left_text = _title_text('left_y', 'left')
+        top_text = _title_text('top_x', 'top')
+        right_text = _title_text('right_y', 'right')
         try:
             if title_offsets:
                 ax._top_xlabel_manual_offset_y_pts = float(title_offsets.get('top_y', 0.0) or 0.0)
@@ -1191,34 +1562,26 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 ax._stored_xlabel = bottom_text
             if left_text is not None:
                 ax._stored_ylabel = left_text
-            if top_text:
+            if top_text is not None:
                 ax._top_xlabel_text_override = top_text
             elif hasattr(ax, '_top_xlabel_text_override'):
                 delattr(ax, '_top_xlabel_text_override')
-            if right_text:
+            if right_text is not None:
                 ax._right_ylabel_text_override = right_text
             elif hasattr(ax, '_right_ylabel_text_override'):
                 delattr(ax, '_right_ylabel_text_override')
             if titles.get('has_bottom_x') is False:
-                ax.xaxis.label.set_visible(False)
+                set_primary_axis_title(ax, "x", on=False, stored_attr="_stored_xlabel")
             else:
-                ax.xaxis.label.set_visible(True)
-                if bottom_text is not None:
-                    ax.set_xlabel(bottom_text)
-                elif hasattr(ax, '_stored_xlabel'):
-                    ax.set_xlabel(ax._stored_xlabel)
+                set_primary_axis_title(ax, "x", on=True, stored_attr="_stored_xlabel")
             try:
                 _ui_position_bottom_xlabel(ax, fig, tick_state)
             except Exception:
                 pass
             if titles.get('has_left_y') is False:
-                ax.yaxis.label.set_visible(False)
+                set_primary_axis_title(ax, "y", on=False, stored_attr="_stored_ylabel")
             else:
-                ax.yaxis.label.set_visible(True)
-                if left_text is not None:
-                    ax.set_ylabel(left_text)
-                elif hasattr(ax, '_stored_ylabel'):
-                    ax.set_ylabel(ax._stored_ylabel)
+                set_primary_axis_title(ax, "y", on=True, stored_attr="_stored_ylabel")
             try:
                 _ui_position_left_ylabel(ax, fig, tick_state)
             except Exception:
@@ -1243,8 +1606,15 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                     ax._right_ylabel_artist.set_visible(False)
                 except Exception:
                     pass
-            if ax2_loaded is not None and right_text:
-                ax2_loaded.set_ylabel(right_text, fontsize=16)
+            if ax2_loaded is not None and right_text is not None:
+                ax2_loaded.set_ylabel(str(right_text), fontsize=16)
+            # Twin ylim after dual-y rebuild (older sessions omit → keep autoscale).
+            try:
+                yr = sess.get('ylim_right')
+                if ax2_loaded is not None and isinstance(yr, (list, tuple)) and len(yr) == 2:
+                    ax2_loaded.set_ylim(float(yr[0]), float(yr[1]))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1268,34 +1638,22 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
         except Exception:
             pass
 
-        args_subset = sess.get('args_subset', {})
-        source_files = resolve_xy_source_files(
-            args=None,
-            labels=labels_list,
-            cif_tick_series=cif_tick_series,
-            fig=fig,
-            args_subset=args_subset,
-            session=sess,
-        )
-        Args = type('Args', (), {
-            'stack': saved_stack,
-            'autoscale': bool(args_subset.get('autoscale', True)),
-            'norm': bool(args_subset.get('norm', False)),
-            'files': source_files,
-        })
-        args_minimal = Args()
-
-        cif_globals_dict: Optional[Dict[str, Any]] = None
-        if cif_tick_series:
-            cif_globals_dict = {
-                'cif_tick_series': list(cif_tick_series),
-                'cif_hkl_map': cif_hkl_map,
-                'cif_hkl_label_map': cif_hkl_label_map,
-                'show_cif_hkl': bool(show_cif_hkl),
-                'show_cif_titles': bool(show_cif_titles),
-                'cif_extend_suspended': False,
-                'keep_canvas_fixed': True,
-            }
+        # Always expose CIF globals (possibly empty) so interactive add works.
+        cif_globals_dict: Dict[str, Any] = {
+            'cif_tick_series': cif_tick_series if isinstance(cif_tick_series, list) else list(cif_tick_series or []),
+            'cif_hkl_map': cif_hkl_map,
+            'cif_hkl_label_map': cif_hkl_label_map,
+            'show_cif_hkl': bool(show_cif_hkl),
+            'show_cif_titles': bool(show_cif_titles),
+            'cif_extend_suspended': False,
+            'keep_canvas_fixed': True,
+            'file_wavelength_info': list(getattr(fig, "_xy_file_wavelength_info", None) or []),
+        }
+        try:
+            # Keep menu/session/redraw on the same list object.
+            fig._batplot_cif_tick_series = cif_globals_dict['cif_tick_series']
+        except Exception:
+            pass
 
         menu_kwargs = {
             'y_data_list': y_data_list,
@@ -1314,6 +1672,7 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             'use_E': use_E,
             'use_k': use_k,
             'use_rft': use_rft,
+            'use_2th': use_2th,
             'cif_globals': cif_globals_dict,
         }
         try:

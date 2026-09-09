@@ -28,6 +28,8 @@ from ...ui import (
     position_right_ylabel as _ui_position_right_ylabel,
     position_bottom_xlabel as _ui_position_bottom_xlabel,
     position_left_ylabel as _ui_position_left_ylabel,
+    resolve_spine_dump_color,
+    sync_figure_geometry_caches,
 )
 from ..common.fonts import collect_fig_font_artists, legend_text_artists
 from ..common.font_extras import (
@@ -35,7 +37,9 @@ from ..common.font_extras import (
     apply_session_font_cfg,
     font_extras_export_dict,
 )
-from ..common.spines import sync_tick_state_from_wasd, current_tick_width
+from ..common.axis_state import capture_axis_wasd_state
+from ..common.spines import current_tick_width, set_primary_axis_title, sync_tick_state_from_wasd
+from .snapshots import _geom_label_text
 from .legend import (
     _coerce_legend_color,
     _color_of,
@@ -149,83 +153,30 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         return None
 
     def _label_visible(lbl):
+        # Title on/off is visibility; empty text must not force title off.
         try:
-            return bool(lbl.get_visible()) and bool(lbl.get_text())
+            return bool(lbl.get_visible())
         except Exception:
             return bool(lbl.get_text()) if hasattr(lbl, 'get_text') else False
-
-    # Current tick visibility (prefer persisted WASD state when available)
-    tick_vis = {
-        'bx': True, 'tx': False, 'ly': True, 'ry': True,
-        'mbx': False, 'mtx': False, 'mly': False, 'mry': False,
-    }
-    try:
-        wasd_from_fig = getattr(fig, '_cpc_wasd_state', None)
-        if isinstance(wasd_from_fig, dict) and wasd_from_fig:
-            # Use stored state (authoritative)
-            tick_vis['bx'] = bool(wasd_from_fig.get('bottom', {}).get('labels', True))
-            tick_vis['tx'] = bool(wasd_from_fig.get('top', {}).get('labels', False))
-            tick_vis['ly'] = bool(wasd_from_fig.get('left', {}).get('labels', True))
-            tick_vis['ry'] = bool(wasd_from_fig.get('right', {}).get('labels', True))
-            tick_vis['mbx'] = bool(wasd_from_fig.get('bottom', {}).get('minor', False))
-            tick_vis['mtx'] = bool(wasd_from_fig.get('top', {}).get('minor', False))
-            tick_vis['mly'] = bool(wasd_from_fig.get('left', {}).get('minor', False))
-            tick_vis['mry'] = bool(wasd_from_fig.get('right', {}).get('minor', False))
-        else:
-            # Infer from current axes state
-            tick_vis['bx'] = any(lbl.get_visible() for lbl in ax.get_xticklabels())
-            tick_vis['tx'] = False  # CPC doesn't duplicate top labels by default
-            tick_vis['ly'] = any(lbl.get_visible() for lbl in ax.get_yticklabels())
-            tick_vis['ry'] = any(lbl.get_visible() for lbl in ax2.get_yticklabels())
-    except Exception:
-        pass
 
     # Plot frame size
     ax_bbox = ax.get_position()
     frame_w_in = ax_bbox.width * fig_w if fig_w else None
     frame_h_in = ax_bbox.height * fig_h if fig_h else None
 
-    # Build WASD-style state (20 parameters: 4 sides × 5 properties)
-    # CPC: bottom/top are X-axis, left is primary Y (capacity), right is twin Y (efficiency)
-    def _get_spine_visible(ax_obj, which: str) -> bool:
-        sp = ax_obj.spines.get(which)
-        try:
-            return bool(sp.get_visible()) if sp is not None else False
-        except Exception:
-            return False
-    
-    wasd_state = getattr(fig, '_cpc_wasd_state', None)
-    if not isinstance(wasd_state, dict) or not wasd_state:
-        wasd_state = {
-            'bottom': {
-                'spine': _get_spine_visible(ax, 'bottom'),
-                'ticks': bool(tick_vis.get('bx', True)),
-                'minor': bool(tick_vis.get('mbx', False)),
-                'labels': bool(tick_vis.get('bx', True)),  # bottom x labels
-                'title': bool(ax.get_xlabel())  # bottom x title
-            },
-            'top': {
-                'spine': _get_spine_visible(ax, 'top'),
-                'ticks': bool(tick_vis.get('tx', False)),
-                'minor': bool(tick_vis.get('mtx', False)),
-                'labels': bool(tick_vis.get('tx', False)),
-                'title': bool(getattr(ax, '_top_xlabel_text', None) and getattr(ax._top_xlabel_text, 'get_visible', lambda: False)())
-            },
-            'left': {
-                'spine': _get_spine_visible(ax, 'left'),
-                'ticks': bool(tick_vis.get('ly', True)),
-                'minor': bool(tick_vis.get('mly', False)),
-                'labels': bool(tick_vis.get('ly', True)),  # left y labels (capacity)
-                'title': _label_visible(ax.yaxis.label)  # left y title
-            },
-            'right': {
-                'spine': _get_spine_visible(ax2, 'right'),
-                'ticks': bool(tick_vis.get('ry', True)),
-                'minor': bool(tick_vis.get('mry', False)),
-                'labels': bool(tick_vis.get('ry', True)),  # right y labels (efficiency)
-                'title': _label_visible(ax2.yaxis.label)  # right y title respects visibility
-            },
-        }
+    # On-screen WASD truth (ax + ax2); never trust stale ``_cpc_wasd_state`` alone.
+    ts = dict(getattr(ax, '_saved_tick_state', {}) or {})
+    wasd_state = capture_axis_wasd_state(
+        ax,
+        tick_state=ts,
+        use_actual_major_visibility=True,
+        right_axis=ax2,
+    )
+    # Prefer explicit WASD flag (artist may be missing while title is ON).
+    wasd_state['top']['title'] = bool(getattr(ax, '_top_xlabel_on', False))
+    wasd_state['bottom']['title'] = _label_visible(ax.xaxis.label)
+    wasd_state['left']['title'] = _label_visible(ax.yaxis.label)
+    wasd_state['right']['title'] = _label_visible(ax2.yaxis.label)
 
     # Capture legend state
     legend_visible = False
@@ -270,6 +221,12 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 (file_data and len(file_data) > 1 and sum(1 for f in file_data if f.get('visible', True)) == 1)
             ),
         },
+        # Display order for compact multi-file legend (h→ra); independent of file_data indices.
+        'legend_file_order': (
+            list(getattr(fig, '_cpc_legend_file_order', None) or range(len(file_data)))
+            if file_data and len(file_data) > 1
+            else None
+        ),
         'ticks': {
             'widths': {
                 'x_major': _tick_width(ax.xaxis, 'major'),
@@ -292,29 +249,37 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         'spines': {
             'bottom': {'linewidth': ax.spines.get('bottom').get_linewidth() if ax.spines.get('bottom') else None,
                        'visible': ax.spines.get('bottom').get_visible() if ax.spines.get('bottom') else None,
-                       'color': ax.spines.get('bottom').get_edgecolor() if ax.spines.get('bottom') else None},
+                       'color': resolve_spine_dump_color(ax, 'bottom', fig)},
             'top':    {'linewidth': ax.spines.get('top').get_linewidth() if ax.spines.get('top') else None,
                        'visible': ax.spines.get('top').get_visible() if ax.spines.get('top') else None,
-                       'color': ax.spines.get('top').get_edgecolor() if ax.spines.get('top') else None},
+                       'color': resolve_spine_dump_color(ax, 'top', fig)},
             'left':   {'linewidth': ax.spines.get('left').get_linewidth() if ax.spines.get('left') else None,
                        'visible': ax.spines.get('left').get_visible() if ax.spines.get('left') else None,
-                       'color': ax.spines.get('left').get_edgecolor() if ax.spines.get('left') else None},
+                       'color': resolve_spine_dump_color(ax, 'left', fig)},
             'right':  {'linewidth': ax2.spines.get('right').get_linewidth() if ax2.spines.get('right') else None,
                        'visible': ax2.spines.get('right').get_visible() if ax2.spines.get('right') else None,
-                       'color': ax2.spines.get('right').get_edgecolor() if ax2.spines.get('right') else None},
+                       'color': resolve_spine_dump_color(ax2, 'right', fig)},
         },
         'spine_colors_auto': getattr(fig, '_cpc_spine_auto', False),
         'spine_colors': dict(getattr(fig, '_cpc_spine_colors', {})),
         'display_mode': getattr(fig, '_cpc_display_mode', 'both'),
+        # Single-file batch stubs keep invert on fig._cpc_eff_inverted (ephemeral
+        # file_data from cpc_normalize_file_data is not panel.file_data).
+        'eff_inverted': bool(
+            file_data[0].get('eff_inverted', False)
+            if file_data
+            else getattr(fig, '_cpc_eff_inverted', False)
+        ),
         'labelpads': {
             'x': getattr(ax.xaxis, 'labelpad', None),
             'ly': getattr(ax.yaxis, 'labelpad', None),  # left y-axis (capacity)
             'ry': getattr(ax2.yaxis, 'labelpad', None),  # right y-axis (efficiency)
         },
         'axis_labels': {
-            'xlabel': ax.get_xlabel() or getattr(ax, '_stored_xlabel', '') or '',
-            'ylabel_left': ax.get_ylabel() or getattr(ax, '_stored_ylabel', '') or '',
-            'ylabel_right': ax2.get_ylabel() or getattr(ax2, '_stored_ylabel', '') or '',
+            # Prefer stored text (including intentional empty) like geometry snap.
+            'xlabel': _geom_label_text(ax, '_stored_xlabel', ax.get_xlabel),
+            'ylabel_left': _geom_label_text(ax, '_stored_ylabel', ax.get_ylabel),
+            'ylabel_right': _geom_label_text(ax2, '_stored_ylabel', ax2.get_ylabel),
         },
         'title_offsets': {
             'top_y': float(getattr(ax, '_top_xlabel_manual_offset_y_pts', 0.0) or 0.0),
@@ -327,7 +292,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         'series': {
             'charge': {
                 'color': _color_of(sc_charge),
-                'marker': getattr(sc_charge, 'get_marker', lambda: 'o')(),
+                'marker': getattr(sc_charge, 'get_marker', lambda: 's')(),
                 'markersize': float(getattr(sc_charge, 'get_sizes', lambda: [32])()[0]) if hasattr(sc_charge, 'get_sizes') else 32.0,
                 'alpha': float(sc_charge.get_alpha()) if sc_charge.get_alpha() is not None else 1.0,
                 'hollow': _is_hollow_marker(sc_charge),
@@ -348,7 +313,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 'alpha': float(sc_eff.get_alpha()) if sc_eff.get_alpha() is not None else 1.0,
                 'visible': bool(getattr(sc_eff, 'get_visible', lambda: True)()),
                 'hollow': _is_hollow_marker(sc_eff),
-                'offsets': (sc_eff.get_offsets().tolist() if hasattr(sc_eff, 'get_offsets') and sc_eff.get_offsets().size else None),
+                # p/i: invert state via eff_inverted only — never ship XY offsets.
             }
         }
     }
@@ -362,12 +327,14 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
             sc_eff = f.get('sc_eff')
             file_info = {
                 'filename': f.get('filename', 'unknown'),
+                'display_name': f.get('display_name', f.get('filename', 'unknown')),
                 'visible': f.get('visible', True),
+                'eff_inverted': bool(f.get('eff_inverted', False)),
                 'charge_visible': bool(getattr(sc_chg, 'get_visible', lambda: True)()) if sc_chg else True,
                 'discharge_visible': bool(getattr(sc_dchg, 'get_visible', lambda: True)()) if sc_dchg else True,
                 'efficiency_visible': bool(getattr(sc_eff, 'get_visible', lambda: True)()) if sc_eff else True,
                 'charge_color': _color_of(sc_chg),
-                'charge_marker': getattr(sc_chg, 'get_marker', lambda: 'o')() if sc_chg else 'o',
+                'charge_marker': getattr(sc_chg, 'get_marker', lambda: 's')() if sc_chg else 's',
                 'charge_hollow': _is_hollow_marker(sc_chg) if sc_chg else False,
                 'discharge_color': _color_of(sc_dchg),
                 'discharge_marker': getattr(sc_dchg, 'get_marker', lambda: 's')() if sc_dchg else 's',
@@ -375,7 +342,7 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
                 'efficiency_color': _color_of(sc_eff),
                 'efficiency_marker': getattr(sc_eff, 'get_marker', lambda: '^')() if sc_eff else '^',
                 'efficiency_hollow': _is_hollow_marker(sc_eff) if sc_eff else False,
-                'efficiency_offsets': (sc_eff.get_offsets().tolist() if sc_eff and hasattr(sc_eff, 'get_offsets') and sc_eff.get_offsets().size else None),
+                # p/i: no efficiency_offsets — match via eff_inverted on import.
             }
             # Save legend labels
             try:
@@ -437,7 +404,9 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             if curr_ax is None or spine_name not in curr_ax.spines:
                 continue
             try:
-                _ui_set_spine_side_color(curr_ax, spine_name, color, fig=fig)
+                _ui_set_spine_side_color(
+                    curr_ax, spine_name, color, fig=fig, tick_state=tick_state
+                )
             except Exception:
                 pass
 
@@ -473,15 +442,30 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
 
     axis_labels = cfg.get('axis_labels') or {}
     try:
-        if axis_labels.get('xlabel'):
-            ax.set_xlabel(str(axis_labels['xlabel']))
-            ax._stored_xlabel = str(axis_labels['xlabel'])
-        if axis_labels.get('ylabel_left'):
-            ax.set_ylabel(str(axis_labels['ylabel_left']))
-            ax._stored_ylabel = str(axis_labels['ylabel_left'])
-        if axis_labels.get('ylabel_right') and ax2 is not None:
-            ax2.set_ylabel(str(axis_labels['ylabel_right']))
-            ax2._stored_ylabel = str(axis_labels['ylabel_right'])
+        from ...utils import finalize_axis_label_text
+
+        # Key presence / ``is not None`` so empty-string clears round-trip via p/i/s.
+        if axis_labels.get('xlabel') is not None:
+            text = finalize_axis_label_text(str(axis_labels['xlabel']))
+            ax.set_xlabel(text)
+            ax._stored_xlabel = text
+            # Keep top-axis title text aligned with interactive ``r``→``x``.
+            ax._stored_top_xlabel = text
+            top_txt = getattr(ax, '_top_xlabel_text', None)
+            if top_txt is not None:
+                try:
+                    if top_txt.get_visible():
+                        top_txt.set_text(text)
+                except Exception:
+                    pass
+        if axis_labels.get('ylabel_left') is not None:
+            text = finalize_axis_label_text(str(axis_labels['ylabel_left']))
+            ax.set_ylabel(text)
+            ax._stored_ylabel = text
+        if axis_labels.get('ylabel_right') is not None and ax2 is not None:
+            text = finalize_axis_label_text(str(axis_labels['ylabel_right']))
+            ax2.set_ylabel(text)
+            ax2._stored_ylabel = text
     except Exception:
         pass
     
@@ -578,17 +562,22 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             pass
     _apply_font_config()
 
-    # Apply canvas and frame size (from 'g' command: plot frame and canvas)
+    # Apply canvas and frame size only for style+geometry (``.bpsg`` / ``cpc_style_geom``).
+    # Style-only (``.bps`` / ``cpc_style``) must not resize the figure (parity with operando/histo).
     try:
-        fig_cfg = cfg.get('figure', {})
+        kind = str(cfg.get('kind', '') or '')
+        apply_canvas_geom = (kind == 'cpc_style_geom')
+        fig_cfg = cfg.get('figure', {}) if apply_canvas_geom else {}
         # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
         axes_frac = fig_cfg.get('axes_fraction')
         frame_size = fig_cfg.get('frame_size')
         
         canvas_size = fig_cfg.get('canvas_size')
         if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
-            # Use forward=False to prevent automatic subplot adjustment that can shift the plot
-            fig.set_size_inches(canvas_size[0], canvas_size[1], forward=False)
+            # forward=True: interactive undo/import must resize the GUI window
+            # (parity with live g→c and with EC/XY/operando undo). axes_fraction
+            # is restored immediately below so auto subplot adjust cannot stick.
+            fig.set_size_inches(canvas_size[0], canvas_size[1], forward=True)
         
         # Frame position: prefer axes_fraction (exact position), fall back to preserving position with frame_size
         if axes_frac and isinstance(axes_frac, (list, tuple)) and len(axes_frac) == 4:
@@ -606,6 +595,14 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                     new_w = fw_in / canvas_w
                     new_h = fh_in / canvas_h
                     ax.set_position([current_pos.x0, current_pos.y0, new_w, new_h])
+        # Keep twin axis locked to primary frame (session load parity).
+        if ax2 is not None:
+            try:
+                ax2.set_position(ax.get_position())
+            except Exception:
+                pass
+        if apply_canvas_geom:
+            sync_figure_geometry_caches(fig, ax)
     except Exception:
         pass
     def _apply_series_config():
@@ -641,17 +638,34 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                     if ef.get('alpha') is not None:
                         f['sc_eff'].set_alpha(float(ef['alpha']))
                 
-                # Efficiency visibility (global)
+                # Efficiency visibility (global) — never ax2.set_visible (keeps right spine).
                 if 'visible' in ef:
                     eff_vis = bool(ef['visible'])
-                    for f in file_data:
-                        try:
-                            f['sc_eff'].set_visible(eff_vis)
-                        except Exception:
-                            pass
                     try:
-                        ax2.set_visible(eff_vis)
+                        wasd = getattr(fig, '_cpc_wasd_state', None)
+                        if not isinstance(wasd, dict):
+                            wasd = {}
+                        wasd.setdefault('right', {})
+                        wasd['right']['ticks'] = bool(eff_vis)
+                        wasd['right']['labels'] = bool(eff_vis)
+                        wasd['right']['title'] = bool(eff_vis)
+                        fig._cpc_wasd_state = wasd
+                    except Exception:
+                        pass
+                    try:
+                        from .panel_menus import apply_cpc_file_artist_visibility
+
+                        apply_cpc_file_artist_visibility(fig, file_data, eff_on=bool(eff_vis))
+                    except Exception:
+                        for f in file_data:
+                            try:
+                                file_vis = bool(f.get('visible', True))
+                                f['sc_eff'].set_visible(file_vis and eff_vis)
+                            except Exception:
+                                pass
+                    try:
                         ax2.yaxis.label.set_visible(eff_vis)
+                        ax2.tick_params(axis='y', right=eff_vis, labelright=eff_vis)
                     except Exception:
                         pass
             else:
@@ -715,18 +729,35 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                         try:
                             eff_vis = bool(ef['visible'])
                             sc_eff.set_visible(eff_vis)
-                            ax2.set_visible(eff_vis)
                             ax2.yaxis.label.set_visible(eff_vis)
+                            ax2.tick_params(axis='y', right=eff_vis, labelright=eff_vis)
                         except Exception:
                             pass
-                    if ef.get('offsets') is not None and hasattr(sc_eff, 'set_offsets'):
+                # Restore invert-efficiency flag without replacing peer XY arrays.
+                # Works for multi-file dicts AND single-file fig._cpc_eff_inverted.
+                if 'eff_inverted' in cfg:
+                    try:
+                        want = bool(cfg.get('eff_inverted', False))
+                        f0 = file_data[0] if file_data else None
+                        cur = (
+                            bool(f0.get('eff_inverted', False))
+                            if f0 is not None
+                            else bool(getattr(fig, '_cpc_eff_inverted', False))
+                        )
+                        if want != cur and sc_eff is not None and hasattr(sc_eff, 'get_offsets'):
+                            offs = sc_eff.get_offsets()
+                            if offs is not None and getattr(offs, 'size', 0):
+                                xs = offs[:, 0]
+                                ys = offs[:, 1]
+                                sc_eff.set_offsets(list(zip(xs, 200.0 - ys)))
+                        if f0 is not None:
+                            f0['eff_inverted'] = want
                         try:
-                            arr = np.array(ef['offsets'])
-                            curr = sc_eff.get_offsets()
-                            if arr.size > 0 and (curr.size == 0 or curr.shape == arr.shape):
-                                sc_eff.set_offsets(arr)
+                            fig._cpc_eff_inverted = want  # type: ignore[attr-defined]
                         except Exception:
                             pass
+                    except Exception:
+                        pass
                 # Restore legend labels for single-file mode
                 try:
                     if 'label' in ch and hasattr(sc_charge, 'set_label'):
@@ -741,15 +772,30 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             pass
     _apply_series_config()
 
-    # Apply legend state (h command)
+    # Apply legend state (h command) including multi-file display order (h→ra)
     def _apply_legend_config():
         try:
+            order = cfg.get('legend_file_order')
+            if (
+                order
+                and isinstance(order, (list, tuple))
+                and file_data
+                and len(order) == len(file_data)
+            ):
+                try:
+                    from .legend_order import ensure_cpc_legend_file_order
+
+                    fig._cpc_legend_file_order = list(order)
+                    ensure_cpc_legend_file_order(fig, file_data)
+                except Exception:
+                    fig._cpc_legend_file_order = list(order)
             leg_cfg = cfg.get('legend', {})
             if leg_cfg:
                 leg_visible = leg_cfg.get('visible', True)
                 leg_xy_in = leg_cfg.get('position_inches')
                 if 'title' in leg_cfg:
-                    fig._cpc_legend_title = leg_cfg.get('title') or _get_legend_title(fig)
+                    title_val = leg_cfg.get('title')
+                    fig._cpc_legend_title = "" if title_val is None else str(title_val)
                 if 'single_file_effective' in leg_cfg:
                     fig._cpc_legend_single_file_effective = bool(leg_cfg.get('single_file_effective'))
                 if leg_xy_in is not None:
@@ -851,15 +897,27 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                 ax.tick_params(axis='y', left=l_ticks, labelleft=l_labels)
                 ax2.tick_params(axis='y', right=r_ticks, labelright=r_labels)
                 try:
-                    ax.xaxis.label.set_visible(bool(wasd.get('bottom', {}).get('title', True)) if wasd else bx)
-                    ax.yaxis.label.set_visible(bool(wasd.get('left', {}).get('title', True)) if wasd else ly)
-                    ax2.yaxis.label.set_visible(bool(wasd.get('right', {}).get('title', True)) if wasd else ry)
+                    set_primary_axis_title(
+                        ax, "x",
+                        on=bool(wasd.get('bottom', {}).get('title', True)) if wasd else bool(bx),
+                        stored_attr="_stored_xlabel",
+                    )
+                    set_primary_axis_title(
+                        ax, "y",
+                        on=bool(wasd.get('left', {}).get('title', True)) if wasd else bool(ly),
+                        stored_attr="_stored_ylabel",
+                    )
+                    set_primary_axis_title(
+                        ax2, "y",
+                        on=bool(wasd.get('right', {}).get('title', True)) if wasd else bool(ry),
+                        stored_attr="_stored_ylabel",
+                    )
                     if wasd:
                         top_title_on = bool(wasd.get('top', {}).get('title', False))
                         ax._top_xlabel_on = top_title_on
-                        if not getattr(ax, '_stored_top_xlabel', None):
+                        if not hasattr(ax, '_stored_top_xlabel') or ax._stored_top_xlabel is None:
                             ax._stored_top_xlabel = ax.get_xlabel() or getattr(ax, '_stored_xlabel', '')
-                        if top_title_on and getattr(ax, '_stored_top_xlabel', ''):
+                        if top_title_on and isinstance(getattr(ax, '_stored_top_xlabel', None), str):
                             if not hasattr(ax, '_top_xlabel_text') or ax._top_xlabel_text is None:
                                 ax._top_xlabel_text = ax.text(
                                     0.5, 1.0, '',
@@ -872,6 +930,16 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                             ax._top_xlabel_text.set_text(ax._stored_top_xlabel)
                             ax._top_xlabel_text.set_visible(True)
                             ax._top_xlabel_text.set_position((0.5, 1.07 if t_labels else 1.02))
+                            top_c = (
+                                (getattr(fig, "_cpc_spine_colors", None) or {}).get("top")
+                                or getattr(ax, "_stored_top_xlabel_color", None)
+                            )
+                            if top_c is not None:
+                                try:
+                                    ax._top_xlabel_text.set_color(top_c)
+                                    ax._stored_top_xlabel_color = top_c
+                                except Exception:
+                                    pass
                         elif hasattr(ax, '_top_xlabel_text') and ax._top_xlabel_text is not None:
                             ax._top_xlabel_text.set_visible(False)
                 except Exception:
@@ -1132,6 +1200,7 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                             artist.set_visible(visible)
                                 except Exception:
                                     pass
+                            # eff_inverted matched later (toggle live Y; do not set flag early).
                             # Restore colors FIRST (before labels), respecting hollow marker style
                             if 'charge_color' in f_info and f.get('sc_charge'):
                                 try:
@@ -1215,17 +1284,32 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                                     f['sc_eff'].set_label(f_info['efficiency_label'])
                                 except Exception:
                                     pass
-                            if 'efficiency_offsets' in f_info and f_info['efficiency_offsets'] and f.get('sc_eff') and hasattr(f['sc_eff'], 'set_offsets'):
+                            # Match invert flag locally — never paste foreign efficiency XY.
+                            if 'eff_inverted' in f_info and f.get('sc_eff') is not None:
                                 try:
-                                    arr = np.array(f_info['efficiency_offsets'])
-                                    curr = f['sc_eff'].get_offsets()
-                                    if arr.size > 0 and (curr.size == 0 or curr.shape == arr.shape):
-                                        f['sc_eff'].set_offsets(arr)
+                                    want = bool(f_info.get('eff_inverted', False))
+                                    cur = bool(f.get('eff_inverted', False))
+                                    if want != cur:
+                                        offs = f['sc_eff'].get_offsets()
+                                        if offs is not None and getattr(offs, 'size', 0):
+                                            xs = offs[:, 0]
+                                            ys = offs[:, 1]
+                                            f['sc_eff'].set_offsets(list(zip(xs, 200.0 - ys)))
+                                    f['eff_inverted'] = want
                                 except Exception:
                                     pass
-                            # Update filename if present
+                            # Update filename / display name if present
                             if 'filename' in f_info:
                                 f['filename'] = f_info['filename']
+                            if 'display_name' in f_info and f_info.get('display_name'):
+                                f['display_name'] = f_info['display_name']
+                try:
+                    if file_data:
+                        fig._cpc_eff_inverted = bool(  # type: ignore[attr-defined]
+                            file_data[0].get('eff_inverted', False)
+                        )
+                except Exception:
+                    pass
             else:
                 # Single file mode: restore legend labels
                 s = cfg.get('series', {})

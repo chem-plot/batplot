@@ -137,3 +137,19 @@
 
 ## 1.8.48
 - Bug fixes on session reload
+
+## 1.8.49
+- GC/CPC interactive overview key `o`: per-cycle capacity & CE table
+  (respects CPC invert-efficiency), capacity retention over a cycle range,
+  summary stats, and CSV/TXT export. Also available in batch EC/CPC menus.
+
+## 1.8.50
+- Cosmetic changes of interactive interface
+- Better CIF file handling
+- Bug fixes
+
+## 1.8.51
+- Bug fixes
+
+## 1.8.52
+- Bug fixes

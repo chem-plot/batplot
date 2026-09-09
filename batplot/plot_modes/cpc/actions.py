@@ -8,6 +8,7 @@ import os
 
 from ..common.crosshair_export import savefig_without_crosshair
 from ..common.files import confirm_previous_path
+from .snapshots import _apply_cpc_geometry_snapshot
 
 
 @dataclass
@@ -61,6 +62,13 @@ def _build_cpc_style_export_config(ctx: CpcActionContext, exp_choice: str) -> tu
         snap["geometry"] = ctx.get_geometry_snapshot(ctx.ax, ctx.ax2)
         return snap, ".bpsg"
     snap["kind"] = "cpc_style"
+    # Style-only must not hitchhike canvas/frame keys (apply already gates them).
+    fig_block = snap.get("figure")
+    if isinstance(fig_block, dict):
+        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+            fig_block.pop(key, None)
+        if not fig_block:
+            snap.pop("figure", None)
     return snap, ".bps"
 
 
@@ -279,6 +287,113 @@ def handle_figure_export(ctx: CpcActionContext) -> None:
     _print_menu(fig)
 
 
+def _sync_cpc_wasd_for_save(ctx: CpcActionContext) -> None:
+    """Sync WASD/tick artists immediately before dump (after path is confirmed)."""
+    fig = ctx.fig
+    ax = ctx.ax
+    ax2 = ctx.ax2
+    tick_state = ctx.tick_state
+    try:
+        wasd = getattr(fig, '_cpc_wasd_state', {})
+        if not isinstance(wasd, dict):
+            wasd = {}
+        w = wasd.setdefault('bottom', {})
+        w['ticks'] = bool(tick_state.get('b_ticks', tick_state.get('bx', True)))
+        w['labels'] = bool(tick_state.get('b_labels', tick_state.get('bx', True)))
+        w['minor'] = bool(tick_state.get('mbx', False))
+        w['title'] = bool(ax.xaxis.label.get_visible())
+        try:
+            sp = ax.spines.get('bottom')
+            w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+        except Exception:
+            pass
+        w = wasd.setdefault('top', {})
+        w['ticks'] = bool(tick_state.get('t_ticks', tick_state.get('tx', False)))
+        w['labels'] = bool(tick_state.get('t_labels', tick_state.get('tx', False)))
+        w['minor'] = bool(tick_state.get('mtx', False))
+        w['title'] = bool(getattr(ax, '_top_xlabel_on', False))
+        try:
+            sp = ax.spines.get('top')
+            w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', False)
+        except Exception:
+            pass
+        w = wasd.setdefault('left', {})
+        w['ticks'] = bool(tick_state.get('l_ticks', tick_state.get('ly', True)))
+        w['labels'] = bool(tick_state.get('l_labels', tick_state.get('ly', True)))
+        w['minor'] = bool(tick_state.get('mly', False))
+        w['title'] = bool(ax.yaxis.label.get_visible())
+        try:
+            sp = ax.spines.get('left')
+            w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+        except Exception:
+            pass
+        w = wasd.setdefault('right', {})
+        w['ticks'] = bool(tick_state.get('r_ticks', tick_state.get('ry', True)))
+        w['labels'] = bool(tick_state.get('r_labels', tick_state.get('ry', True)))
+        w['minor'] = bool(tick_state.get('mry', False))
+        w['title'] = bool(ax2.yaxis.label.get_visible() if ax2 is not None else False)
+        try:
+            sp = ax2.spines.get('right') if ax2 is not None else None
+            w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
+        except Exception:
+            pass
+        setattr(fig, '_cpc_wasd_state', wasd)
+        try:
+            ax._saved_tick_state = dict(tick_state)
+        except Exception:
+            pass
+        try:
+            bot = wasd.get('bottom', {}) or {}
+            top = wasd.get('top', {}) or {}
+            left = wasd.get('left', {}) or {}
+            right = wasd.get('right', {}) or {}
+            ax.tick_params(
+                axis='x', which='major',
+                bottom=bool(bot.get('ticks', True)),
+                labelbottom=bool(bot.get('labels', True)),
+                top=bool(top.get('ticks', False)),
+                labeltop=bool(top.get('labels', False)),
+            )
+            ax.tick_params(
+                axis='y', which='major',
+                left=bool(left.get('ticks', True)),
+                labelleft=bool(left.get('labels', True)),
+                right=False, labelright=False,
+            )
+            if ax2 is not None:
+                ax2.tick_params(
+                    axis='y', which='major',
+                    right=bool(right.get('ticks', True)),
+                    labelright=bool(right.get('labels', True)),
+                    left=False, labelleft=False,
+                )
+            ax.tick_params(
+                axis='x', which='minor',
+                bottom=bool(bot.get('minor', False)),
+                top=bool(top.get('minor', False)),
+                labelbottom=False, labeltop=False,
+            )
+            ax.tick_params(
+                axis='y', which='minor',
+                left=bool(left.get('minor', False)),
+                right=False, labelleft=False, labelright=False,
+            )
+            if ax2 is not None:
+                ax2.tick_params(
+                    axis='y', which='minor',
+                    right=bool(right.get('minor', False)),
+                    left=False, labelleft=False, labelright=False,
+                )
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def handle_save_session(ctx: CpcActionContext) -> None:
     """Save CPC session data and style to a project pickle."""
     fig = ctx.fig
@@ -288,63 +403,12 @@ def handle_save_session(ctx: CpcActionContext) -> None:
     sc_discharge = ctx.sc_discharge
     sc_eff = ctx.sc_eff
     file_data = ctx.file_data
-    tick_state = ctx.tick_state
     _safe_input = ctx.safe_input
     _print_menu = ctx.print_menu
 
     try:
-        # Sync current tick/title visibility (including minors) into stored WASD state before save
-        try:
-            wasd = getattr(fig, '_cpc_wasd_state', {})
-            if not isinstance(wasd, dict):
-                wasd = {}
-            # bottom
-            w = wasd.setdefault('bottom', {})
-            w['ticks'] = bool(tick_state.get('b_ticks', tick_state.get('bx', True)))
-            w['labels'] = bool(tick_state.get('b_labels', tick_state.get('bx', True)))
-            w['minor'] = bool(tick_state.get('mbx', False))
-            w['title'] = bool(ax.xaxis.label.get_visible())
-            try:
-                sp = ax.spines.get('bottom')
-                w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
-            except Exception:
-                pass
-            # top
-            w = wasd.setdefault('top', {})
-            w['ticks'] = bool(tick_state.get('t_ticks', tick_state.get('tx', False)))
-            w['labels'] = bool(tick_state.get('t_labels', tick_state.get('tx', False)))
-            w['minor'] = bool(tick_state.get('mtx', False))
-            w['title'] = bool(getattr(ax, '_top_xlabel_on', False))
-            try:
-                sp = ax.spines.get('top')
-                w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', False)
-            except Exception:
-                pass
-            # left
-            w = wasd.setdefault('left', {})
-            w['ticks'] = bool(tick_state.get('l_ticks', tick_state.get('ly', True)))
-            w['labels'] = bool(tick_state.get('l_labels', tick_state.get('ly', True)))
-            w['minor'] = bool(tick_state.get('mly', False))
-            w['title'] = bool(ax.yaxis.label.get_visible())
-            try:
-                sp = ax.spines.get('left')
-                w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
-            except Exception:
-                pass
-            # right
-            w = wasd.setdefault('right', {})
-            w['ticks'] = bool(tick_state.get('r_ticks', tick_state.get('ry', True)))
-            w['labels'] = bool(tick_state.get('r_labels', tick_state.get('ry', True)))
-            w['minor'] = bool(tick_state.get('mry', False))
-            w['title'] = bool(ax2.yaxis.label.get_visible() if ax2 is not None else False)
-            try:
-                sp = ax2.spines.get('right') if ax2 is not None else None
-                w['spine'] = bool(sp.get_visible()) if sp else w.get('spine', True)
-            except Exception:
-                pass
-            setattr(fig, '_cpc_wasd_state', wasd)
-        except Exception:
-            pass
+        from ..common.session_helpers import resolve_session_save_path
+
         folder = ctx.choose_save_path(ctx.file_paths, purpose="CPC session save")
         if not folder:
             _print_menu(fig)
@@ -372,6 +436,21 @@ def handle_save_session(ctx: CpcActionContext) -> None:
         if not choice or choice.lower() == 'q':
             _print_menu(fig)
             return
+
+        def _dump(target: str) -> bool:
+            _sync_cpc_wasd_for_save(ctx)
+            return bool(ctx.dump_cpc_session(
+                target,
+                fig=fig,
+                ax=ax,
+                ax2=ax2,
+                sc_charge=sc_charge,
+                sc_discharge=sc_discharge,
+                sc_eff=sc_eff,
+                file_data=file_data,
+                skip_confirm=True,
+            ))
+
         if choice.lower() == 'o':
             # Overwrite last saved session
             if not last_session_path:
@@ -386,18 +465,8 @@ def handle_save_session(ctx: CpcActionContext) -> None:
             if yn != 'y':
                 _print_menu(fig)
                 return
-            ctx.dump_cpc_session(
-                last_session_path,
-                fig=fig,
-                ax=ax,
-                ax2=ax2,
-                sc_charge=sc_charge,
-                sc_discharge=sc_discharge,
-                sc_eff=sc_eff,
-                file_data=file_data,
-                skip_confirm=True,
-            )
-            print(f"Overwritten session to {last_session_path}")
+            if _dump(last_session_path):
+                print(f"Overwritten session to {last_session_path}")
             _print_menu(fig)
             return
         if choice.isdigit() and files:
@@ -408,19 +477,9 @@ def handle_save_session(ctx: CpcActionContext) -> None:
                 if yn != 'y':
                     _print_menu(fig)
                     return
-                target = os.path.join(folder, name)
-                ctx.dump_cpc_session(
-                    target,
-                    fig=fig,
-                    ax=ax,
-                    ax2=ax2,
-                    sc_charge=sc_charge,
-                    sc_discharge=sc_discharge,
-                    sc_eff=sc_eff,
-                    file_data=file_data,
-                    skip_confirm=True,
-                )
-                fig._last_session_save_path = target
+                target = resolve_session_save_path(name, folder)
+                if _dump(target):
+                    print(f"Overwritten session to {target}")
                 _print_menu(fig)
                 return
             else:
@@ -428,28 +487,13 @@ def handle_save_session(ctx: CpcActionContext) -> None:
                 _print_menu(fig)
                 return
         if choice.lower() != 'o':
-            name = choice
-            root, ext = os.path.splitext(name)
-            if ext == '':
-                name = name + '.pkl'
-            target = name if os.path.isabs(name) else os.path.join(folder, name)
+            target = resolve_session_save_path(choice, folder)
             if os.path.exists(target):
                 yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                 if yn != 'y':
                     _print_menu(fig)
                     return
-            ctx.dump_cpc_session(
-                target,
-                fig=fig,
-                ax=ax,
-                ax2=ax2,
-                sc_charge=sc_charge,
-                sc_discharge=sc_discharge,
-                sc_eff=sc_eff,
-                file_data=file_data,
-                skip_confirm=True,
-            )
-            fig._last_session_save_path = target
+            _dump(target)
     except Exception as e:
         print(f"Save failed: {e}")
     _print_menu(fig)
@@ -526,12 +570,21 @@ def handle_style_export(ctx: CpcActionContext) -> None:
                     lw = props.get('linewidth', '?')
                     vis = props.get('visible', False)
                     col = props.get('color')
-                    print(f"  {name:<6} lw={lw} visible={vis} color={col}")
+                    try:
+                        from ...color_utils import format_color_listing
+                        col_disp = format_color_listing(col) if col is not None else "--"
+                    except Exception:
+                        col_disp = col
+                    print(f"  {name:<6} lw={lw} visible={vis} color={col_disp}")
             spine_colors = snap.get('spine_colors', {})
             if spine_colors:
                 print("Spine colors (k):")
                 for name, color in spine_colors.items():
-                    print(f"  {name}: {color}")
+                    try:
+                        from ...color_utils import format_color_listing
+                        print(f"  {name}: {format_color_listing(color)}")
+                    except Exception:
+                        print(f"  {name}: {color}")
             spine_auto = snap.get('spine_colors_auto', False)
             if spine_auto:
                 print(f"  Auto: ON (capacity→left, efficiency→right)")
@@ -551,6 +604,16 @@ def handle_style_export(ctx: CpcActionContext) -> None:
                     ch_col = finfo.get('charge_color', 'N/A')
                     dh_col = finfo.get('discharge_color', 'N/A')
                     ef_col = finfo.get('efficiency_color', 'N/A')
+                    try:
+                        from ...color_utils import format_color_listing as _fcl
+                        if ch_col not in (None, 'N/A'):
+                            ch_col = _fcl(ch_col)
+                        if dh_col not in (None, 'N/A'):
+                            dh_col = _fcl(dh_col)
+                        if ef_col not in (None, 'N/A'):
+                            ef_col = _fcl(ef_col)
+                    except Exception:
+                        pass
                     print(f"  {i}. {vis_mark} {fname}")
                     print(f"     charge={ch_col}, discharge={dh_col}, efficiency={ef_col}")
 
@@ -561,9 +624,16 @@ def handle_style_export(ctx: CpcActionContext) -> None:
             ef = s.get('efficiency', {})
             print(f"\n--- Series (c, m, ry) ---")
             if not multi_files:
-                print(f"Charge: color={ch.get('color')}, markersize={ch.get('markersize')}, alpha={ch.get('alpha')}")
-                print(f"Discharge: color={dh.get('color')}, markersize={dh.get('markersize')}, alpha={dh.get('alpha')}")
-                print(f"Efficiency: color={ef.get('color')}, markersize={ef.get('markersize')}, alpha={ef.get('alpha')}, visible={ef.get('visible')}")
+                try:
+                    from ...color_utils import format_color_listing as _fcl
+                    ch_c = _fcl(ch.get('color')) if ch.get('color') is not None else ch.get('color')
+                    dh_c = _fcl(dh.get('color')) if dh.get('color') is not None else dh.get('color')
+                    ef_c = _fcl(ef.get('color')) if ef.get('color') is not None else ef.get('color')
+                except Exception:
+                    ch_c, dh_c, ef_c = ch.get('color'), dh.get('color'), ef.get('color')
+                print(f"Charge: color={ch_c}, markersize={ch.get('markersize')}, alpha={ch.get('alpha')}")
+                print(f"Discharge: color={dh_c}, markersize={dh.get('markersize')}, alpha={dh.get('alpha')}")
+                print(f"Efficiency: color={ef_c}, markersize={ef.get('markersize')}, alpha={ef.get('alpha')}, visible={ef.get('visible')}")
             else:
                 print(f"Marker sizes (m): charge={ch.get('markersize')}, discharge={dh.get('markersize')}, efficiency={ef.get('markersize')}")
                 print(f"Alpha: charge={ch.get('alpha')}, discharge={dh.get('alpha')}, efficiency={ef.get('alpha')}")
@@ -766,6 +836,7 @@ def handle_style_import(ctx: CpcActionContext) -> None:
     file_data = ctx.file_data
     _print_menu = ctx.print_menu
 
+    pushed = False
     try:
         path = ctx.choose_style_file(ctx.file_paths, purpose="style import")
         if not path:
@@ -794,6 +865,7 @@ def handle_style_import(ctx: CpcActionContext) -> None:
             return
 
         ctx.push_state("import-style")
+        pushed = True
 
         geometry_cfg = cfg.get('geometry')
         if geometry_cfg is None:
@@ -803,32 +875,24 @@ def handle_style_import(ctx: CpcActionContext) -> None:
         # Apply style
         ctx.apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg, file_data)
 
-        # Apply geometry if present
+        # Apply geometry if present (same helper as undo/batch — allows clearing labels)
         if has_geometry:
             try:
-                geom = geometry_cfg or {}
-                if 'xlabel' in geom and geom['xlabel']:
-                    ax.set_xlabel(geom['xlabel'])
-                if 'ylabel_left' in geom and geom['ylabel_left']:
-                    ax.set_ylabel(geom['ylabel_left'])
-                if ax2 is not None and 'ylabel_right' in geom and geom['ylabel_right']:
-                    ax2.set_ylabel(geom['ylabel_right'])
-                if 'xlim' in geom and isinstance(geom['xlim'], list) and len(geom['xlim']) == 2:
-                    ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
-                if 'ylim_left' in geom and isinstance(geom['ylim_left'], list) and len(geom['ylim_left']) == 2:
-                    ax.set_ylim(geom['ylim_left'][0], geom['ylim_left'][1])
-                if ax2 is not None and 'ylim_right' in geom and isinstance(geom['ylim_right'], list) and len(geom['ylim_right']) == 2:
-                    ax2.set_ylim(geom['ylim_right'][0], geom['ylim_right'][1])
+                _apply_cpc_geometry_snapshot(ax, ax2, geometry_cfg or {})
                 print("Applied geometry (labels and limits)")
                 fig.canvas.draw_idle()
             except Exception as e:
                 print(f"Warning: Could not apply geometry: {e}")
 
     except Exception as e:
-        try:
-            ctx.pop_undo()
-        except Exception:
-            pass
+        if pushed:
+            try:
+                ctx.restore_state()
+            except Exception:
+                try:
+                    ctx.pop_undo()
+                except Exception:
+                    pass
         print(f"Error importing style: {e}")
     _print_menu(fig)
 
@@ -911,7 +975,8 @@ def handle_quick_overwrite_session(ctx: CpcActionContext) -> None:
         if not last_session_path:
             _print_menu(fig)
             return
-        ctx.dump_cpc_session(
+        _sync_cpc_wasd_for_save(ctx)
+        if ctx.dump_cpc_session(
             last_session_path,
             fig=fig,
             ax=ctx.ax,
@@ -921,8 +986,8 @@ def handle_quick_overwrite_session(ctx: CpcActionContext) -> None:
             sc_eff=ctx.sc_eff,
             file_data=ctx.file_data,
             skip_confirm=True,
-        )
-        print(f"Overwritten session to {last_session_path}")
+        ):
+            print(f"Overwritten session to {last_session_path}")
     except Exception as e:
         print(f"Overwrite failed: {e}")
     _print_menu(fig)

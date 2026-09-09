@@ -120,8 +120,30 @@ def test_rainbow_palette_available_in_all_mode_option_lists():
     assert "rainbow" in build_xy_palette_options(lambda name: None)
     assert "rainbow" in cpc_palette_options()
 
+    # Last digit 1-6 after cycles = palette; use name / digit (not legacy pN).
+    # "1 6" → cycle 1 + palette rainbow (mode 1). Visibility of 1 and 6: use "1 31"
+    # style lists or a range without a trailing palette digit.
     _mode, _cycles, _mapping, palette, _select_all = _parse_cycle_tokens(["1", "6"])
     assert palette == "rainbow"
+    assert _cycles == [1]
+    _mode_b, _cycles_b, _mapping_b, palette_b, _ = _parse_cycle_tokens(["1", "rainbow"])
+    assert palette_b == "rainbow"
+    assert _cycles_b == [1]
+    # legacy pN rejected
+    _mode_p, _cycles_p, _m_p, palette_p, _ = _parse_cycle_tokens(["1", "p6"])
+    assert palette_p is None and _mode_p == "numbers" and _cycles_p == [1]
+    _mode2, _cycles2, _mapping2, palette2, _ = _parse_cycle_tokens(["2-30", "6"])
+    assert palette2 == "rainbow"
+    assert _cycles2[0] == 2 and _cycles2[-1] == 30
+    # No trailing palette digit → visibility-only numbers mode
+    mode_n, cycles_n, _m, pal_n, _ = _parse_cycle_tokens(["1", "31"])
+    assert mode_n == "numbers" and pal_n is None and cycles_n == [1, 31]
+    mode_a, _c_a, _m_a, pal_a, use_all = _parse_cycle_tokens(["all", "3"])
+    assert mode_a == "palette" and use_all is True and pal_a == "Dark2"
+    mode_m, cycles_m, mapping_m, _p, _ = _parse_cycle_tokens(["1:red", "5:#00ff00"])
+    assert mode_m == "map" and 1 in mapping_m and 5 in cycles_m
+    mode_n2, cycles_n2, mapping_n2, _p2, _ = _parse_cycle_tokens(["2:4", "3:u1"])
+    assert mode_n2 == "map" and cycles_n2 == [2, 3] and 2 in mapping_n2 and 3 in mapping_n2
 
     operando_names = [name for name, _desc in recommended_operando_colormaps()]
     assert "rainbow" in operando_names

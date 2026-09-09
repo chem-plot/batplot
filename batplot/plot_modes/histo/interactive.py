@@ -15,6 +15,7 @@ from ..common.menu_rendering import append_last_action_shortcuts, print_menu_col
 from ..common.menus import run_option_menu
 from ..common.terminal import colorize_prompt, safe_input
 from ...ui import resize_canvas, resize_plot_frame
+from ...utils import finalize_axis_label_text
 from .actions import (
     HistoActionContext,
     handle_figure_export,
@@ -38,18 +39,22 @@ from .y_range import run_histo_y_range_menu
 
 
 def _colorize_menu(text: str) -> str:
-    if ":" not in text:
-        return text
-    cmd, desc = text.split(":", 1)
-    return f"\033[96m{cmd.strip()}\033[0m: {desc.strip()}"
+    from ..common.menu_rendering import colorize_menu
+
+    return colorize_menu(text)
 
 
-def _apply_style_file(fig, ax, state: HistoState, path: str) -> None:
+def _apply_style_file(fig, ax, state: HistoState, path: str) -> bool:
     with open(path, "r", encoding="utf-8") as fh:
         payload = json.load(fh)
+    kind = payload.get("kind", "") if isinstance(payload, dict) else ""
+    if kind and kind != "histo_style":
+        print(f"Not a histogram style file (kind={kind!r}).")
+        return False
     from .session import apply_histo_style_snapshot
 
     apply_histo_style_snapshot(fig, ax, state, payload)
+    return True
 
 
 def _histo_action_context(
@@ -59,6 +64,7 @@ def _histo_action_context(
     *,
     push_state,
     pop_undo,
+    restore_state=None,
 ) -> HistoActionContext:
     paths = [state.source_path] if state.source_path else []
     return HistoActionContext(
@@ -71,6 +77,7 @@ def _histo_action_context(
         format_file_timestamp=format_file_timestamp,
         push_state=push_state,
         pop_undo=pop_undo,
+        restore_state=restore_state,
         save_session=lambda path: _save_session(fig, ax, state, path),
         export_style=lambda path, include_geometry=True: _export_style(fig, ax, state, path, include_geometry=include_geometry),
         export_figure=lambda path: _export_figure(fig, ax, path),
@@ -87,25 +94,51 @@ def _y_range_menu_label(state: HistoState) -> str:
 
 def _print_histo_menu(fig, state: HistoState) -> None:
     bw = max(0.01, min(float(state.style.bar_width_frac), 1.0))
-    col1 = ["c: colors", "f: font", "a: density curve", "l: lines/grid", "t: toggle spines", "g: size"]
+    col1 = ["c: colors", "f: font", "a: density curve", "l: lines/grid", "t: spines/ticks (+h display)", "g: size"]
     col2 = [f"w: bar width ({bw:g})", "r: rename labels", "x: range/bins", _y_range_menu_label(state)]
     col3 = ["e: export figure", "p: export style", "i: import style", "s: save session", "b: undo", "q: quit"]
     append_last_action_shortcuts(col3, fig)
     print_menu_columns(
         title="Histogram Interactive Menu",
-        columns=[("(Styles)", col1), ("(Geometries)", col2), ("(Options)", col3)],
+        columns=[("Styles", col1), ("Geometries", col2), ("Options", col3)],
         min_widths=(18, 18, 18),
         colorize_item=_colorize_menu,
     )
 
 
+def _ensure_histo_values_master(state: HistoState) -> np.ndarray:
+    """Never-shrink full column backup on the live state object."""
+    vals = np.asarray(state.setup.values, dtype=float)
+    master = getattr(state, "_values_master", None)
+    try:
+        from ..common.session_data_guarantee import never_shrink_array
+
+        master = never_shrink_array(master, vals)
+    except Exception:
+        master = np.array(vals, copy=True)
+    try:
+        state._values_master = master  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return np.asarray(master, dtype=float)
+
+
 def _snapshot_state(state: HistoState, fig=None, ax=None) -> dict:
     normalize_histo_title(state)
+    # Live canvas/frame authority for s/b/p captures (mirrors export/save sync).
+    if fig is not None and ax is not None:
+        try:
+            sync_histo_geometry(fig, ax, state)
+        except Exception:
+            pass
+    values_master = _ensure_histo_values_master(state)
     snap = {
         "setup": {
             "column_index": state.setup.column_index,
             "column_name": state.setup.column_name,
+            # Full column always — xmin/xmax only affect draw, never truncate values.
             "values": np.asarray(state.setup.values, dtype=float),
+            "values_master": np.array(values_master, copy=True),
             "xmin": state.setup.xmin,
             "xmax": state.setup.xmax,
             "bin_edges": np.asarray(state.setup.bin_edges, dtype=float),
@@ -154,17 +187,35 @@ def _snapshot_state(state: HistoState, fig=None, ax=None) -> dict:
 def _snapshot_for_json(state: HistoState, fig=None, ax=None) -> dict:
     snap = _snapshot_state(state, fig, ax)
     snap["setup"]["values"] = np.asarray(snap["setup"]["values"]).tolist()
+    if snap["setup"].get("values_master") is not None:
+        snap["setup"]["values_master"] = np.asarray(snap["setup"]["values_master"]).tolist()
     snap["setup"]["bin_edges"] = np.asarray(snap["setup"]["bin_edges"]).tolist()
     return snap
 
 
 def _restore_snapshot(snap: dict) -> HistoState:
-    s = snap["setup"]
-    st = snap["style"]
+    # Style-only ``p`` payloads omit setup — fabricate a placeholder; callers that
+    # import style must keep the live setup (apply_histo_style_snapshot).
+    s = snap.get("setup")
+    if not isinstance(s, dict):
+        s = {
+            "column_index": 0,
+            "column_name": "",
+            "values": [],
+            "xmin": 0.0,
+            "xmax": 1.0,
+            "bin_edges": [0.0, 1.0],
+        }
+    st = snap.get("style") or {}
+    # Prefer never-truncated master column when present (BC: fall back to values).
+    _vals = s.get("values_master")
+    if _vals is None:
+        _vals = s.get("values", [])
+    _vals_arr = np.asarray(_vals, dtype=float)
     setup = HistoSetup(
         column_index=int(s["column_index"]),
         column_name=str(s["column_name"]),
-        values=np.asarray(s["values"], dtype=float),
+        values=_vals_arr,
         xmin=float(s["xmin"]),
         xmax=float(s["xmax"]),
         bin_edges=np.asarray(s["bin_edges"], dtype=float),
@@ -185,10 +236,10 @@ def _restore_snapshot(snap: dict) -> HistoState:
         density_curve_lw=float(st.get("density_curve_lw", 1.8)),
         density_curve_ls=str(st.get("density_curve_ls", "-")),
         density_curve_alpha=float(st.get("density_curve_alpha", 1.0)),
-        xlabel=str(st.get("xlabel", "")),
-        ylabel=str(st.get("ylabel", "")),
-        title=str(st.get("title", "")),
-        top_xlabel=str(st.get("top_xlabel", "")),
+        xlabel=finalize_axis_label_text(str(st.get("xlabel", ""))),
+        ylabel=finalize_axis_label_text(str(st.get("ylabel", ""))),
+        title=finalize_axis_label_text(str(st.get("title", ""))),
+        top_xlabel=finalize_axis_label_text(str(st.get("top_xlabel", ""))),
         figsize=tuple(st.get("figsize", [8.0, 5.5])),
         axes_fraction=(
             tuple(st["axes_fraction"])
@@ -210,6 +261,10 @@ def _restore_snapshot(snap: dict) -> HistoState:
         ),
     )
     state = HistoState(setup=setup, style=style, source_path=str(snap.get("source_path", "")))
+    try:
+        state._values_master = np.array(_vals_arr, copy=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
     normalize_histo_title(state)
     return state
 
@@ -217,6 +272,19 @@ def _restore_snapshot(snap: dict) -> HistoState:
 def sanitize_histo_session_snap(snap: dict) -> dict:
     """Strip legacy auto plot titles from a session snap (mutates and returns *snap*)."""
     if not isinstance(snap, dict):
+        return snap
+    # Style-only exports have no setup — only normalize title text.
+    if not isinstance(snap.get("setup"), dict):
+        style = snap.get("style")
+        if isinstance(style, dict):
+            title = str(style.get("title", "") or "").strip()
+            low = title.lower()
+            if not title or low.startswith("histogram ") or low in (
+                "length",
+                "histogram length",
+                "histogram",
+            ):
+                style["title"] = ""
         return snap
     try:
         normalized = _restore_snapshot(snap)
@@ -258,8 +326,10 @@ def _run_histo_size_menu(fig, ax, state: HistoState, *, push_state) -> None:
 
     def _resize_frame() -> None:
         try:
-            push_state()
-            resize_plot_frame(fig, ax, [], [], type("Args", (), {"stack": False})(), _noop_update_labels)
+            resize_plot_frame(
+                fig, ax, [], [], type("Args", (), {"stack": False})(), _noop_update_labels,
+                on_before_change=push_state,
+            )
             sync_histo_geometry(fig, ax, state)
             fig.canvas.draw_idle()
         except Exception as exc:
@@ -267,8 +337,7 @@ def _run_histo_size_menu(fig, ax, state: HistoState, *, push_state) -> None:
 
     def _resize_canvas_cmd() -> None:
         try:
-            push_state()
-            resize_canvas(fig, ax)
+            resize_canvas(fig, ax, on_before_change=push_state)
             sync_histo_geometry(fig, ax, state)
             fig.canvas.draw_idle()
         except Exception as exc:
@@ -292,6 +361,13 @@ def _save_session(fig, ax, state: HistoState, path: str) -> None:
     snap = sanitize_histo_session_snap(_snapshot_state(state, fig, ax))
     payload = {"kind": "histo", "version": 1, "state": snap}
     try:
+        from ..common.session_helpers import capture_last_figure_export_path
+
+        # Last exported figure path so 'oe' works after reopening the session.
+        payload["last_figure_export_path"] = capture_last_figure_export_path(fig)
+    except Exception:
+        pass
+    try:
         from ...session import _package_versions_stamp
 
         payload["package_versions"] = _package_versions_stamp()
@@ -306,6 +382,9 @@ def _export_style(fig, ax, state: HistoState, path: str, *, include_geometry: bo
     sync_histo_geometry(fig, ax, state)
     payload = _snapshot_for_json(state, fig, ax)
     payload["kind"] = "histo_style"
+    # p/i contract: style-only — never ship column data / source path.
+    payload.pop("setup", None)
+    payload.pop("source_path", None)
     if not include_geometry:
         for key in ("figsize", "axes_fraction", "ylim"):
             payload.get("style", {}).pop(key, None)
@@ -368,6 +447,22 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
         if history:
             history.pop()
 
+    def restore_state(*, quiet: bool = False) -> bool:
+        """Pop tip and apply it (push-before-mutate contract)."""
+        if len(history) <= 1:
+            if not quiet:
+                print("No undo history.")
+            return False
+        snap = history.pop()
+        try:
+            _apply_state(fig, ax, state, _restore_snapshot(snap), snap=snap)
+            return True
+        except Exception as exc:
+            history.append(snap)
+            if not quiet:
+                print(f"Undo failed: {exc}")
+            return False
+
     push_state()
 
     normalize_histo_title(state)
@@ -390,6 +485,14 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
             apply_histo_spine_colors(fig, ax, get_histo_spine_colors(fig))
         except Exception:
             pass
+
+    def _ctx():
+        return _histo_action_context(
+            fig, ax, state,
+            push_state=push_state,
+            pop_undo=pop_undo,
+            restore_state=lambda: restore_state(quiet=True),
+        )
 
     while True:
         _print_histo_menu(fig, state)
@@ -424,11 +527,10 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
             continue
 
         if cmd == "b":
-            if len(history) <= 1:
-                print("No undo history.")
-                continue
-            history.pop()
-            _apply_state(fig, ax, state, _restore_snapshot(history[-1]), snap=history[-1])
+            # Push-before-mutate: tip is the pre-edit state. Restore the popped
+            # snap (XY/EC/CPC/operando/batch parity) — do not peek under it or
+            # multi-step undo skips a level.
+            restore_state(quiet=False)
             continue
 
         if cmd == "c":
@@ -439,6 +541,8 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
                 set_bar_color=lambda c: setattr(state.style, "bar_color", c),
                 get_edge_color=lambda: state.style.edge_color,
                 set_edge_color=lambda c: setattr(state.style, "edge_color", c),
+                get_bar_alpha=lambda: float(state.style.alpha),
+                set_bar_alpha=lambda a: setattr(state.style, "alpha", float(a)),
                 push_state=push_state,
                 refresh=_refresh_figure,
                 finish_spine_change=_finish_spine_colors_only,
@@ -467,6 +571,7 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
                 safe_input=safe_input,
                 colorize_menu=_colorize_menu,
                 colorize_prompt=colorize_prompt,
+                fig=fig,
             )
             fig.canvas.draw_idle()
             continue
@@ -559,8 +664,13 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
         if cmd == "t":
             def _histo_toggle_display(key: str) -> None:
                 if key == "d":
+                    # Rewrite ylabel only when it still matches the prior mode
+                    # default; keep cleared ("") and custom titles intact.
+                    prev_default = state.y_label_default()
+                    cur = state.style.ylabel
                     state.style.density = not state.style.density
-                    state.style.ylabel = state.y_label_default()
+                    if cur == prev_default:
+                        state.style.ylabel = state.y_label_default()
                 elif key == "n":
                     state.style.show_bar_labels = not state.style.show_bar_labels
                 elif key == "m":
@@ -585,34 +695,31 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
             continue
 
         if cmd == "e":
-            handle_figure_export(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_figure_export(_ctx())
             continue
 
         if cmd == "p":
-            handle_style_export(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_style_export(_ctx())
             continue
 
         if cmd == "i":
-            handle_style_import(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_style_import(_ctx())
             continue
 
         if cmd == "s":
-            handle_save_session(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_save_session(_ctx())
             continue
 
         if cmd == "oe":
-            handle_quick_overwrite_figure(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_quick_overwrite_figure(_ctx())
             continue
 
         if cmd == "os":
-            handle_quick_overwrite_session(_histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo))
+            handle_quick_overwrite_session(_ctx())
             continue
 
         if cmd in ("ops", "opsg"):
-            handle_quick_overwrite_style(
-                _histo_action_context(fig, ax, state, push_state=push_state, pop_undo=pop_undo),
-                include_geometry=(cmd == "opsg"),
-            )
+            handle_quick_overwrite_style(_ctx(), include_geometry=(cmd == "opsg"))
             continue
 
         print(f"Unknown command: {cmd!r}")

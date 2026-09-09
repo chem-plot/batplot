@@ -36,6 +36,65 @@ def close_figures_after_test():
     plt.close("all")
 
 
+@pytest.fixture(autouse=True)
+def isolate_batplot_config(tmp_path, monkeypatch):
+    """Point ~/.batplot at a per-test temp dir.
+
+    Keeps rename/recent-name/user-color menus from reading or writing the real
+    user config during tests (deterministic on every OS and CI).
+    """
+    import batplot.config as CFG
+
+    cfg_dir = tmp_path / "batplot_config"
+    cfg_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(CFG, "get_config_dir", lambda: cfg_dir)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def stub_screen_color_picker(request, monkeypatch):
+    """Block real eyedropper GUI in all tests except dedicated screen_color suites.
+
+    Menu smoke / keystroke scripts often feed ``e`` while a color submenu is
+    open; without this stub the magnifier subprocess + ``Picker>`` loop hangs
+    the whole suite (macOS / Windows / Linux).
+    """
+    name = getattr(request.module, "__name__", "") or ""
+    path = str(getattr(request.fspath, "strpath", "") or getattr(request, "path", ""))
+    if "test_screen_color" in name or "test_screen_color" in path:
+        yield
+        return
+    import batplot.color_utils as CU
+    import batplot.screen_color as SC
+
+    def _noop_prompt(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(CU, "prompt_screen_color", _noop_prompt)
+    monkeypatch.setattr(SC, "pick_screen_colors", lambda *a, **k: [])
+    monkeypatch.setattr(SC, "pick_screen_color", lambda *a, **k: None)
+    for mod_name in (
+        "batplot.plot_modes.xy.colors",
+        "batplot.plot_modes.xy.cif",
+        "batplot.plot_modes.histo.colors",
+        "batplot.plot_modes.electrochem.colors",
+        "batplot.plot_modes.electrochem.spine_colors",
+        "batplot.plot_modes.cpc.colors",
+        "batplot.plot_modes.cpc.interactive",
+        "batplot.plot_modes.operando.colors",
+        "batplot.plot_modes.operando.line_style",
+        "batplot.plot_modes.operando.grid",
+        "batplot.plot_modes.batch_session.menu_xy",
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["*"])
+        except Exception:
+            continue
+        if hasattr(mod, "prompt_screen_color"):
+            monkeypatch.setattr(mod, "prompt_screen_color", _noop_prompt, raising=False)
+    yield
+
+
 @pytest.fixture
 def session_path(tmp_path):
     """Return a helper that builds absolute paths inside a per-test tmp dir."""

@@ -64,7 +64,7 @@ def test_shared_height_updates_contour_colorbar_and_ec():
 
 def test_operando_batch_menu_lists_size_not_scattered_widths(capsys):
     from batplot.plot_modes.batch_session.menu_operando import _print_operando_batch_menu
-    from tests.test_operando_batch_menu import _build_panel
+    from test_operando_batch_menu import _build_panel
 
     p = _build_panel()
     _print_operando_batch_menu([p])

@@ -40,6 +40,7 @@ def _is_mpt_like_ext(ext: str) -> bool:
 
 
 from .ec_common import _resolve_mass
+from .plot_modes.electrochem.capacity_cum import apply_gc_capacity_mode, stamp_gc_capacity_mode
 from .utils import _confirm_overwrite, natural_sort_key, ensure_subdirectory
 
 
@@ -109,7 +110,7 @@ def batch_process(directory: str, args):
     - .nor → Energy space (XAS, eV)
     - .chik → k-space (EXAFS, Å⁻¹)
     - .chir → r-space (Fourier transform of EXAFS, Å)
-    - .xy, .xye, .dat, .csv, .txt → Generic 2-column data (requires --xaxis flag)
+    - .xy, .xye, .dat, .csv, .txt → Generic 2-column data (labels X/Y; optional --xaxis / --wl)
     
     STYLE FILE SUPPORT:
     ------------------
@@ -121,7 +122,7 @@ def batch_process(directory: str, args):
         directory: Path to directory containing data files
         args: Argument namespace with batch processing options:
             - all: Style file path (if provided) or 'all' string
-            - xaxis: X-axis type for unknown extensions (Q, 2theta, r, energy, k, rft)
+            - xaxis: Optional X-axis type (Q, 2theta, r, energy, k, rft); omit for X/Y
             - xrange: Optional X-axis range (min, max)
             - yrange: Optional Y-axis range (min, max)
             - format: Output format ('svg' or 'png', default 'svg')
@@ -136,7 +137,7 @@ def batch_process(directory: str, args):
     # ====================================================================
     # We classify file extensions into three categories:
     # 1. Known extensions with automatic axis detection (don't need --xaxis)
-    # 2. Known generic extensions (need --xaxis if axis type unclear)
+    # 2. Generic / unknown extensions → X/Y unless --xaxis / --wl given
     # 3. Excluded extensions (not data files, skip them)
     # ====================================================================
     
@@ -208,7 +209,7 @@ def batch_process(directory: str, args):
         if ext in known_ext:
             files.append(f)
         else:
-            # Include unknown extensions (require --xaxis)
+            # Include unknown extensions (default X/Y; optional --xaxis / --wl)
             files.append(f)
             unknown_ext_files.append(f)
     
@@ -220,20 +221,15 @@ def batch_process(directory: str, args):
         batch_save_xy_directory(directory, args, files)
         return
     
-    # Check if --xaxis is required for unknown extensions
-    if unknown_ext_files and not args.xaxis:
-        print(f"Error: Found {len(unknown_ext_files)} file(s) with unknown extension(s) that require --xaxis:")
-        for uf in unknown_ext_files[:5]:  # Show first 5
-            print(f"  - {uf}")
-        if len(unknown_ext_files) > 5:
-            print(f"  ... and {len(unknown_ext_files) - 5} more")
-        print("\nKnown extensions that don't require --xaxis: .qye, .gr, .nor, .chik, .chir")
-        print("Please specify x-axis type with --xaxis (options: 2theta, Q, r, energy, k, rft)")
-        print("Example: batplot --all --xaxis 2theta")
-        return
-    
-    if unknown_ext_files:
+    # Unknown extensions: without --xaxis/--wl → generic X/Y (same as interactive
+    # ``batplot file.xy``). With --xaxis, note the chosen type.
+    if unknown_ext_files and args.xaxis:
         print(f"Note: Processing {len(unknown_ext_files)} file(s) with unknown extension(s) using --xaxis {args.xaxis}")
+    elif unknown_ext_files and getattr(args, "wl", None) is None:
+        print(
+            f"Note: Processing {len(unknown_ext_files)} file(s) as generic X/Y "
+            "(cols 1–2). Use --xaxis or --wl for XRD/PDF/XAS axis types."
+        )
     
     print(f"Found {len(files)} files. Exporting SVG plots to Figures/")
     
@@ -255,6 +251,7 @@ def batch_process(directory: str, args):
             # We detect the format from the file extension and use the
             # appropriate reader function.
             # ============================================================
+            file_wl = getattr(args, "wl", None)
             
             if ext == '.gr':
                 x, y = read_gr_file(fpath); e = None
@@ -281,8 +278,9 @@ def batch_process(directory: str, args):
             elif ext in ('.brml', '.xrdml', '.rasx') or (ext == '.raw' and is_bruker_raw(fpath)):
                 x, y, e, wl_from_file = read_xrd_vendor_file(fpath)
                 axis_mode = '2theta'
-                if args.wl is None and wl_from_file is not None:
-                    args.wl = wl_from_file
+                if file_wl is None and wl_from_file is not None:
+                    # Per-file wavelength only — do not mutate shared args.wl
+                    file_wl = wl_from_file
             elif ext == '.raw':
                 # .raw from non-Bruker instrument: load as generic text
                 data = robust_loadtxt_skipheader(fpath)
@@ -312,8 +310,16 @@ def batch_process(directory: str, args):
                 else:
                     x, y = data[:, 0], data[:, 1]
                     e = data[:, 2] if data.shape[1] >= 3 else None
-                ax = (args.xaxis or '').strip()
-                axis_mode = 'Q' if ax.upper() == 'Q' else (args.xaxis if args.xaxis else '2theta')
+                # Preserve historic --xaxis / --wl behavior for non-Bruker .raw:
+                #   --xaxis Q → Q; other --xaxis → that type; --wl alone → 2θ
+                # Only the no-flag path is new (generic X/Y).
+                if args.xaxis:
+                    ax = (args.xaxis or "").strip()
+                    axis_mode = "Q" if ax.upper() == "Q" else args.xaxis
+                elif getattr(args, "wl", None) is not None:
+                    axis_mode = "2theta"
+                else:
+                    axis_mode = "generic"
             else:
                 data = robust_loadtxt_skipheader(fpath)
                 if data.ndim == 1: data = data.reshape(1, -1)
@@ -367,19 +373,20 @@ def batch_process(directory: str, args):
                         args._batch_warned_extensions.add(ext)
                         print(f"  Note: Reading '{ext}' files as 2-column (x, y) data with x-axis = {args.xaxis}")
                 elif getattr(args, 'wl', None) is not None:
-                    # .txt / generic text: --wl implies XRD Q conversion (matches main batplot.py)
+                    # .txt / generic text: --wl implies XRD Q conversion (matches main pipeline)
                     axis_mode = 'Q'
                 else:
-                    raise ValueError(f"Unknown file type: {fname}. Use --xaxis [Q|2theta|r|k|energy|rft], or --wl for XRD Q, or batplot --help for help.")
+                    # Quick plot: cols 1–2 with labels X / Y (matches interactive)
+                    axis_mode = 'generic'
 
             # Convert to Q if needed
             if axis_mode == 'Q' and ext not in ('.qye', '.gr', '.nor'):
-                if args.wl is None:
+                if file_wl is None:
                     axis_mode = '2theta'
                     x_plot = x
                 else:
                     theta_rad = np.radians(x/2)
-                    x_plot = 4*np.pi*np.sin(theta_rad)/args.wl
+                    x_plot = 4*np.pi*np.sin(theta_rad)/file_wl
             else:
                 x_plot = x
 
@@ -443,9 +450,18 @@ def batch_process(directory: str, args):
                 ax_b.set_xlabel(r"k ($\mathrm{\AA}^{-1}$)")
             elif axis_mode == 'rft':
                 ax_b.set_xlabel("Radial distance (Å)")
+            elif axis_mode == 'generic':
+                ax_b.set_xlabel("X")
+            elif args.xaxis and str(args.xaxis).lower() not in (
+                "2theta", "two_theta", "tth", "q", "d", "r", "energy", "k", "rft", "time",
+            ):
+                ax_b.set_xlabel(str(args.xaxis))
             else:
                 ax_b.set_xlabel("2θ (deg)")
-            ax_b.set_ylabel("Normalized intensity (a.u.)" if getattr(args, 'norm', False) else "Intensity")
+            if axis_mode == 'generic' and not getattr(args, 'norm', False):
+                ax_b.set_ylabel("Y")
+            else:
+                ax_b.set_ylabel("Normalized intensity (a.u.)" if getattr(args, 'norm', False) else "Intensity")
             ax_b.set_title(fname)
             fig_b.subplots_adjust(left=0.18, right=0.97, bottom=0.16, top=0.90)
             # Get output format from args, default to svg
@@ -704,6 +720,10 @@ def batch_process_ec(directory: str, args):
                     x_label = r'Specific Capacity (mAh g$^{-1}$)'
                 else:
                     raise ValueError(f"Unsupported file type for GC: {ext}")
+
+                cap_x, x_label, _cum_gc = apply_gc_capacity_mode(
+                    args, cap_x, charge_mask, discharge_mask, x_label
+                )
                 
                 # Plot cycles
                 if cycle_numbers is not None:
@@ -756,6 +776,7 @@ def batch_process_ec(directory: str, args):
                 ax_b.set_title(f"{fname}")
                 legend = ax_b.legend(loc='best', fontsize='small', framealpha=0.8, title='Cycle')
                 sync_legend_title_fontsize(legend)
+                stamp_gc_capacity_mode(fig_b, cumulative=_cum_gc)
             
             # ---- CV Mode ----
             elif mode == 'cv':

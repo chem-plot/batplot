@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional, Sequence
 
 from ...plotting import update_labels
+from ..common.line_dash import capture_dash_pattern, clear_dash_pattern, restore_dash_pattern
 
 
 def run_rearrange_menu(
@@ -61,6 +62,7 @@ def run_rearrange_menu(
                         "color": ln.get_color(),
                         "linewidth": ln.get_linewidth(),
                         "linestyle": ln.get_linestyle(),
+                        "dash_pattern": capture_dash_pattern(ln),
                         "alpha": ln.get_alpha(),
                         "marker": ln.get_marker(),
                         "markersize": ln.get_markersize(),
@@ -78,6 +80,13 @@ def run_rearrange_menu(
                 x_full_list[:]      = [x_full_list[i] for i in new_order]
                 raw_y_full_list[:]  = [raw_y_full_list[i] for i in new_order]
                 offsets_list[:]     = [offsets_list[i] for i in new_order]
+                # Keep master full buffers in the same order (save/expand use them).
+                try:
+                    from .full_data import install_master_full
+
+                    install_master_full(fig, x_full_list, raw_y_full_list, force=True)
+                except Exception:
+                    pass
     
                 if args.stack:
                     offset_local = 0.0
@@ -90,6 +99,8 @@ def run_rearrange_menu(
                         ln.set_color(style["color"]) 
                         ln.set_linewidth(style["linewidth"]) 
                         ln.set_linestyle(style["linestyle"]) 
+                        clear_dash_pattern(ln)
+                        restore_dash_pattern(ln, style.get("dash_pattern"))
                         ln.set_alpha(style["alpha"]) 
                         ln.set_marker(style["marker"]) 
                         ln.set_markersize(style["markersize"]) 
@@ -109,6 +120,8 @@ def run_rearrange_menu(
                         ln.set_color(style["color"]) 
                         ln.set_linewidth(style["linewidth"]) 
                         ln.set_linestyle(style["linestyle"]) 
+                        clear_dash_pattern(ln)
+                        restore_dash_pattern(ln, style.get("dash_pattern"))
                         ln.set_alpha(style["alpha"]) 
                         ln.set_marker(style["marker"]) 
                         ln.set_markersize(style["markersize"]) 

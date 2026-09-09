@@ -534,7 +534,7 @@ def test_ec_spine_color_helper_updates_spine_and_tick_colors():
 
     assert states == ["color-spine"]
     assert mcolors.to_hex(ax.spines["left"].get_edgecolor()) == "#ff0000"
-    assert ax.yaxis.label.get_color() == "red"
+    assert mcolors.to_hex(ax.yaxis.label.get_color()) == "#ff0000"
 
 
 def test_ec_legend_order_helper_reorders_multifile_state():
@@ -543,6 +543,7 @@ def test_ec_legend_order_helper_reorders_multifile_state():
         {"filename": "file1", "display_name": "file1", "visible": True, "cycle_lines": cycle_lines},
         {"filename": "file2", "display_name": "file2", "visible": True, "cycle_lines": cycle_lines},
     ]
+    fig._ec_legend_file_order = [0, 1]
     states = []
     redraws = []
     inputs = iter(["2 1", "q"])

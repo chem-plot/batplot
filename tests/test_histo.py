@@ -259,7 +259,7 @@ def test_resolve_histo_color_hex_and_palette():
     palette_opts = histo_palette_options()
     palette_index = {str(i): name for i, name in enumerate(palette_opts, 1)}
     assert resolve_histo_color("#ff0000", None, palette_index) == "#ff0000"
-    assert resolve_histo_color("red", None, palette_index) == "red"
+    assert resolve_histo_color("red", None, palette_index) == "#ff0000"
     pal_color = resolve_histo_color("viridis", None, palette_index)
     assert pal_color is not None
     assert pal_color.startswith("#")

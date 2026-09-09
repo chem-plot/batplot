@@ -141,9 +141,18 @@ def ensure_colormap(name: Optional[str]) -> bool:
     base = name[:-2] if name.lower().endswith('_r') else name
     base_lower = base.lower()
     
-    # STEP 1: Check if it's already a registered matplotlib colormap
-    if base_lower in plt.colormaps():
-        return True
+    # STEP 1: Check if it's already a registered matplotlib colormap.
+    # Matplotlib colormap names are case-sensitive (e.g. 'Set2', 'Dark2'),
+    # so check the exact name first, then the lowercase variant.
+    try:
+        registered = plt.colormaps()
+        if base in registered or base_lower in registered:
+            return True
+        # Case-insensitive match: user typed 'set2' for registered 'Set2'.
+        if base_lower in {n.lower() for n in registered}:
+            return True
+    except Exception:
+        pass
     
     # STEP 2: Try to load from cmcrameri package (scientific colormaps)
     # cmcrameri is an optional package with colorblind-friendly colormaps
@@ -169,14 +178,20 @@ def ensure_colormap(name: Optional[str]) -> bool:
             return False
     
     # STEP 4: Final fallback - try to get it directly from matplotlib
-    # This handles any other matplotlib-compatible colormap
+    # This handles any other matplotlib-compatible colormap (case-sensitive
+    # names like 'Set2' first, then the lowercase variant).
     try:
         from matplotlib import colormaps as mpl_colormaps
 
-        _ = mpl_colormaps[base_lower]
-        return True
+        for cand in (base, base_lower):
+            try:
+                _ = mpl_colormaps[cand]
+                return True
+            except Exception:
+                continue
     except Exception:
-        return False
+        pass
+    return False
 
 
 def get_colormap(name: Optional[str]) -> Optional[Colormap]:
@@ -195,6 +210,19 @@ def get_colormap(name: Optional[str]) -> Optional[Colormap]:
     for candidate in (name, name.lower()):
         if candidate and candidate not in candidates:
             candidates.append(candidate)
+    # Canonicalize case: matplotlib names are case-sensitive ('Set2'), so map
+    # e.g. 'set2' → 'Set2' and 'set2_r' → 'Set2_r'.
+    try:
+        lower_map = {n.lower(): n for n in plt.colormaps()}
+        canon = lower_map.get(name.lower())
+        if canon and canon not in candidates:
+            candidates.append(canon)
+        if name.lower().endswith("_r"):
+            canon_base = lower_map.get(name.lower()[:-2])
+            if canon_base and f"{canon_base}_r" not in candidates:
+                candidates.append(f"{canon_base}_r")
+    except Exception:
+        pass
 
     try:
         from matplotlib import colormaps as mpl_colormaps
@@ -261,6 +289,16 @@ def _ansi_color_block_from_rgba(rgba) -> str:
         return "[??]"
 
 
+def to_display_hex(color) -> Optional[str]:
+    """Normalize any matplotlib-accepted color to lowercase ``#rrggbb`` (no alpha)."""
+    if color is None:
+        return None
+    try:
+        return str(mcolors.to_hex(mcolors.to_rgba(color), keep_alpha=False)).lower()
+    except Exception:
+        return None
+
+
 def color_block(color: Optional[str]) -> str:
     """Return a colored block (ANSI) for the supplied color string."""
     if not color:
@@ -273,17 +311,21 @@ def color_block(color: Optional[str]) -> str:
 
 
 def format_color_listing(color) -> str:
-    """Return ``<swatch> <hex>`` for menu listings (curves, saved colors, etc.)."""
+    """Return ``<swatch> <hex>`` for menu listings (curves, saved colors, etc.).
+
+    Always prefers a hex code next to the ANSI color cube so every mode shows
+    the same readable form (e.g. ``██ #1f77b4``), including named colors,
+    ``C0`` cycle colors, and RGBA tuples from matplotlib artists.
+    """
     if color is None:
         return f"{color_block(None)} --"
-    try:
-        rgba = mcolors.to_rgba(color)
-        return f"{color_block(color)} {mcolors.to_hex(rgba)}"
-    except Exception:
+    hex_code = to_display_hex(color)
+    if hex_code is None:
         text = str(color).strip()
         if not text:
             return f"{color_block(None)} --"
-        return f"{color_block(text)} {text}"
+        return f"{color_block(None)} {text}"
+    return f"{color_block(hex_code)} {hex_code}"
 
 
 def color_bar(colors: Sequence[str]) -> str:
@@ -394,36 +436,12 @@ def _set_cached_colors(fig, colors: List[str]):
 
 def get_user_color_list(fig=None) -> List[str]:
     """
-    Return cached user colors (persisted to ~/.batplot).
-    
-    HOW IT WORKS:
-    ------------
-    1. First check if colors are cached in figure object (fast path)
-    2. If not cached, load from disk (~/.batplot/config.json)
-    3. Cache the loaded colors in figure object for next time
-    4. Return the color list
-    
-    WHY CACHING?
-    -----------
-    - Fast: Memory access is much faster than disk I/O
-    - Efficient: Only reads from disk once per session
-    - Persistent: Colors are saved to disk, so they persist between sessions
-    
-    Args:
-        fig: Matplotlib figure object (optional, for caching)
-    
-    Returns:
-        List of color codes (hex strings like '#FF0000' or named colors like 'red')
+    Return user colors from ``~/.batplot/config.json`` (source of truth).
+
+    Always reloads from disk so multiple figures (batch panels) and the
+    eyedropper stay in sync. Optionally refreshes ``fig._user_colors_cache``.
     """
-    # Check if colors are already cached in figure object
-    if fig is not None and hasattr(fig, '_user_colors_cache'):
-        # Return cached colors (fast path - no disk access)
-        # list() creates a copy so caller can't modify the cached version
-        return list(getattr(fig, '_user_colors_cache'))
-    
-    # Not cached - load from disk
     colors = list(_cfg_get_user_colors())
-    # Cache for next time
     _set_cached_colors(fig, colors)
     return colors
 
@@ -431,40 +449,17 @@ def get_user_color_list(fig=None) -> List[str]:
 def _save_user_colors(colors: List[str], fig=None) -> List[str]:
     """
     Save user colors to disk and cache, removing duplicates and empty entries.
-    
-    HOW IT WORKS:
-    ------------
-    1. Remove empty/None colors (filter out invalid entries)
-    2. Remove duplicates (keep only first occurrence of each color)
-    3. Save cleaned list to disk (~/.batplot/config.json)
-    4. Update cache in figure object
-    5. Return cleaned list
-    
-    WHY CLEAN THE LIST?
-    ------------------
-    - Empty strings would cause errors when trying to use them as colors
-    - Duplicates waste space and confuse users
-    - Clean data = better user experience
-    
-    Args:
-        colors: List of color codes (may contain duplicates or empty strings)
-        fig: Matplotlib figure object (optional, for caching)
-    
-    Returns:
-        Cleaned list (no duplicates, no empty entries)
     """
-    cleaned: List[str] = []  # Type annotation: cleaned is a list of strings
+    cleaned: List[str] = []
     for col in colors:
-        # Skip empty/None colors
         if not col:
             continue
-        # Only add if not already in cleaned list (removes duplicates)
         if col not in cleaned:
             cleaned.append(col)
-    # Save to disk (persists between sessions)
-    _cfg_save_user_colors(cleaned)
-    # Update cache (fast access for current session)
+    ok = _cfg_save_user_colors(cleaned)
     _set_cached_colors(fig, cleaned)
+    if not ok:
+        print("Warning: could not write ~/.batplot/config.json (colors may not persist).")
     return cleaned
 
 
@@ -543,39 +538,255 @@ def resolve_color_token(token: str, fig=None) -> str:
         colors = get_user_color_list(fig)
         # Check if index is valid (within bounds of color list)
         if 0 <= idx < len(colors):
-            return colors[idx]  # Return the actual color code
-    
-    # Not a reference, or invalid index - return token as-is
-    return token
+            token = colors[idx]
+
+    # Normalize named / cycle / RGBA colors to lowercase hex for consistent
+    # display and storage across modes. Unknown tokens pass through unchanged.
+    hex_code = to_display_hex(token)
+    return hex_code if hex_code is not None else token
 
 
 def print_user_colors(fig=None) -> None:
-    """Print saved colors with indices and color blocks."""
+    """Print saved colors with indices, color cubes, and hex codes."""
     colors = get_user_color_list(fig)
     if not colors:
         print("No saved user colors.")
         return
     print("Saved colors:")
     for idx, color in enumerate(colors, 1):
-        print(f"  {idx}: {color_block(color)} {color}")
+        print(f"  {idx}: {format_color_listing(color)}")
+
+
+# After the screen picker, one accidental blank Enter must not exit color menus.
+_ignore_next_blank_color_input = False
+_last_screen_pick_count = 0
+
+
+def arm_ignore_next_blank_color_input() -> None:
+    """Arm a one-shot guard: next blank color-menu input is ignored (not back)."""
+    global _ignore_next_blank_color_input
+    _ignore_next_blank_color_input = True
+
+
+def clear_blank_color_input_guard() -> None:
+    """Disarm the post-picker blank guard (e.g. when leaving a color submenu)."""
+    global _ignore_next_blank_color_input
+    _ignore_next_blank_color_input = False
+
+
+def consume_blank_color_input_guard() -> bool:
+    """Return True if a blank input should be ignored (and clear the guard)."""
+    global _ignore_next_blank_color_input
+    if _ignore_next_blank_color_input:
+        _ignore_next_blank_color_input = False
+        return True
+    return False
+
+
+def last_screen_pick_count() -> int:
+    """How many colors the last ``prompt_screen_color`` call saved (0 if none)."""
+    return int(_last_screen_pick_count)
+
+
+def blank_means_back(raw: str) -> bool:
+    """True if empty input should leave a color prompt.
+
+    After the screen picker, one blank Enter is ignored so a leftover or habit
+    Enter does not quit the color menu (user must type ``q`` to leave).
+    Any non-empty input clears the one-shot guard.
+    """
+    global _ignore_next_blank_color_input
+    if (raw or "").strip():
+        _ignore_next_blank_color_input = False
+        return False
+    if _ignore_next_blank_color_input:
+        _ignore_next_blank_color_input = False
+        return False
+    return True
+
+
+def prompt_screen_color(fig=None, *, add_to_saved: bool = True) -> Optional[str]:
+    """Open the screen eyedropper; pick one or more colors; stay in the menu.
+
+    Used by color menus via key ``e``. Magnifier stays open until ``q``.
+    Each Enter saves a color into the user list. Returns the *last* picked
+    ``#rrggbb`` (for single-target apply paths), or ``None`` if none picked.
+
+    Call :func:`last_screen_pick_count` after return: if ``> 1``, apply-on-pick
+    callers should *not* auto-apply (all picks were saved as ``u#`` only).
+    """
+    global _last_screen_pick_count
+    _last_screen_pick_count = 0
+    # Same dashed frame as other interactive key-description blocks.
+    try:
+        from .plot_modes.common.menu_rendering import (
+            MENU_SEPARATOR_LINE,
+            menu_block_begin,
+            menu_block_end,
+        )
+
+        menu_block_begin(force_new=True)
+        _sep = MENU_SEPARATOR_LINE
+        _close = menu_block_end
+    except Exception:
+        _sep = "-" * 60
+        print(_sep)
+
+        def _close() -> None:
+            print(_sep)
+
+    print("Screen color picker (magnifier is preview only):")
+    print("  Keep the mouse on a color.")
+    print("  In THIS terminal:")
+    print("    Enter        = pick this color (window stays — pick more)")
+    print("    q then Enter = done (close magnifier, return to color menu)")
+    print("  Or close the magnifier window (X) = done.")
+    _close()
+    try:
+        from .screen_color import pick_screen_colors
+    except Exception as exc:
+        print(f"Screen color picker unavailable: {exc}")
+        return None
+    try:
+        picked = pick_screen_colors(show_intro=False)
+    except Exception as exc:
+        print(f"Screen color picker failed: {exc}")
+        return None
+    # Always arm: even cancel/zero picks — leftover Enter must not quit menus.
+    arm_ignore_next_blank_color_input()
+    if not picked:
+        print("No colors picked — still in the color menu (q to leave).")
+        return None
+
+    last: Optional[str] = None
+    for raw in picked:
+        hex_c = to_display_hex(raw) or raw
+        last = hex_c
+        if add_to_saved:
+            colors = add_user_color(hex_c, fig)
+            try:
+                idx = colors.index(hex_c) + 1
+            except ValueError:
+                idx = len(colors)
+            print(
+                f"  Saved {format_color_listing(hex_c)} as user color {idx} "
+                f"(use {idx} or u{idx})."
+            )
+        else:
+            print(f"  Picked {format_color_listing(hex_c)}")
+    _last_screen_pick_count = len(picked)
+    n = len(picked)
+    if n > 1:
+        print(
+            f"Done — {n} color(s) saved as u#. "
+            "Enter a number/u#/name to apply, or q to leave."
+        )
+    else:
+        print(f"Done — {n} color(s). Still in the color menu (q to leave).")
+    return last
+
+
+def run_color_token_input_loop(
+    *,
+    prompt,
+    safe_input,
+    colorize_prompt,
+    process,
+    fig=None,
+    cancel_on_blank: bool = True,
+) -> None:
+    """Prompt for colors with shared ``e`` (screen pick) / ``u`` (manage) / ``q``.
+
+    ``process(resolved_color)`` should apply the color and return ``True`` to
+    continue, ``False`` on validation error. Blank/q exits. Tokens are resolved
+    via ``resolve_color_token`` (saved indices, names, hex).
+
+    Multi-pick via ``e``: all colors are saved as ``u#``; auto-apply only runs
+    when exactly one color was picked (avoids silently recoloring after a
+    palette grab).
+    """
+    try:
+        while True:
+            text = prompt() if callable(prompt) else prompt
+            try:
+                try:
+                    raw = safe_input(colorize_prompt(text), cancel_on_interrupt=True).strip()
+                except TypeError:
+                    raw = safe_input(colorize_prompt(text)).strip()
+            except (KeyboardInterrupt, EOFError):
+                print("Canceled.")
+                break
+            low = raw.lower()
+            if low == "q":
+                break
+            if not raw:
+                if cancel_on_blank and blank_means_back(raw):
+                    break
+                continue
+            # Real token: clear post-picker blank guard
+            blank_means_back(raw)
+            if low == "e":
+                picked = prompt_screen_color(fig)
+                if not picked:
+                    continue
+                if last_screen_pick_count() > 1:
+                    # Saved only — do not apply last (user is building a palette).
+                    continue
+                try:
+                    result = process(picked)
+                except Exception as exc:
+                    print(f"Error: {exc}")
+                    continue
+                if result is False:
+                    continue
+                continue
+            if low == "u":
+                manage_user_colors(fig)
+                continue
+            try:
+                resolved = resolve_color_token(raw, fig)
+            except Exception:
+                resolved = raw
+            try:
+                result = process(resolved)
+            except Exception as exc:
+                print(f"Error: {exc}")
+                continue
+            if result is False:
+                continue
+    finally:
+        clear_blank_color_input_guard()
 
 
 def manage_user_colors(fig=None) -> None:
     """Interactive submenu for editing user-defined colors."""
+    try:
+        _manage_user_colors_inner(fig)
+    finally:
+        clear_blank_color_input_guard()
+
+
+def _manage_user_colors_inner(fig=None) -> None:
     while True:
         colors = get_user_color_list(fig)
         print("\n\033[1mUser color list:\033[0m")
         if colors:
             for idx, color in enumerate(colors, 1):
-                print(f"  {idx}: {color_block(color)} {color}")
+                print(f"  {idx}: {format_color_listing(color)}")
         else:
             print("  (empty)")
-        print("Options: \033[96ma\033[0m=add colors  \033[96md\033[0m=delete numbers  \033[96mc\033[0m=clear  \033[96mq\033[0m=back")
+        print(
+            "Options: \033[96ma\033[0m=add colors  \033[96me\033[0m=pick from screen  "
+            "\033[96md\033[0m=delete numbers  \033[96mc\033[0m=clear  \033[96mq\033[0m=back"
+        )
         choice = input("User colors> ").strip().lower()
         if not choice:
             continue
         if choice == 'q':
             break
+        if choice == 'e':
+            prompt_screen_color(fig, add_to_saved=True)
+            continue
         if choice == 'a':
             line = input("Enter colors (space-separated names/hex codes) or q: ").strip()
             if not line or line.lower() == 'q':
@@ -588,8 +799,9 @@ def manage_user_colors(fig=None) -> None:
                 colors = get_user_color_list(fig)
                 added = 0
                 for col in new_colors:
-                    if col not in colors:
-                        colors.append(col)
+                    hex_col = to_display_hex(col) or col
+                    if hex_col not in colors and col not in colors:
+                        colors.append(hex_col)
                         added += 1
                 _save_user_colors(colors, fig)
                 print(f"Added {added} color(s).")
@@ -640,11 +852,18 @@ __all__ = [
     'color_bar',
     'color_block',
     'ensure_colormap',
+    'format_color_listing',
     'get_colormap',
     'manage_user_colors',
     'palette_preview',
     'print_user_colors',
+    'prompt_screen_color',
+    'blank_means_back',
+    'clear_blank_color_input_guard',
+    'last_screen_pick_count',
     'remove_user_color',
+    'run_color_token_input_loop',
+    'to_display_hex',
     'resolve_color_token',
     'get_user_color_list',
 ]

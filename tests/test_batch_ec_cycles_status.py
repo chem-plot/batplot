@@ -35,8 +35,14 @@ def test_print_batch_ec_cycles_status_shows_all_panels(capsys):
         assert "[2]" in out
         assert "B443.pkl" in out
         assert "B444.pkl" in out
-        assert "1:" in out
-        assert "5:" in out
+        assert "Visible cycles:" in out
+        assert "Current curves" not in out  # colors opt-in
+
+        print_batch_ec_cycles_status([p1, p2], colors=True)
+        out2 = capsys.readouterr().out
+        assert "Current curves" in out2
+        assert "1:" in out2
+        assert "5:" in out2
     finally:
         plt.close(fig1)
         plt.close(fig2)

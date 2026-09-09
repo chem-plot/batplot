@@ -32,12 +32,13 @@ from ..electrochem.legend import (
     _store_legend_title,
 )
 from ..electrochem.line_style import run_ec_line_style_menu
+from ..electrochem.overview import run_gc_overview
 from ..electrochem.spine_colors import run_ec_spine_color_menu
 from ..electrochem.style_apply import apply_ec_style_config
 from ..common.batch_font import run_batch_font_menu
 from ..common.files import confirm_previous_path
 from ..common.fonts import collect_fig_font_artists
-from ..common.menu_rendering import colorize_menu_item as _colorize_menu, print_menu_columns, prompt_menu_key
+from ..common.menu_rendering import colorize_menu as _colorize_menu, print_menu_columns, prompt_menu_key
 from ..common.menus import run_legend_position_menu
 from ..common.terminal import colorize_inline_commands, colorize_prompt, safe_input
 from ..electrochem.export import _ec_savefig_plot_window
@@ -67,14 +68,29 @@ from .batch_menu_helpers import (
     batch_options_menu_column,
     prompt_axis_limits,
 )
-from .common import SyncUndoStacks, draw_panels, print_batch_header, set_all_panel_figure_titles
+from .common import (
+    SyncUndoStacks,
+    draw_panels,
+    make_style_import_prepare,
+    print_batch_header,
+    set_all_panel_figure_titles,
+)
 from .ec_batch_helpers import (
+    apply_ec_cycles_colors_only,
+    apply_ec_file_visibility_only,
+    apply_ec_labels_only,
+    apply_ec_legend_only,
+    apply_ec_line_chrome_only,
+    apply_ec_smooth_only,
+    apply_ec_spine_colors_only,
+    apply_ec_wasd_chrome_only,
     default_ec_tick_state,
     ec_all_cycles,
     ec_apply_display_mode,
     ec_apply_nice_ticks,
     ec_apply_spine_color,
     ec_normalize_file_data,
+    ec_panel_is_dqdv,
     ec_print_file_list_factory,
     ec_run_file_visibility_menu,
     ec_tick_state_from_fig,
@@ -84,7 +100,9 @@ from .ec_batch_helpers import (
     print_batch_ec_cycles_status,
     run_ec_batch_spine_menu,
 )
+from ..electrochem.interactive import _apply_stored_smooth_settings
 from ..electrochem.legend_order import run_ec_legend_order_menu
+from ..electrochem.smoothing_menu import run_dqdv_smoothing_menu
 from .load import EcPanel
 
 
@@ -92,8 +110,8 @@ def _default_tick_state() -> dict:
     return default_ec_tick_state()
 
 
-def _tick_state_from_fig(fig) -> dict:
-    return ec_tick_state_from_fig(fig)
+def _tick_state_from_fig(fig, ax=None) -> dict:
+    return ec_tick_state_from_fig(fig, ax)
 
 
 def _ec_batch_has_multi_file(panels: List[EcPanel]) -> bool:
@@ -104,28 +122,40 @@ def _ec_batch_has_multi_file(panels: List[EcPanel]) -> bool:
     return False
 
 
+def _ec_batch_is_dqdv(panels: List[EcPanel]) -> bool:
+    """True when this batch is dQ/dV (subtype is uniform; check reference)."""
+    return bool(panels) and ec_panel_is_dqdv(panels[0])
+
+
 def _print_ec_batch_menu(panels: List[EcPanel]) -> None:
+    is_dqdv = _ec_batch_is_dqdv(panels)
     col1 = [
         "f: font",
         "l: line style",
         "t: spines/ticks",
         "k: spine colors",
         "h: legend",
-        "d: display chg/dch",
-        "v: show/hide files",
+        "d: display (Chg/Dch)",
         "g: size",
     ]
+    if is_dqdv:
+        col1.insert(2, "sm: smooth")
+    if _ec_batch_has_multi_file(panels):
+        # Match interactive: only list file visibility when multi-file
+        col1.insert(-1, "v: show/hide files")
     col2 = [
         "c: cycles/colors",
         "r: rename labels/files",
         "x: x range",
         "y: y range",
     ]
-    if _ec_batch_has_multi_file(panels):
-        col2.append("ra: rearrange legend")
     col3 = batch_options_menu_column(panels)
+    # Overview is GC-only (capacity metrics); omit for dQ/dV batches.
+    if not is_dqdv:
+        col3.insert(1, "o: overview")
+    family = "dQ/dV" if is_dqdv else "EC"
     print_menu_columns(
-        title=f"Batch EC Menu ({len(panels)} plots)",
+        title=f"Batch {family} Menu ({len(panels)} plots)",
         columns=[("Styles", col1), ("Geometries", col2), ("Options", col3)],
         min_widths=(20, 22, 18),
         colorize_item=_colorize_menu,
@@ -144,7 +174,7 @@ def _ec_batch_font_artists(panel: EcPanel) -> list:
 def _capture_panel(panel: EcPanel) -> dict:
     from ..common.state_capture import as_style_geom_export
 
-    tick_state = _tick_state_from_fig(panel.fig)
+    tick_state = _tick_state_from_fig(panel.fig, panel.ax)
     snap = _get_style_snapshot(
         panel.fig,
         panel.ax,
@@ -159,8 +189,8 @@ def _capture_panel(panel: EcPanel) -> dict:
     )
 
 
-def _apply_cfg(panel: EcPanel, cfg: dict) -> bool:
-    tick_state = _tick_state_from_fig(panel.fig)
+def _apply_cfg(panel: EcPanel, cfg: dict, *, silent: bool = True) -> bool:
+    tick_state = _tick_state_from_fig(panel.fig, panel.ax)
     is_multi = bool(panel.file_data and len(panel.file_data) > 1)
     return apply_ec_style_config(
         cfg,
@@ -170,7 +200,7 @@ def _apply_cfg(panel: EcPanel, cfg: dict) -> bool:
         file_data=panel.file_data,
         tick_state=tick_state,
         is_multi_file=is_multi,
-        silent=False,
+        silent=silent,
     )
 
 
@@ -196,7 +226,7 @@ def _ref_menu_context(ref: EcPanel):
 
 
 def _save_ec_panel(panel: EcPanel, path: str) -> None:
-    dump_ec_session(
+    ok = dump_ec_session(
         path,
         fig=panel.fig,
         ax=panel.ax,
@@ -204,6 +234,8 @@ def _save_ec_panel(panel: EcPanel, path: str) -> None:
         file_data=panel.file_data,
         skip_confirm=True,
     )
+    if not ok:
+        raise RuntimeError(f"Failed to save EC session to {path}")
 
 
 def _export_ec_panel(panel: EcPanel, path: str) -> None:
@@ -219,6 +251,7 @@ def _export_ec_panel(panel: EcPanel, path: str) -> None:
 
 def run_ec_batch_menu(panels: List[EcPanel]) -> None:
     set_all_panel_figure_titles(panels)
+    is_dqdv = _ec_batch_is_dqdv(panels)
     print_batch_header("ec_gc", panels)
     # Seed fig-level _ec_file_data/_ec_is_multi_file on every panel so reused
     # normal-mode helpers (_rebuild_legend, apply_ec_style_config sync, etc.)
@@ -226,7 +259,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
     # reference one used for nested submenus.
     for _p in panels:
         _fd, _cl, _multi = ec_normalize_file_data(_p)
-        ensure_ec_fig_state(_p, _fd, _multi)
+        ensure_ec_fig_state(_p, _fd, _multi, is_dqdv=ec_panel_is_dqdv(_p))
     undo = SyncUndoStacks(len(panels))
     undo.push_all([_capture_panel(p) for p in panels])
     pending: str | None = None
@@ -263,6 +296,16 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
             def _after_ec_geom() -> None:
                 for p in panels:
                     ec_apply_nice_ticks(p.ax)
+                    try:
+                        from ..electrochem.style import reseal_ec_chrome
+
+                        reseal_ec_chrome(
+                            p.fig,
+                            p.ax,
+                            tick_state=_tick_state_from_fig(p.fig, p.ax),
+                        )
+                    except Exception:
+                        pass
 
             run_batch_geom_size_menu(
                 panels,
@@ -293,7 +336,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_line_chrome_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_line_style_menu(
                     fig=ref.fig,
@@ -302,11 +345,43 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                     file_data=file_data,
                     current_file_idx=0,
                     is_multi_file=is_multi_file,
-                    is_dqdv=False,
+                    is_dqdv=is_dqdv,
                     print_file_list=print_file_list,
                     iter_cycle_lines=_iter_cycle_lines,
                     rebuild_legend=_rebuild_legend,
-                    apply_stored_smooth_settings=lambda *_a, **_k: None,
+                    apply_stored_smooth_settings=_apply_stored_smooth_settings,
+                    push_state=noop_snapshot,
+                    safe_input=safe_input,
+                    colorize_menu=_colorize_menu,
+                    colorize_prompt=colorize_prompt,
+                ),
+            )
+            continue
+
+        if cmd == "sm":
+            if not is_dqdv:
+                print("'sm' is only available in batch dQ/dV mode.")
+                continue
+            file_data, cycle_lines, is_multi_file, print_file_list = _ref_menu_context(ref)
+            edit_ref_then_sync(
+                ref,
+                panels,
+                undo=undo,
+                capture_panel=_capture_panel,
+                apply_cfg=apply_ec_smooth_only,
+                draw_all=lambda: draw_panels(panels),
+                edit_fn=lambda: run_dqdv_smoothing_menu(
+                    fig=ref.fig,
+                    cycle_lines=cycle_lines,
+                    file_data=file_data,
+                    current_file_idx=0,
+                    all_cycles=ec_all_cycles(cycle_lines, file_data),
+                    is_dqdv=True,
+                    is_multi_file=is_multi_file,
+                    menu_title="",
+                    canvas_mode=False,
+                    print_menu=lambda *_a, **_k: None,
+                    print_file_list=print_file_list,
                     push_state=noop_snapshot,
                     safe_input=safe_input,
                     colorize_menu=_colorize_menu,
@@ -321,19 +396,19 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_wasd_chrome_only,
                 draw_all=lambda: draw_panels(panels),
             )
             continue
 
         if cmd == "k":
-            tick_state = _tick_state_from_fig(ref.fig)
+            tick_state = _tick_state_from_fig(ref.fig, ref.ax)
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_spine_colors_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_spine_color_menu(
                     fig=ref.fig,
@@ -376,12 +451,36 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 except Exception:
                     pass
 
+            file_data_h, _cycle_lines_h, is_multi_h, print_file_list_h = _ref_menu_context(ref)
+
+            def _ec_rearrange_legend_ref() -> None:
+                pre_ra = _capture_panel(ref)
+
+                def _restore_ra() -> None:
+                    _restore_panel(ref, pre_ra)
+                    try:
+                        ref.fig.canvas.draw_idle()
+                    except Exception:
+                        pass
+
+                run_ec_legend_order_menu(
+                    fig=ref.fig,
+                    ax=ref.ax,
+                    file_data=file_data_h,
+                    is_multi_file=is_multi_h,
+                    print_file_list=print_file_list_h,
+                    rebuild_legend=_rebuild_legend,
+                    push_state=noop_snapshot,
+                    restore_state=_restore_ra,
+                    safe_input=safe_input,
+                )
+
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_legend_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_legend_position_menu(
                     fig=ref.fig,
@@ -395,6 +494,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                     safe_input=safe_input,
                     colorize_menu=_colorize_menu,
                     colorize_prompt=colorize_prompt,
+                    rearrange_legend=_ec_rearrange_legend_ref if is_multi_h else None,
                 ),
             )
             continue
@@ -437,7 +537,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_cycles_colors_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_cycles_menu(
                     fig=ref.fig,
@@ -447,7 +547,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                     current_file_idx=0,
                     all_cycles=ec_all_cycles(cycle_lines, file_data),
                     is_multi_file=is_multi_file,
-                    is_dqdv=False,
+                    is_dqdv=is_dqdv,
                     menu_title="",
                     canvas_mode=False,
                     print_file_list=print_file_list,
@@ -464,26 +564,30 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                     set_visible_cycles=_set_visible_cycles,
                     apply_colors=_apply_colors,
                     apply_curve_linewidth=_apply_curve_linewidth,
-                    apply_stored_smooth_settings=lambda *_a, **_k: None,
+                    apply_stored_smooth_settings=_apply_stored_smooth_settings,
                     apply_display_mode=lambda mode: ec_apply_display_mode(
                         mode, cycle_lines=cycle_lines, file_data=file_data, is_multi_file=is_multi_file,
                     ),
                     rebuild_legend=_rebuild_legend,
                     apply_nice_ticks=lambda: ec_apply_nice_ticks(ref.ax),
-                    curves_status_fn=lambda: print_batch_ec_cycles_status(panels),
+                    curves_status_fn=lambda colors=False: print_batch_ec_cycles_status(
+                        panels, colors=colors
+                    ),
                 ),
             )
             continue
 
         if cmd == "r":
             file_data, _cycle_lines, _is_multi_file, print_file_list = _ref_menu_context(ref)
-            tick_state = _tick_state_from_fig(ref.fig)
+            tick_state = _tick_state_from_fig(ref.fig, ref.ax)
+            # Labels-only sync: full style apply would copy cycle colors,
+            # dQ/dV smooth, WASD, and visible cycles onto every peer panel.
             edit_ref_then_sync(
                 ref,
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_labels_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: run_ec_rename_menu(
                     fig=ref.fig,
@@ -513,6 +617,17 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 for p in panels:
                     try:
                         p.ax.set_xlim(lims[0], lims[1])
+                        ec_apply_nice_ticks(p.ax)
+                        try:
+                            from ..electrochem.style import reseal_ec_chrome
+
+                            reseal_ec_chrome(
+                                p.fig,
+                                p.ax,
+                                tick_state=_tick_state_from_fig(p.fig, p.ax),
+                            )
+                        except Exception:
+                            pass
                     except Exception as exc:
                         print(f"X range failed: {exc}")
                 draw_panels(panels)
@@ -528,10 +643,43 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 for p in panels:
                     try:
                         p.ax.set_ylim(lims[0], lims[1])
+                        ec_apply_nice_ticks(p.ax)
+                        try:
+                            from ..electrochem.style import reseal_ec_chrome
+
+                            reseal_ec_chrome(
+                                p.fig,
+                                p.ax,
+                                tick_state=_tick_state_from_fig(p.fig, p.ax),
+                            )
+                        except Exception:
+                            pass
                     except Exception as exc:
                         print(f"Y range failed: {exc}")
                 draw_panels(panels)
                 print(f"EC Y set to {lims[0]:.4g} … {lims[1]:.4g} on all plots.")
+            continue
+
+        if cmd == "o":
+            if is_dqdv:
+                print("'o' overview is GC-only — not available in batch dQ/dV. Use single-session --i for GC overview.")
+                continue
+            for i, p in enumerate(panels):
+                file_data, cycle_lines, _is_multi = ec_normalize_file_data(p)
+                print(f"\n--- Plot {i + 1}: {os.path.basename(p.path)} ---")
+                try:
+                    run_gc_overview(
+                        cycle_lines=cycle_lines,
+                        file_data=file_data,
+                        fig=p.fig,
+                        safe_input=safe_input,
+                        colorize_menu=_colorize_menu,
+                        colorize_prompt=colorize_prompt,
+                        print_file_list=None,
+                        include_hidden=False,
+                    )
+                except Exception as exc:
+                    print(f"Error in overview: {exc}")
             continue
 
         if cmd == "i":
@@ -546,7 +694,9 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 path_prompt="Import style path (.bps/.bpsg, q=cancel): ",
                 load_style=lambda path: _load_style_file(path) or None,
                 apply_style=lambda panel, cfg: _apply_cfg(panel, cfg),
-                prepare=lambda _indices: undo.push_all([_capture_panel(p) for p in panels]),
+                prepare=make_style_import_prepare(
+                    undo, panels, _capture_panel, _restore_panel
+                ),
                 on_applied=_on_style_imported,
             )
             continue
@@ -569,6 +719,14 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 cfg["kind"] = "ec_style_geom" if sub == "psg" else "ec_style"
                 if sub == "ps":
                     cfg.pop("geometry", None)
+                    # Capacity↔ions↔dual is structural (interactive ps parity).
+                    cfg.pop("xaxis_dual", None)
+                    fig_block = cfg.get("figure")
+                    if isinstance(fig_block, dict):
+                        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+                            fig_block.pop(key, None)
+                        if not fig_block:
+                            cfg.pop("figure", None)
                 with open(out, "w", encoding="utf-8") as fh:
                     json.dump(cfg, fh, indent=2)
                 panel.fig._last_style_export_path = os.path.abspath(out)  # type: ignore[attr-defined]
@@ -600,6 +758,13 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 cfg["kind"] = "ec_style_geom" if cmd == "opsg" else "ec_style"
                 if cmd == "ops":
                     cfg.pop("geometry", None)
+                    cfg.pop("xaxis_dual", None)
+                    fig_block = cfg.get("figure")
+                    if isinstance(fig_block, dict):
+                        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+                            fig_block.pop(key, None)
+                        if not fig_block:
+                            cfg.pop("figure", None)
                 try:
                     with open(path, "w", encoding="utf-8") as fh:
                         json.dump(cfg, fh, indent=2)
@@ -627,7 +792,7 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
                 panels,
                 undo=undo,
                 capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
+                apply_cfg=apply_ec_file_visibility_only,
                 draw_all=lambda: draw_panels(panels),
                 edit_fn=lambda: ec_run_file_visibility_menu(
                     file_data=file_data,
@@ -643,35 +808,18 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
             )
             continue
 
-        if cmd == "ra":
-            file_data, _cycle_lines, is_multi_file, print_file_list = _ref_menu_context(ref)
-            edit_ref_then_sync(
-                ref,
-                panels,
-                undo=undo,
-                capture_panel=_capture_panel,
-                apply_cfg=_apply_cfg,
-                draw_all=lambda: draw_panels(panels),
-                edit_fn=lambda: run_ec_legend_order_menu(
-                    fig=ref.fig,
-                    ax=ref.ax,
-                    file_data=file_data,
-                    is_multi_file=is_multi_file,
-                    print_file_list=print_file_list,
-                    rebuild_legend=_rebuild_legend,
-                    push_state=noop_snapshot,
-                    safe_input=safe_input,
-                ),
+        if cmd == "a":
+            print(
+                "'a' is not enabled in batch "
+                "(X-axis ions/capacity mode needs per-dataset capacity constants)."
             )
             continue
 
-        if cmd in ("a", "sm", "2d"):
-            reasons = {
-                "a": "X-axis ions/capacity mode needs per-dataset capacity constants",
-                "sm": "dQ/dV smoothing is a per-dataset data transform",
-                "2d": "dQ/dV 2D opens a separate companion figure",
-            }
-            print(f"{cmd!r} is not enabled in batch ({reasons.get(cmd, 'advanced')}).")
+        if cmd == "2d":
+            print(
+                "'2d' is not enabled in batch "
+                "(dQ/dV 2D opens a separate companion figure; reload contour .pkls instead)."
+            )
             continue
 
         print(f"Unknown command: {cmd!r}")

@@ -372,11 +372,23 @@ def handle_quick_overwrite_session(ctx: OperandoActionContext) -> None:
                 print("Error: could not build dQ/dV 2D session snapshot.")
                 print_menu()
                 return
+            try:
+                from ..common.session_helpers import capture_last_figure_export_path
+
+                last = capture_last_figure_export_path(fig)
+                if last:
+                    snap["last_figure_export_path"] = last
+            except Exception:
+                pass
             with open(last_session_path, "wb") as fh:
                 pickle.dump(snap, fh)
+            try:
+                fig._last_session_save_path = os.path.abspath(last_session_path)
+            except Exception:
+                pass
             print(f"Overwritten dQ/dV 2D session to {last_session_path}")
         else:
-            dump_operando_session(
+            if dump_operando_session(
                 last_session_path,
                 fig=fig,
                 ax=ctx.ax,
@@ -384,8 +396,8 @@ def handle_quick_overwrite_session(ctx: OperandoActionContext) -> None:
                 cbar=ctx.cbar,
                 ec_ax=ctx.ec_ax,
                 skip_confirm=True,
-            )
-            print(f"Overwritten session to {last_session_path}")
+            ):
+                print(f"Overwritten session to {last_session_path}")
     except Exception as e:
         print(f"Overwrite failed: {e}")
     print_menu()
@@ -530,7 +542,7 @@ def handle_export_style(ctx: OperandoActionContext) -> None:
                 highlight = bool(getattr(fig, '_operando_cif_highlight', False))
                 print(f"CIF ticks (c): {n_sets} set(s), hkl={'on' if show_hkl else 'off'}, titles={'on' if show_titles else 'off'}, placement={placement}, highlight={'on' if highlight else 'off'}")
             else:
-                print("CIF ticks (c): none")
+                print("CIF ticks (c): none (use c → a to add)")
 
             # ---- EC Panel (Side Panel) ----
             if ec_ax is not None:
@@ -598,7 +610,7 @@ def handle_export_style(ctx: OperandoActionContext) -> None:
                            'ticks': bool(op_ts.get('l_ticks', op_ts.get('ly', True))), 
                            'minor': bool(op_ts.get('mly', False)), 
                            'labels': bool(op_ts.get('l_labels', op_ts.get('ly', True))), 
-                           'title': bool(ax.get_ylabel())},
+                           'title': bool(ax.yaxis.label.get_visible())},
                 'top':    {'spine': bool(ax.spines.get('top').get_visible() if ax.spines.get('top') else False),
                            'ticks': bool(op_ts.get('t_ticks', op_ts.get('tx', False))), 
                            'minor': bool(op_ts.get('mtx', False)), 
@@ -608,7 +620,7 @@ def handle_export_style(ctx: OperandoActionContext) -> None:
                            'ticks': bool(op_ts.get('b_ticks', op_ts.get('bx', True))), 
                            'minor': bool(op_ts.get('mbx', False)), 
                            'labels': bool(op_ts.get('b_labels', op_ts.get('bx', True))), 
-                           'title': bool(ax.get_xlabel())},
+                           'title': bool(ax.xaxis.label.get_visible())},
                 'right':  {'spine': bool(ax.spines.get('right').get_visible() if ax.spines.get('right') else False),
                            'ticks': bool(op_ts.get('r_ticks', op_ts.get('ry', False))), 
                            'minor': bool(op_ts.get('mry', False)), 
@@ -641,12 +653,12 @@ def handle_export_style(ctx: OperandoActionContext) -> None:
                                'ticks': bool(ec_ts.get('b_ticks', ec_ts.get('bx', True))), 
                                'minor': bool(ec_ts.get('mbx', False)), 
                                'labels': bool(ec_ts.get('b_labels', ec_ts.get('bx', True))), 
-                               'title': bool(ec_ax.get_xlabel())},
+                               'title': bool(ec_ax.xaxis.label.get_visible())},
                     'right':  {'spine': bool(ec_ax.spines.get('right').get_visible() if ec_ax.spines.get('right') else False),
                                'ticks': bool(ec_ts.get('r_ticks', ec_ts.get('ry', False))), 
                                'minor': bool(ec_ts.get('mry', False)), 
                                'labels': bool(ec_ts.get('r_labels', ec_ts.get('ry', False))), 
-                               'title': bool(ec_ax.get_ylabel())},  # Use actual ylabel for EC
+                               'title': bool(ec_ax.yaxis.label.get_visible())},
                 }
                 print(_colorize_inline_commands("EC pane (t>e: w=top, s=bottom, d=right; 'a' not available):"))
                 for side_key, side_name in [('top', 'w'), ('bottom', 's'), ('right', 'd')]:
@@ -819,12 +831,14 @@ def handle_import_style(ctx: OperandoActionContext) -> None:
     print_menu = ctx.print_menu
     _snapshot = ctx.snapshot
     _pop_undo = ctx.pop_undo
+    _restore = getattr(ctx, "restore", None) or _pop_undo
     ax_w_in = ctx.ax_w_in
     ax_h_in = ctx.ax_h_in
     cb_w_in = ctx.cb_w_in
     cb_gap_in = ctx.cb_gap_in
     ec_gap_in = ctx.ec_gap_in
     ec_w_in = ctx.ec_w_in
+    pushed = False
     try:
         path = choose_style_file(file_paths, purpose="style import")
         if not path:
@@ -840,6 +854,7 @@ def handle_import_style(ctx: OperandoActionContext) -> None:
             print_menu()
             return
         _snapshot("import-style")
+        pushed = True
         # Lazy import avoids circular import at module load (style_apply imports actions helpers).
         from .style_apply import apply_operando_ec_style_config
         from .layout import _ensure_fixed_params
@@ -849,9 +864,12 @@ def handle_import_style(ctx: OperandoActionContext) -> None:
         )
         if not ok:
             try:
-                _pop_undo()
+                _restore()
             except Exception:
-                pass
+                try:
+                    _pop_undo()
+                except Exception:
+                    pass
         else:
             print(f"Applied style from {path}")
         try:
@@ -861,10 +879,14 @@ def handle_import_style(ctx: OperandoActionContext) -> None:
         except Exception:
             pass
     except Exception as e:
-        try:
-            _pop_undo()
-        except Exception:
-            pass
+        if pushed:
+            try:
+                _restore()
+            except Exception:
+                try:
+                    _pop_undo()
+                except Exception:
+                    pass
         print(f"Load style failed: {e}")
     _sync_geometry(ctx, ax_w_in, ax_h_in, cb_w_in, cb_gap_in, ec_gap_in, ec_w_in)
     print_menu()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batplot"
-version = "1.8.48"
+version = "1.8.52"
 description = "Interactive plotting tool for material science (1D plot) and electrochemistry (GC, CV, dQ/dV, CPC, operando) with batch processing"
 authors = [
     { name = "Tian Dai", email = "tianda@uio.no" }
@@ -14,6 +14,7 @@ requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.21.0",
     "matplotlib>=3.5.0",
+    "scipy>=1.7.0",
     "rich>=10.0.0",
     "openpyxl>=3.0.0",
 ]
@@ -33,7 +34,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=7.0", "basedpyright>=1.28.0"]
+test = ["pytest>=7.0", "pytest-timeout>=2.0", "basedpyright>=1.28.0"]
 
 [tool.basedpyright]
 include = ["batplot", "tests"]
@@ -64,7 +65,11 @@ batplot = "batplot.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not integration'"
+timeout = 60
+markers = [
+    "integration: optional slow/local integration tests (opt-in via BATPLOT_RUN_USER_PKL_TESTS=1)",
+]
 
 [tool.setuptools.packages.find]
 include = ["batplot*"]

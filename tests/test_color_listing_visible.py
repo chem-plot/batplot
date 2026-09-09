@@ -66,9 +66,14 @@ def test_print_ec_current_curves_skips_hidden_file_and_cycles():
             file_data=file_data,
         )
     out = buf.getvalue()
-    assert "f1/1:" in out
-    assert "f1/2:" not in out
-    assert "f2/1:" in out
+    # New format: per-file summary row + indented visible-cycle rows.
+    assert "f1:" in out
+    assert "(1 visible cycle)" in out
+    assert "A" in out
+    assert "f2:" in out
+    assert "B" in out
+    # Hidden cycle 2 of file 1 must not be listed (only cycle 1 rows appear).
+    assert "      2:" not in out
     assert "Hidden" not in out
     assert "f3" not in out
 
@@ -89,8 +94,9 @@ def test_print_ec_multi_file_compacts_when_many_visible_cycles():
     out = buf.getvalue()
     assert "f1:" in out
     assert "visible cycles)" in out
-    assert "f1/1:" not in out
-    assert "f1/2:" not in out
+    # Above the expand threshold no per-cycle rows are printed.
+    assert "      1:" not in out
+    assert "      2:" not in out
 
 
 def test_print_ec_single_file_lists_only_visible_cycles():

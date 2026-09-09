@@ -54,27 +54,25 @@ def build_saved_tick_state(
 ) -> Dict[str, bool]:
     """Build a flat ``_saved_tick_state`` dict from a WASD side-state dict.
 
-    ``tick_defaults`` and ``label_defaults`` must match the defaults used in the
-    surrounding ``tick_params`` calls. Passing those defaults explicitly keeps the
-    stored state aligned with what is displayed, even when a saved session omits
-    a side key.
+    Thin wrapper around :func:`wasd_to_tick_state` so session load, undo, style,
+    and batch all share one legacy rule (``bx`` = ticks AND labels).
     """
-    wasd = wasd or {}
-    out: Dict[str, bool] = {}
-    for side in SIDES:
-        prefix = _PREFIX_BY_SIDE[side]
-        state = wasd.get(side, {}) or {}
-        out[f"{prefix}_ticks"] = bool(
-            state.get("ticks", _side_default(tick_defaults, side))
-        )
-        out[f"{prefix}_labels"] = bool(
-            state.get("labels", _side_default(label_defaults, side))
-        )
-        minor_key = f"m{prefix}x" if prefix in ("t", "b") else f"m{prefix}y"
-        out[minor_key] = bool(state.get("minor", False))
+    # Lazy import: spines imports SIDES from this module.
+    from .spines import wasd_to_tick_state
+
+    out = wasd_to_tick_state(
+        wasd,
+        tick_defaults=tick_defaults,
+        label_defaults=label_defaults,
+        include_legacy=True,
+    )
     if overrides:
         for key, value in overrides.items():
             out[str(key)] = bool(value)
+        # Keep legacy keys coherent after overrides.
+        from .spines import sync_legacy_tick_keys
+
+        sync_legacy_tick_keys(out)
     return out
 
 

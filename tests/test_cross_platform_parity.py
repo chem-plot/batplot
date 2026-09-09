@@ -79,3 +79,37 @@ def test_filter_imk_warning_never_drops_real_errors():
     filt.write("Traceback (most recent call last):\n")
     filt.write("ValueError: bad limit\n")
     assert "ValueError" in out.getvalue()
+
+
+@pytest.mark.parametrize("platform_name", ["darwin", "win32", "linux"])
+def test_gui_backend_order_simulated_platforms(monkeypatch, platform_name):
+    monkeypatch.setattr(sys, "platform", platform_name)
+    order = _gui_backend_order()
+    assert order
+    if platform_name == "darwin":
+        assert order[0] == "MacOSX"
+        assert "TkAgg" in order
+    else:
+        assert order[0] == "TkAgg"
+
+
+@pytest.mark.parametrize("platform_name", ["darwin", "win32", "linux"])
+def test_session_save_path_expanduser_and_ext(monkeypatch, platform_name, tmp_path):
+    monkeypatch.setattr(sys, "platform", platform_name)
+    from batplot.plot_modes.common.session_helpers import resolve_session_save_path
+
+    p = resolve_session_save_path("mysess", folder=str(tmp_path))
+    assert p.endswith(".pkl")
+    assert str(tmp_path) in p
+    # ~ must expand on every OS
+    home = resolve_session_save_path("~/bp_platform_probe")
+    assert not home.startswith("~")
+    assert home.endswith(".pkl")
+
+
+@pytest.mark.parametrize("platform_name", ["darwin", "win32", "linux"])
+def test_safe_input_and_menu_key_under_platform(monkeypatch, platform_name):
+    monkeypatch.setattr(sys, "platform", platform_name)
+    monkeypatch.setattr("builtins.input", lambda _p="": "  K  ")
+    assert T.safe_input("> ") == "  K  "
+    assert T.prompt_menu_key() == "k"

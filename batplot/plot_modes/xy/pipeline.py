@@ -23,6 +23,7 @@ import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 
 from ...batch import _apply_xy_style
+from ...ec_common import _apply_default_ec_layout, _default_ec_figsize
 from ..._mpl_backend import (
     ensure_gui_backend,
     hold_figure_open,
@@ -70,23 +71,16 @@ def run_xy_pipeline(args) -> int:
     offset = 0.0
     direction = -1 if args.stack else 1  # stack downward
     if args.interactive:
-        # Interactive: keep a reasonably compact default size so the window
-        # fits well on most screens; margins are handled by the menu logic.
         plt.ion()
-        figsize = (8, 6)
-    else:
-        # Non-interactive (no --i): use a slightly larger canvas so that labels,
-        # titles, legends, and CIF ticks are not clipped even with long filenames.
-        # The size (9, 6.4) keeps a similar aspect ratio but with a bit more room
-        # than the interactive default while still fitting comfortably on screen.
-        figsize = (9.5, 6.4)
-    fig, ax = plt.subplots(figsize=figsize)
+    # All single-axes modes (XY, GC, CV, dQ/dV, CPC) share one default canvas
+    # and plot-frame size so a fresh plot looks identical across modes.
+    fig, ax = plt.subplots(figsize=_default_ec_figsize())
     ax2 = None  # Right y-axis (twinx), created when --ry curves exist
     
-    # Set consistent margins for all modes.
+    # Shared default margins (same plot frame as the electrochem modes).
     # This prevents labels/titles from being cut off at the edges.
     try:
-        fig.subplots_adjust(left=0.125, right=0.9, top=0.88, bottom=0.11)
+        _apply_default_ec_layout(fig)
     except Exception:
         pass
 
@@ -120,20 +114,24 @@ def run_xy_pipeline(args) -> int:
         any_chik = any("chik" in _ext_token(f) for f in args.files)
         any_chir = any("chir" in _ext_token(f) for f in args.files)
         any_txt = any(f.lower().endswith(".txt") for f in args.files)
-        any_cif = any(f.lower().endswith(".cif") for f in args.files)
+        from ..common.sources import path_token_without_suffix
+
+        any_cif = any(
+            path_token_without_suffix(f).lower().endswith(".cif") for f in args.files
+        )
         any_xrd_vendor = any(f.lower().endswith((".raw", ".brml", ".xrdml", ".rasx")) for f in args.files)
-        non_cif_count = sum(0 if f.lower().endswith('.cif') else 1 for f in args.files)
+        non_cif_count = sum(
+            0 if path_token_without_suffix(f).lower().endswith(".cif") else 1
+            for f in args.files
+        )
         cif_only = any_cif and non_cif_count == 0
-        # Check for wavelength parameters (file:wl), but exclude Windows drive letters (C:\...)
+        # Check for wavelength / :q parameters, excluding Windows drive colons.
         def has_wavelength_param(f):
-            if ":" not in f:
-                return False
-            # Check if it's a Windows path (single letter followed by :\ or :/)
-            if len(f) >= 2 and f[1] == ':' and len(f[0]) == 1 and f[0].isalpha():
-                # This is a Windows drive letter, check after the drive path
-                # Look for additional colons beyond the drive letter
-                return ":" in f[2:]
-            return True
+            from ..common.sources import split_path_token
+
+            _path, rest = split_path_token(f)
+            return bool(rest)
+
         any_lambda = any(has_wavelength_param(f) for f in args.files) or args.wl is not None
 
         # Incompatibilities (no mixing of fundamentally different axis domains)
@@ -152,31 +150,35 @@ def run_xy_pipeline(args) -> int:
         elif any_chir:
             axis_mode = "rft"
         elif any_txt:
-            # .txt is generic: need --xaxis unless XRD context is clear from --wl or file:wl (same as .xy without ext hint).
+            # .txt is generic: --xaxis / --wl / file:wl set XRD (or other) mode;
+            # otherwise plot cols 1–2 with labels X / Y (quick plot).
             if args.xaxis:
                 # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
                 axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
             elif getattr(args, 'wl', None) is not None or any_lambda:
                 axis_mode = "Q"
             else:
-                raise ValueError(
-                    "Unknown file type for .txt. Add --xaxis [Q|2theta|r|k|energy|rft], or use --wl for XRD Q conversion, "
-                    "or batplot --help."
-                )
+                axis_mode = "generic"
         elif any_lambda or any_cif or any_xrd_vendor:
             # XRD vendor formats (.raw, .brml, .xrdml, .rasx) are 2theta; CIF is Q; file:wl implies Q domain
-            if args.xaxis and args.xaxis.lower() in ("2theta","two_theta","tth"):
+            # Explicit --xaxis always wins (including d), same as the plain-file branch below.
+            if args.xaxis and args.xaxis.lower() in ("2theta", "two_theta", "tth"):
                 axis_mode = "2theta"
             elif args.xaxis and args.xaxis.upper() == "Q":
                 axis_mode = "Q"
+            elif args.xaxis and str(args.xaxis).lower() == "d":
+                axis_mode = "d"
             elif getattr(args, 'wl', None) is not None:
                 # User gave --wl: default to Q and convert using file metadata or --wl
                 axis_mode = "Q"
             elif any_lambda:
                 # Per-file wavelength suffix (file:wl) implies Q mode by default
                 axis_mode = "Q"
+            elif any_cif and cif_only:
+                # CIF alone: peaks are native in Q — no --wl / --xaxis required
+                axis_mode = "Q"
             elif any_cif:
-                # CIF without global wavelength: keep 2theta axis (ticks will be converted if/when wavelength is known)
+                # Data + CIF without λ: keep 2θ for the measured curve (CIF needs λ below)
                 axis_mode = "2theta"
             else:
                 # No explicit wavelength info: use 2theta so x-axis scale/label are correct
@@ -185,7 +187,8 @@ def run_xy_pipeline(args) -> int:
             # Normalize case: 'q' or 'Q' → 'Q' (uppercase), everything else lowercase
             axis_mode = "Q" if args.xaxis.upper() == "Q" else args.xaxis.lower()
         else:
-            raise ValueError("Unknown file type. Use: batplot file.csv --xaxis [Q|2theta|r|k|energy|rft] or batplot --help for help.")
+            # .xy / .xye / .csv / etc. without --xaxis or --wl: quick plot cols 1–2 as X/Y
+            axis_mode = "generic"
 
     use_Q   = axis_mode == "Q"
     use_2th = axis_mode == "2theta"
@@ -195,10 +198,20 @@ def run_xy_pipeline(args) -> int:
     use_rft = axis_mode == "rft"    # NEW
     use_time = axis_mode == "time"  # NEW: electrochemistry time mode
 
+    # Keep args.xaxis in sync with resolved mode so Options ``u`` / session dump
+    # always know 2θ vs Q vs d (e.g. inferred 2θ without a typed --xaxis).
+    if axis_mode in ("Q", "2theta", "d", "r", "energy", "k", "rft"):
+        try:
+            args.xaxis = "Q" if axis_mode == "Q" else axis_mode
+        except Exception:
+            pass
+
     # Initialize wavelength_file from args.wl (may be overridden per-file later)
     wavelength_file = getattr(args, 'wl', None)
 
     # Validate: if using 2theta mode with CIF files, wavelength is required
+    # (--wl). Unchanged when --xaxis / --wl are used: still requires args.wl
+    # for 2θ+CIF (file:wl alone does not satisfy this gate — historic behavior).
     if use_2th and any_cif and not wavelength_file:
         raise ValueError(
             "Cannot display CIF files in 2θ mode without wavelength.\n"
@@ -292,16 +305,11 @@ def run_xy_pipeline(args) -> int:
 
     # Use data_files instead of args.files for processing
     for idx_file, file_entry in enumerate(data_files):
-        # Handle Windows paths (C:\...) vs wavelength parameters (file:wl)
-        # On Windows, check if first part is a single letter (drive letter)
-        parts = file_entry.split(":")
-        if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
-            # Windows drive letter detected (e.g., "C" from "C:\path")
-            # Rejoin the first two parts as the filename
-            fname = parts[0] + ":" + parts[1]
-            parts = [fname] + parts[2:]  # Reconstruct parts with full Windows path
-        else:
-            fname = parts[0]
+        # Handle Windows paths (C:\... / \\?\C:\...) vs wavelength parameters (file:wl)
+        from ..common.sources import split_path_token
+
+        fname, rest = split_path_token(file_entry)
+        parts = [fname] + list(rest)
         # Parse wavelength parameters: file:wl, file:wl1:wl2, file.cif:wl, or file:q
         wavelength_file = None
         original_wavelength = None  # First wavelength (for Q conversion)
@@ -366,9 +374,10 @@ def run_xy_pipeline(args) -> int:
                 x = Q_sim
                 y = I_sim
                 e = None
-                # Force axis mode if needed
-                if not (use_Q or use_2th):
+                # Force axis mode if needed (do not override an explicit d / Q / 2θ choice)
+                if axis_mode not in ("Q", "2theta", "d") and not (use_Q or use_2th):
                     use_Q = True
+                    axis_mode = "Q"
                 # Reflection list and per-Q hkl labels (no wavelength cutoff in pure Q domain)
                 qmax_sim = float(Q_sim[-1]) if len(Q_sim) else 0.0
                 refl = cif_reflection_positions(fname, Qmax=qmax_sim, wavelength=None)
@@ -439,6 +448,21 @@ def run_xy_pipeline(args) -> int:
                 curves_to_plot = xy_curves
             else:
                 curves_to_plot = [(data[:, 0], data[:, 1], data[:, 2] if data.shape[1] >= 3 else None, label)]
+        elif args.fullprof and file_ext == ".dat":
+            # Must run before the generic .dat reader (otherwise --fullprof is dead).
+            try:
+                y_plot, n_rows = read_fullprof_rowwise(fname)
+                xstart, xend, xstep = args.fullprof[0], args.fullprof[1], args.fullprof[2]
+                x_plot = np.linspace(xstart, xend, len(y_plot))
+                wavelength = args.fullprof[3] if len(args.fullprof) >= 4 else wavelength_file
+                if use_Q and wavelength:
+                    theta_rad = np.radians(x_plot / 2)
+                    x_plot = 4 * np.pi * np.sin(theta_rad) / wavelength
+                e_plot = None
+                curves_to_plot = [(x_plot, y_plot, e_plot, label)]
+            except Exception as e:
+                print(f"Error reading FullProf-style {fname}: {e}")
+                continue
         elif file_ext in [".nor", ".xy", ".xye", ".qye", ".dat", ".csv"] or is_chik or is_chir:
             try:
                 data = robust_loadtxt_skipheader(fname)
@@ -479,19 +503,6 @@ def run_xy_pipeline(args) -> int:
             if not xy_curves:
                 continue
             curves_to_plot = xy_curves
-        elif args.fullprof and file_ext == ".dat":
-            try:
-                y_plot, n_rows = read_fullprof_rowwise(fname)
-                xstart, xend, xstep = args.fullprof[0], args.fullprof[1], args.fullprof[2]
-                x_plot = np.linspace(xstart, xend, len(y_plot))
-                wavelength = args.fullprof[3] if len(args.fullprof)>=4 else wavelength_file
-                if use_Q and wavelength:
-                    theta_rad = np.radians(x_plot / 2)
-                    x_plot = 4*np.pi*np.sin(theta_rad)/wavelength
-                e_plot = None
-            except Exception as e:
-                print(f"Error reading FullProf-style {fname}: {e}")
-                continue
         else:
             # Unknown extension: attempt to read as 2-column (x, y) data
             try:
@@ -534,7 +545,10 @@ def run_xy_pipeline(args) -> int:
                 args._warned_extensions = set()
             if file_ext and file_ext not in args._warned_extensions:
                 args._warned_extensions.add(file_ext)
-                print(f"Note: Reading '{file_ext}' file as 2-column (x, y) data. Use --xaxis to specify x-axis type if needed.")
+                print(
+                    f"Note: Reading '{file_ext}' file as 2-column (x, y) data "
+                    "(labels X / Y unless --xaxis / --wl is set)."
+                )
 
         if not curves_to_plot:
             continue
@@ -712,9 +726,22 @@ def run_xy_pipeline(args) -> int:
             x_data_list.append(x_plotted)
             y_data_list.append(y_plotted.copy())
             labels_list.append(curve_label)
-            orig_y.append(y_plotted.copy())
+            # Offset-free baseline for session dump/load and smooth/offset reset (p/i/s/b).
+            # Under --ro the displayed Y is former X (no stack offset on that axis).
+            if getattr(args, "ro", False):
+                orig_y.append(np.asarray(y_plotted, dtype=float).copy())
+            else:
+                orig_y.append(np.asarray(y_norm, dtype=float).copy())
             if is_right_y:
                 right_y_curve_indices.append(len(y_data_list) - 1)
+
+    # Immutable full-domain backup for X expand / .pkl save (never replace with crops).
+    try:
+        from .full_data import install_master_full
+
+        install_master_full(fig, x_full_list, raw_y_full_list, force=True)
+    except Exception:
+        pass
 
     # ---------------- Force axis to fit all data before labels ----------------
     ax.relim()
@@ -792,6 +819,52 @@ def run_xy_pipeline(args) -> int:
             _lines_by_curve.append(ax.lines[k] if k < len(ax.lines) else None)
     fig._xy_lines_by_curve = _lines_by_curve
 
+    # Persist diffraction axis mode for interactive ``u`` / CIF redraw / session.
+    # Dual-wl file:λ1:λ2 → Q uses λ1; dual-remapped 2θ uses λ2. Persist the λ
+    # that matches the plotted domain (not always conversion_wl / final_wl).
+    try:
+        from .axis_units import set_xy_axis_mode
+        if axis_mode in ("Q", "2theta", "d"):
+            _ow = locals().get("original_wavelength")
+            _cw = locals().get("conversion_wavelength")
+            _fw = locals().get("wavelength_file")
+            if axis_mode == "Q":
+                persist_wl = _ow if _ow is not None else _fw
+            elif axis_mode == "2theta":
+                persist_wl = _fw if _fw is not None else _ow
+            else:
+                # d: Bragg λ is the one used to build Q (λ1 for dual / single file:wl)
+                persist_wl = _ow if _ow is not None else _fw
+            if persist_wl is None:
+                persist_wl = getattr(args, "wl", None)
+            set_xy_axis_mode(fig, axis_mode, wavelength=persist_wl)
+            # Dual-remapped 2θ display (λ₂) — crosshair shows both λs
+            try:
+                fig._xy_dual_wl_display = bool(  # type: ignore[attr-defined]
+                    use_2th
+                    and _ow is not None
+                    and _cw is not None
+                    and any(
+                        (info or {}).get("original_wl") is not None
+                        and (info or {}).get("conversion_wl") is not None
+                        for info in (file_wavelength_info or [])
+                    )
+                )
+            except Exception:
+                pass
+            # Persist dual-wl pairs for session/style/Options ``u`` after reload
+            try:
+                fig._xy_file_wavelength_info = list(file_wavelength_info or [])  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        elif axis_mode == "generic":
+            # Quick plot (no --xaxis / --wl): never invent 2θ for Options ``u``
+            set_xy_axis_mode(fig, "unknown", wavelength=None)
+        elif axis_mode in ("r", "energy", "k", "rft", "time"):
+            set_xy_axis_mode(fig, "other", wavelength=None)
+    except Exception:
+        pass
+
     # Ensure consistent initial placement (especially for stacked mode)
     update_labels(ax, y_data_list, label_text_objects, args.stack, False)
     
@@ -805,11 +878,8 @@ def run_xy_pipeline(args) -> int:
     def _ensure_wavelength_for_2theta():
         """Ensure wavelength assigned to all CIF tick sets without prompting.
 
-        Order of preference:
-          1. Existing wavelength already stored in any series.
-          2. args.wl if provided by user.
-          3. Previously cached value (cif_cached_wavelength).
-          4. Default 1.5406 Å.
+        Prefer fig / ``--wl`` / ``file:wl`` / entry λ (same as Options ``u``).
+        Cu Kα 1.5406 Å is only a last-resort BC default.
         """
         nonlocal cif_cached_wavelength
         if not cif_tick_series:
@@ -819,9 +889,18 @@ def run_xy_pipeline(args) -> int:
             if _wl is not None:
                 cif_cached_wavelength = _wl
                 return _wl
-        wl = getattr(args, 'wl', None)
+        from .axis_units import resolve_cif_draw_wavelength
+        wl = resolve_cif_draw_wavelength(
+            fig=fig,
+            args=args,
+            cif_series=cif_tick_series,
+            file_wavelength_info=file_wavelength_info,
+            axis_mode="2theta",
+        )
         if wl is None:
-            wl = cif_cached_wavelength if cif_cached_wavelength is not None else 1.5406
+            wl = cif_cached_wavelength
+        if wl is None:
+            return None
         cif_cached_wavelength = wl
         for i,(lab, fname, peaksQ, w0, qmax_sim, color) in enumerate(cif_tick_series):
             cif_tick_series[i] = (lab, fname, peaksQ, wl, qmax_sim, color)
@@ -839,30 +918,42 @@ def run_xy_pipeline(args) -> int:
 
     def extend_cif_tick_series(xmax_domain):
         """Extend CIF peak list if x-range upper bound increases beyond simulated Qmax.
-        xmax_domain: upper x limit in current axis units (Q or 2θ).
+        xmax_domain: upper x limit in current axis units (Q / 2θ / d).
         """
         if globals().get('cif_extend_suspended', False):
             return
         if not cif_tick_series:
             return
+        from .axis_units import get_xy_axis_mode, xmax_domain_to_Q
+        axis_mode = get_xy_axis_mode(
+            fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+            use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+        )
+        if axis_mode not in ("2theta", "Q", "d"):
+            # Unknown axis: do not invent Q (wrong ticks on old 2θ / blank xlabel)
+            return
         # Determine target Q for extension depending on axis
         wl_any = None
-        if use_2th:
-            # Ensure wavelength known
-            for _,_,_,wl_,_ in cif_tick_series:
-                if wl_ is not None:
-                    wl_any = wl_
-                    break
+        if axis_mode == "2theta":
+            for entry in cif_tick_series:
+                try:
+                    if entry[3] is not None:
+                        wl_any = entry[3]
+                        break
+                except Exception:
+                    pass
             if wl_any is None:
                 wl_any = _ensure_wavelength_for_2theta()
         updated = False
+        try:
+            xlim_now = ax.get_xlim()
+        except Exception:
+            xlim_now = None
         for i,(lab,fname,peaksQ,wl,qmax_sim,color) in enumerate(cif_tick_series):
-            if use_2th:
-                wl_use = wl if wl is not None else wl_any
-                theta_rad = np.radians(min(xmax_domain, 179.9)/2.0)
-                Q_target = 4*np.pi*np.sin(theta_rad)/wl_use if wl_use else qmax_sim
-            else:
-                Q_target = xmax_domain
+            wl_use = wl if wl is not None else wl_any
+            Q_target = xmax_domain_to_Q(
+                xmax_domain, axis_mode, wl=wl_use, xlim=xlim_now,
+            )
             if not QUIET_CIF_EXTEND:
                 try:
                     print(f"[CIF extend check] {lab}: current Qmax={qmax_sim:.3f}, target Q={Q_target:.3f}")
@@ -871,8 +962,11 @@ def run_xy_pipeline(args) -> int:
             if Q_target > qmax_sim + 1e-6:
                 new_Qmax = Q_target + 0.25
                 try:
-                    # Only apply wavelength constraint for 2θ axis; in Q axis enumerate freely
-                    refl = cif_reflection_positions(fname, Qmax=new_Qmax, wavelength=(wl if (wl and use_2th) else None))
+                    # Only apply wavelength constraint for 2θ axis; in Q/d enumerate freely
+                    refl = cif_reflection_positions(
+                        fname, Qmax=new_Qmax,
+                        wavelength=(wl if (wl and axis_mode == "2theta") else None),
+                    )
                     cif_tick_series[i] = (lab, fname, refl, wl, float(new_Qmax), color)
                     if not QUIET_CIF_EXTEND:
                         print(f"Extended CIF ticks for {lab} to Qmax={new_Qmax:.2f} (count={len(refl)})")
@@ -891,6 +985,17 @@ def run_xy_pipeline(args) -> int:
         if cif_series_draw is None:
             cif_series_draw = cif_tick_series
         if not cif_series_draw:
+            # Clear leftover artists after undo of the last/only CIF set.
+            for art in getattr(ax, '_cif_tick_art', []):
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+            ax._cif_tick_art = []
+            try:
+                fig.canvas.draw_idle()
+            except Exception:
+                pass
             return
         # Preserve current limits before drawing - use actual current limits
         # to prevent any movement when toggling
@@ -906,27 +1011,31 @@ def run_xy_pipeline(args) -> int:
         fixed_yr = fixed_ylim[1] - fixed_ylim[0]
         if fixed_yr <= 0: fixed_yr = 1.0
         
-        # Check visibility flags first to decide if we need to adjust y-axis
+        # Check visibility flags first to decide if we need to adjust y-axis.
+        # Prefer figure attrs (batch / reopened sessions); __main__ is process-global.
         show_titles = show_cif_titles  # Use closure variable
         try:
-            # Check __main__ module first (for backward compatibility)
-            _bp_module = sys.modules.get('__main__')
-            if _bp_module is not None and hasattr(_bp_module, 'show_cif_titles'):
-                show_titles = bool(getattr(_bp_module, 'show_cif_titles', True))
-            # Also check if stored on figure/axes (from interactive menu)
             if hasattr(fig, '_bp_show_cif_titles'):
                 show_titles = bool(getattr(fig, '_bp_show_cif_titles', True))
+            else:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None and hasattr(_bp_module, 'show_cif_titles'):
+                    show_titles = bool(getattr(_bp_module, 'show_cif_titles', True))
         except Exception:
             pass
         
         # Optional per-set visibility list (maintained by interactive menu).
         set_visible = None
         try:
-            _bp_module = sys.modules.get('__main__')
-            if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
-                vis = list(getattr(_bp_module, 'cif_set_visible') or [])
-                if len(vis) == len(cif_series_draw):
-                    set_visible = [bool(v) for v in vis]
+            vis = None
+            if hasattr(fig, '_bp_cif_set_visible'):
+                vis = list(getattr(fig, '_bp_cif_set_visible') or [])
+            else:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None and hasattr(_bp_module, 'cif_set_visible'):
+                    vis = list(getattr(_bp_module, 'cif_set_visible') or [])
+            if isinstance(vis, list) and len(vis) == len(cif_series_draw):
+                set_visible = [bool(v) for v in vis]
         except Exception:
             pass
         # Effective number of visible CIF rows (for spacing and y-limit expansion)
@@ -937,9 +1046,12 @@ def run_xy_pipeline(args) -> int:
         
         show_hkl_for_spacing = False
         try:
-            _bp_module_sp = sys.modules.get('__main__')
-            if _bp_module_sp is not None and hasattr(_bp_module_sp, 'show_cif_hkl'):
-                show_hkl_for_spacing = bool(getattr(_bp_module_sp, 'show_cif_hkl', False))
+            if hasattr(fig, '_bp_show_cif_hkl'):
+                show_hkl_for_spacing = bool(getattr(fig, '_bp_show_cif_hkl', False))
+            else:
+                _bp_module_sp = sys.modules.get('__main__')
+                if _bp_module_sp is not None and hasattr(_bp_module_sp, 'show_cif_hkl'):
+                    show_hkl_for_spacing = bool(getattr(_bp_module_sp, 'show_cif_hkl', False))
         except Exception:
             pass
         if not show_hkl_for_spacing:
@@ -988,32 +1100,41 @@ def run_xy_pipeline(args) -> int:
             except Exception: pass
         new_art = []
         mixed_mode = (not cif_only)  # cif_only variable defined earlier in script context
-        # Check hkl visibility - check __main__ module first (where interactive menu stores it)
-        # then fall back to closure variable
+        # Prefer figure attr; __main__/globals are process-global leftovers.
         show_hkl = False
         try:
-            _bp_module = sys.modules.get('__main__')
-            if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
-                show_hkl = bool(getattr(_bp_module, 'show_cif_hkl', False))
+            if hasattr(fig, '_bp_show_cif_hkl'):
+                show_hkl = bool(getattr(fig, '_bp_show_cif_hkl', False))
+            else:
+                _bp_module = sys.modules.get('__main__')
+                if _bp_module is not None and hasattr(_bp_module, 'show_cif_hkl'):
+                    show_hkl = bool(getattr(_bp_module, 'show_cif_hkl', False))
         except Exception:
             pass
-        # Fall back to closure variable if not found in module
         if not show_hkl:
             try:
                 show_hkl = bool(globals().get('show_cif_hkl', False))
             except Exception:
                 pass
+        from .axis_units import domain_peak_to_Q, get_xy_axis_mode, peaks_Q_to_domain
+        axis_mode_draw = get_xy_axis_mode(
+            fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+            use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+        )
+        # Unknown / non-XRD: titles only (never invent Q — misplaces ticks on 2θ)
+        xrd_draw = axis_mode_draw in ("2theta", "Q", "d")
         visible_idx = 0
         for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_series_draw):
             if set_visible is not None and i < len(set_visible) and not set_visible[i]:
                 continue
             y_line = base - visible_idx * spacing + xy_cif_stack_y_offset(fig, i)
             tick_h, hkl_y = xy_cif_tick_stack_layout(y_line, yr)
-            if use_2th:
-                if wl is None: wl = _ensure_wavelength_for_2theta()
-                domain_peaks = _Q_to_2theta(peaksQ, wl)
+            if not xrd_draw:
+                domain_peaks = []
             else:
-                domain_peaks = peaksQ
+                if axis_mode_draw == "2theta" and wl is None:
+                    wl = _ensure_wavelength_for_2theta()
+                domain_peaks = peaks_Q_to_domain(peaksQ, axis_mode_draw, wl)
             # --- NEW: restrict to current visible x-range for performance ---
             xlow, xhigh = ax.get_xlim()
             if domain_peaks:
@@ -1030,10 +1151,15 @@ def run_xy_pipeline(args) -> int:
                     )
                 visible_idx += 1
                 continue
-            # Build map for quick hkl lookup by Q (only if hkl labels are enabled)
+            # Build map for quick hkl lookup by Q (only if hkl labels are enabled).
+            # Prefer fig-backed map so interactively added CIFs (same path keys)
+            # are visible even if the closure map was not mutated in place.
             label_map = {}
             if show_hkl:
-                label_map = cif_hkl_label_map.get(fname, {})
+                hkl_src = getattr(fig, '_batplot_cif_hkl_label_map', None)
+                if not isinstance(hkl_src, dict):
+                    hkl_src = cif_hkl_label_map
+                label_map = (hkl_src or {}).get(fname, {}) or {}
             # --- Optimized tick & hkl label drawing ---
             # Check if we should show hkl labels: need show_hkl, peaks, AND a non-empty label_map
             if show_hkl and peaksQ and label_map:
@@ -1053,11 +1179,9 @@ def run_xy_pipeline(args) -> int:
                 for p in domain_peaks:
                     ln, = ax.plot([p, p], [y_line, y_line + tick_h], color=color, lw=1.0, alpha=0.9, zorder=3)
                     new_art.append(ln)
-                    if use_2th and wl:
-                        theta = np.radians(p/2.0)
-                        Qp = 4*np.pi*np.sin(theta)/wl
-                    else:
-                        Qp = p
+                    Qp = domain_peak_to_Q(p, axis_mode_draw, wl)
+                    if Qp is None:
+                        continue
                     Qp_rounded = round(Qp, 6)
                     lbl = label_map.get(Qp_rounded)
                     if lbl:
@@ -1085,14 +1209,12 @@ def run_xy_pipeline(args) -> int:
         show_hkl = globals().get('show_cif_hkl', False)
         # Build mapping from Q to label text if available
         for i,(lab, fname, peaksQ, wl, qmax_sim, color) in enumerate(cif_series_draw):
-            if use_2th and wl is None:
+            if axis_mode_draw == "2theta" and wl is None:
                 wl = getattr(ax, '_cif_hover_wl', None)
             # Recreate domain peaks consistent with those drawn (limit to view)
-            if use_2th:
-                if wl is None: continue
-                domain_peaks = _Q_to_2theta(peaksQ, wl)
-            else:
-                domain_peaks = peaksQ
+            if axis_mode_draw == "2theta" and wl is None:
+                continue
+            domain_peaks = peaks_Q_to_domain(peaksQ, axis_mode_draw, wl)
             xlow, xhigh = ax.get_xlim()
             domain_peaks = [p for p in domain_peaks if xlow <= p <= xhigh]
             if not domain_peaks:
@@ -1116,13 +1238,18 @@ def run_xy_pipeline(args) -> int:
                 yr, show_titles=show_titles, show_hkl=show_hkl_h, stacked_or_multi_y=_stacked
             )
             y_line = base - i * spacing + xy_cif_stack_y_offset(fig, i)
-            label_map = cif_hkl_label_map.get(fname, {}) if show_hkl else {}
+            if show_hkl:
+                hkl_src = getattr(fig, '_batplot_cif_hkl_label_map', None)
+                if not isinstance(hkl_src, dict):
+                    hkl_src = cif_hkl_label_map
+                label_map = (hkl_src or {}).get(fname, {}) or {}
+            else:
+                label_map = {}
             for p in domain_peaks:
-                if use_2th and wl:
-                    theta = np.radians(p/2.0); Qp = 4*np.pi*np.sin(theta)/wl
-                else:
-                    Qp = p
-                lbl = label_map.get(round(Qp,6), None)
+                Qp = domain_peak_to_Q(p, axis_mode_draw, wl)
+                lbl = None
+                if Qp is not None:
+                    lbl = label_map.get(round(Qp, 6), None)
                 hover_meta.append({'x': p, 'y': y_line, 'hkl': lbl, 'series': lab})
         ax._cif_tick_hover_meta = hover_meta
         fig.canvas.draw_idle()
@@ -1157,9 +1284,26 @@ def run_xy_pipeline(args) -> int:
                     if tooltip.get_visible():
                         tooltip.set_visible(False); fig.canvas.draw_idle()
                     return
-                # Compose text
+                # Compose text — read live axis mode (Options ``u`` may have converted)
                 hkl_txt = best['hkl'] if best.get('hkl') else ''
-                tip = f"{best['series']}\nQ={best['x']:.4f}" if use_Q else (f"{best['series']}\n2θ={best['x']:.4f}" if use_2th else f"{best['series']} {best['x']:.4f}")
+                try:
+                    from .axis_units import get_xy_axis_mode
+                    mode = get_xy_axis_mode(
+                        fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+                        use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+                    )
+                    if mode not in ("2theta", "Q", "d"):
+                        mode = "2theta" if use_2th else ("Q" if use_Q else "unknown")
+                except Exception:
+                    mode = "2theta" if use_2th else ("Q" if use_Q else "unknown")
+                if mode == "Q":
+                    tip = f"{best['series']}\nQ={best['x']:.4f}"
+                elif mode == "2theta":
+                    tip = f"{best['series']}\n2θ={best['x']:.4f}"
+                elif mode == "d":
+                    tip = f"{best['series']}\nd={best['x']:.4f}"
+                else:
+                    tip = f"{best['series']} {best['x']:.4f}"
                 if hkl_txt:
                     tip += f"\n{hkl_txt}"
                 tooltip.set_text(tip)
@@ -1170,11 +1314,14 @@ def run_xy_pipeline(args) -> int:
             cid = fig.canvas.mpl_connect('motion_notify_event', _on_move)
             ax._cif_hover_cid = cid
 
+    # Always expose the live series + draw helpers so interactive ``cif`` → ``a``
+    # can add the first CIF without restarting (empty series draws nothing).
+    try:
+        fig._batplot_cif_tick_series = cif_tick_series
+        fig._batplot_cif_hkl_label_map = cif_hkl_label_map
+    except Exception:
+        pass
     if cif_tick_series:
-        try:
-            fig._batplot_cif_tick_series = cif_tick_series
-        except Exception:
-            pass
         # Auto-assign distinct colors for CIF tick series.
         # For multiple CIF series:
         #   - If <= 10 files, use 'tab10' but in a re-ordered sequence to
@@ -1213,9 +1360,9 @@ def run_xy_pipeline(args) -> int:
         if use_2th:
             _ensure_wavelength_for_2theta()
         draw_cif_ticks()
-        # expose helpers for interactive updates
-        ax._cif_extend_func = extend_cif_tick_series
-        ax._cif_draw_func = draw_cif_ticks
+    # expose helpers for interactive updates (including empty → add CIF)
+    ax._cif_extend_func = extend_cif_tick_series
+    ax._cif_draw_func = draw_cif_ticks
 
     # Handle EXAFS k-weighted χ(k) mode labels
     if getattr(args, 'k3chik', False):
@@ -1237,7 +1384,11 @@ def run_xy_pipeline(args) -> int:
         elif use_rft: x_label = "Radial distance (Å)"
         elif use_Q: x_label = r"Q ($\mathrm{\AA}^{-1}$)"
         elif use_2th: x_label = "2θ (deg)"
+        elif axis_mode == "d":
+            x_label = r"d ($\mathrm{\AA}$)"
         elif use_time: x_label = "Time (h)"
+        elif axis_mode == "generic":
+            x_label = "X"
         elif args.xaxis:
             x_label = str(args.xaxis)
         else:
@@ -1249,6 +1400,8 @@ def run_xy_pipeline(args) -> int:
             y_label = "Potential (V)"
         elif should_normalize:
             y_label = "Normalized intensity (a.u.)"
+        elif axis_mode == "generic":
+            y_label = "Y"
         else:
             y_label = "Intensity"
     
@@ -1402,7 +1555,7 @@ def run_xy_pipeline(args) -> int:
             fig, ax, y_data_list, x_data_list, labels_list,
             orig_y, label_text_objects, args.delta, x_label, args,
             x_full_list, raw_y_full_list, offsets_list,
-            use_Q, use_r, use_E, use_k, use_rft,
+            use_Q, use_r, use_E, use_k, use_rft, use_2th,
             cif_globals=cif_globals,
         )
         hold_figure_open()

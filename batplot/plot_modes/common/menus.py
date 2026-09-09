@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, Optional
 
+from ...color_utils import blank_means_back, run_color_token_input_loop
+
 
 DEFAULT_FONT_FAMILIES = [
     "Arial",
@@ -77,6 +79,7 @@ def run_font_menu(
     apply_highlight_facecolor: Callable[[str], None] | None = None,
     apply_highlight_alpha: Callable[[float], None] | None = None,
     apply_highlight_pad: Callable[[float], None] | None = None,
+    highlight_fig: Any = None,
 ) -> None:
     """Run the shared ``f`` font submenu.
 
@@ -115,7 +118,7 @@ def run_font_menu(
         keys += "/q"
         sub = safe_input(colorize_prompt(f"Font ({keys}): ")).strip().lower()
         if not sub:
-            if blank_exits:
+            if blank_exits and blank_means_back(sub):
                 break
             continue
         if sub == "q":
@@ -220,12 +223,12 @@ def run_font_menu(
                 on = "on" if hl_get() else "off"
                 print(f"\nText highlight (current: {on}, face={st.get('fc', 'white')}, alpha={st.get('alpha', 0.85):g}, pad={st.get('pad', 0.2):g})")
                 print("  " + colorize_menu("t: toggle on/off"))
-                print("  " + colorize_menu("c: face color (e.g. white, #f8f8f8)"))
+                print("  " + colorize_menu("c: face color (e=pick/apply last; saves as u#)"))
                 print("  " + colorize_menu("a: alpha (0-1)"))
                 print("  " + colorize_menu("p: pad (bbox padding)"))
                 print("  " + colorize_menu("q: back"))
                 hsub = safe_input(colorize_prompt("Highlight (t/c/a/p/q): ")).strip().lower()
-                if not hsub or hsub == "q":
+                if hsub == "q" or blank_means_back(hsub):
                     break
                 if hsub == "t":
                     try:
@@ -245,11 +248,15 @@ def run_font_menu(
                             print(f"Error: {exc}")
                         return True
 
-                    run_repeat_input_loop(
-                        prompt=lambda: f"Highlight face color (current: {hl_style().get('fc', 'white')}, q=back): ",
+                    run_color_token_input_loop(
+                        prompt=lambda: (
+                            f"Highlight face color (current: {hl_style().get('fc', 'white')}, "
+                            f"e=pick/apply last, u=manage, q=back): "
+                        ),
                         safe_input=safe_input,
                         colorize_prompt=colorize_prompt,
                         process=_apply_hl_color,
+                        fig=highlight_fig,
                     )
                     continue
                 if hsub == "a" and apply_highlight_alpha is not None:
@@ -480,16 +487,25 @@ def _legend_position_submenu(
     colorize_prompt: Callable[[str], str],
     step: float,
 ) -> None:
-    def _set_and_apply(pos: tuple[float, float], message: str | None = None) -> None:
+    def _set_and_apply(pos: tuple[float, float], message: str | None = None) -> bool:
         new_pos = sanitize_offset(pos)
         if new_pos is None:
             print(f"Invalid position: x={pos[0]:.2f}, y={pos[1]:.2f} is out of bounds.")
-            return
+            return False
         set_position(new_pos)
         apply_position()
         if message is None:
             message = f"Legend position updated: x={new_pos[0]:.2f}, y={new_pos[1]:.2f}"
         print(message)
+        return True
+
+    def _push_then_apply(pos: tuple[float, float], message: str | None = None) -> None:
+        # Validate-then-push: out-of-bounds must not create a junk undo frame.
+        if sanitize_offset(pos) is None:
+            print(f"Invalid position: x={pos[0]:.2f}, y={pos[1]:.2f} is out of bounds.")
+            return
+        push_state("legend-position")
+        _set_and_apply(pos, message)
 
     def _axis_submenu(axis: str) -> None:
         while True:
@@ -510,22 +526,19 @@ def _legend_position_submenu(
             if not value or value == "q":
                 break
             if axis == "x" and value in ("a", "d"):
-                push_state("legend-position")
                 delta = -step if value == "a" else step
-                _set_and_apply((x_in + delta, y_in))
+                _push_then_apply((x_in + delta, y_in))
                 continue
             if axis == "y" and value in ("w", "s"):
-                push_state("legend-position")
                 delta = step if value == "w" else -step
-                _set_and_apply((x_in, y_in + delta))
+                _push_then_apply((x_in, y_in + delta))
                 continue
             try:
                 direct = float(value)
             except (ValueError, KeyboardInterrupt):
                 print(f"Invalid input (use {'a, d' if axis == 'x' else 'w, s'}, number, or q).")
                 continue
-            push_state("legend-position")
-            _set_and_apply((direct, y_in) if axis == "x" else (x_in, direct))
+            _push_then_apply((direct, y_in) if axis == "x" else (x_in, direct))
 
     while True:
         xy_in = get_position()
@@ -545,14 +558,12 @@ def _legend_position_submenu(
             break
         x_in, y_in = get_position()
         if cmd == "0":
-            push_state("legend-position")
-            _set_and_apply((0.0, 0.0), "Legend position reset to center.")
+            _push_then_apply((0.0, 0.0), "Legend position reset to center.")
             continue
         if cmd in ("w", "s", "a", "d"):
-            push_state("legend-position")
             dx = (-step if cmd == "a" else step if cmd == "d" else 0.0)
             dy = (step if cmd == "w" else -step if cmd == "s" else 0.0)
-            _set_and_apply((x_in + dx, y_in + dy))
+            _push_then_apply((x_in + dx, y_in + dy))
             continue
         if cmd == "x":
             _axis_submenu("x")
@@ -570,8 +581,7 @@ def _legend_position_submenu(
         except Exception:
             print("Invalid numbers.")
             continue
-        push_state("legend-position")
-        _set_and_apply((direct_x, direct_y))
+        _push_then_apply((direct_x, direct_y))
 
 
 def run_legend_position_menu(
@@ -588,19 +598,25 @@ def run_legend_position_menu(
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
     step: float = 0.1,
+    rearrange_legend: Callable[[], None] | None = None,
 ) -> None:
-    """Run shared EC/CPC legend visibility and position submenu."""
-    if sanitize_offset(get_position()) is None:
-        offset = derive_legend_offset_from_current(
+    """Run shared EC/CPC legend visibility and position submenu.
+
+    When ``rearrange_legend`` is provided (multi-file modes), also offers
+    ``ra: rearrange`` for legend display order.
+    """
+    # Display-only seed: do not write legend offset attrs until the user edits
+    # (opening ``h`` must not create an irreversible mutate without undo).
+    def _current_position() -> tuple[float, float]:
+        cur = sanitize_offset(get_position())
+        if cur is not None:
+            return cur
+        derived = derive_legend_offset_from_current(
             fig=fig,
             legend=get_legend(),
             sanitize_offset=sanitize_offset,
         )
-        if offset is not None:
-            set_position(offset)
-
-    def _current_position() -> tuple[float, float]:
-        return sanitize_offset(get_position()) or (0.0, 0.0)
+        return derived if derived is not None else (0.0, 0.0)
 
     legend = get_legend()
     visible = bool(legend.get_visible()) if legend is not None else False
@@ -611,8 +627,11 @@ def run_legend_position_menu(
         print("Legend:")
         print("  " + colorize_menu("t: toggle"))
         print("  " + colorize_menu("p: set position"))
+        if rearrange_legend is not None:
+            print("  " + colorize_menu("ra: rearrange"))
         print("  " + colorize_menu("q: back"))
-        sub = safe_input(colorize_prompt("Legend (t/p/q): ")).strip().lower()
+        prompt_keys = "t/p/ra/q" if rearrange_legend is not None else "t/p/q"
+        sub = safe_input(colorize_prompt(f"Legend ({prompt_keys}): ")).strip().lower()
         if not sub:
             continue
         if sub == "q":
@@ -633,6 +652,12 @@ def run_legend_position_menu(
                 colorize_prompt=colorize_prompt,
                 step=step,
             )
+            continue
+        if sub == "ra" and rearrange_legend is not None:
+            try:
+                rearrange_legend()
+            except Exception as exc:
+                print(f"Error rearranging legend: {exc}")
             continue
         print("Unknown option.")
 

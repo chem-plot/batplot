@@ -114,12 +114,17 @@ def _ask_directory_dialog(initialdir: Optional[str] = None) -> Optional[str]:
             # If AppleScript fails with an exception, return None (will fall back to manual input)
             return None
     
-    # Windows/Linux: Try tkinter first
+    # Windows/Linux: Try tkinter first. None → backend unavailable (fall through).
+    # Empty-string sentinel is not used; cancel returns False so we do NOT open a
+    # second dialog (zenity) after the user already dismissed tk.
     if not sys.platform.startswith("darwin"):
         try:
             path = _ask_directory_dialog_tk(initialdir)
+            if path is False:
+                return None  # dialog shown; user cancelled
             if path:
                 return path
+            # path is None → tk unavailable / failed to open
         except Exception:
             # If tkinter fails, continue to other methods
             pass
@@ -136,24 +141,33 @@ def _ask_directory_dialog(initialdir: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def _applescript_quote(value: str) -> str:
+    """Escape a string for embedding in an AppleScript double-quoted literal."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+    )
+
+
 def _ask_directory_dialog_macos(initialdir: str) -> Optional[str]:
     """Use AppleScript (osascript) to show the native folder picker on macOS.
-    
+
     Returns the selected folder path, or None if user cancels or if any error occurs.
     """
     if not shutil.which("osascript"):
         return None
-    
+
     prompt = "Select a folder"
     # Build AppleScript - use a single error handler to avoid syntax issues
     # Error -128 is user cancel, which is expected behavior
     if os.path.isdir(initialdir):
         # Use a variable for the path to avoid quoting issues
         script_parts = [
-            f'set initialPath to "{initialdir}"',
+            f'set initialPath to "{_applescript_quote(initialdir)}"',
             "try",
             "    set defaultLocation to POSIX file initialPath",
-            f'    set theFolder to choose folder with prompt "{prompt}" default location defaultLocation',
+            f'    set theFolder to choose folder with prompt "{_applescript_quote(prompt)}" default location defaultLocation',
             "    return POSIX path of theFolder",
             "on error errMsg number errNum",
             "    if errNum is -128 then",
@@ -167,7 +181,7 @@ def _ask_directory_dialog_macos(initialdir: str) -> Optional[str]:
     else:
         script_parts = [
             "try",
-            f'    set theFolder to choose folder with prompt "{prompt}"',
+            f'    set theFolder to choose folder with prompt "{_applescript_quote(prompt)}"',
             "    return POSIX path of theFolder",
             "on error errMsg number errNum",
             "    if errNum is -128 then",
@@ -226,8 +240,14 @@ def _ask_directory_dialog_macos(initialdir: str) -> Optional[str]:
         return None
 
 
-def _ask_directory_dialog_tk(initialdir: str) -> Optional[str]:
-    """Tkinter-based folder picker (Windows/Linux only - never used on macOS)."""
+def _ask_directory_dialog_tk(initialdir: str):
+    """Tkinter-based folder picker (Windows/Linux only - never used on macOS).
+
+    Returns:
+        str: selected folder
+        False: dialog was shown and user cancelled (do not fall back to zenity)
+        None: backend unavailable / failed before show (caller may fall back)
+    """
     # Never use tkinter on macOS to avoid crashes
     if sys.platform.startswith("darwin"):
         return None
@@ -253,10 +273,11 @@ def _ask_directory_dialog_tk(initialdir: str) -> Optional[str]:
             initialdir=initialdir,
             mustexist=False,
         )
-        result = folder if folder else None
-        return result
-    except Exception as e:
-        # Silently fail - will fall back to manual input
+        if folder:
+            return folder
+        return False  # shown; cancelled
+    except Exception:
+        # Failed before/during show — allow Linux zenity fallback
         return None
     finally:
         if root is not None:
@@ -292,7 +313,9 @@ def _ask_directory_dialog_zenity(initialdir: str) -> Optional[str]:
     if not cmd:
         return None
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=300,
+        )
         if res.returncode == 0:
             selection = res.stdout.strip()
             return selection or None
@@ -301,54 +324,162 @@ def _ask_directory_dialog_zenity(initialdir: str) -> Optional[str]:
     return None
 
 
-def _ask_file_dialog(initialdir: Optional[str] = None, filetypes: Optional[Tuple[str, ...]] = None) -> Optional[str]:
-    """Open a platform-aware file picker dialog."""
+def _strip_outer_quotes(token: str) -> str:
+    """Remove one layer of matching outer quotes (needed for Windows shlex)."""
+    tok = str(token)
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+        return tok[1:-1]
+    return tok
+
+
+def _parse_typed_path_list(line: str) -> list:
+    """Parse a typed path line into absolute paths (spaces via quotes / shlex).
+
+    Used when an OS file dialog returns empty (cancel or unavailable) so
+    headless / SSH / broken-GUI sessions can still add files once.
+
+    On Windows, ``shlex(..., posix=False)`` keeps outer quotes in tokens; those
+    are stripped so ``\"C:\\\\My Files\\\\a.cif\"`` resolves correctly while
+    unquoted ``C:\\\\Users\\\\...`` backslashes are still preserved.
+    """
+    text = (line or "").strip()
+    if not text:
+        return []
+    try:
+        import shlex
+
+        tokens = shlex.split(text, posix=os.name != "nt")
+    except Exception:
+        tokens = text.split()
+    out = []
+    for tok in tokens:
+        if not tok:
+            continue
+        tok = _strip_outer_quotes(tok)
+        if not tok:
+            continue
+        p = os.path.abspath(os.path.expanduser(tok))
+        out.append(p)
+    return out
+
+
+def _ask_file_dialog(
+    initialdir: Optional[str] = None,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select a file",
+) -> Optional[str]:
+    """Open a platform-aware file picker dialog (macOS / Windows / Linux).
+
+    ``filetypes`` is a tuple of extensions such as ``(".cif", ".CIF")``.
+    Returns an absolute path, or ``None`` if the user cancels / no dialog is available.
+    """
+    paths = _ask_files_dialog(initialdir=initialdir, filetypes=filetypes, title=title, multiple=False)
+    if not paths:
+        return None
+    return paths[0]
+
+
+def _ask_files_dialog(
+    initialdir: Optional[str] = None,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select file(s)",
+    multiple: bool = True,
+) -> list:
+    """Open a platform-aware file picker; return a list of absolute paths.
+
+    When ``multiple`` is False, at most one path is returned (same as
+    :func:`_ask_file_dialog`). Cancel / unavailable dialog → ``[]``.
+    """
     initialdir = os.path.abspath(initialdir or os.getcwd())
     if not os.path.isdir(initialdir):
         initialdir = os.path.expanduser("~")
-    
-    # macOS: use AppleScript for file selection
+
     if sys.platform.startswith("darwin"):
-        return _ask_file_dialog_macos(initialdir)
+        return _ask_files_dialog_macos(
+            initialdir, filetypes=filetypes, title=title, multiple=multiple
+        )
 
-    # Windows/Linux: try tkinter first
-    if not sys.platform.startswith("darwin"):
-        try:
-            path = _ask_file_dialog_tk(initialdir, filetypes=filetypes)
-            if path:
-                return path
-        except Exception:
-            pass
+    # Tk: None → backend unavailable (fall through on Linux).
+    # list (incl. []) → dialog was shown; empty means cancel — do NOT open zenity.
+    try:
+        paths = _ask_files_dialog_tk(
+            initialdir, filetypes=filetypes, title=title, multiple=multiple
+        )
+        if paths is not None:
+            return paths
+    except Exception:
+        pass
 
-    # Linux desktop fallback via zenity/kdialog if available
     if sys.platform.startswith("linux"):
         try:
-            path = _ask_file_dialog_zenity(initialdir, filetypes=filetypes)
-            if path:
-                return path
+            paths = _ask_files_dialog_zenity(
+                initialdir, filetypes=filetypes, title=title, multiple=multiple
+            )
+            if paths:
+                return paths
         except Exception:
             pass
-    
-    return None
+
+    return []
 
 
-def _ask_file_dialog_macos(initialdir: str) -> Optional[str]:
+def _ask_file_dialog_macos(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select a file",
+) -> Optional[str]:
+    paths = _ask_files_dialog_macos(
+        initialdir, filetypes=filetypes, title=title, multiple=False
+    )
+    return paths[0] if paths else None
+
+
+def _ask_files_dialog_macos(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select file(s)",
+    multiple: bool = True,
+) -> list:
     if not shutil.which("osascript"):
-        return None
-    
+        return []
+
+    # AppleScript ``of type`` prefers extension tokens without the leading dot.
+    type_tokens: list[str] = []
+    if filetypes:
+        seen: set[str] = set()
+        for ext in filetypes:
+            tok = str(ext).lstrip(".").lower()
+            if tok and tok not in seen:
+                seen.add(tok)
+                type_tokens.append(tok)
+    type_clause = ""
+    if type_tokens:
+        quoted = ", ".join(f'"{_applescript_quote(t)}"' for t in type_tokens)
+        type_clause = f" of type {{{quoted}}}"
+    multi_clause = " with multiple selections allowed" if multiple else ""
+
     script_parts = [
-        f'set initialPath to "{initialdir}"',
+        f'set initialPath to "{_applescript_quote(initialdir)}"',
         "try",
         "    set defaultLocation to POSIX file initialPath",
-        '    set theFile to choose file with prompt "Select a style file" default location defaultLocation',
-        "    return POSIX path of theFile",
-        "on error errMsg number errNum",
-        "    if errNum is -128 then",
-        '        return ""',
+        f'    set theFiles to choose file with prompt "{_applescript_quote(title)}"'
+        f" default location defaultLocation{type_clause}{multi_clause}",
+        "    set out to \"\"",
+        "    if class of theFiles is list then",
+        "        repeat with f in theFiles",
+        "            set out to out & (POSIX path of f) & linefeed",
+        "        end repeat",
         "    else",
-        '        return ""',
+        "        set out to POSIX path of theFiles",
         "    end if",
-        "end try"
+        "    return out",
+        "on error errMsg number errNum",
+        '    return ""',
+        "end try",
     ]
     script = "\n".join(script_parts)
     try:
@@ -360,17 +491,51 @@ def _ask_file_dialog_macos(initialdir: str) -> Optional[str]:
             check=False,
             timeout=300,
         )
-        if res.returncode == 0:
-            selection = res.stdout.strip()
+        if res.returncode != 0:
+            return []
+        out = []
+        for line in (res.stdout or "").splitlines():
+            selection = line.strip()
+            if not selection:
+                continue
+            try:
+                selection = os.path.normpath(os.path.abspath(selection))
+                if os.path.isfile(selection):
+                    selection = os.path.realpath(selection)
+            except (OSError, ValueError):
+                pass
             if selection and os.path.isfile(selection):
-                return selection
-            return None
-        return None
+                out.append(selection)
+        return out
     except Exception:
-        return None
+        return []
 
 
-def _ask_file_dialog_tk(initialdir: str, filetypes: Optional[Tuple[str, ...]] = None) -> Optional[str]:
+def _ask_file_dialog_tk(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select a file",
+) -> Optional[str]:
+    paths = _ask_files_dialog_tk(
+        initialdir, filetypes=filetypes, title=title, multiple=False
+    )
+    return paths[0] if paths else None
+
+
+def _ask_files_dialog_tk(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select file(s)",
+    multiple: bool = True,
+):
+    """Tk file picker (Windows/Linux).
+
+    Returns a ``list`` of paths when the dialog was shown (empty on cancel).
+    Returns ``None`` when the backend is unavailable so the caller may fall
+    back (e.g. Linux zenity) without treating cancel as “try another dialog”.
+    """
     if sys.platform.startswith("darwin"):
         return None
     root = None
@@ -390,13 +555,29 @@ def _ask_file_dialog_tk(initialdir: str, filetypes: Optional[Tuple[str, ...]] = 
         tk_filetypes = [("All files", "*.*")]
         if filetypes:
             patterns = " ".join(f"*{ext}" if ext.startswith('.') else f"*.{ext}" for ext in filetypes)
-            tk_filetypes.insert(0, ("Style files", patterns))
+            # Deduplicate case variants for the label (e.g. .cif/.CIF → CIF files)
+            label = "Files"
+            exts_lower = {str(e).lstrip(".").lower() for e in filetypes if e}
+            if exts_lower == {"cif"}:
+                label = "CIF files"
+            elif "bps" in exts_lower or "bpsg" in exts_lower or "bpsh" in exts_lower:
+                label = "Style files"
+            tk_filetypes.insert(0, (label, patterns))
+        if multiple:
+            selection = filedialog.askopenfilenames(
+                title=title,
+                initialdir=initialdir,
+                filetypes=tk_filetypes,
+            )
+            return [os.path.abspath(p) for p in (selection or ()) if p and os.path.isfile(p)]
         file_path = filedialog.askopenfilename(
-            title="Select a style file",
+            title=title,
             initialdir=initialdir,
             filetypes=tk_filetypes,
         )
-        return file_path or None
+        if file_path and os.path.isfile(file_path):
+            return [os.path.abspath(file_path)]
+        return []
     except Exception:
         return None
     finally:
@@ -411,19 +592,39 @@ def _ask_file_dialog_tk(initialdir: str, filetypes: Optional[Tuple[str, ...]] = 
                 pass
 
 
-def _ask_file_dialog_zenity(initialdir: str, filetypes: Optional[Tuple[str, ...]] = None) -> Optional[str]:
+def _ask_file_dialog_zenity(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select a file",
+) -> Optional[str]:
+    paths = _ask_files_dialog_zenity(
+        initialdir, filetypes=filetypes, title=title, multiple=False
+    )
+    return paths[0] if paths else None
+
+
+def _ask_files_dialog_zenity(
+    initialdir: str,
+    filetypes: Optional[Tuple[str, ...]] = None,
+    *,
+    title: str = "Select file(s)",
+    multiple: bool = True,
+) -> list:
     cmd = None
     if shutil.which("zenity"):
         filename_arg = f"--filename={os.path.join(initialdir.rstrip(os.sep), '')}"
         zenity_cmd = [
             "zenity",
             "--file-selection",
-            "--title=Select a style file",
+            f"--title={title}",
             filename_arg,
         ]
+        if multiple:
+            zenity_cmd.extend(["--multiple", "--separator=\n"])
         if filetypes:
             patterns = " ".join(f"*{ext}" if ext.startswith('.') else f"*.{ext}" for ext in filetypes)
-            zenity_cmd.append(f"--file-filter=Style files | {patterns}")
+            zenity_cmd.append(f"--file-filter=Files | {patterns}")
         cmd = zenity_cmd
     elif shutil.which("kdialog"):
         pattern = " ".join(f"*{ext}" if ext.startswith('.') else f"*.{ext}" for ext in (filetypes or ()))
@@ -435,19 +636,35 @@ def _ask_file_dialog_zenity(initialdir: str, filetypes: Optional[Tuple[str, ...]
             initialdir,
             pattern,
             "--title",
-            "Select a style file",
+            title,
         ]
+        if multiple:
+            # Newline-separated paths so names with spaces survive parsing.
+            cmd.extend(["--multiple", "--separate-output"])
     if cmd is None:
-        return None
+        return []
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if res.returncode == 0:
-            selection = res.stdout.strip()
-            if selection and os.path.isfile(selection):
-                return selection
-        return None
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=300,
+        )
+        if res.returncode != 0:
+            return []
+        raw = (res.stdout or "").strip()
+        if not raw:
+            return []
+        # zenity (--separator=\n) and kdialog (--separate-output) use newlines.
+        parts = [p.strip() for p in raw.replace("\r", "\n").split("\n") if p.strip()]
+        if len(parts) == 1 and not os.path.isfile(parts[0]):
+            # Legacy kdialog without --separate-output: space-separated (breaks
+            # paths with spaces; only used when the whole line is not a file).
+            parts = [p for p in raw.split() if p]
+        out = []
+        for p in parts:
+            if os.path.isfile(p):
+                out.append(os.path.abspath(p))
+        return out
     except Exception:
-        return None
+        return []
 
 
 def ensure_subdirectory(subdir_name: str, base_path: Optional[str] = None) -> str:
@@ -510,6 +727,11 @@ def get_organized_path(filename: str, file_type: str, base_path: Optional[str] =
         >>> get_organized_path('/tmp/plot.svg', 'figure')
         '/tmp/plot.svg'  # Already has path, use as-is
     """
+    # Expand ``~/…`` first so home-relative exports work on Windows/macOS/Linux.
+    try:
+        filename = os.path.expanduser(str(filename))
+    except Exception:
+        filename = str(filename)
     # If filename already has a directory component, respect user's choice
     # os.path.dirname returns '' for bare filenames, non-empty for paths
     if os.path.dirname(filename):
@@ -598,90 +820,241 @@ def list_files_in_subdirectory(extensions: tuple, file_type: str, base_path: Opt
     return sorted(files, key=lambda x: natural_sort_key(x[0]))
 
 
-def print_recent_axis_names(colorize: Optional[Callable[[str], str]] = None) -> None:
-    """Print numbered list of recently typed axis names (shared across all batplot modes)."""
+def print_recent_axis_names(colorize: Optional[Callable[[str], str]] = None,
+                            mode: Optional[str] = None) -> None:
+    """Print numbered list of recently typed axis names.
+
+    With ``mode`` (e.g. ``'xy'``, ``'ec'``, ``'cpc'``, ``'operando'``,
+    ``'histo'``) only that mode's names are shown; without it the legacy
+    shared list is shown (backward compatible).
+
+    Entries that still contain ``{sub()}`` / ``{super()}`` / other shortcuts
+    are shown as ``shortcut → converted`` so the list reflects mathtext.
+    """
     from .config import get_recent_axis_names
 
-    names = get_recent_axis_names()
+    names = get_recent_axis_names(mode)
     if not names:
         msg = "No recent axis names stored yet."
         print(colorize(msg) if colorize else msg)
         return
-    header = "Recent axis names (newest first; shared across all modes):"
+    if mode is None:
+        header = "Recent axis names (newest first; shared across all modes):"
+    else:
+        header = "Recent axis names (newest first; this mode only — type its number at a label prompt):"
     print(colorize(header) if colorize else header)
     for i, name in enumerate(names, 1):
-        line = f"  {i}: {name}"
+        converted = finalize_axis_label_text(name)
+        if converted != name and _label_has_shortcuts(name):
+            line = f"  {i}: {name}  ->  {converted}"
+        else:
+            line = f"  {i}: {converted}"
         print(colorize(line) if colorize else line)
 
 
-def remember_axis_name(name: str) -> None:
-    """Store a user-entered axis label in the shared recent-names list."""
+def remember_axis_name(name: str, mode: Optional[str] = None) -> None:
+    """Store a user-entered axis label in the recent-names list (per-mode when *mode* is given).
+
+    Shortcuts such as ``{sub()}`` / ``{super()}`` are converted before storage
+    so saved names always reflect the mathtext that appears on the plot.
+    """
     from .config import record_recent_axis_name
 
-    record_recent_axis_name(name)
+    record_recent_axis_name(finalize_axis_label_text(name), mode)
 
 
-def print_label_latex_tips(colorize: Optional[Callable[[str], str]] = None) -> None:
-    """Print the standard LaTeX/mathtext hint block for interactive rename prompts.
+def resolve_recent_axis_name(text: str, mode: Optional[str] = None) -> str:
+    """Resolve a label prompt entry against the recent-names list.
 
-    If *colorize* is set (e.g. terminal highlighting), it is applied to each
-    line after the header. Pure strings only (works on Windows/macOS/Linux).
+    - A pure number (e.g. ``2``) picks recent name #2 for *mode* (1-based,
+      newest first). Out-of-range numbers are kept as literal text.
+    - A double-quoted entry (e.g. ``"3"``) strips the quotes and is always
+      treated as literal text, so numeric axis labels stay reachable.
+    - Anything else is returned unchanged (callers still run
+      :func:`finalize_axis_label_text` / :func:`convert_label_shortcuts`).
+
+    Picked recent names are finalized so old config entries that still store
+    raw ``{sub()}`` / ``{super()}`` convert on reuse.
     """
-    print("Tip: Use LaTeX/mathtext for special characters:")
+    from .config import get_recent_axis_names
+
+    s = (text or '').strip()
+    if len(s) >= 2 and s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+    if s.isdigit():
+        names = get_recent_axis_names(mode)
+        idx = int(s) - 1
+        if 0 <= idx < len(names):
+            picked = finalize_axis_label_text(names[idx])
+            print(f"Using recent name {idx + 1}: {picked}")
+            return picked
+    return text
+
+
+def _label_has_shortcuts(text: str) -> bool:
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\{(?:sub|super|italic)\([^)]*\)\}|"
+            r"\{(?:"
+            r"alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
+            r"Alpha|Beta|Gamma|Delta|Epsilon|Zeta|Eta|Theta|Iota|Kappa|Lambda|Mu|Nu|Xi|Pi|Rho|Sigma|Tau|Upsilon|Phi|Chi|Psi|Omega|"
+            r"AA|angstrom|deg|degree|bullet|pm|times|cdot|approx|infty|neq|le|ge|rightarrow|leftarrow"
+            r")\}",
+            text,
+        )
+    )
+
+
+def print_label_math_help(colorize: Optional[Callable[[str], str]] = None) -> None:
+    """Print math/science typing help for rename menus (subkey ``m``).
+
+    Covers ``{sub()}`` / ``{super()}`` / ``{italic()}``, Greek, and common
+    symbols. Uses ``safe_console_print`` for Windows console safety.
+    """
+    from .plot_modes.common.terminal import safe_console_print
+
+    safe_console_print("Math / science typing help (shortcuts → mathtext on the plot):")
     bodies = (
-        "Subscript: H$_2$O → H₂O  |  Superscript: m$^2$ → m²",
-        "Bullet: $\\bullet$ → •   |  Greek: $\\alpha$, $\\beta$  |  Angstrom: $\\AA$ → Å",
-        "Italic: $\\mathit{abc}$  |  Shortcut: {italic(abc)} → $\\mathit{abc}$",
-        "Shortcuts: g{super(-1)} → g$^{\\mathrm{-1}}$  |  Li{sub(2)}O → Li$_{\\mathrm{2}}$O",
+        "Sub/super:  Li{sub(2)}O → Li₂O   |   g{super(-1)} → g⁻¹   |   m{super(2)} → m²",
+        "Also LaTeX: H$_2$O  |  m$^2$  |  Å$^{-1}$",
+        "Italic:     {italic(d)}Q/{italic(d)}V  or  $\\mathit{d}$Q/$\\mathit{d}$V",
+        "Greek:      {alpha} {beta} {gamma} {delta} {epsilon} {theta} {lambda} {mu} {pi} {sigma} {omega}",
+        "            Capitals: {Gamma} {Delta} {Theta} {Lambda} {Sigma} {Omega} {Phi} {Psi}",
+        "Science:    {AA}/{angstrom} → Å  |  {deg} → °  |  {bullet}  |  {pm} ±  |  {times} ×  |  {cdot} ·",
+        "            {approx} ≈  |  {infty} ∞  |  {neq} ≠  |  {le} ≤  |  {ge} ≥",
+        "Examples:   Capacity (mAh g{super(-1)})   |   {alpha}-Li{sub(3)}PS{sub(4)}   |   2{theta} ({deg})",
     )
     prefix = "  "
     for body in bodies:
         line = colorize(body) if colorize else body
-        print(prefix + line)
+        safe_console_print(prefix + line)
+
+
+def print_label_latex_tips(colorize: Optional[Callable[[str], str]] = None) -> None:
+    """Alias for :func:`print_label_math_help` (kept for older call sites)."""
+    print_label_math_help(colorize=colorize)
 
 
 def convert_label_shortcuts(text: str) -> str:
-    """Convert shortcut syntax to LaTeX format for labels.
-    
-    Converts {super(...)}, {sub(...)}, and {italic(...)} shortcuts to LaTeX.
-    This allows easier input of mathematical notation without typing full LaTeX.
-    
-    Args:
-        text: Label text that may contain {super(...)}, {sub(...)}, or {italic(...)} shortcuts
-        
-    Returns:
-        Text with shortcuts converted to LaTeX format (sup/sub use \\mathrm{};
-        italic uses \\mathit{}).
-        
+    """Convert shortcut syntax to LaTeX/mathtext for labels.
+
+    Converts ``{super(...)}``, ``{sub(...)}``, ``{italic(...)}``, Greek letter
+    tokens (``{alpha}``, ``{beta}``, …), and common science symbols
+    (``{AA}``, ``{deg}``, ``{pm}``, …). Already-converted mathtext is left
+    unchanged (safe to run on style/session restore).
+
     Examples:
         >>> convert_label_shortcuts("g{super(-1)}")
         'g$^{\\\\mathrm{-1}}$'
         >>> convert_label_shortcuts("Li{sub(2)}FeSeO")
         'Li$_{\\\\mathrm{2}}$FeSeO'
-        >>> convert_label_shortcuts("H{sub(2)}O")
-        'H$_{\\\\mathrm{2}}$O'
         >>> convert_label_shortcuts("{italic(Fe)}")
         '$\\\\mathit{Fe}$'
+        >>> convert_label_shortcuts("{alpha}-phase")
+        '$\\\\alpha$-phase'
     """
     if not text:
         return text
 
-    # Convert {italic(...)} to $\\mathit{...}$ (math italic)
+    # Function-like shortcuts first (may contain greek names as literal args).
     text = re.sub(r'\{italic\(([^)]+)\)\}', r'$\\mathit{\1}$', text)
-
-    # Convert {super(...)} to $^{\mathrm{...}}$ to prevent italic rendering
-    # Pattern matches {super(anything inside)}
-    # Use \mathrm{} to ensure non-italic rendering unless explicitly specified
-    # Need to escape backslashes in replacement string for LaTeX commands
     text = re.sub(r'\{super\(([^)]+)\)\}', r'$^{\\mathrm{\1}}$', text)
-    
-    # Convert {sub(...)} to $_{\mathrm{...}}$ to prevent italic rendering
-    # Pattern matches {sub(anything inside)}
-    # Use \mathrm{} to ensure non-italic rendering unless explicitly specified
-    # Need to escape backslashes in replacement string for LaTeX commands
     text = re.sub(r'\{sub\(([^)]+)\)\}', r'$_{\\mathrm{\1}}$', text)
-    
+
+    # Bare science / greek tokens: {alpha}, {AA}, {deg}, …
+    _TOKEN_TO_MATH = {
+        "alpha": r"$\alpha$",
+        "beta": r"$\beta$",
+        "gamma": r"$\gamma$",
+        "delta": r"$\delta$",
+        "epsilon": r"$\epsilon$",
+        "zeta": r"$\zeta$",
+        "eta": r"$\eta$",
+        "theta": r"$\theta$",
+        "iota": r"$\iota$",
+        "kappa": r"$\kappa$",
+        "lambda": r"$\lambda$",
+        "mu": r"$\mu$",
+        "nu": r"$\nu$",
+        "xi": r"$\xi$",
+        "pi": r"$\pi$",
+        "rho": r"$\rho$",
+        "sigma": r"$\sigma$",
+        "tau": r"$\tau$",
+        "upsilon": r"$\upsilon$",
+        "phi": r"$\phi$",
+        "chi": r"$\chi$",
+        "psi": r"$\psi$",
+        "omega": r"$\omega$",
+        "Alpha": r"$\mathrm{A}$",
+        "Beta": r"$\mathrm{B}$",
+        "Gamma": r"$\Gamma$",
+        "Delta": r"$\Delta$",
+        "Epsilon": r"$\mathrm{E}$",
+        "Zeta": r"$\mathrm{Z}$",
+        "Eta": r"$\mathrm{H}$",
+        "Theta": r"$\Theta$",
+        "Iota": r"$\mathrm{I}$",
+        "Kappa": r"$\mathrm{K}$",
+        "Lambda": r"$\Lambda$",
+        "Mu": r"$\mathrm{M}$",
+        "Nu": r"$\mathrm{N}$",
+        "Xi": r"$\Xi$",
+        "Pi": r"$\Pi$",
+        "Rho": r"$\mathrm{P}$",
+        "Sigma": r"$\Sigma$",
+        "Tau": r"$\mathrm{T}$",
+        "Upsilon": r"$\Upsilon$",
+        "Phi": r"$\Phi$",
+        "Chi": r"$\mathrm{X}$",
+        "Psi": r"$\Psi$",
+        "Omega": r"$\Omega$",
+        "AA": r"$\mathrm{\AA}$",
+        "angstrom": r"$\mathrm{\AA}$",
+        "deg": r"$^{\circ}$",
+        "degree": r"$^{\circ}$",
+        "bullet": r"$\bullet$",
+        "pm": r"$\pm$",
+        "times": r"$\times$",
+        "cdot": r"$\cdot$",
+        "approx": r"$\approx$",
+        "infty": r"$\infty$",
+        "neq": r"$\neq$",
+        "le": r"$\leq$",
+        "ge": r"$\geq$",
+        "rightarrow": r"$\rightarrow$",
+        "leftarrow": r"$\leftarrow$",
+    }
+
+    def _replace_token(match: re.Match) -> str:
+        key = match.group(1)
+        return _TOKEN_TO_MATH.get(key, match.group(0))
+
+    text = re.sub(
+        r"\{("
+        + "|".join(re.escape(k) for k in sorted(_TOKEN_TO_MATH.keys(), key=len, reverse=True))
+        + r")\}",
+        _replace_token,
+        text,
+    )
     return text
+
+
+def finalize_axis_label_text(text: str) -> str:
+    """Convert label shortcuts then normalize for matplotlib (p/i/s/b-safe).
+
+    Idempotent on already-converted mathtext / plain strings. Use whenever a
+    label is stored, listed, or applied from style/session/undo so old
+    payloads that still contain ``{sub()}`` / ``{super()}`` render correctly.
+    """
+    if text is None:
+        return text
+    s = str(text)
+    if not s:
+        return s
+    return normalize_label_text(convert_label_shortcuts(s))
 
 
 def normalize_label_text(text: str) -> str:

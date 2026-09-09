@@ -5,7 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from ..common.size_spec import parse_positive_float, parse_size_spec
+from ..common.size_spec import (
+    canvas_applied_msg,
+    canvas_size_prompt,
+    fmt_inch,
+    fmt_inches_pair,
+    is_size_quit_token,
+    parse_positive_float,
+    parse_size_spec,
+)
 from ..common.terminal import colorize_prompt, safe_input
 from .layout import (
     _apply_group_layout_inches,
@@ -129,14 +137,16 @@ def print_operando_layout_status(
     layout = OperandoLayoutInches.read(fig, ax, cbar_ax, ec_ax)
     cw, ch = _get_fig_size(fig)
     print(f"\n── {title} ──")
-    print(f"  Canvas (figure):     {cw:.2f} x {ch:.2f} in")
+    print(f"  Canvas (figure):     {fmt_inches_pair(cw, ch)}")
     print(
-        f"  Operando (contour):  {layout.op_w_in:.2f} x {layout.op_h_in:.2f} in  (width x height)"
+        f"  Operando (contour):  {fmt_inches_pair(layout.op_w_in, layout.op_h_in)}  "
+        f"(width x height)"
     )
-    print(f"  Colorbar:            {layout.cb_w_in:.2f} in wide")
+    print(f"  Colorbar:            {fmt_inch(layout.cb_w_in)} wide")
     if ec_ax is not None:
         print(
-            f"  EC side panel:       {layout.ec_w_in:.2f} x {layout.op_h_in:.2f} in  (width x height)"
+            f"  EC side panel:       {fmt_inches_pair(layout.ec_w_in, layout.op_h_in)}  "
+            f"(width x height)"
         )
     print("  (Height is shared: contour, colorbar, and EC use the same panel height.)")
 
@@ -160,7 +170,7 @@ def _print_batch_layout_status(panels: Sequence, *, title: str) -> None:
     print(f"\n── {title} ──")
     print(f"  Canvas (figure):     {cw_text} in")
     print(f"  Operando (contour):  {op_w} x {op_h} in  (width x height)")
-    print(f"  Colorbar:            {layout.cb_w_in:.2f} in wide")
+    print(f"  Colorbar:            {fmt_inch(layout.cb_w_in)} wide")
     if ec_ax is not None:
         ec_w = summarize_values(
             [OperandoLayoutInches.read(p.fig, p.ax, p.cbar.ax, p.ec_ax).ec_w_in for p in panels]
@@ -250,12 +260,10 @@ def run_operando_size_menu(
         if action == "c":
             cur_w, cur_h = _get_fig_size(fig)
             spec = safe_input_fn(
-                colorize_prompt_fn(
-                    "Canvas size (e.g. '11 6', '6x4', 'w=11 h=6', q=back): "
-                ),
+                colorize_prompt_fn(canvas_size_prompt()),
                 cancel_on_interrupt=True,
             ).strip()
-            if not spec or spec.lower() == "q":
+            if is_size_quit_token(spec):
                 return False
             parsed = parse_size_spec(spec, cur_w, cur_h)
             if parsed is None:
@@ -264,10 +272,12 @@ def run_operando_size_menu(
             on_before_change()
             apply_canvas_preserving_panels(fig, ax, cbar_ax, ec_ax, new_w, new_h)
             on_after_change()
-            print(f"Canvas set to {new_w:.2f} x {new_h:.2f} in (panel inches preserved).")
+            print(
+                f"{canvas_applied_msg(new_w, new_h)} (panel inches preserved)."
+            )
             return True
         if action == "o":
-            print(f"Current operando width: {layout.op_w_in:.2f} in")
+            print(f"Current operando width: {fmt_inch(layout.op_w_in)}")
             val = parse_positive_float(
                 safe_input_fn(colorize_prompt_fn("Operando width inches (q=back): ")).strip(),
                 label="width",
@@ -277,13 +287,13 @@ def run_operando_size_menu(
             on_before_change()
             apply_operando_width(fig, ax, cbar_ax, ec_ax, val)
             on_after_change()
-            print(f"Operando width set to {val:.2f} in.")
+            print(f"Operando width set to {fmt_inch(val)}.")
             return True
         if action == "e":
             if ec_ax is None:
                 print("EC side panel not available.")
                 return True
-            print(f"Current EC width: {layout.ec_w_in:.2f} in")
+            print(f"Current EC width: {fmt_inch(layout.ec_w_in)}")
             val = parse_positive_float(
                 safe_input_fn(colorize_prompt_fn("EC width inches (q=back): ")).strip(),
                 label="width",
@@ -293,10 +303,10 @@ def run_operando_size_menu(
             on_before_change()
             apply_ec_width(fig, ax, cbar_ax, ec_ax, val)
             on_after_change()
-            print(f"EC width set to {val:.2f} in.")
+            print(f"EC width set to {fmt_inch(val)}.")
             return True
         if action == "h":
-            print(f"Current panel height: {layout.op_h_in:.2f} in")
+            print(f"Current panel height: {fmt_inch(layout.op_h_in)}")
             val = parse_positive_float(
                 safe_input_fn(
                     colorize_prompt_fn(
@@ -312,8 +322,8 @@ def run_operando_size_menu(
             on_after_change()
             op_h, cb_h, ec_h = panel_heights_inches(fig, ax, cbar_ax, ec_ax)
             print(
-                f"Panel height set to {val:.2f} in "
-                f"(contour {op_h:.2f}, colorbar {cb_h:.2f}, EC {ec_h:.2f} in)."
+                f"Panel height set to {fmt_inch(val)} "
+                f"(contour {fmt_inch(op_h)}, colorbar {fmt_inch(cb_h)}, EC {fmt_inch(ec_h)})."
             )
             return True
         if action == "s":
@@ -340,7 +350,7 @@ def run_operando_size_menu(
         print_operando_layout_status(fig, ax, cbar_ax, ec_ax)
         _size_submenu_options(ec_ax, colorize_menu=colorize_menu_fn)
         choice = safe_input_fn(colorize_prompt_fn("Size (c/o/e/h/s/q): ")).strip().lower()
-        if not choice or choice == "q":
+        if is_size_quit_token(choice) or choice == "q":
             break
         if choice not in ("c", "o", "e", "h", "s"):
             print("Unknown option.")
@@ -380,19 +390,17 @@ def run_operando_batch_size_menu(
         if action == "c":
             cur_w, cur_h = _get_fig_size(ref.fig)
             spec = safe_input_fn(
-                colorize_prompt_fn(
-                    "Canvas size for ALL plots (e.g. '11 6', '6x4', q=back): "
-                ),
+                colorize_prompt_fn(canvas_size_prompt(all_plots=True)),
                 cancel_on_interrupt=True,
             ).strip()
-            if not spec or spec.lower() == "q":
+            if is_size_quit_token(spec):
                 return False
             parsed = parse_size_spec(spec, cur_w, cur_h)
             if parsed is None:
                 return True
             w, h = max(MIN_CANVAS_IN, parsed[0]), max(MIN_CANVAS_IN, parsed[1])
             _mutate("canvas", (w, h))
-            print(f"Canvas set to {w:.2f} x {h:.2f} in on all {len(panels)} plots.")
+            print(canvas_applied_msg(w, h, n_plots=len(panels)))
             return True
         if action == "o":
             print_batch_scalar_status(
@@ -409,7 +417,7 @@ def run_operando_batch_size_menu(
             if val is None:
                 return False
             _mutate("op_w", val)
-            print(f"Operando width set to {val:.2f} in on all plots.")
+            print(f"Operando width set to {fmt_inch(val)} on all plots.")
             return True
         if action == "e":
             if ec_ax is None:
@@ -429,7 +437,7 @@ def run_operando_batch_size_menu(
             if val is None:
                 return False
             _mutate("ec_w", val)
-            print(f"EC width set to {val:.2f} in on all plots.")
+            print(f"EC width set to {fmt_inch(val)} on all plots.")
             return True
         if action == "h":
             print_batch_scalar_status(
@@ -450,7 +458,7 @@ def run_operando_batch_size_menu(
             if val is None:
                 return False
             _mutate("height", val)
-            print(f"Panel height set to {val:.2f} in on all plots.")
+            print(f"Panel height set to {fmt_inch(val)} on all plots.")
             return True
         if action == "s":
             factor = _parse_scale_factor(
@@ -471,13 +479,12 @@ def run_operando_batch_size_menu(
         _print_batch_layout_status(panels, title="Size (all plots)")
         _size_submenu_options(ec_ax, colorize_menu=colorize_menu_fn)
         choice = safe_input_fn(colorize_prompt_fn("Size (c/o/e/h/s/q): ")).strip().lower()
-        if not choice or choice == "q":
+        if is_size_quit_token(choice) or choice == "q":
             break
         if choice not in ("c", "o", "e", "h", "s"):
             print("Unknown option.")
             continue
         _change(choice)
-
 
 __all__ = [
     "OperandoLayoutInches",

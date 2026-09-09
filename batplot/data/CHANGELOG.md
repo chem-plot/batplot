@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.8.52] - 2026-08-08
+- Bug fixes
+
+
+## [1.8.51] - 2026-08-06
+- Bug fixes
+
+
+## [1.8.50] - 2026-08-02
+- Cosmetic changes of interactive interface
+- Better CIF file handling
+- Bug fixes
+- Added ``--strip-header N``: remove first N lines from a file or folder
+  (``--ext``; comma-separated ok) and export copies to a ``stripped/`` subfolder
+- XRD crosshair (XY + operando ``n``): when λ is known (``--wl`` / ``file:wl`` /
+  session), show 2θ, Q, and d together; without λ keep prior Q↔d / 2θ-only readout
+- Add ``scipy`` as a core dependency (operando ``pk`` peak search)
+- Operando ``pk`` peak search follows Options ``u`` axis units; with λ exports
+  2θ + Q + d together
+
+
+## [1.8.49] - 2026-07-30
+- GC/CPC interactive overview key `o`: per-cycle capacity & CE table
+  (respects CPC invert-efficiency), capacity retention over a cycle range,
+  summary stats, and CSV/TXT export. Also available in batch EC/CPC menus.
+
+
 ## [1.8.48] - 2026-07-29
 - Bug fixes on session reload
 

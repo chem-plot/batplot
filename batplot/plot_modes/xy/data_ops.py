@@ -13,7 +13,11 @@ import numpy as np  # type: ignore[import]
 
 
 def _fft_smooth(y: np.ndarray, points: int = 5, cutoff: float = 0.1) -> np.ndarray:
-    """Apply FFT filter smoothing to data."""
+    """Apply FFT low-pass smoothing to data.
+
+    ``points`` is accepted for call-site compatibility with the FFT menu but is
+    unused: the filter is controlled solely by ``cutoff`` (Nyquist fraction).
+    """
     n = y.size
     if n < 3:
         return y
@@ -21,7 +25,7 @@ def _fft_smooth(y: np.ndarray, points: int = 5, cutoff: float = 0.1) -> np.ndarr
     fft_vals = np.fft.rfft(y)
     freq = np.fft.rfftfreq(n)
     # Low-pass filter: zero out frequencies above cutoff
-    mask = freq <= cutoff
+    mask = freq <= float(cutoff)
     fft_vals[~mask] = 0
     # Inverse FFT
     smoothed = np.fft.irfft(fft_vals, n)
@@ -29,17 +33,29 @@ def _fft_smooth(y: np.ndarray, points: int = 5, cutoff: float = 0.1) -> np.ndarr
 
 
 def _adjacent_average_smooth(y: np.ndarray, points: int = 5) -> np.ndarray:
-    """Apply Adjacent-Averaging smoothing to data."""
+    """Apply Adjacent-Averaging smoothing to data (same length as input)."""
     n = y.size
     if n < points:
         return y
     if points < 2:
         return y
-    # Use convolution for moving average
-    kernel = np.ones(points) / points
-    # Pad edges
-    padded = np.pad(y, (points//2, points//2), mode='edge')
-    smoothed = np.convolve(padded, kernel, mode='valid')
+    # Use convolution for moving average; pad so output length == n for both
+    # odd and even windows (symmetric pad of points//2 each side with mode='same'
+    # would grow for even windows when combined with mode='valid').
+    kernel = np.ones(int(points), dtype=float) / float(points)
+    pad_left = (int(points) - 1) // 2
+    pad_right = int(points) - 1 - pad_left
+    padded = np.pad(y, (pad_left, pad_right), mode="edge")
+    smoothed = np.convolve(padded, kernel, mode="valid")
+    if smoothed.size != n:
+        # Fallback: force length match without shifting the series
+        if smoothed.size > n:
+            smoothed = smoothed[:n]
+        else:
+            out = np.empty(n, dtype=float)
+            out[: smoothed.size] = smoothed
+            out[smoothed.size :] = y[smoothed.size :]
+            return out
     return smoothed
 
 

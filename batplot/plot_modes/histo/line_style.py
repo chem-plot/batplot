@@ -121,22 +121,23 @@ def run_histo_line_style_menu(
                     ).strip()
                     if not fw_in or fw_in.lower() == "q":
                         break
-                    push_state()
                     try:
                         frame_w, tick_major, tick_minor = parse_frame_tick_widths(fw_in)
-                        apply_frame_and_tick_widths(
-                            [ax],
-                            frame_width=frame_w,
-                            major_width=tick_major,
-                            minor_width=tick_minor,
-                        )
-                        _after_change()
-                        print(
-                            f"Set frame width={frame_w}, major tick width={tick_major}, "
-                            f"minor tick width={tick_minor}"
-                        )
                     except ValueError:
                         print("Invalid numeric value(s).")
+                        continue
+                    push_state()
+                    apply_frame_and_tick_widths(
+                        [ax],
+                        frame_width=frame_w,
+                        major_width=tick_major,
+                        minor_width=tick_minor,
+                    )
+                    _after_change()
+                    print(
+                        f"Set frame width={frame_w}, major tick width={tick_major}, "
+                        f"minor tick width={tick_minor}"
+                    )
                 continue
             if sub == "g":
                 push_state()

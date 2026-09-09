@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional, cast
 
 import numpy as np
@@ -167,11 +168,16 @@ def _coerce_legend_color(color):
 
 
 def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
-    """Fetch stored legend title, falling back to current legend text or None."""
+    """Fetch stored legend title, falling back to current legend text or None.
+
+    Intentional empty string on the figure is preserved (not replaced by default).
+    """
     try:
-        title = getattr(fig, "_cpc_legend_title", None)
-        if isinstance(title, str) and title:
-            return title
+        if hasattr(fig, "_cpc_legend_title"):
+            title = getattr(fig, "_cpc_legend_title")
+            if title is None:
+                return default
+            return str(title)
     except Exception:
         pass
     try:
@@ -179,8 +185,10 @@ def _get_legend_title(fig, default: Optional[str] = None) -> Optional[str]:
             leg = ax.get_legend()
             if leg is not None:
                 title = leg.get_title().get_text()
-                if title:
-                    return title
+                if title is not None and str(title) != "":
+                    return str(title)
+                if title == "":
+                    return ""
     except Exception:
         pass
     return default
@@ -326,8 +334,9 @@ def _rebuild_legend(ax, ax2, file_data, preserve_position=True):
                 leg = ax.get_legend()
                 if leg:
                     leg.set_visible(False)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Do not swallow silently — reorder / style import depend on this path.
+        print(f"Warning: CPC legend rebuild failed: {exc}")
 
 
 def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
@@ -336,9 +345,16 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
     if leg_title is None:
         leg_title = _get_legend_title(fig, default=None)
 
+    from .legend_order import ensure_cpc_legend_file_order
+
+    order = ensure_cpc_legend_file_order(fig, file_data, ax=ax)
+    ordered_files = [
+        file_data[idx] for idx in order if 0 <= idx < len(file_data)
+    ]
+
     file_rows = []
     any_eff_visible = False
-    for file_info in file_data:
+    for file_info in ordered_files:
         sc_c = file_info.get("sc_charge")
         sc_d = file_info.get("sc_discharge")
         sc_e = file_info.get("sc_eff")
@@ -361,7 +377,11 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
             except Exception:
                 pass
 
-        raw_label = file_info.get("filename", "") or file_info.get("label", "")
+        raw_label = (
+            file_info.get("display_name")
+            or file_info.get("filename", "")
+            or file_info.get("label", "")
+        )
         if not raw_label:
             try:
                 raw_label = sc_c.get_label() or ""
@@ -369,7 +389,11 @@ def _build_compact_cpc_legend(ax, ax2, file_data, xy_in=None, leg_title=None):
                 raw_label = ""
         for suffix in (" (Chg)", " (Dch)", " (Eff)", " (chg)", " (dch)", " (eff)"):
             raw_label = raw_label.replace(suffix, "")
-        file_rows.append((color, raw_label.strip()))
+        # Prefer stem over raw basename with extension in compact rows.
+        cleaned = raw_label.strip()
+        if cleaned.lower().endswith((".csv", ".xlsx", ".xls", ".mpt")):
+            cleaned = os.path.splitext(cleaned)[0]
+        file_rows.append((color, cleaned))
 
         if sc_e is not None:
             try:

@@ -6,12 +6,14 @@ from typing import Callable
 
 from ...ui import position_bottom_xlabel, position_left_ylabel, position_top_xlabel
 from ...utils import (
-    convert_label_shortcuts,
-    normalize_label_text,
-    print_label_latex_tips,
+    finalize_axis_label_text,
+    print_label_math_help,
     print_recent_axis_names,
     remember_axis_name,
+    resolve_recent_axis_name,
 )
+
+_RECENT_MODE = "histo"
 from .plot import HistoState
 from .spines import ensure_histo_tick_state, reapply_histo_spine_layout
 
@@ -49,42 +51,66 @@ def run_histo_rename_menu(
     while True:
         print("\n\033[1mRename labels>\033[0m  Current:")
         print(f"  bottom x:  {state.style.xlabel or '(empty)'}")
-        print(f"  y-axis:    {state.style.ylabel or state.y_label_default()}")
+        print(f"  y-axis:    {state.style.ylabel if state.style.ylabel else '(empty)'}")
         print(f"  top title: {state.style.title or '(empty)'}")
         print(f"  top x:     {_top_x_display()}")
         choice = safe_input(
             colorize_prompt(
-                "Rename (x=bottom x, y=y-axis, q=return): "
+                "Rename (x=bottom x, y=y-axis, t=title, o=top x, s=recent, m=math help, q=return): "
             ),
             cancel_on_interrupt=True,
         ).strip().lower()
         if not choice or choice == "q":
             break
         if choice == "s":
-            print_recent_axis_names()
+            print_recent_axis_names(mode=_RECENT_MODE)
+            continue
+        if choice == "m":
+            print_label_math_help()
             continue
         if choice not in ("x", "y", "t", "o"):
             print("Unknown option.")
             continue
 
-        print_label_latex_tips()
         label_kind = choice
         while True:
             if label_kind == "x":
-                prompt = f"New bottom x-axis label [{state.style.xlabel}] (q=back): "
+                prompt = (
+                    f"New bottom x-axis label [{state.style.xlabel}] "
+                    f"(-=clear, number=recent, s=list, m=math help, q=back): "
+                )
             elif label_kind == "y":
-                prompt = f"New y-axis label [{state.style.ylabel}] (q=back): "
+                prompt = (
+                    f"New y-axis label [{state.style.ylabel}] "
+                    f"(-=clear, number=recent, s=list, m=math help, q=back): "
+                )
             elif label_kind == "t":
-                prompt = f"New top plot title [{state.style.title}] (q=back): "
+                prompt = (
+                    f"New top plot title [{state.style.title}] "
+                    f"(-=clear, number=recent, s=list, m=math help, q=back): "
+                )
             else:
-                prompt = f"New top x-axis label [{_top_x_display()}] (q=back): "
+                prompt = (
+                    f"New top x-axis label [{_top_x_display()}] "
+                    f"(-=clear, number=recent, s=list, m=math help, q=back): "
+                )
 
             raw = safe_input(colorize_prompt(prompt), cancel_on_interrupt=True).strip()
             if not raw or raw.lower() == "q":
                 break
+            if raw.lower() == "s":
+                print_recent_axis_names(mode=_RECENT_MODE)
+                continue
+            if raw.lower() == "m":
+                print_label_math_help()
+                continue
 
-            text = normalize_label_text(convert_label_shortcuts(raw))
-            remember_axis_name(text)
+            if raw == "-":
+                text = ""
+            else:
+                text = resolve_recent_axis_name(raw, mode=_RECENT_MODE)
+                text = finalize_axis_label_text(text)
+                remember_axis_name(text, mode=_RECENT_MODE)
             push_state()
             if label_kind == "x":
                 state.style.xlabel = text
@@ -94,10 +120,16 @@ def run_histo_rename_menu(
                 state.style.title = text
             else:
                 state.style.top_xlabel = text
-                ax._top_xlabel_text_override = text  # type: ignore[attr-defined]
+                if text:
+                    ax._top_xlabel_text_override = text  # type: ignore[attr-defined]
+                elif hasattr(ax, "_top_xlabel_text_override"):
+                    try:
+                        delattr(ax, "_top_xlabel_text_override")
+                    except Exception:
+                        ax._top_xlabel_text_override = ""  # type: ignore[attr-defined]
             refresh()
             _apply_histo_label_change(fig, ax, state)
-            print("Label updated.")
+            print("Label updated." if text else "Label cleared.")
 
 
 __all__ = ["run_histo_rename_menu"]

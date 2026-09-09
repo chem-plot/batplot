@@ -55,12 +55,30 @@ def run_batch_font_menu(
         _push_all()
         set_font_size_default(size)
         apply_font_size_to_artists(_all_artists(), size)
+        try:
+            from ..operando.ions_axis import restyle_ec_ion_annotations
+
+            for panel in panels:
+                ec = getattr(panel, "ec_ax", None)
+                if ec is not None:
+                    restyle_ec_ion_annotations(ec)
+        except Exception:
+            pass
         draw_panels()
 
     def _apply_weight(weight: str) -> None:
         _push_all()
         for panel in panels:
             apply_fig_font_weight(panel.fig, collect_artists(panel), weight)
+        try:
+            from ..operando.ions_axis import restyle_ec_ion_annotations
+
+            for panel in panels:
+                ec = getattr(panel, "ec_ax", None)
+                if ec is not None:
+                    restyle_ec_ion_annotations(ec)
+        except Exception:
+            pass
         draw_panels()
 
     def _toggle_highlight() -> None:
@@ -122,6 +140,7 @@ def run_batch_font_menu(
         apply_highlight_facecolor=_set_hl_fc,
         apply_highlight_alpha=_set_hl_alpha,
         apply_highlight_pad=_set_hl_pad,
+        highlight_fig=ref_fig,
     )
 
 

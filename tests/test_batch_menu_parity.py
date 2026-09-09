@@ -36,18 +36,20 @@ def test_ec_batch_menu_lists_tier_ab_keys(capsys):
     out = _strip_ansi(capsys.readouterr().out)
     for token in (
         "font", "line style", "spines/ticks", "spine colors", "legend",
-        "display chg/dch", "cycles/colors", "show/hide files",
+        "display (Chg/Dch)", "cycles/colors",
         "size",
-        "rename", "x range", "y range",
+        "rename", "x range", "y range", "overview",
         "export style", "import style", "save session", "undo",
     ):
         assert token in out, f"missing {token!r}"
+    assert "Not in batch" not in out
+    assert "show/hide files" not in out  # single-file: hidden (matches interactive)
     assert "rearrange legend" not in out
     assert "(ref)" not in out
     plt.close(fig)
 
 
-def test_ec_batch_menu_shows_rearrange_legend_for_multi_file(capsys):
+def test_ec_batch_menu_hides_top_level_rearrange_shows_v_for_multi_file(capsys):
     fig, ax = plt.subplots()
     (c1,) = ax.plot([0, 1], [0, 1])
     (d1,) = ax.plot([0, 1], [1, 0])
@@ -59,7 +61,10 @@ def test_ec_batch_menu_shows_rearrange_legend_for_multi_file(capsys):
     p = EcPanel(path="a.pkl", fig=fig, ax=ax, cycle_lines={1: {"charge": c1, "discharge": d1}}, file_data=file_data)
     _print_ec_batch_menu([p])
     out = _strip_ansi(capsys.readouterr().out)
-    assert "rearrange legend" in out
+    # Rearrange lives under h→ra only (not a top-level batch key).
+    assert "rearrange legend" not in out
+    assert "show/hide files" in out
+    assert "legend" in out
 
 
 def test_ec_batch_range_and_style_roundtrip():
@@ -103,12 +108,15 @@ def test_cpc_batch_menu_lists_tier_ab_keys(capsys):
     _print_cpc_batch_menu([p])
     out = _strip_ansi(capsys.readouterr().out)
     for token in (
-        "font", "line widths", "marker sizes", "colors", "display chg/dch",
-        "show/hide efficiency", "spines/ticks", "legend", "show/hide files",
+        "font", "line widths", "marker sizes", "colors", "display (Chg/Dch)",
+        "show/hide efficiency", "spines/ticks", "legend",
         "size",
         "rename labels", "x range", "y ranges", "invert efficiency",
+        "overview",
     ):
         assert token in out, f"missing {token!r}"
+    assert "Not in batch" not in out
+    assert "show/hide files" not in out  # single-file panel
     plt.close(fig)
 
 
@@ -149,10 +157,12 @@ def test_xy_batch_menu_lists_tier_b_keys(capsys):
     _print_xy_batch_menu([p])
     out = _strip_ansi(capsys.readouterr().out)
     for token in (
-        "colors", "font", "line style", "spines/ticks", "curve labels",
+        "colors", "font", "line style", "spines/ticks", "legend",
         "size", "rename labels", "x range", "y range", "peak finder",
+        "CIF ticks",
     ):
         assert token in out, f"missing {token!r}"
+    assert "Not in batch" not in out
     plt.close(fig)
 
 

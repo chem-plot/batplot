@@ -11,13 +11,15 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional, Sequence
 
 from ...utils import (
-    convert_label_shortcuts,
-    normalize_label_text,
-    print_label_latex_tips,
+    finalize_axis_label_text,
+    print_label_math_help,
     print_recent_axis_names,
     remember_axis_name,
+    resolve_recent_axis_name,
 )
 from ..common.sources import cif_present
+
+_RECENT_MODE = "xy"
 
 
 def run_xy_rename_menu(
@@ -45,17 +47,19 @@ def run_xy_rename_menu(
             rename_opts = "c=curve"
             if has_cif:
                 rename_opts += ", t=CIF phase label (same as cif→r)"
-            rename_opts += ", x=x-axis, y=y-axis, s=show recent, q=return"
+            rename_opts += ", x=x-axis, y=y-axis, s=show recent, m=math help, q=return"
             mode = safe_input(f"Rename ({rename_opts}): ").strip().lower()
             if mode == 'q':
                 break
             if mode == '':
                 continue
             if mode == 's':
-                print_recent_axis_names()
+                print_recent_axis_names(mode=_RECENT_MODE)
+                continue
+            if mode == 'm':
+                print_label_math_help()
                 continue
             if mode == 'c':
-                print_label_latex_tips()
                 while True:
                     idx_in = safe_input("Curve number to rename (q=back): ").strip()
                     if not idx_in or idx_in.lower() == 'q':
@@ -68,10 +72,16 @@ def run_xy_rename_menu(
                     if not (0 <= idx < len(labels)):
                         print("Invalid index.")
                         continue
-                    new_label = safe_input(f"New curve label [{labels[idx]}] (q=back): ")
+                    if idx >= len(label_text_objects):
+                        print("Invalid index (label artist missing).")
+                        continue
+                    new_label = safe_input(f"New curve label [{labels[idx]}] (m=math help, q=back): ")
                     if not new_label or new_label.lower() == 'q':
                         continue
-                    new_label = convert_label_shortcuts(new_label)
+                    if new_label.strip().lower() == 'm':
+                        print_label_math_help()
+                        continue
+                    new_label = finalize_axis_label_text(new_label)
                     push_state("rename-curve")
                     labels[idx] = new_label
                     label_text_objects[idx].set_text(f"{idx+1}: {new_label}")
@@ -96,28 +106,34 @@ def run_xy_rename_menu(
                     except ValueError:
                         print("Bad index.")
                         continue
-                    print_label_latex_tips()
                     while True:
-                        new_name = safe_input("New CIF phase label (q=back): ").strip()
+                        new_name = safe_input("New CIF phase label (m=math help, q=back): ").strip()
                         if not new_name or new_name.lower() == 'q':
                             break
-                        new_name = convert_label_shortcuts(new_name)
+                        if new_name.lower() == 'm':
+                            print_label_math_help()
+                            continue
+                        new_name = finalize_axis_label_text(new_name)
                         apply_cif_phase_label_rename(idx, new_name)
                         print(f"Phase {idx + 1} label updated.")
             elif mode in ('x','y'):
-                print("Enter new axis label (q=back).")
-                print_label_latex_tips()
+                print("Enter new axis label (q=back; number = recent name, s=list, m=math help; use \"quotes\" for a literal number).")
                 while True:
-                    if mode == 'x':
-                        current = ax.xaxis.label.get_text()
-                    else:
-                        current = ax.yaxis.label.get_text()
-                    new_axis = safe_input(f"New axis label [{current}] (q=back): ")
+                    from ..common.axis_state import primary_axis_label_text
+
+                    current = primary_axis_label_text(ax, mode)
+                    new_axis = safe_input(f"New axis label [{current}] (number=recent, s=list, m=math help, q=back): ")
                     if not new_axis or new_axis.lower() == 'q':
                         break
-                    new_axis = convert_label_shortcuts(new_axis)
-                    new_axis = normalize_label_text(new_axis)
-                    remember_axis_name(new_axis)
+                    if new_axis.strip().lower() == 's':
+                        print_recent_axis_names(mode=_RECENT_MODE)
+                        continue
+                    if new_axis.strip().lower() == 'm':
+                        print_label_math_help()
+                        continue
+                    new_axis = resolve_recent_axis_name(new_axis, mode=_RECENT_MODE)
+                    new_axis = finalize_axis_label_text(new_axis)
+                    remember_axis_name(new_axis, mode=_RECENT_MODE)
                     push_state("rename-axis")
                     # Freeze layout and preserve current pad via one-shot pending to avoid drift
                     try:
@@ -138,6 +154,16 @@ def run_xy_rename_menu(
                         except Exception:
                             pass
                         ax.xaxis.label.set_text(new_axis)
+                        try:
+                            ax._stored_xlabel = new_axis
+                        except Exception:
+                            pass
+                        # Clear sticky top override so duplicate top title follows rename
+                        try:
+                            if hasattr(ax, '_top_xlabel_text_override'):
+                                delattr(ax, '_top_xlabel_text_override')
+                        except Exception:
+                            pass
                         position_top_xlabel()
                         position_bottom_xlabel()
                     else:
@@ -146,6 +172,24 @@ def run_xy_rename_menu(
                         except Exception:
                             pass
                         ax.yaxis.label.set_text(new_axis)
+                        try:
+                            ax._stored_ylabel = new_axis
+                        except Exception:
+                            pass
+                        # Clear sticky right override (mirror x/top clear above).
+                        try:
+                            if hasattr(ax, "_right_ylabel_text_override"):
+                                delattr(ax, "_right_ylabel_text_override")
+                        except Exception:
+                            pass
+                        # Dual-Y twin must get the same rename.
+                        ax2 = getattr(fig, "_xy_ax2", None)
+                        if ax2 is not None:
+                            try:
+                                ax2.set_ylabel(new_axis)
+                                ax2._stored_ylabel = new_axis
+                            except Exception:
+                                pass
                         position_right_ylabel()
                         position_left_ylabel()
                 sync_fonts()

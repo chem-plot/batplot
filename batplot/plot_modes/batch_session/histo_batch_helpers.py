@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from typing import Callable, List, Sequence, Tuple
 
+from ..common.size_spec import (
+    canvas_applied_msg,
+    canvas_size_prompt,
+    current_canvas_status,
+    current_plot_frame_status,
+    is_size_quit_token,
+    panel_size_list_line,
+    parse_size_spec,
+    plot_frame_applied_msg,
+)
 from ..common.terminal import colorize_prompt, safe_input
 from ..histo.plot import HistoState, sync_histo_geometry
 from .batch_menu_helpers import summarize_values
@@ -27,7 +37,6 @@ def summarize_frame_inches(panels: Sequence[HistoPanel]) -> str:
     return summarize_values(labels, fmt="{}")
 
 
-from ..common.size_spec import parse_size_spec
 def set_frame_inches(fig, ax, w_in: float, h_in: float) -> None:
     """Set plot frame to absolute width/height in inches inside the current canvas."""
     fig_w, fig_h = fig.get_size_inches()
@@ -85,14 +94,14 @@ def _print_frame_status(panels: Sequence[HistoPanel]) -> None:
         p = panels[0]
         cw, ch = p.fig.get_size_inches()
         fw, fh = frame_inches(p.fig, p.ax)
-        print(f"Current canvas: {cw:.2f} x {ch:.2f} in")
-        print(f"Current plot frame: {fw:.2f} x {fh:.2f} in (W x H)")
+        print(current_canvas_status(cw, ch))
+        print(current_plot_frame_status(fw, fh))
         return
     print("Current sizes (new values apply to ALL plots):")
     for i, panel in enumerate(panels, 1):
         cw, ch = panel.fig.get_size_inches()
         fw, fh = frame_inches(panel.fig, panel.ax)
-        print(f"  [{i}] canvas {cw:.2f}×{ch:.2f} in, frame {fw:.2f}×{fh:.2f} in")
+        print(panel_size_list_line(i, canvas=(cw, ch), frame=(fw, fh)))
 
 
 def _print_canvas_status(panels: Sequence[HistoPanel]) -> None:
@@ -101,13 +110,13 @@ def _print_canvas_status(panels: Sequence[HistoPanel]) -> None:
     if same and panels:
         cw, ch = panels[0].fig.get_size_inches()
         fw, fh = frame_inches(panels[0].fig, panels[0].ax)
-        print(f"Current canvas size: {cw:.2f} x {ch:.2f} in (frame {fw:.2f} x {fh:.2f} in)")
+        print(current_canvas_status(cw, ch, frame=(fw, fh)))
         return
     print("Current canvas sizes (new values apply to ALL plots):")
     for i, panel in enumerate(panels, 1):
         cw, ch = panel.fig.get_size_inches()
         fw, fh = frame_inches(panel.fig, panel.ax)
-        print(f"  [{i}] canvas {cw:.2f}×{ch:.2f} in (frame {fw:.2f}×{fh:.2f} in)")
+        print(panel_size_list_line(i, canvas=(cw, ch), frame=(fw, fh)))
 
 
 def run_batch_plot_frame_menu(
@@ -123,16 +132,13 @@ def run_batch_plot_frame_menu(
         _print_frame_status(panels)
         try:
             spec = safe_input(
-                colorize_prompt(
-                    "Enter new plot frame size for ALL plots "
-                    "(e.g. '6 4', '3x3', 'w=6 h=4', 'scale=1.2', single width, q=back): "
-                ),
+                colorize_prompt(plot_frame_size_prompt(all_plots=True)),
                 cancel_on_interrupt=True,
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("Canceled.")
             return
-        if not spec or spec.lower() == "q":
+        if is_size_quit_token(spec):
             return
         parsed = parse_size_spec(spec, cur_w, cur_h)
         if parsed is None:
@@ -141,7 +147,7 @@ def run_batch_plot_frame_menu(
         push_all()
         apply_plot_frame_to_all(panels, new_w, new_h)
         draw_all()
-        print(f"Plot frame set to {new_w:.2f} x {new_h:.2f} in on all {len(panels)} plots.")
+        print(plot_frame_applied_msg(new_w, new_h, n_plots=len(panels)))
 
 
 def run_batch_canvas_menu(
@@ -157,16 +163,13 @@ def run_batch_canvas_menu(
         _print_canvas_status(panels)
         try:
             spec = safe_input(
-                colorize_prompt(
-                    "Enter new canvas size for ALL plots "
-                    "(e.g. '8 6', '6x4', 'w=6 h=5', 'scale=1.2', q=back): "
-                ),
+                colorize_prompt(canvas_size_prompt(all_plots=True)),
                 cancel_on_interrupt=True,
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("Canceled.")
             return
-        if not spec or spec.lower() == "q":
+        if is_size_quit_token(spec):
             return
         parsed = parse_size_spec(spec, cur_w, cur_h)
         if parsed is None:
@@ -178,7 +181,7 @@ def run_batch_canvas_menu(
         push_all()
         apply_canvas_to_all(panels, new_w, new_h)
         draw_all()
-        print(f"Canvas set to {new_w:.2f} x {new_h:.2f} in on all {len(panels)} plots.")
+        print(canvas_applied_msg(new_w, new_h, n_plots=len(panels)))
 
 
 def run_batch_histo_geom_menu(
@@ -194,7 +197,7 @@ def run_batch_histo_geom_menu(
             print("  " + colorize_menu(f"{key}: {desc}"))
         print("  " + colorize_menu("q: back"))
         choice = safe_input(colorize_prompt("Geom (p/c/q): ")).strip().lower()
-        if not choice or choice == "q":
+        if is_size_quit_token(choice) or choice == "q":
             break
         if choice == "p":
             run_batch_plot_frame_menu(panels, push_all=push_all, draw_all=draw_all)
@@ -212,8 +215,7 @@ def run_batch_histo_geom_menu(
         push_all()
         apply_plot_frame_to_all(panels, new_w, new_h)
         draw_all()
-        print(f"Plot frame set to {new_w:.2f} x {new_h:.2f} in on all {len(panels)} plots.")
-
+        print(plot_frame_applied_msg(new_w, new_h, n_plots=len(panels)))
 
 __all__ = [
     "apply_canvas_to_all",

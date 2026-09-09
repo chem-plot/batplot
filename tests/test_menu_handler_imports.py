@@ -120,6 +120,13 @@ def _names_defined_in_subtree(root: ast.AST) -> set[str]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     names.add(target.id)
+        elif isinstance(node, ast.ImportFrom):
+            # Function-local lazy imports (e.g. CPC add_file / legend_order).
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
     return names
 
 

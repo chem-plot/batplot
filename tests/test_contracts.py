@@ -113,7 +113,7 @@ def test_stale_modes_module_is_compatibility_only():
         module.handle_gc_mode(object())
 
 
-def test_manual_entrypoint_removed_and_flag_opens_pdf(monkeypatch):
+def test_manual_entrypoint_removed_and_flag_opens_docs_site(monkeypatch):
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     manifest = (root / "MANIFEST.in").read_text(encoding="utf-8")
@@ -135,7 +135,7 @@ def test_manual_entrypoint_removed_and_flag_opens_pdf(monkeypatch):
         parse_args(["--manual"])
 
     assert exc.value.code == 0
-    assert opened["url"].endswith("batplot_user_manual.pdf")
+    assert opened["url"] == "https://chem-plot.github.io/batplot/"
 
 
 def test_legacy_operando_ec_exports_layout_helpers():

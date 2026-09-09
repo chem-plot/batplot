@@ -8,13 +8,25 @@ import numpy as np  # type: ignore[import]
 import matplotlib.pyplot as plt  # type: ignore[import]
 from matplotlib.ticker import FuncFormatter, NullFormatter  # type: ignore[import-untyped]
 
-from ...ui import capture_axes_tick_locators, restore_axes_tick_locators, set_spine_side_color
+from ...ui import (
+    capture_axes_tick_locators,
+    resolve_spine_dump_color,
+    restore_axes_tick_locators,
+    set_spine_side_color,
+)
 from ...utils import natural_sort_key
 from ...ec_common import _default_ec_figsize
+from ..common.axis_state import capture_axis_wasd_state
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
 from ..common.fonts import collect_operando_font_artists
-from ..common.spines import current_tick_width
-from ..common.session_helpers import _current_tick_length
+from ..common.axis_state import primary_axis_label_text
+from ..common.spines import (
+    apply_wasd_spines,
+    apply_wasd_tick_params,
+    current_tick_width,
+    set_primary_axis_title,
+)
+from ..common.session_helpers import _apply_axes_bbox, _current_tick_length
 
 
 def _dqdv_2d_row_tick_indices(n_rows: int, max_ticks: int = 24) -> np.ndarray:
@@ -92,15 +104,24 @@ def _dqdv_2d_ensure_center_lines(cax, dv: float) -> None:
 
 
 def _dqdv_2d_restore_custom_labels(cax) -> None:
-    """Re-apply user-renamed axis labels after a data-only refresh."""
+    """Re-apply user-renamed axis labels after a data-only refresh.
+
+    Intentional empty strings must re-apply (falsy ``if labels.get(...)``
+    previously skipped cleared titles).
+    """
     labels = getattr(cax, "_custom_labels", None)
     if not isinstance(labels, dict):
         return
     try:
-        if labels.get("x"):
-            cax.set_xlabel(str(labels["x"]))
-        if labels.get("y"):
-            cax.set_ylabel(str(labels["y"]))
+        if "x" in labels and labels["x"] is not None:
+            text = str(labels["x"])
+            cax.set_xlabel(text)
+            # Keep store in sync so later WASD title-on does not revive stale text.
+            cax._stored_xlabel = text
+        if "y" in labels and labels["y"] is not None:
+            text = str(labels["y"])
+            cax.set_ylabel(text)
+            cax._stored_ylabel = text
     except Exception:
         pass
 
@@ -172,6 +193,105 @@ def _dqdv_interp_unique_sorted_x(x: np.ndarray, z: np.ndarray, gx: np.ndarray) -
         out[np.abs(gx - xu_arr[0]) < 1e-12] = zu_arr[0]
         return out
     return np.interp(gx, xu_arr, zu_arr, left=np.nan, right=np.nan)
+
+
+class _DqdvArrayLine:
+    """Minimal Line2D stand-in so 2D contour ``.pkl`` can rebuild ox without live EC."""
+
+    def __init__(self, x, y, *, visible: bool = True):
+        self._x = np.asarray(x, dtype=float).reshape(-1)
+        self._y = np.asarray(y, dtype=float).reshape(-1)
+        self._visible = bool(visible)
+
+    def get_xdata(self):
+        return self._x
+
+    def get_ydata(self):
+        return self._y
+
+    def get_visible(self):
+        return self._visible
+
+
+def _dqdv_serialize_file_data_source(file_data: Any) -> Optional[List[Dict[str, Any]]]:
+    """Pack cycle line x/y arrays for ``.pkl`` (ox rebuild after reload)."""
+    if not isinstance(file_data, list) or not file_data:
+        return None
+    out: List[Dict[str, Any]] = []
+    for f in file_data:
+        if not isinstance(f, dict):
+            continue
+        entry: Dict[str, Any] = {
+            "filename": f.get("filename"),
+            "display_name": f.get("display_name"),
+            "visible": bool(f.get("visible", True)),
+            "cycle_lines": {},
+        }
+        cl = f.get("cycle_lines") or {}
+        if not isinstance(cl, dict):
+            continue
+        for cyc, parts in cl.items():
+            if not isinstance(parts, dict):
+                continue
+            packed: Dict[str, Any] = {}
+            for role in ("charge", "discharge"):
+                ln = parts.get(role)
+                if ln is None:
+                    continue
+                try:
+                    from ..common.session_data_guarantee import line_display_and_full_xy
+
+                    # Prefer unfiltered originals so ox can widen past spike filters.
+                    _xd, _yd, x_full, y_full = line_display_and_full_xy(ln)
+                    packed[role] = {
+                        "x": x_full,
+                        "y": y_full,
+                        "visible": bool(ln.get_visible()),
+                    }
+                except Exception:
+                    continue
+            if packed:
+                entry["cycle_lines"][cyc] = packed
+        if entry["cycle_lines"]:
+            out.append(entry)
+    return out or None
+
+
+def _dqdv_deserialize_file_data_source(blob_src: Any) -> Optional[List[Dict[str, Any]]]:
+    """Rebuild array-backed file_data for potential-window rebuild after load."""
+    if not isinstance(blob_src, list) or not blob_src:
+        return None
+    out: List[Dict[str, Any]] = []
+    for f in blob_src:
+        if not isinstance(f, dict):
+            continue
+        entry: Dict[str, Any] = {
+            "filename": f.get("filename"),
+            "display_name": f.get("display_name"),
+            "visible": bool(f.get("visible", True)),
+            "cycle_lines": {},
+        }
+        cl = f.get("cycle_lines") or {}
+        if not isinstance(cl, dict):
+            continue
+        for cyc, parts in cl.items():
+            if not isinstance(parts, dict):
+                continue
+            packed: Dict[str, Any] = {}
+            for role in ("charge", "discharge"):
+                spec = parts.get(role)
+                if not isinstance(spec, dict):
+                    continue
+                packed[role] = _DqdvArrayLine(
+                    spec.get("x"),
+                    spec.get("y"),
+                    visible=bool(spec.get("visible", True)),
+                )
+            if packed:
+                entry["cycle_lines"][cyc] = packed
+        if entry["cycle_lines"]:
+            out.append(entry)
+    return out or None
 
 
 def _dqdv_butterfly_xz_from_line(
@@ -303,7 +423,7 @@ def bind_dqdv_2d_contour_figure(
         cfig._dqdv_2d_v_lo_orig = v_lo
         cfig._dqdv_2d_v_hi_orig = v_hi
     cfig._dqdv_2d_row_labels = [str(s) for s in row_labels]
-    cfig._dqdv_2d_zlabel = str(zlab or "dQ/dV")
+    cfig._dqdv_2d_zlabel = "dQ/dV" if zlab is None else str(zlab)
     cfig._dqdv_2d_axis_mapping_version = 2
     if file_data is not None:
         cfig._dqdv_2d_file_data = file_data
@@ -392,7 +512,8 @@ def reapply_dqdv_2d_contour_axes(fig, ax, im, cbar=None, *, style_mode: str = "m
     if dv <= 0 or not np.isfinite(dv):
         return
     row_labels = [str(s) for s in (getattr(fig, "_dqdv_2d_row_labels", None) or [])]
-    zlab = str(getattr(fig, "_dqdv_2d_zlabel", None) or "dQ/dV")
+    _z = getattr(fig, "_dqdv_2d_zlabel", None)
+    zlab = "dQ/dV" if _z is None else str(_z)
     try:
         Zm = np.ma.masked_invalid(np.asarray(im.get_array(), dtype=float))
     except Exception:
@@ -437,6 +558,17 @@ def build_dqdv_2d_snapshot(
     def _tick_length(axis_obj, which: str):
         return _current_tick_length(axis_obj, which)
     cbar_ax = getattr(cbar, "ax", None)
+    axes_bbox = None
+    try:
+        _bb = cax.get_position()
+        axes_bbox = {
+            "left": float(_bb.x0),
+            "right": float(_bb.x1),
+            "bottom": float(_bb.y0),
+            "top": float(_bb.y1),
+        }
+    except Exception:
+        axes_bbox = None
     snap: Dict[str, Any] = {
         "version": 1,
         "kind": "dqdv_2d_contour",
@@ -445,27 +577,35 @@ def build_dqdv_2d_snapshot(
         "v_hi": float(v_hi),
         "Z": np.array(arr, dtype=float, copy=True),
         "row_labels": [str(s) for s in row_labels],
-        "zlabel": str(zlab or "dQ/dV"),
+        "zlabel": "dQ/dV" if zlab is None else str(zlab),
         "cmap": str(cmap_name),
         "clim": tuple(float(x) for x in im.get_clim()),
         "figsize": [float(x) for x in cfig.get_size_inches()],
         "xlim": tuple(float(x) for x in cax.get_xlim()),
         "ylim": tuple(float(x) for x in cax.get_ylim()),
+        "axes_bbox": axes_bbox,
         "nx": int(getattr(cfig, "_dqdv_2d_nx", 320)),
         "v_lo_orig": float(getattr(cfig, "_dqdv_2d_v_lo_orig", v_lo)),
         "v_hi_orig": float(getattr(cfig, "_dqdv_2d_v_hi_orig", v_hi)),
+        # Source dQ/dV curves so ox can widen again after .pkl reload (BC: optional).
+        "source_file_data": _dqdv_serialize_file_data_source(
+            getattr(cfig, "_dqdv_2d_file_data", None)
+        ),
         "axis": {
-            "xlabel": cax.get_xlabel(),
-            "ylabel": cax.get_ylabel(),
+            "xlabel": primary_axis_label_text(cax, "x"),
+            "ylabel": primary_axis_label_text(cax, "y"),
             "xlabel_visible": bool(cax.xaxis.label.get_visible()),
             "ylabel_visible": bool(cax.yaxis.label.get_visible()),
             "x_labelpad": getattr(cax.xaxis, "labelpad", None),
             "y_labelpad": getattr(cax.yaxis, "labelpad", None),
+            # Additive BC: keep text when title was hidden at dump time.
+            "stored_xlabel": getattr(cax, "_stored_xlabel", None),
+            "stored_ylabel": getattr(cax, "_stored_ylabel", None),
         },
         "spines": {
             name: {
                 "linewidth": float(sp.get_linewidth()),
-                "color": sp.get_edgecolor(),
+                "color": resolve_spine_dump_color(cax, name, cfig),
                 "visible": bool(sp.get_visible()),
             }
             for name, sp in cax.spines.items()
@@ -497,7 +637,58 @@ def build_dqdv_2d_snapshot(
             "mode": getattr(cfig, "_colorbar_label_mode", "highlow"),
             "visible": bool(cbar_ax.get_visible()) if cbar_ax is not None else True,
         },
+        "title_offsets": {
+            "top_y": float(getattr(cax, "_top_xlabel_manual_offset_y_pts", 0.0) or 0.0),
+            "top_x": float(getattr(cax, "_top_xlabel_manual_offset_x_pts", 0.0) or 0.0),
+            "bottom_y": float(getattr(cax, "_bottom_xlabel_manual_offset_y_pts", 0.0) or 0.0),
+            "left_x": float(getattr(cax, "_left_ylabel_manual_offset_x_pts", 0.0) or 0.0),
+            "right_x": float(getattr(cax, "_right_ylabel_manual_offset_x_pts", 0.0) or 0.0),
+            "right_y": float(getattr(cax, "_right_ylabel_manual_offset_y_pts", 0.0) or 0.0),
+        },
     }
+    # Colorbar tick/label side (parity with operando dump; BC: optional).
+    try:
+        if cbar_ax is not None:
+            snap["colorbar"]["ticks_left"] = any(
+                getattr(tick, "tick1line", None) and tick.tick1line.get_visible()
+                for tick in cbar_ax.yaxis.get_major_ticks()
+            )
+            snap["colorbar"]["label_left"] = (
+                cbar_ax.yaxis.get_label_position() == "left"
+            )
+    except Exception:
+        pass
+    # Optional chrome (BC: older companions omit these keys).
+    try:
+        custom = getattr(cax, "_custom_labels", None)
+        if isinstance(custom, dict):
+            snap["custom_labels"] = {
+                k: (None if v is None else str(v)) for k, v in custom.items()
+            }
+    except Exception:
+        pass
+    try:
+        ts = getattr(cax, "_saved_tick_state", None)
+        # Persist any dict (including {}) so load does not invent defaults.
+        if isinstance(ts, dict):
+            snap["tick_state"] = dict(ts)
+    except Exception:
+        pass
+    try:
+        wasd = capture_axis_wasd_state(
+            cax,
+            tick_state=getattr(cax, "_saved_tick_state", None),
+            use_actual_major_visibility=True,
+        )
+        snap["wasd_state"] = wasd
+    except Exception:
+        pass
+    if snap.get("source_file_data") is None:
+        print(
+            "Warning: dQ/dV 2D session has no source cycle arrays. "
+            "Saving Z for the current potential window only — "
+            "widening ox after reload will not work until you re-open 2D from the EC dQ/dV menu."
+        )
     return snap
 
 
@@ -515,7 +706,10 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
         return None
     Z = np.asarray(blob["Z"], dtype=float)
     row_labels = [str(x) for x in (blob.get("row_labels") or [])]
-    zlab = str(blob.get("zlabel") or "dQ/dV")
+    if "zlabel" in blob and blob.get("zlabel") is not None:
+        zlab = str(blob.get("zlabel"))
+    else:
+        zlab = "dQ/dV"
     cmap = str(blob.get("cmap") or "viridis")
     figsize = blob.get("figsize")
     if not figsize:
@@ -543,11 +737,20 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
         pass
     if len(row_labels) != Zm.shape[0]:
         row_labels = [str(i) for i in range(Zm.shape[0])]
+    src = _dqdv_deserialize_file_data_source(blob.get("source_file_data"))
     bind_dqdv_2d_contour_figure(
         cfig, cax, im, v_lo, v_hi, row_labels,
-        zlab=str(blob.get("zlabel") or "dQ/dV"),
+        zlab=zlab,
         nx=int(blob.get("nx", 320)),
+        file_data=src,
     )
+    try:
+        if blob.get("v_lo_orig") is not None:
+            cfig._dqdv_2d_v_lo_orig = float(blob["v_lo_orig"])
+        if blob.get("v_hi_orig") is not None:
+            cfig._dqdv_2d_v_hi_orig = float(blob["v_hi_orig"])
+    except Exception:
+        pass
     cbar_ax = cfig.add_axes((0.0, 0.0, 0.01, 0.01))
 
     class _MockColorbar:
@@ -577,16 +780,44 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
         pass
     try:
         axis_cfg = blob.get("axis", {})
-        if axis_cfg.get("xlabel") is not None:
-            cax.set_xlabel(str(axis_cfg.get("xlabel") or ""))
-        if axis_cfg.get("ylabel") is not None:
-            cax.set_ylabel(str(axis_cfg.get("ylabel") or ""))
-        cax.xaxis.label.set_visible(bool(axis_cfg.get("xlabel_visible", True)))
-        cax.yaxis.label.set_visible(bool(axis_cfg.get("ylabel_visible", True)))
+        # Seed stored text before visibility so hide→show keeps titles.
+        if isinstance(axis_cfg.get("stored_xlabel"), str):
+            cax._stored_xlabel = axis_cfg["stored_xlabel"]
+        elif axis_cfg.get("xlabel") is not None:
+            cax._stored_xlabel = str(axis_cfg.get("xlabel") or "")
+        if isinstance(axis_cfg.get("stored_ylabel"), str):
+            cax._stored_ylabel = axis_cfg["stored_ylabel"]
+        elif axis_cfg.get("ylabel") is not None:
+            cax._stored_ylabel = str(axis_cfg.get("ylabel") or "")
+        set_primary_axis_title(
+            cax, "x",
+            on=bool(axis_cfg.get("xlabel_visible", True)),
+            stored_attr="_stored_xlabel",
+        )
+        set_primary_axis_title(
+            cax, "y",
+            on=bool(axis_cfg.get("ylabel_visible", True)),
+            stored_attr="_stored_ylabel",
+        )
         if axis_cfg.get("x_labelpad") is not None:
             cax.xaxis.labelpad = float(axis_cfg["x_labelpad"])
         if axis_cfg.get("y_labelpad") is not None:
             cax.yaxis.labelpad = float(axis_cfg["y_labelpad"])
+    except Exception:
+        pass
+    try:
+        custom = blob.get("custom_labels")
+        if isinstance(custom, dict):
+            cax._custom_labels = {
+                k: (None if v is None else str(v)) for k, v in custom.items()
+            }
+            _dqdv_2d_restore_custom_labels(cax)
+    except Exception:
+        pass
+    try:
+        ts = blob.get("tick_state")
+        if isinstance(ts, dict):
+            cax._saved_tick_state = dict(ts)
     except Exception:
         pass
     try:
@@ -631,23 +862,74 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
     except Exception:
         pass
     try:
+        # WASD after tick_params so side visibility/titles survive width restores.
+        wasd = blob.get("wasd_state")
+        # Any dict is authoritative; empty {} is a no-op for spine/tick apply.
+        if isinstance(wasd, dict):
+            apply_wasd_spines(cax, wasd)
+            apply_wasd_tick_params(cax, wasd)
+            bot = wasd.get("bottom") or {}
+            left = wasd.get("left") or {}
+            if "title" in bot:
+                set_primary_axis_title(
+                    cax, "x",
+                    on=bool(bot.get("title")),
+                    stored_attr="_stored_xlabel",
+                )
+            if "title" in left:
+                set_primary_axis_title(
+                    cax, "y",
+                    on=bool(left.get("title")),
+                    stored_attr="_stored_ylabel",
+                )
+            cax._top_xlabel_on = bool((wasd.get("top") or {}).get("title", False))
+            cax._right_ylabel_on = bool((wasd.get("right") or {}).get("title", False))
+            # Renames in custom_labels win over stored axis titles from dump.
+            _dqdv_2d_restore_custom_labels(cax)
+    except Exception:
+        pass
+    try:
         # Spine/tick/label colors AFTER tick_params, then finalize for p/i/s/b stability.
         from ...ui import finalize_spine_colors
 
+        ts = blob.get("tick_state")
+        if not isinstance(ts, dict):
+            ts = getattr(cax, "_saved_tick_state", None)
         for name, spec in (blob.get("spines", {}) or {}).items():
             if not isinstance(spec, dict) or spec.get("color") is None:
                 continue
             if cax.spines.get(name) is None:
                 continue
-            set_spine_side_color(cax, name, spec["color"], fig=cfig)
-        finalize_spine_colors(cfig, cax, draw=False)
+            set_spine_side_color(
+                cax, name, spec["color"], fig=cfig, tick_state=ts
+            )
+        finalize_spine_colors(cfig, cax, tick_state=ts, draw=False)
     except Exception:
         pass
     try:
         cb_cfg = blob.get("colorbar", {}) or {}
-        cbar_ax._colorbar_label = str(cb_cfg.get("label") or zlab)
+        if "label" in cb_cfg and cb_cfg.get("label") is not None:
+            cbar_ax._colorbar_label = str(cb_cfg.get("label"))
+        else:
+            cbar_ax._colorbar_label = str(zlab)
         cfig._colorbar_label_mode = cb_cfg.get("mode", "highlow")
         cbar_ax.set_visible(bool(cb_cfg.get("visible", True)))
+        if cb_cfg.get("ticks_left") is not None:
+            ticks_left = bool(cb_cfg["ticks_left"])
+            cbar_ax._colorbar_ticks_left = ticks_left
+            cbar_ax.yaxis.set_ticks_position("left" if ticks_left else "right")
+        if cb_cfg.get("label_left") is not None:
+            label_left = bool(cb_cfg["label_left"])
+            cbar_ax._colorbar_label_left = label_left
+            cbar_ax.yaxis.set_label_position("left" if label_left else "right")
+    except Exception:
+        pass
+    try:
+        from ..common.title_offsets import restore_title_offsets
+
+        offsets = blob.get("title_offsets")
+        if isinstance(offsets, dict) and offsets:
+            restore_title_offsets(cax, offsets)
     except Exception:
         pass
     try:
@@ -667,10 +949,15 @@ def restore_dqdv_2d_companion_figure(blob: Dict[str, Any]) -> Optional[Tuple[Any
     try:
         xlim = blob.get("xlim")
         ylim = blob.get("ylim")
-        if xlim and len(xlim) == 2:
+        if isinstance(xlim, (list, tuple)) and len(xlim) == 2:
             cax.set_xlim(float(xlim[0]), float(xlim[1]))
-        if ylim and len(ylim) == 2:
+        if isinstance(ylim, (list, tuple)) and len(ylim) == 2:
             cax.set_ylim(float(ylim[0]), float(ylim[1]))
+    except Exception:
+        pass
+    try:
+        # Restore plot-frame geometry after default subplots layout (BC: optional).
+        _apply_axes_bbox(cax, blob.get("axes_bbox"))
     except Exception:
         pass
     try:

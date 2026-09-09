@@ -31,6 +31,7 @@ from ..operando.style import build_operando_ec_style_config_v2
 from ..xy.interactive import normalize_xy_menu_kwargs
 from ..xy.style import export_style_config
 from . import menu_cpc, menu_ec, menu_operando, menu_xy
+from .dqdv_2d_batch_helpers import save_dqdv_2d_panel
 from .menu_histo import _save_histo_panel
 from .xy_batch_helpers import dump_xy_panel
 
@@ -106,11 +107,23 @@ def _apply_ec_import(panel, cfg: dict) -> bool | None:
     return menu_ec._apply_cfg(panel, cfg)
 
 
+def _strip_figure_geometry_keys(cfg: dict) -> None:
+    """Remove canvas/frame hitchhikers from a style-only (``ps``) payload."""
+    fig_block = cfg.get("figure")
+    if isinstance(fig_block, dict):
+        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+            fig_block.pop(key, None)
+        if not fig_block:
+            cfg.pop("figure", None)
+
+
 def _export_ec_style(panel, path: str, sub: str) -> None:
     cfg = _capture_ec(panel)
     cfg["kind"] = "ec_style_geom" if sub == "psg" else "ec_style"
     if sub == "ps":
         cfg.pop("geometry", None)
+        cfg.pop("xaxis_dual", None)
+        _strip_figure_geometry_keys(cfg)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 
@@ -138,6 +151,7 @@ def _export_cpc_style(panel, path: str, sub: str) -> None:
     cfg["kind"] = "cpc_style_geom" if sub == "psg" else "cpc_style"
     if sub == "ps":
         cfg.pop("geometry", None)
+        _strip_figure_geometry_keys(cfg)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 
@@ -232,6 +246,17 @@ _BATCH_HANDLERS: dict[str, BatchPanelStateHandler] = {
         restore=_restore_operando,
         apply_import=_apply_operando_import,
         save=menu_operando._save_operando_panel,
+        export_style=_export_operando_style,
+        load_import=_load_json_style,
+    ),
+    # Contour reuses operando capture/apply (includes cfg["dqdv_2d"]) but must
+    # save with kind=dqdv_2d_contour — never dump_operando_session.
+    "dqdv_2d_contour": BatchPanelStateHandler(
+        kind="dqdv_2d_contour",
+        capture=_capture_operando,
+        restore=_restore_operando,
+        apply_import=_apply_operando_import,
+        save=save_dqdv_2d_panel,
         export_style=_export_operando_style,
         load_import=_load_json_style,
     ),

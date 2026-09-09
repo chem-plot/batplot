@@ -173,17 +173,166 @@ def imk_stderr_guard() -> Iterator[None]:
             _imk_guard = None
 
 
+_CONSOLE_SAFE_REPLACEMENTS = (
+    ("→", "->"),  # right arrow
+    ("←", "<-"),  # left arrow
+    ("↔", "<->"),  # left-right arrow
+    ("✓", "[OK]"),  # check
+    ("✗", "[X]"),  # ballot x
+    ("✔", "[OK]"),  # heavy check
+    ("⚠", "!"),  # warning
+    ("θ", "theta"),
+    ("Θ", "Theta"),
+    ("λ", "lambda"),
+    ("Λ", "Lambda"),
+    ("µ", "u"),
+    ("μ", "u"),
+    ("σ", "sigma"),
+    ("Δ", "d"),
+    ("⁻", "-"),
+    ("¹", "1"),
+    ("²", "2"),
+    ("³", "3"),
+    ("₁", "1"),
+    ("₂", "2"),
+    ("Å", "A"),
+    ("•", "*"),
+    ("—", "-"),
+    ("–", "-"),
+    ("…", "..."),
+    ("≥", ">="),
+    ("≤", "<="),
+    ("≠", "!="),
+    ("≈", "~"),
+    ("×", "x"),
+    ("─", "-"),
+    ("│", "|"),
+    ("╭", "+"),
+    ("╮", "+"),
+    ("╯", "+"),
+    ("╰", "+"),
+    ("└", "+"),
+    ("┘", "+"),
+    ("┌", "+"),
+    ("┐", "+"),
+)
+
+
+def _stream_encoding(stream) -> str:
+    return (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+
+
+def stream_needs_console_safe(stream=None) -> bool:
+    """True when the stream is unlikely to accept full Unicode (e.g. cp1252)."""
+    enc = _stream_encoding(stream if stream is not None else sys.stdout)
+    if not enc or enc in ("utf8", "utf8sig", "utf"):
+        return False
+    return True
+
+
+def console_safe_text(text: str) -> str:
+    """Transliterate menu/banner characters that break classic Windows consoles."""
+    out = str(text)
+    for src, dst in _CONSOLE_SAFE_REPLACEMENTS:
+        if src in out:
+            out = out.replace(src, dst)
+    return out
+
+
+_orig_builtin_print = print
+_safe_builtins_installed = False
+
+
+def safe_console_print(*args, **kwargs) -> None:
+    """``print`` that never crashes on legacy Windows code pages (cp1252).
+
+    On non-UTF-8 consoles, transliterate common scientific/menu glyphs first.
+    Always fall back to ``errors='replace'`` if encoding still fails.
+    """
+    stream = kwargs.get("file", sys.stdout)
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    flush = bool(kwargs.get("flush", False))
+    parts = [str(a) for a in args]
+    if stream_needs_console_safe(stream):
+        parts = [console_safe_text(p) for p in parts]
+    try:
+        _orig_builtin_print(*parts, **kwargs)
+        return
+    except UnicodeEncodeError:
+        pass
+    text = sep.join(parts) + end
+    enc = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        safe = text.encode(enc, errors="replace").decode(enc, errors="replace")
+        stream.write(safe)
+        if flush:
+            try:
+                stream.flush()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            buf = getattr(stream, "buffer", None)
+            if buf is not None:
+                buf.write(text.encode(enc, errors="replace"))
+        except Exception:
+            pass
+
+
+def _enable_windows_vt_mode() -> None:
+    """Enable ANSI escape processing on modern Windows consoles (best-effort)."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # STD_OUTPUT_HANDLE = -11, ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+def install_safe_builtins() -> None:
+    """Route built-in ``print`` through :func:`safe_console_print` (once).
+
+    Called from the CLI entry so interactive menus and errors stay readable on
+    Windows cp1252 without editing every ``print`` call site.
+    """
+    global _safe_builtins_installed
+    if _safe_builtins_installed:
+        return
+    import builtins
+
+    _enable_windows_vt_mode()
+    builtins.print = safe_console_print  # type: ignore[assignment]
+    _safe_builtins_installed = True
+
+
 def safe_input(prompt: str = "", *, cancel_on_interrupt: bool = False) -> str:
     """Call ``input`` while suppressing harmless macOS IMK terminal warnings."""
     sys.stdout.flush()
     original_stderr = sys.stderr
     sys.stderr = FilterIMKWarning(original_stderr)
+    prompt_s = str(prompt)
+    if stream_needs_console_safe(sys.stdout):
+        prompt_s = console_safe_text(prompt_s)
     try:
-        return input(prompt)
+        try:
+            return input(prompt_s)
+        except UnicodeEncodeError:
+            # Prompt still not encodable — ASCII-replace then retry once.
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            prompt_s = prompt_s.encode(enc, errors="replace").decode(enc, errors="replace")
+            return input(prompt_s)
     except KeyboardInterrupt:
         if cancel_on_interrupt:
             try:
-                print()
+                safe_console_print()
             except Exception:
                 pass
             return ""
@@ -191,7 +340,7 @@ def safe_input(prompt: str = "", *, cancel_on_interrupt: bool = False) -> str:
     except EOFError:
         if cancel_on_interrupt:
             try:
-                print()
+                safe_console_print()
             except Exception:
                 pass
             return ""
@@ -228,7 +377,18 @@ def prompt_float(safe_input_fn, prompt_text: str, *, on_error: str = "Invalid nu
 
 
 def colorize_prompt(text: str) -> str:
-    """Colorize command keys in parenthesized prompts such as ``(s=size, q=return)``."""
+    """Colorize command keys in parenthesized prompts such as ``(s=size, q=return)``.
+
+    Also closes any open menu-description block (trailing dashed line) so the
+    input row is visually separated from the key list above.
+    """
+    try:
+        from .menu_rendering import menu_block_end
+
+        menu_block_end()
+    except Exception:
+        pass
+
     pattern = r"\(([a-z]+=[^,)]+(?:,\s*[a-z]+=[^,)]+)*|[a-z]+(?:/[a-z]+)+)\)"
 
     def colorize_match(match: re.Match) -> str:
@@ -286,6 +446,10 @@ __all__ = [
     "imk_stderr_guard",
     "is_imk_noise",
     "prompt_menu_key",
+    "console_safe_text",
+    "stream_needs_console_safe",
+    "safe_console_print",
+    "install_safe_builtins",
     "safe_input",
     "prompt_float",
     "colorize_prompt",

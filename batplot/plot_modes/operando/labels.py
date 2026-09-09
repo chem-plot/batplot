@@ -6,13 +6,15 @@ from ...ui import position_left_ylabel as _ui_position_left_ylabel
 from ...ui import position_right_ylabel as _ui_position_right_ylabel
 from ...ui import position_top_xlabel as _ui_position_top_xlabel
 from ...utils import (
-    convert_label_shortcuts,
-    normalize_label_text,
-    print_label_latex_tips,
+    finalize_axis_label_text,
+    print_label_math_help,
     print_recent_axis_names,
     remember_axis_name,
+    resolve_recent_axis_name,
 )
 from ..common.spines import keep_yaxis_label_on_side
+
+_RECENT_MODE = "operando"
 
 
 def run_operando_rename_menu(
@@ -23,6 +25,7 @@ def run_operando_rename_menu(
     safe_input,
     colorize_menu,
     colorize_prompt,
+    restore=None,
 ) -> None:
     """Run the operando-axis rename submenu."""
     try:
@@ -32,21 +35,24 @@ def run_operando_rename_menu(
         print("  " + colorize_menu("x: x-axis"))
         print("  " + colorize_menu("y: y-axis"))
         print("  " + colorize_menu("s: show recent axis names"))
+        print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
         print("  " + colorize_menu("q: back"))
-        print_label_latex_tips()
         while True:
-            sub = safe_input(colorize_prompt("Rename operando axes (x/y/s/q): ")).strip().lower()
+            sub = safe_input(colorize_prompt("Rename operando axes (x/y/s/m/q): ")).strip().lower()
             if not sub:
                 continue
             if sub == "q":
                 break
             if sub == "s":
-                print_recent_axis_names()
+                print_recent_axis_names(mode=_RECENT_MODE)
+                continue
+            if sub == "m":
+                print_label_math_help(colorize=colorize_menu)
                 continue
             if sub == "x":
-                _rename_operando_x(fig=fig, ax=ax, snapshot=snapshot, safe_input=safe_input)
+                _rename_operando_x(fig=fig, ax=ax, snapshot=snapshot, safe_input=safe_input, restore=restore)
             elif sub == "y":
-                _rename_operando_y(fig=fig, ax=ax, snapshot=snapshot, safe_input=safe_input)
+                _rename_operando_y(fig=fig, ax=ax, snapshot=snapshot, safe_input=safe_input, restore=restore)
             try:
                 fig.canvas.draw()
             except Exception:
@@ -63,6 +69,7 @@ def run_operando_ec_rename_menu(
     safe_input,
     colorize_menu,
     colorize_prompt,
+    restore=None,
 ) -> None:
     """Run the EC side-panel rename submenu."""
     if ec_ax is None:
@@ -75,21 +82,24 @@ def run_operando_ec_rename_menu(
         print("  " + colorize_menu("x: x-axis"))
         print("  " + colorize_menu("y: y-axis (mode-aware)"))
         print("  " + colorize_menu("s: show recent axis names"))
+        print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
         print("  " + colorize_menu("q: back"))
-        print_label_latex_tips()
         while True:
-            sub = safe_input(colorize_prompt("Rename EC axes (x/y/s/q): ")).strip().lower()
+            sub = safe_input(colorize_prompt("Rename EC axes (x/y/s/m/q): ")).strip().lower()
             if not sub:
                 continue
             if sub == "q":
                 break
             if sub == "s":
-                print_recent_axis_names()
+                print_recent_axis_names(mode=_RECENT_MODE)
+                continue
+            if sub == "m":
+                print_label_math_help(colorize=colorize_menu)
                 continue
             if sub == "x":
-                _rename_ec_x(fig=fig, ec_ax=ec_ax, snapshot=snapshot, safe_input=safe_input)
+                _rename_ec_x(fig=fig, ec_ax=ec_ax, snapshot=snapshot, safe_input=safe_input, restore=restore)
             elif sub == "y":
-                _rename_ec_y(fig=fig, ec_ax=ec_ax, snapshot=snapshot, safe_input=safe_input)
+                _rename_ec_y(fig=fig, ec_ax=ec_ax, snapshot=snapshot, safe_input=safe_input, restore=restore)
             try:
                 fig.canvas.draw()
             except Exception:
@@ -98,82 +108,129 @@ def run_operando_ec_rename_menu(
         print(f"Rename failed: {exc}")
 
 
-def _rename_operando_x(*, fig, ax, snapshot, safe_input) -> None:
+def _prompt_label(*, current: str, kind: str, safe_input) -> str | None:
+    """Return finalized label text, ``\"\"`` for clear, or ``None`` to abort."""
     while True:
-        current = ax.get_xlabel() or ""
-        label = safe_input(f"New operando X label (q=back, current='{current}'): ")
+        label = safe_input(
+            f"New {kind} label (number=recent, s=list, m=math help, -=clear, q=back, current='{current}'): "
+        )
         if not label or label.lower() == "q":
+            return None
+        if label.strip().lower() == "s":
+            print_recent_axis_names(mode=_RECENT_MODE)
+            continue
+        if label.strip().lower() == "m":
+            print_label_math_help()
+            continue
+        if label.strip() == "-":
+            return ""
+        label = resolve_recent_axis_name(label, mode=_RECENT_MODE)
+        label = finalize_axis_label_text(label)
+        remember_axis_name(label, mode=_RECENT_MODE)
+        return label
+
+
+def _rename_operando_x(*, fig, ax, snapshot, safe_input, restore=None) -> None:
+    from ..common.axis_state import primary_axis_label_text
+
+    while True:
+        current = primary_axis_label_text(ax, "x")
+        label = _prompt_label(current=current, kind="operando X", safe_input=safe_input)
+        if label is None:
             break
-        label = normalize_label_text(convert_label_shortcuts(label))
-        remember_axis_name(label)
         snapshot("rename-op-x")
         try:
             ax.set_xlabel(label)
+            ax._stored_xlabel = label
             ax._custom_labels["x"] = label
             _ui_position_top_xlabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
             print(f"Operando X label updated to: '{label}'")
         except Exception:
-            pass
+            if restore is not None:
+                try:
+                    restore()
+                except Exception:
+                    pass
 
 
-def _rename_operando_y(*, fig, ax, snapshot, safe_input) -> None:
+def _rename_operando_y(*, fig, ax, snapshot, safe_input, restore=None) -> None:
+    from ..common.axis_state import primary_axis_label_text
+
     while True:
-        current = ax.get_ylabel() or ""
-        label = safe_input(f"New operando Y label (q=back, current='{current}'): ")
-        if not label or label.lower() == "q":
+        current = primary_axis_label_text(ax, "y")
+        label = _prompt_label(current=current, kind="operando Y", safe_input=safe_input)
+        if label is None:
             break
-        label = normalize_label_text(convert_label_shortcuts(label))
-        remember_axis_name(label)
         snapshot("rename-op-y")
         try:
             ax.set_ylabel(label)
+            ax._stored_ylabel = label
             ax._custom_labels["y"] = label
             _ui_position_left_ylabel(ax, fig, getattr(ax, "_saved_tick_state", {}))
             print(f"Operando Y label updated to: '{label}'")
         except Exception:
-            pass
+            if restore is not None:
+                try:
+                    restore()
+                except Exception:
+                    pass
 
 
-def _rename_ec_x(*, fig, ec_ax, snapshot, safe_input) -> None:
+def _rename_ec_x(*, fig, ec_ax, snapshot, safe_input, restore=None) -> None:
+    from ..common.axis_state import primary_axis_label_text
+
     while True:
-        current = ec_ax.get_xlabel() or ""
-        label = safe_input(f"New EC X label (q=back, current='{current}'): ")
-        if not label or label.lower() == "q":
+        current = primary_axis_label_text(ec_ax, "x")
+        label = _prompt_label(current=current, kind="EC X", safe_input=safe_input)
+        if label is None:
             break
-        label = normalize_label_text(convert_label_shortcuts(label))
-        remember_axis_name(label)
         snapshot("rename-ec-x")
         try:
             ec_ax.set_xlabel(label)
+            ec_ax._stored_xlabel = label
             ec_ax._custom_labels["x"] = label
             _ui_position_top_xlabel(ec_ax, fig, getattr(ec_ax, "_saved_tick_state", {}))
             print(f"EC X label updated to: '{label}'")
         except Exception:
-            pass
+            if restore is not None:
+                try:
+                    restore()
+                except Exception:
+                    pass
 
 
-def _rename_ec_y(*, fig, ec_ax, snapshot, safe_input) -> None:
+def _rename_ec_y(*, fig, ec_ax, snapshot, safe_input, restore=None) -> None:
+    from ..common.axis_state import primary_axis_label_text
+
     while True:
-        current = ec_ax.get_ylabel() or ""
-        label = safe_input(f"New EC Y label (q=back, current='{current}'): ")
-        if not label or label.lower() == "q":
+        current = primary_axis_label_text(ec_ax, "y")
+        label = _prompt_label(current=current, kind="EC Y", safe_input=safe_input)
+        if label is None:
             break
-        label = normalize_label_text(convert_label_shortcuts(label))
-        remember_axis_name(label)
         snapshot("rename-ec-y")
         try:
-            ec_ax.set_ylabel(label)
             mode = getattr(ec_ax, "_ec_y_mode", "time")
             if mode == "ions":
+                # Ions: tags-only — do not overwrite time spine title / force visibility.
                 ec_ax._custom_labels["y_ions"] = label
+                print(f"EC ions tag updated to: '{label}' (axis title stays time)")
             else:
+                ec_ax.set_ylabel(label)
+                ec_ax._stored_ylabel = label
                 ec_ax._custom_labels["y_time"] = label
-            keep_yaxis_label_on_side(ec_ax, "right", visible=True)
-            if hasattr(ec_ax, "_right_ylabel_artist") and ec_ax._right_ylabel_artist is not None:
-                ec_ax._right_ylabel_artist.set_visible(False)
-            print(f"EC Y label updated to: '{label}'")
+                keep_yaxis_label_on_side(
+                    ec_ax, "right",
+                    visible=bool(getattr(ec_ax, "_right_ylabel_on", True)),
+                )
+                if hasattr(ec_ax, "_right_ylabel_artist") and ec_ax._right_ylabel_artist is not None:
+                    ec_ax._right_ylabel_artist.set_visible(False)
+                print(f"EC Y label updated to: '{label}'")
         except Exception:
-            pass
+            if restore is not None:
+                try:
+                    restore()
+                except Exception:
+                    pass
 
 
 __all__ = [

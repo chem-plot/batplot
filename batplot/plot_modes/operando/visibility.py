@@ -17,6 +17,7 @@ def run_visibility_menu(
     colorize_menu,
     colorize_prompt,
     colorize_inline_commands,
+    pop_undo=None,
 ) -> None:
     """Run the `v` visibility/colorbar submenu."""
     try:
@@ -28,6 +29,7 @@ def run_visibility_menu(
                 cbar=cbar,
                 ec_ax=ec_ax,
                 snapshot=snapshot,
+                pop_undo=pop_undo,
                 safe_input=safe_input,
                 colorize_menu=colorize_menu,
                 colorize_prompt=colorize_prompt,
@@ -40,6 +42,7 @@ def run_visibility_menu(
                 cbar=cbar,
                 ec_ax=ec_ax,
                 snapshot=snapshot,
+                pop_undo=pop_undo,
                 safe_input=safe_input,
                 colorize_menu=colorize_menu,
                 colorize_prompt=colorize_prompt,
@@ -50,11 +53,14 @@ def run_visibility_menu(
         print(f"Error toggling visibility: {exc}")
 
 
-def _run_dual_panel_visibility_menu(*, fig, ax, im, cbar, ec_ax, snapshot, safe_input, colorize_menu, colorize_prompt) -> None:
+def _run_dual_panel_visibility_menu(
+    *, fig, ax, im, cbar, ec_ax, snapshot, safe_input, colorize_menu, colorize_prompt, pop_undo=None
+) -> None:
     while True:
         cb_h_offset = getattr(cbar.ax, "_cb_h_offset_in", 0.0)
         ec_h_offset = getattr(ec_ax, "_ec_h_offset_in", 0.0)
         print(f"  Colorbar offset: {cb_h_offset:.3f}\", EC offset: {ec_h_offset:.3f}\"")
+        # colorize_menu opens the dashed frame; colorize_prompt closes it
         print("  " + colorize_menu("1: toggle colorbar"))
         print("  " + colorize_menu("2: toggle EC panel"))
         print("  " + colorize_menu("3: toggle both"))
@@ -67,16 +73,18 @@ def _run_dual_panel_visibility_menu(*, fig, ax, im, cbar, ec_ax, snapshot, safe_
         ).strip().lower()
         if not choice or choice == "q":
             break
-        snapshot("toggle-visibility")
         if choice == "1":
+            snapshot("toggle-visibility")
             cb_vis = cbar.ax.get_visible()
             cbar.ax.set_visible(not cb_vis)
             print(f"Colorbar: {'hidden' if cb_vis else 'shown'}")
         elif choice == "2":
+            snapshot("toggle-visibility")
             ec_vis = ec_ax.get_visible()
             ec_ax.set_visible(not ec_vis)
             print(f"EC panel: {'hidden' if ec_vis else 'shown'}")
         elif choice == "3":
+            snapshot("toggle-visibility")
             cb_vis = cbar.ax.get_visible()
             ec_vis = ec_ax.get_visible()
             new_vis = not (cb_vis and ec_vis)
@@ -84,10 +92,20 @@ def _run_dual_panel_visibility_menu(*, fig, ax, im, cbar, ec_ax, snapshot, safe_
             ec_ax.set_visible(new_vis)
             print(f"Colorbar & EC panel: {'shown' if new_vis else 'hidden'}")
         elif choice == "4":
+            snapshot("toggle-visibility")
             _toggle_colorbar_label_mode(fig=fig, im=im, cbar=cbar)
         elif choice == "5":
-            _set_colorbar_label_text(im=im, cbar=cbar, safe_input=safe_input, colorize_prompt=colorize_prompt)
+            _set_colorbar_label_text(
+                im=im, cbar=cbar, safe_input=safe_input, colorize_prompt=colorize_prompt,
+                snapshot=snapshot,
+            )
         elif choice == "m":
+            # Snapshot only if an offset actually changes (q with no nudge = no tip).
+            before_cb = float(getattr(cbar.ax, "_cb_h_offset_in", 0.0) or 0.0)
+            before_ec = (
+                float(getattr(ec_ax, "_ec_h_offset_in", 0.0) or 0.0)
+                if ec_ax is not None else None
+            )
             snapshot("move-horizontal-position")
             _run_horizontal_position_menu(
                 fig=fig,
@@ -99,6 +117,16 @@ def _run_dual_panel_visibility_menu(*, fig, ax, im, cbar, ec_ax, snapshot, safe_
                 colorize_prompt=colorize_prompt,
                 allow_ec=True,
             )
+            after_cb = float(getattr(cbar.ax, "_cb_h_offset_in", 0.0) or 0.0)
+            after_ec = (
+                float(getattr(ec_ax, "_ec_h_offset_in", 0.0) or 0.0)
+                if ec_ax is not None else None
+            )
+            if after_cb == before_cb and after_ec == before_ec and pop_undo is not None:
+                try:
+                    pop_undo()
+                except Exception:
+                    pass
         else:
             print("Invalid choice.")
 
@@ -115,9 +143,13 @@ def _run_operando_only_visibility_menu(
     colorize_menu,
     colorize_prompt,
     colorize_inline_commands,
+    pop_undo=None,
 ) -> None:
     while True:
+        from ..common.menu_rendering import menu_block_begin
+
         cb_h_offset = getattr(cbar.ax, "_cb_h_offset_in", 0.0)
+        menu_block_begin(force_new=True)
         print(colorize_inline_commands(
             f"Toggle: 1=colorbar visibility, 2=colorbar label mode, 3=colorbar label text, "
             f"m=move horizontal position (cb:{cb_h_offset:.3f}\"), q=back"
@@ -127,16 +159,21 @@ def _run_operando_only_visibility_menu(
         ).strip().lower()
         if not choice or choice == "q":
             break
-        snapshot("toggle-visibility")
         if choice == "1":
+            snapshot("toggle-visibility")
             cb_vis = cbar.ax.get_visible()
             cbar.ax.set_visible(not cb_vis)
             print(f"Colorbar: {'hidden' if cb_vis else 'shown'}")
         elif choice == "2":
+            snapshot("toggle-visibility")
             _toggle_colorbar_label_mode(fig=fig, im=im, cbar=cbar)
         elif choice == "3":
-            _set_colorbar_label_text(im=im, cbar=cbar, safe_input=safe_input, colorize_prompt=colorize_prompt)
+            _set_colorbar_label_text(
+                im=im, cbar=cbar, safe_input=safe_input, colorize_prompt=colorize_prompt,
+                snapshot=snapshot,
+            )
         elif choice == "m":
+            before_cb = float(getattr(cbar.ax, "_cb_h_offset_in", 0.0) or 0.0)
             snapshot("move-horizontal-position")
             _run_horizontal_position_menu(
                 fig=fig,
@@ -148,6 +185,12 @@ def _run_operando_only_visibility_menu(
                 colorize_prompt=colorize_prompt,
                 allow_ec=False,
             )
+            after_cb = float(getattr(cbar.ax, "_cb_h_offset_in", 0.0) or 0.0)
+            if after_cb == before_cb and pop_undo is not None:
+                try:
+                    pop_undo()
+                except Exception:
+                    pass
         else:
             print("Invalid choice.")
 
@@ -163,21 +206,33 @@ def _toggle_colorbar_label_mode(*, fig, im, cbar) -> None:
     print(f"Colorbar labels: {'High/Low mode' if new_mode == 'highlow' else 'Normal mode'}")
 
 
-def _set_colorbar_label_text(*, im, cbar, safe_input, colorize_prompt) -> None:
+def _set_colorbar_label_text(*, im, cbar, safe_input, colorize_prompt, snapshot=None) -> bool:
+    """Return True if at least one label change was applied."""
+    from ...utils import finalize_axis_label_text, print_label_math_help
+
+    changed = False
     while True:
         current_label = getattr(cbar.ax, "_colorbar_label", "Intensity")
         print(f"Current colorbar label: {current_label}")
         new_label = safe_input(
-            colorize_prompt("New colorbar label (q=back): ")
+            colorize_prompt("New colorbar label (m=math help, q=back): ")
         ).strip()
         if not new_label or new_label.lower() == "q":
             break
+        if new_label.lower() == "m":
+            print_label_math_help()
+            continue
+        new_label = finalize_axis_label_text(new_label)
+        if snapshot is not None and not changed:
+            snapshot("toggle-visibility")
         cbar.ax._colorbar_label = new_label
         try:
             _update_custom_colorbar(cbar.ax, im, label=new_label)
         except Exception:
             pass
         print(f"Colorbar label set to: {new_label}")
+        changed = True
+    return changed
 
 
 def _fig_dpi(fig) -> float:

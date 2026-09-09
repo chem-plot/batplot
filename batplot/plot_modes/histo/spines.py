@@ -11,6 +11,7 @@ from ..common.spines import (
     build_wasd_state,
     default_flat_tick_state,
     legacy_tick_state_to_flat,
+    set_primary_axis_title,
     sync_legacy_tick_keys,
     sync_tick_state_from_wasd,
 )
@@ -34,25 +35,27 @@ _LABEL_DEFAULTS = {"top": False, "bottom": True, "left": True, "right": False}
 
 def ensure_histo_tick_state(ax) -> Dict[str, bool]:
     tick_state = getattr(ax, "_saved_tick_state", None)
-    if not isinstance(tick_state, dict) or not tick_state:
+    if not isinstance(tick_state, dict):
         tick_state = default_flat_tick_state(
             tick_defaults=_TICK_DEFAULTS,
             label_defaults=_LABEL_DEFAULTS,
         )
-        ax._saved_tick_state = tick_state
     else:
+        # Dict (including {}) is authoritative — do not treat empty as missing.
         tick_state = legacy_tick_state_to_flat(
             tick_state,
             tick_defaults=_TICK_DEFAULTS,
             label_defaults=_LABEL_DEFAULTS,
         )
-        ax._saved_tick_state = tick_state
+    ax._saved_tick_state = tick_state
     sync_legacy_tick_keys(tick_state)
     return tick_state
 
 
 def ensure_histo_wasd(fig, ax, tick_state: Dict[str, bool]) -> Dict[str, Dict[str, bool]]:
     wasd = getattr(fig, "_histo_wasd_state", None)
+    # Rebuild when missing/non-dict OR empty {}. Empty cannot drive the t-menu
+    # (side keys required); full dumps always store all four sides.
     if not isinstance(wasd, dict) or not wasd:
         wasd = build_wasd_state(
             get_spine_visible=lambda side: bool(ax.spines.get(side).get_visible()) if ax.spines.get(side) else False,
@@ -109,13 +112,18 @@ def get_histo_spine_colors(fig) -> dict[str, str]:
 
 
 def capture_histo_spine_colors_from_ax(ax) -> dict[str, str]:
+    from ...ui import resolve_spine_dump_color
+
     out: dict[str, str] = {}
+    fig = getattr(ax, "figure", None)
     for side in _SPINE_SIDES:
         sp = ax.spines.get(side)
         if sp is None:
             continue
         try:
-            out[side] = _normalize_spine_color(sp.get_edgecolor())
+            raw = resolve_spine_dump_color(ax, side, fig)
+            if raw is not None:
+                out[side] = _normalize_spine_color(raw)
         except Exception:
             pass
     return out
@@ -177,7 +185,7 @@ def _apply_histo_spine_color(fig, ax, side: str, color) -> None:
     hex_color = _normalize_spine_color(color)
     tick_state = ensure_histo_tick_state(ax)
     try:
-        set_spine_side_color(ax, side, hex_color, fig=fig)
+        set_spine_side_color(ax, side, hex_color, fig=fig, tick_state=tick_state)
         if side == "top":
             ax._stored_top_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_top_xlabel(ax, fig, tick_state)
@@ -350,7 +358,9 @@ def apply_histo_spine_snapshot(fig, ax, snap: dict) -> None:
     elif isinstance(getattr(fig, "_histo_spine_colors", None), dict):
         pass
     else:
-        fig._histo_spine_colors = {}  # type: ignore[attr-defined]
+        # Old pickles/snaps without spine_colors: keep live artist colors.
+        captured = capture_histo_spine_colors_from_ax(ax)
+        fig._histo_spine_colors = dict(captured) if captured else {}  # type: ignore[attr-defined]
     apply_histo_line_style_to_ax(
         ax,
         {
@@ -384,28 +394,41 @@ def apply_histo_wasd(
         ax.tick_params(axis="both", which="minor", length=minor)
 
     bottom = wasd.get("bottom", {})
+    ax._stored_xlabel = state.style.xlabel  # type: ignore[attr-defined]
+    set_primary_axis_title(
+        ax, "x",
+        on=bool(bottom.get("title", True)),
+        stored_attr="_stored_xlabel",
+    )
     if bool(bottom.get("title", True)):
-        ax.set_xlabel(state.style.xlabel, fontsize=state.style.label_fontsize)
-        ax.xaxis.label.set_visible(True)
-    else:
-        if not hasattr(ax, "_stored_xlabel"):
-            ax._stored_xlabel = state.style.xlabel
-        ax.xaxis.label.set_visible(False)
+        try:
+            ax.xaxis.label.set_fontsize(state.style.label_fontsize)
+        except Exception:
+            pass
 
     top = wasd.get("top", {})
     ax._top_xlabel_on = bool(top.get("title", False))  # type: ignore[attr-defined]
     if state.style.top_xlabel:
         ax._top_xlabel_text_override = state.style.top_xlabel  # type: ignore[attr-defined]
+    elif hasattr(ax, "_top_xlabel_text_override"):
+        try:
+            delattr(ax, "_top_xlabel_text_override")
+        except Exception:
+            ax._top_xlabel_text_override = ""  # type: ignore[attr-defined]
 
     left = wasd.get("left", {})
-    ylab = state.style.ylabel or state.y_label_default()
+    # Keep intentional empty ylabel; do not invent "Count"/"Density" here.
+    ax._stored_ylabel = state.style.ylabel  # type: ignore[attr-defined]
+    set_primary_axis_title(
+        ax, "y",
+        on=bool(left.get("title", True)),
+        stored_attr="_stored_ylabel",
+    )
     if bool(left.get("title", True)):
-        ax.set_ylabel(ylab, fontsize=state.style.label_fontsize)
-        ax.yaxis.label.set_visible(True)
-    else:
-        if not hasattr(ax, "_stored_ylabel"):
-            ax._stored_ylabel = ylab
-        ax.yaxis.label.set_visible(False)
+        try:
+            ax.yaxis.label.set_fontsize(state.style.label_fontsize)
+        except Exception:
+            pass
 
     apply_changed_side_title_positions(
         changed_sides,
@@ -440,10 +463,17 @@ def reapply_histo_spine_layout(
 
 
 def sync_histo_spine_from_reference(ref_fig, ref_ax, targets: list[tuple[Any, Any]]) -> None:
-    snap = capture_histo_spine_snapshot(ref_fig, ref_ax)
+    """Copy WASD / ticks / offsets from ref — not colors or ``l`` widths (batch ``t``)."""
+    snap = dict(capture_histo_spine_snapshot(ref_fig, ref_ax))
+    # Keep peer colors panel-local (EC/CPC/operando ``t`` vs ``k``/``c`` parity).
+    snap.pop("spine_colors", None)
+    # Frame/tick widths belong to ``l`` — do not hitchhike onto batch ``t``.
+    snap.pop("spine_linewidths", None)
+    snap.pop("tick_widths", None)
     for fig, ax in targets:
         apply_histo_spine_snapshot(fig, ax, snap)
-        apply_histo_spine_colors(fig, ax, snap.get("spine_colors"))
+        peer_colors = get_histo_spine_colors(fig) or capture_histo_spine_colors_from_ax(ax)
+        apply_histo_spine_colors(fig, ax, peer_colors)
 
 
 def persist_histo_spine_before_redraw(
@@ -455,8 +485,15 @@ def persist_histo_spine_before_redraw(
     """Capture spine/tick state from the live axis before histogram redraw clears locators."""
     snap = capture_histo_spine_snapshot(fig, ax)
     if sync_targets:
+        # Peers get WASD/ticks/offsets; colors (``c``) and widths (``l``) stay local.
+        peer_snap = dict(snap)
+        peer_snap.pop("spine_colors", None)
+        peer_snap.pop("spine_linewidths", None)
+        peer_snap.pop("tick_widths", None)
         for tfig, tax in sync_targets:
-            apply_histo_spine_snapshot(tfig, tax, snap)
+            apply_histo_spine_snapshot(tfig, tax, peer_snap)
+            peer_colors = get_histo_spine_colors(tfig) or capture_histo_spine_colors_from_ax(tax)
+            apply_histo_spine_colors(tfig, tax, peer_colors)
     return snap
 
 

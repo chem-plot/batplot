@@ -10,6 +10,8 @@ import numpy as np
 from ...ui import capture_axes_tick_locators
 from ..common.font_extras import apply_font_extras_from_cfg, font_extras_export_dict
 from ..common.fonts import collect_fig_font_artists
+from ..common.line_dash import capture_dash_pattern
+from ..common.session_helpers import _current_tick_length
 from ..common.spines import current_tick_width
 from .layout import _ensure_fixed_params, _get_fig_size, _get_geometry_snapshot
 
@@ -19,18 +21,8 @@ def _axis_tick_width(axis_obj, which: str = 'major'):
 
 
 def _axis_tick_length(axis_obj, which: str = "major"):
-    try:
-        ticks = axis_obj.get_major_ticks() if which == "major" else axis_obj.get_minor_ticks()
-        if ticks:
-            return float(ticks[0].tick1line.get_markersize())
-    except Exception:
-        pass
-    try:
-        tick_kw = axis_obj._major_tick_kw if which == "major" else axis_obj._minor_tick_kw
-        length = tick_kw.get("size") or tick_kw.get("length")
-        return float(length) if length is not None else None
-    except Exception:
-        return None
+    # One capture rule with session/p/s/b (preserves length 0).
+    return _current_tick_length(axis_obj, which)
 
 
 def _actual_major_visibility(ax, side: str):
@@ -78,34 +70,46 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
     cb_label_text = str(getattr(cbar.ax, "_colorbar_label", cbar.ax.get_ylabel() or "Intensity"))
     cb_label_mode = getattr(fig, "_colorbar_label_mode", "highlow")
 
-    op_ts = getattr(ax, "_saved_tick_state", {})
+    op_ts = getattr(ax, "_saved_tick_state", {}) or {}
+    # Prefer on-screen major tick/label visibility (same as session dump).
+    op_left_ticks, op_left_labels = _actual_major_visibility(ax, "left")
+    op_top_ticks, op_top_labels = _actual_major_visibility(ax, "top")
+    op_bottom_ticks, op_bottom_labels = _actual_major_visibility(ax, "bottom")
+    op_right_ticks, op_right_labels = _actual_major_visibility(ax, "right")
+    def _axis_title_visible(axis_obj, which: str) -> bool:
+        try:
+            lbl = axis_obj.yaxis.label if which == "y" else axis_obj.xaxis.label
+            return bool(lbl.get_visible())
+        except Exception:
+            return bool(axis_obj.get_ylabel() if which == "y" else axis_obj.get_xlabel())
+
     op_wasd = {
         "left": {
             "spine": bool(ax.spines.get("left").get_visible() if ax.spines.get("left") else False),
-            "ticks": bool(op_ts.get("l_ticks", op_ts.get("ly", True))),
+            "ticks": _wasd_bool_from_state_or_actual(op_ts, "left", "ticks", op_left_ticks, True),
             "minor": bool(op_ts.get("mly", False)),
-            "labels": bool(op_ts.get("l_labels", op_ts.get("ly", True))),
-            "title": bool(ax.get_ylabel()),
+            "labels": _wasd_bool_from_state_or_actual(op_ts, "left", "labels", op_left_labels, True),
+            "title": _axis_title_visible(ax, "y"),
         },
         "top": {
             "spine": bool(ax.spines.get("top").get_visible() if ax.spines.get("top") else False),
-            "ticks": bool(op_ts.get("t_ticks", op_ts.get("tx", False))),
+            "ticks": _wasd_bool_from_state_or_actual(op_ts, "top", "ticks", op_top_ticks, False),
             "minor": bool(op_ts.get("mtx", False)),
-            "labels": bool(op_ts.get("t_labels", op_ts.get("tx", False))),
+            "labels": _wasd_bool_from_state_or_actual(op_ts, "top", "labels", op_top_labels, False),
             "title": bool(getattr(ax, "_top_xlabel_on", False)),
         },
         "bottom": {
             "spine": bool(ax.spines.get("bottom").get_visible() if ax.spines.get("bottom") else False),
-            "ticks": bool(op_ts.get("b_ticks", op_ts.get("bx", True))),
+            "ticks": _wasd_bool_from_state_or_actual(op_ts, "bottom", "ticks", op_bottom_ticks, True),
             "minor": bool(op_ts.get("mbx", False)),
-            "labels": bool(op_ts.get("b_labels", op_ts.get("bx", True))),
-            "title": bool(ax.get_xlabel()),
+            "labels": _wasd_bool_from_state_or_actual(op_ts, "bottom", "labels", op_bottom_labels, True),
+            "title": _axis_title_visible(ax, "x"),
         },
         "right": {
             "spine": bool(ax.spines.get("right").get_visible() if ax.spines.get("right") else False),
-            "ticks": bool(op_ts.get("r_ticks", op_ts.get("ry", False))),
+            "ticks": _wasd_bool_from_state_or_actual(op_ts, "right", "ticks", op_right_ticks, False),
             "minor": bool(op_ts.get("mry", False)),
-            "labels": bool(op_ts.get("r_labels", op_ts.get("ry", False))),
+            "labels": _wasd_bool_from_state_or_actual(op_ts, "right", "labels", op_right_labels, False),
             "title": bool(getattr(ax, "_right_ylabel_on", False)),
         },
     }
@@ -136,18 +140,21 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
                 "ticks": _wasd_bool_from_state_or_actual(ec_ts, "bottom", "ticks", ec_bottom_ticks, True),
                 "minor": bool(ec_ts.get("mbx", False)),
                 "labels": _wasd_bool_from_state_or_actual(ec_ts, "bottom", "labels", ec_bottom_labels, True),
-                "title": bool(ec_ax.get_xlabel()),
+                "title": _axis_title_visible(ec_ax, "x"),
             },
             "right": {
                 "spine": bool(ec_ax.spines.get("right").get_visible() if ec_ax.spines.get("right") else False),
                 "ticks": _wasd_bool_from_state_or_actual(ec_ts, "right", "ticks", ec_right_ticks, True),
                 "minor": bool(ec_ts.get("mry", False)),
                 "labels": _wasd_bool_from_state_or_actual(ec_ts, "right", "labels", ec_right_labels, True),
-                "title": bool(ec_ax.get_ylabel()),
+                "title": _axis_title_visible(ec_ax, "y"),
             },
         }
+        # Ions mode is overlay-only — do not rewrite WASD for tick labels.
     else:
         ec_wasd = {}
+
+    from ...ui import resolve_spine_dump_color
 
     op_spines = {}
     for name in ("bottom", "top", "left", "right"):
@@ -156,7 +163,7 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             op_spines[name] = {
                 "linewidth": float(sp.get_linewidth()),
                 "visible": bool(sp.get_visible()),
-                "color": sp.get_edgecolor(),
+                "color": resolve_spine_dump_color(ax, name, fig),
             }
     ec_spines = {}
     if ec_ax is not None:
@@ -166,7 +173,7 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
                 ec_spines[name] = {
                     "linewidth": float(sp.get_linewidth()),
                     "visible": bool(sp.get_visible()),
-                    "color": sp.get_edgecolor(),
+                    "color": resolve_spine_dump_color(ec_ax, name, fig),
                 }
 
     def _tw(axis_obj, which_axis: str = "x", which_tick: str = "major"):
@@ -211,7 +218,15 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             ln = ec_ax.lines[0]
         if ln is not None:
             try:
-                ec_curve = {"color": ln.get_color(), "linewidth": float(ln.get_linewidth())}
+                ec_curve = {
+                    "color": ln.get_color(),
+                    "linewidth": float(ln.get_linewidth()),
+                    "linestyle": ln.get_linestyle(),
+                    "dash_pattern": capture_dash_pattern(ln),
+                    "marker": ln.get_marker(),
+                    "markersize": ln.get_markersize(),
+                    "alpha": ln.get_alpha(),
+                }
             except Exception:
                 pass
 
@@ -221,12 +236,8 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         ec_ylim_cur = ec_ax.get_ylim()
         ec_reversed = bool(ec_ylim_cur[0] > ec_ylim_cur[1])
         ec_y_mode = getattr(ec_ax, "_ec_y_mode", "time")
-        ion_params = getattr(ec_ax, "_ion_params", None)
-        ions_abs = getattr(ec_ax, "_ions_abs", None)
-        try:
-            ions_abs_payload = np.asarray(ions_abs, float).tolist() if ions_abs is not None else None
-        except Exception:
-            ions_abs_payload = None
+        _ip = getattr(ec_ax, "_ion_params", None)
+        ion_params = dict(_ip) if isinstance(_ip, dict) else _ip
         ion_guides = []
         for gl in getattr(ec_ax, "_ion_guides", []) or []:
             try:
@@ -264,7 +275,6 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         ec_reversed = False
         ec_y_mode = "time"
         ion_params = None
-        ions_abs_payload = None
         ion_guides = []
         ion_annots = []
         ec_labelpads = {}
@@ -306,20 +316,62 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
     op_custom_labels = dict(getattr(ax, '_custom_labels', {'x': None, 'y': None}))
 
     cif_cfg = None
-    if getattr(ax, "_operando_cif_tick_series", None):
+    series = list(getattr(ax, "_operando_cif_tick_series", None) or [])
+
+    def _json_color(c):
+        try:
+            if isinstance(c, (list, tuple)) and len(c) >= 3:
+                return [float(c[0]), float(c[1]), float(c[2])] + (
+                    [float(c[3])] if len(c) > 3 else []
+                )
+        except Exception:
+            pass
+        return c
+
+    def _json_peaks(peaks):
+        try:
+            return [float(v) for v in list(peaks)]
+        except Exception:
+            return list(peaks) if peaks is not None else []
+
+    # Non-empty series: always export CIF metadata. Empty series: still embed
+    # tick_series=[] on psg so batch undo can clear a first interactive add.
+    # Style-only (.bps) with no CIF omits the block (legacy BC).
+    if series or exp_choice != "ps":
         cif_cfg = {
             "show_hkl": bool(getattr(fig, "_operando_cif_show_hkl", False)),
             "show_titles": bool(getattr(fig, "_operando_cif_show_titles", True)),
             "placement": str(getattr(fig, "_operando_cif_placement", "below")),
             "y_positions": list(getattr(fig, "_operando_cif_y_positions", [])),
-            "labels": [str(entry[0]) for entry in ax._operando_cif_tick_series],
-            "colors": [entry[-1] for entry in ax._operando_cif_tick_series],
+            "labels": [str(entry[0]) for entry in series],
+            "files": [str(entry[1]) for entry in series],
+            "colors": [_json_color(entry[-1]) for entry in series],
             "colormap": getattr(fig, "_operando_cif_colormap", None),
             "highlight": bool(getattr(fig, "_operando_cif_highlight", False)),
             "title_font": dict(getattr(fig, "_operando_cif_title_font", None) or {}),
             "title_visible": list(getattr(fig, "_operando_cif_title_visible", None) or []),
             "set_visible": list(getattr(fig, "_operando_cif_set_visible", None) or []),
         }
+        # Embed peak data in style+geometry (psg) and batch capture so p/i/b
+        # can round-trip CIF sets added interactively without re-reading files.
+        if exp_choice != "ps":
+            cif_cfg["tick_series"] = [
+                [
+                    str(e[0]),
+                    str(e[1]),
+                    _json_peaks(e[2]),
+                    (None if e[3] is None else float(e[3])),
+                    (None if e[4] is None else float(e[4])),
+                    _json_color(e[5]),
+                ]
+                for e in series
+            ]
+            try:
+                cif_cfg["hkl_label_map"] = dict(
+                    getattr(ax, "_operando_cif_hkl_label_map", None) or {}
+                )
+            except Exception:
+                cif_cfg["hkl_label_map"] = {}
 
     ec_payload = {
         "wasd_state": ec_wasd,
@@ -332,34 +384,39 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         },
         "curve": ec_curve,
         "grid": ec_grid,
-        "y_reversed": ec_reversed,
         "y_mode": ec_y_mode,
         "ion_params": ion_params,
-        "ions_abs": ions_abs_payload,
-        "prev_ec_xlim": tuple(getattr(ec_ax, "_prev_ec_xlim", ())) if ec_ax is not None and getattr(ec_ax, "_prev_ec_xlim", None) is not None else None,
-        "ions_xlim_expanded": bool(getattr(ec_ax, "_ions_xlim_expanded", False)) if ec_ax is not None else False,
+        # p/i contract: never embed ion time-series arrays (recompute on import).
+        # Session ``s`` still persists ions_abs via dump_operando_session.
         "ion_guides": ion_guides,
         "ion_annots": ion_annots,
         "visible": ec_vis,
         "labelpads": ec_labelpads,
         "title_offsets": ec_title_offsets,
         "custom_labels": ec_custom_labels,
-        "saved_time_ylim": saved_time_ylim,
     }
+    # View/limit bookkeeping is geometry (psg / session), not style-only ``ps``.
+    if exp_choice != "ps":
+        ec_payload["prev_ec_xlim"] = (
+            tuple(getattr(ec_ax, "_prev_ec_xlim", ()))
+            if ec_ax is not None and getattr(ec_ax, "_prev_ec_xlim", None) is not None
+            else None
+        )
+        ec_payload["ions_xlim_expanded"] = (
+            bool(getattr(ec_ax, "_ions_xlim_expanded", False)) if ec_ax is not None else False
+        )
+        ec_payload["saved_time_ylim"] = saved_time_ylim
+    else:
+        ec_payload["prev_ec_xlim"] = None
+        ec_payload["ions_xlim_expanded"] = False
+        ec_payload["saved_time_ylim"] = None
 
     cfg = {
         "kind": "operando_ec_style" if exp_choice == "ps" else "operando_ec_style_geom",
         "version": 2,
-        "figure": {"canvas_size": [fig_w, fig_h], "cb_visible": cb_vis, "cb_label_mode": cb_label_mode},
-        "geometry": {
-            "op_w_in": ax_w_in,
-            "op_h_in": ax_h_in,
-            "ec_w_in": ec_w_in,
-            "cb_w_in": cb_w_in,
-            "cb_gap_in": cb_gap_in,
-            "ec_gap_in": ec_gap_in,
-            "cb_h_offset": float(cb_h_offset),
-            "ec_h_offset": float(ec_h_offset) if ec_h_offset is not None else None,
+        "figure": {
+            "cb_visible": cb_vis,
+            "cb_label_mode": cb_label_mode,
         },
         "operando": {
             "cmap": cmap_name,
@@ -371,8 +428,6 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
                 "direction": getattr(fig, "_tick_direction", "out"),
                 "locator_state": op_tick_locator_state,
             },
-            "y_reversed": op_reversed,
-            "intensity_range": intensity_range,
             "labelpads": op_labelpads,
             "title_offsets": op_title_offsets,
             "custom_labels": op_custom_labels,
@@ -387,6 +442,23 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             "label_left": cb_label_left,
         },
     }
+    # Style+geometry (psg): persist canvas/panel inches, clim, reverse, axes limits.
+    # Style-only (ps): omit view-geometry so import (i) does not resize/reclim/flip.
+    if exp_choice != "ps":
+        cfg["figure"]["canvas_size"] = [fig_w, fig_h]
+        cfg["geometry"] = {
+            "op_w_in": ax_w_in,
+            "op_h_in": ax_h_in,
+            "ec_w_in": ec_w_in,
+            "cb_w_in": cb_w_in,
+            "cb_gap_in": cb_gap_in,
+            "ec_gap_in": ec_gap_in,
+            "cb_h_offset": float(cb_h_offset),
+            "ec_h_offset": float(ec_h_offset) if ec_h_offset is not None else None,
+        }
+        cfg["operando"]["y_reversed"] = op_reversed
+        cfg["operando"]["intensity_range"] = intensity_range
+        cfg["ec"]["y_reversed"] = ec_reversed
     default_ext = ".bps" if exp_choice == "ps" else ".bpsg"
     if exp_choice == "psg":
         cfg["axes_geometry"] = _get_geometry_snapshot(ax, ec_ax)
@@ -394,13 +466,16 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         cfg["cif"] = cif_cfg
     if getattr(fig, "_is_dqdv_2d_contour", False):
         try:
-            cfg["dqdv_2d"] = {
-                "v_lo": float(fig._dqdv_2d_v_lo),
-                "v_hi": float(fig._dqdv_2d_v_hi),
+            # Labels/zlabel are style; V_lo/V_hi rebuild the map → geometry only.
+            d2 = {
                 "row_labels": [str(s) for s in (fig._dqdv_2d_row_labels or [])],
                 "zlabel": str(getattr(fig, "_dqdv_2d_zlabel", "dQ/dV")),
                 "axis_mapping_version": int(getattr(fig, "_dqdv_2d_axis_mapping_version", 2)),
             }
+            if exp_choice == "psg":
+                d2["v_lo"] = float(fig._dqdv_2d_v_lo)
+                d2["v_hi"] = float(fig._dqdv_2d_v_hi)
+            cfg["dqdv_2d"] = d2
         except Exception:
             pass
     return cfg, default_ext

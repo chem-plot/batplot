@@ -28,7 +28,9 @@ from batplot.plot_modes.histo.wizard import HistoSetup
 
 def test_all_batch_kinds_registered():
     handlers = batch_state_handlers()
-    assert set(handlers) == {"xy", "ec_gc", "cpc", "operando_ec", "histo"}
+    assert set(handlers) == {
+        "xy", "ec_gc", "cpc", "operando_ec", "dqdv_2d_contour", "histo",
+    }
     for kind, handler in handlers.items():
         assert handler.kind == kind
         assert callable(handler.capture)
@@ -40,7 +42,7 @@ def test_all_batch_kinds_registered():
 
 
 def test_xy_pisb_roundtrip(tmp_path):
-    from tests.test_batch_session import _make_xy_pkl
+    from test_batch_session import _make_xy_pkl
 
     pkl = tmp_path / "xy.pkl"
     _make_xy_pkl(str(pkl))
@@ -95,7 +97,7 @@ def test_histo_pisb_roundtrip(tmp_path):
 
 
 def test_operando_pisb_roundtrip():
-    from tests.test_operando_batch_menu import _build_panel
+    from test_operando_batch_menu import _build_panel
 
     panel = _build_panel()
     try:
@@ -119,6 +121,11 @@ def _collect_pkl_paths(*roots: str) -> list[str]:
 
 @pytest.fixture(scope="module")
 def user_figures_pkls():
+    # Opt-in only: recursive OneDrive walks hang / take forever in default CI.
+    if os.environ.get("BATPLOT_RUN_USER_PKL_TESTS", "").lower() not in ("1", "true", "yes"):
+        pytest.skip(
+            "Set BATPLOT_RUN_USER_PKL_TESTS=1 to run local Figures .pkl batch p/i/s/b integration"
+        )
     roots = [
         os.environ.get(
             "BATPLOT_FIGURES_PKL_DIR",
@@ -135,12 +142,17 @@ def user_figures_pkls():
     return paths
 
 
+@pytest.mark.integration
 def test_user_figures_pkls_batch_pisb(user_figures_pkls):
-    """Optional integration: every user .pkl loads and passes batch p/i/s/b round-trip."""
+    """Optional integration: every user .pkl loads and passes batch p/i/s/b round-trip.
+
+    Disabled by default (``-m 'not integration'`` and ``BATPLOT_RUN_USER_PKL_TESTS``).
+    Unit round-trips above cover the commercial release gate.
+    """
     failures: list[tuple[str, str]] = []
     for path in user_figures_pkls:
         kind = detect_session_kind(path)
-        if kind is None or kind == "dqdv_2d_contour":
+        if kind is None:
             continue
         if kind not in batch_state_handlers():
             continue

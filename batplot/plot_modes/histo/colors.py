@@ -8,12 +8,13 @@ import matplotlib.pyplot as plt  # type: ignore[import]
 from matplotlib import colors as mcolors  # type: ignore[import]
 
 from ...color_utils import (
-    color_block,
     ensure_colormap,
     format_color_listing,
     get_colormap,
     get_user_color_list,
     manage_user_colors,
+    prompt_screen_color,
+    blank_means_back,
     palette_preview,
     resolve_color_token,
 )
@@ -79,6 +80,8 @@ def run_histo_color_menu(
     colorize_prompt: Callable[[str], str],
     apply_spine_color: Callable[[str, str], None] | None = None,
     finish_spine_change: Callable[[list[tuple[str, str]]], None] | None = None,
+    get_bar_alpha: Callable[[], float] | None = None,
+    set_bar_alpha: Callable[[float], None] | None = None,
 ) -> None:
     """Run the histogram colors submenu (bar, edge, spines, palettes, saved colors)."""
     palette_opts = histo_palette_options()
@@ -117,23 +120,11 @@ def run_histo_color_menu(
                 )
             )
 
-    while True:
-        bar_cur = get_bar_color()
-        edge_cur = get_edge_color()
-        print("\n\033[1mColors>\033[0m  Current:")
-        print(f"  bar:  {format_color_listing(bar_cur)}")
-        print(f"  edge: {format_color_listing(edge_cur)}")
-        spine_cols = get_histo_spine_colors(fig) or capture_histo_spine_colors_from_ax(ax)
-        if spine_cols:
-            key_map = {"top": "w", "left": "a", "bottom": "s", "right": "d"}
-            parts = [
-                f"{key_map[side]}:{spine_cols[side]}"
-                for side in ("top", "left", "bottom", "right")
-                if side in spine_cols
-            ]
-            if parts:
-                print(f"  spines: {' '.join(parts)}")
+    from ..common.menu_rendering import menu_block_begin
 
+    while True:
+        menu_block_begin(force_new=True)
+        print("\033[1mColors>\033[0m")
         user_colors = get_user_color_list(fig)
         if user_colors:
             print("Saved colors (refer as number or u#):")
@@ -149,28 +140,56 @@ def run_histo_color_menu(
                 print(f"      {preview}")
 
         c, r = "\033[96m", "\033[0m"
-        print(f"Bar/edge        : {c}bar:red{r}  {c}edge:#333{r}  {c}bar:2 edge:u3{r}")
-        print(f"Palette (bar)   : {c}viridis{r}  or  {c}3{r}  (palette number/name)")
-        print(f"Spine colors    : {c}w:red{r}  {c}a:#4561F7{r}  ({c}w{r}=top {c}a{r}=left {c}s{r}=bottom {c}d{r}=right)")
-        print(f"Other           : {c}u{r}=manage saved colors   {c}q{r}=back")
+        print()
+        print("How to set color:")
+        print(f"  bar/edge:  {c}bar:red{r}  {c}edge:#333{r}  {c}bar:2 edge:u3{r}")
+        if get_bar_alpha is not None and set_bar_alpha is not None:
+            print(f"  alpha:     {c}alpha:0.5{r}")
+        print(f"  palette:   {c}viridis{r}  or  {c}3{r}  (palette number/name)")
+        print(f"  spine:     {c}w:red{r}  {c}a:#4561F7{r}  ({c}w{r}=top {c}a{r}=left {c}s{r}=bottom {c}d{r}=right)")
+        print(
+            f"Other           : {c}v{r}: show current colors   "
+            f"{c}u{r}: edit saved colors   {c}e{r}: pick color from screen   {c}q{r}: back"
+        )
 
         try:
             line = safe_input(colorize_prompt("Colors> "), cancel_on_interrupt=True).strip()
         except (KeyboardInterrupt, EOFError):
             break
-        if not line or line.lower() == "q":
+        if line.lower() == "q" or blank_means_back(line):
             break
 
         low = line.lower()
+        if low == "v":
+            bar_cur = get_bar_color()
+            edge_cur = get_edge_color()
+            print("Current:")
+            print(f"  bar:  {format_color_listing(bar_cur)}")
+            print(f"  edge: {format_color_listing(edge_cur)}")
+            if get_bar_alpha is not None:
+                print(f"  alpha: {float(get_bar_alpha()):g}")
+            spine_cols = get_histo_spine_colors(fig) or capture_histo_spine_colors_from_ax(ax)
+            if spine_cols:
+                key_map = {"top": "w", "left": "a", "bottom": "s", "right": "d"}
+                parts = [
+                    f"{key_map[side]}:{spine_cols[side]}"
+                    for side in ("top", "left", "bottom", "right")
+                    if side in spine_cols
+                ]
+                if parts:
+                    print(f"  spines: {' '.join(parts)}")
+            continue
         if low == "u":
             manage_user_colors(fig)
+            continue
+        if low == "e":
+            prompt_screen_color(fig)
             continue
 
         tokens = line.split()
         is_spine = all(":" in t and t.split(":", 1)[0].lower() in _SPINE_KEYS for t in tokens if t)
         if is_spine and tokens:
-            push_state()
-            changed: list[tuple[str, str]] = []
+            planned: list[tuple[str, str]] = []
             for tok in tokens:
                 key_part, color_spec = tok.split(":", 1)
                 spine_name = _SPINE_KEYS[key_part.lower()]
@@ -178,10 +197,16 @@ def run_histo_color_menu(
                 if resolved is None:
                     print(f"Invalid color for {spine_name}: {color_spec}")
                     continue
+                planned.append((spine_name, resolved))
+            if not planned:
+                continue
+            push_state()
+            changed: list[tuple[str, str]] = []
+            for spine_name, resolved in planned:
                 try:
                     _apply_spine(spine_name, resolved)
                     changed.append((spine_name, resolved))
-                    print(f"Set {spine_name} spine to {color_block(resolved)} {resolved}")
+                    print(f"Set {spine_name} spine to {format_color_listing(resolved)}")
                 except Exception as exc:
                     print(f"Error setting {spine_name} color: {exc}")
             if changed:
@@ -200,17 +225,18 @@ def run_histo_color_menu(
             pal = resolve_palette_token(tokens[0], palette_index)
             if pal in plt.colormaps() or ensure_colormap(pal):
                 preview = palette_preview(pal)
-                print(f"Bar color from palette '{pal}': {color_block(resolved)} {resolved}")
+                print(f"Bar color from palette '{pal}': {format_color_listing(resolved)}")
                 if preview:
                     print(f"  {preview}")
             else:
-                print(f"Bar color: {color_block(resolved)} {resolved}")
+                print(f"Bar color: {format_color_listing(resolved)}")
             fig.canvas.draw_idle()
             continue
 
         if has_colon:
             bar_val: str | None = None
             edge_val: str | None = None
+            alpha_val: float | None = None
             spines: list[tuple[str, str]] = []
             for tok in tokens:
                 if ":" not in tok:
@@ -218,6 +244,20 @@ def run_histo_color_menu(
                     continue
                 key, color_spec = tok.split(":", 1)
                 key = key.lower()
+                if key == "alpha":
+                    if set_bar_alpha is None:
+                        print("Bar alpha is not available here.")
+                        continue
+                    try:
+                        alpha_val = float(color_spec)
+                    except ValueError:
+                        print(f"Invalid alpha: {color_spec}")
+                        continue
+                    if alpha_val < 0.0 or alpha_val > 1.0:
+                        print("Alpha must be between 0 and 1.")
+                        alpha_val = None
+                        continue
+                    continue
                 resolved = resolve_histo_color(color_spec, fig, palette_index)
                 if resolved is None:
                     print(f"Invalid color for {key}: {color_spec}")
@@ -229,35 +269,41 @@ def run_histo_color_menu(
                 elif key in _SPINE_KEYS:
                     spines.append((_SPINE_KEYS[key], resolved))
                 else:
-                    print(f"Unknown key '{key}'. Use bar, edge, or w/a/s/d.")
-            if bar_val is None and edge_val is None and not spines:
+                    print(f"Unknown key '{key}'. Use bar, edge, alpha, or w/a/s/d.")
+            if bar_val is None and edge_val is None and alpha_val is None and not spines:
                 continue
             push_state()
             if bar_val is not None:
                 set_bar_color(bar_val)
-                print(f"Bar: {color_block(bar_val)} {bar_val}")
+                print(f"Bar: {format_color_listing(bar_val)}")
             if edge_val is not None:
                 set_edge_color(edge_val)
-                print(f"Edge: {color_block(edge_val)} {edge_val}")
+                print(f"Edge: {format_color_listing(edge_val)}")
+            if alpha_val is not None and set_bar_alpha is not None:
+                set_bar_alpha(alpha_val)
+                print(f"Bar alpha: {alpha_val:g}")
             changed_spines: list[tuple[str, str]] = []
             for spine_name, resolved in spines:
                 try:
                     _apply_spine(spine_name, resolved)
                     changed_spines.append((spine_name, resolved))
-                    print(f"{spine_name} spine: {color_block(resolved)} {resolved}")
+                    print(f"{spine_name} spine: {format_color_listing(resolved)}")
                 except Exception as exc:
                     print(f"Error setting {spine_name} color: {exc}")
+            # Bar/edge/alpha live in style and need a redraw — do not skip when
+            # the same line also sets spine colors (old elif left patches stale).
+            if bar_val is not None or edge_val is not None or alpha_val is not None:
+                refresh()
             if changed_spines:
                 _finish_spine_change(changed_spines)
-            elif bar_val is not None or edge_val is not None:
-                refresh()
+            elif bar_val is not None or edge_val is not None or alpha_val is not None:
                 try:
                     fig.canvas.draw()
                 except Exception:
                     fig.canvas.draw_idle()
             continue
 
-        print("Unknown input. Use bar:color, edge:color, palette name, or spine keys.")
+        print("Unknown input. Use bar:color, edge:color, alpha:0.5, palette name, or spine keys.")
 
 
 __all__ = ["histo_palette_options", "resolve_histo_color", "run_histo_color_menu"]

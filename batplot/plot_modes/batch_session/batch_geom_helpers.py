@@ -5,7 +5,16 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Sequence, Tuple
 
-from ..common.size_spec import parse_size_spec
+from ..common.size_spec import (
+    canvas_applied_msg,
+    canvas_size_prompt,
+    current_canvas_status,
+    current_plot_frame_status,
+    is_size_quit_token,
+    panel_size_list_line,
+    parse_size_spec,
+    plot_frame_applied_msg,
+)
 from ..common.terminal import colorize_prompt, safe_input
 
 
@@ -68,15 +77,19 @@ def _print_frame_status(panels: Sequence, *, item_name: str = "plot") -> None:
     if same and panels:
         cw, ch = canvases[0]
         fw, fh = frames[0]
-        print(f"Current canvas (all plots): {cw:.2f} x {ch:.2f} in")
-        print(f"Current plot frame (all plots): {fw:.2f} x {fh:.2f} in (W x H)")
+        print(current_canvas_status(cw, ch, all_plots=True))
+        print(current_plot_frame_status(fw, fh, all_plots=True))
         return
     print(f"Current {item_name} sizes (new values apply to ALL plots):")
     for i, panel in enumerate(panels, 1):
         cw, ch = _panel_fig(panel).get_size_inches()
         fw, fh = frame_inches(_panel_fig(panel), _panel_ax(panel))
         label = os.path.basename(getattr(panel, "path", "") or "") or f"plot {i}"
-        print(f"  [{i}] canvas {cw:.2f}×{ch:.2f} in, frame {fw:.2f}×{fh:.2f} in  ({label})")
+        print(
+            panel_size_list_line(
+                i, canvas=(cw, ch), frame=(fw, fh), label=label
+            )
+        )
 
 
 def _print_canvas_status(panels: Sequence) -> None:
@@ -86,14 +99,18 @@ def _print_canvas_status(panels: Sequence) -> None:
     if same and panels:
         cw, ch = canvases[0]
         fw, fh = frames[0]
-        print(f"Current canvas (all plots): {cw:.2f} x {ch:.2f} in (frame {fw:.2f} x {fh:.2f} in)")
+        print(current_canvas_status(cw, ch, frame=(fw, fh), all_plots=True))
         return
     print("Current canvas sizes (new values apply to ALL plots):")
     for i, panel in enumerate(panels, 1):
         cw, ch = _panel_fig(panel).get_size_inches()
         fw, fh = frame_inches(_panel_fig(panel), _panel_ax(panel))
         label = os.path.basename(getattr(panel, "path", "") or "") or f"plot {i}"
-        print(f"  [{i}] canvas {cw:.2f}×{ch:.2f} in (frame {fw:.2f}×{fh:.2f} in)  ({label})")
+        print(
+            panel_size_list_line(
+                i, canvas=(cw, ch), frame=(fw, fh), label=label
+            )
+        )
 
 
 def apply_plot_frame_to_all(panels: Sequence, w_in: float, h_in: float) -> None:
@@ -122,16 +139,13 @@ def run_batch_plot_frame_menu(
         _print_frame_status(panels)
         try:
             spec = safe_input(
-                colorize_prompt(
-                    "Enter new plot frame size for ALL plots "
-                    "(e.g. '6 4', '3x3', 'w=6 h=4', 'scale=1.2', single width, q=back): "
-                ),
+                colorize_prompt(plot_frame_size_prompt(all_plots=True)),
                 cancel_on_interrupt=True,
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("Canceled.")
             return
-        if not spec or spec.lower() == "q":
+        if is_size_quit_token(spec):
             return
         parsed = parse_size_spec(spec, cur_w, cur_h)
         if parsed is None:
@@ -142,7 +156,7 @@ def run_batch_plot_frame_menu(
         if on_applied:
             on_applied()
         draw_all()
-        print(f"Plot frame set to {new_w:.2f} x {new_h:.2f} in on all {len(panels)} plots.")
+        print(plot_frame_applied_msg(new_w, new_h, n_plots=len(panels)))
 
 
 def run_batch_canvas_menu(
@@ -159,16 +173,13 @@ def run_batch_canvas_menu(
         _print_canvas_status(panels)
         try:
             spec = safe_input(
-                colorize_prompt(
-                    "Enter new canvas size for ALL plots "
-                    "(e.g. '8 6', '6x4', 'w=6 h=5', 'scale=1.2', q=back): "
-                ),
+                colorize_prompt(canvas_size_prompt(all_plots=True)),
                 cancel_on_interrupt=True,
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("Canceled.")
             return
-        if not spec or spec.lower() == "q":
+        if is_size_quit_token(spec):
             return
         parsed = parse_size_spec(spec, cur_w, cur_h)
         if parsed is None:
@@ -179,7 +190,7 @@ def run_batch_canvas_menu(
         if on_applied:
             on_applied()
         draw_all()
-        print(f"Canvas set to {new_w:.2f} x {new_h:.2f} in on all {len(panels)} plots.")
+        print(canvas_applied_msg(new_w, new_h, n_plots=len(panels)))
 
 
 def run_batch_geom_size_menu(
@@ -196,7 +207,7 @@ def run_batch_geom_size_menu(
         print("  " + colorize_menu("c: canvas size"))
         print("  " + colorize_menu("q: back"))
         choice = safe_input(colorize_prompt("Size (p/c/q): ")).strip().lower()
-        if not choice or choice == "q":
+        if is_size_quit_token(choice) or choice == "q":
             break
         if choice == "p":
             run_batch_plot_frame_menu(

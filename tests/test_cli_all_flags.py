@@ -77,6 +77,19 @@ def _run(argv):
         (["--all"], {"all": "all"}),
         (["--all", "xy"], {"all": "xy"}),
         (["f.xy", "--convert", "1.54", "q"], {"convert": ["1.54", "q"]}),
+        (["gc.csv", "--gc", "--cum"], {"gc": True, "cum": True}),
+        (
+            ["folder", "--ext", ".xy", "--convert", "0.26", "q", "--convert-ext", "qye"],
+            {"ext": ".xy", "convert": ["0.26", "q"], "convert_ext": "qye"},
+        ),
+        (
+            ["data.txt", "--strip-header", "5"],
+            {"strip_header": 5, "files": ["data.txt"]},
+        ),
+        (
+            ["folder", "--strip-header", "3", "--ext", ".xy,.dat"],
+            {"strip_header": 3, "ext": ".xy,.dat", "files": ["folder"]},
+        ),
         (["f.xy", "--extract-brml-scans"], {"extract_brml_scans": ""}),
         (["f.xy", "--extract-brml-scans", "outdir"], {"extract_brml_scans": "outdir"}),
         (["f.xy", "--fullprof", "1", "2", "3"], {"fullprof": [1.0, 2.0, 3.0]}),
@@ -112,7 +125,7 @@ def test_version_flag_exits_cleanly(capsys):
 
 
 def test_xy_route_flags_with_xaxis(workdir):
-    from tests.test_cli_smoke import _xrd_xy, _run as cli_run
+    from test_cli_smoke import _xrd_xy, _run as cli_run
 
     _xrd_xy(workdir / "a.xy")
     _xrd_xy(workdir / "b.xy")
@@ -125,7 +138,7 @@ def test_xy_route_flags_with_xaxis(workdir):
 
 
 def test_operando_average_and_sum_flags(workdir):
-    from tests.test_cli_smoke import _xrd_xy, _run as cli_run
+    from test_cli_smoke import _xrd_xy, _run as cli_run
 
     folder = workdir / "scans"
     folder.mkdir()
@@ -138,7 +151,7 @@ def test_operando_average_and_sum_flags(workdir):
 
 
 def test_convert_flag_exports_qye(workdir):
-    from tests.test_cli_smoke import _xrd_xy, _run as cli_run
+    from test_cli_smoke import _xrd_xy, _run as cli_run
 
     _xrd_xy(workdir / "a.xy")
     _xrd_xy(workdir / "b.xy")

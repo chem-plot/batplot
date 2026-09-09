@@ -7,7 +7,7 @@ import importlib.abc
 import importlib.machinery
 import sys
 
-__version__ = "1.8.48"
+__version__ = "1.8.52"
 
 
 _LEGACY_MODULE_ALIASES = {

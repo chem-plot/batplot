@@ -14,8 +14,12 @@ from matplotlib.ticker import (  # type: ignore[import-untyped]
     NullLocator,
 )
 
-from .colors import _iter_cycle_lines
-from .style import _apply_cycle_styles, apply_dual_top_axis_style
+from .colors import (
+    _apply_visible_cycle_numbers,
+    _iter_cycle_lines,
+)
+from .style import _apply_cycle_styles
+from ..common.spines import set_primary_axis_title
 from .legend import (
     _apply_file_display_names_to_legend,
     _apply_legend_position,
@@ -24,6 +28,7 @@ from .legend import (
     _sanitize_legend_offset,
 )
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg
+from ..common.line_dash import clear_dash_pattern, restore_dash_pattern
 from ..common.terminal import safe_input
 from ...ui import (
     finalize_spine_colors,
@@ -31,6 +36,8 @@ from ...ui import (
     position_left_ylabel as _ui_position_left_ylabel,
     position_right_ylabel as _ui_position_right_ylabel,
     position_top_xlabel as _ui_position_top_xlabel,
+    restore_axes_tick_locators,
+    sync_figure_geometry_caches,
 )
 from .interactive import (
     _apply_font_family,
@@ -152,17 +159,21 @@ def apply_ec_style_config(
 
     # --- Apply comprehensive style (no curve data) ---
     # Figure and font
+    # Canvas/frame geometry belongs to style+geometry (``.bpsg`` / ``ec_style_geom``).
+    # Style-only (``.bps`` / ``ec_style``) must not resize the figure (parity with operando/histo).
+    apply_canvas_geom = (kind == 'ec_style_geom')
     try:
         fig_cfg = cfg.get('figure', {})
         # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
-        axes_frac = fig_cfg.get('axes_fraction')
-        frame_size = fig_cfg.get('frame_size')
+        axes_frac = fig_cfg.get('axes_fraction') if apply_canvas_geom else None
+        frame_size = fig_cfg.get('frame_size') if apply_canvas_geom else None
 
-        canvas_size = fig_cfg.get('canvas_size')
-        if canvas_size and isinstance(canvas_size, list) and len(canvas_size) == 2:
-            # Use forward=False to prevent automatic subplot adjustment that can shift the plot
-            # We'll restore axes_fraction immediately after to set exact position
-            fig.set_size_inches(canvas_size[0], canvas_size[1], forward=False)
+        canvas_size = fig_cfg.get('canvas_size') if apply_canvas_geom else None
+        # Accept list or tuple (session dumps use tuples; JSON .bpsg uses lists).
+        if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
+            # forward=True so interactive/batch undo and .bpsg import resize the
+            # GUI window (parity with live g→c and dedicated EC undo).
+            fig.set_size_inches(canvas_size[0], canvas_size[1], forward=True)
 
         # Frame position: prefer axes_fraction (exact position), fall back to centering based on frame_size
         axes_position_changed = False
@@ -210,6 +221,9 @@ def apply_ec_style_config(
                     axes_position_changed = True
                     ax.set_position([left, bottom, w_frac, h_frac])
 
+        if apply_canvas_geom:
+            sync_figure_geometry_caches(fig, ax)
+
         font_cfg = cfg.get('font', {})
         if font_cfg.get('family'):
             _apply_font_family(ax, font_cfg['family'])
@@ -226,18 +240,26 @@ def apply_ec_style_config(
             pass
         axis_labels = cfg.get('axis_labels') or {}
         try:
+            from ...utils import finalize_axis_label_text
+
             if axis_labels.get('xlabel') is not None:
-                ax.set_xlabel(str(axis_labels['xlabel']))
+                text = finalize_axis_label_text(str(axis_labels['xlabel']))
+                ax.set_xlabel(text)
+                # Keep bookkeeping in sync so later WASD / p / i / s do not
+                # resurrect a stale label (batch rename peers).
+                ax._stored_xlabel = text
             if axis_labels.get('ylabel') is not None:
-                ax.set_ylabel(str(axis_labels['ylabel']))
+                text = finalize_axis_label_text(str(axis_labels['ylabel']))
+                ax.set_ylabel(text)
+                ax._stored_ylabel = text
         except Exception:
             pass
         axis_label_colors = cfg.get('axis_label_colors') or {}
         try:
-            if axis_label_colors.get('x'):
+            if axis_label_colors.get('x') is not None:
                 ax.xaxis.label.set_color(axis_label_colors['x'])
                 ax._stored_xlabel_color = axis_label_colors['x']
-            if axis_label_colors.get('y'):
+            if axis_label_colors.get('y') is not None:
                 ax.yaxis.label.set_color(axis_label_colors['y'])
                 ax._stored_ylabel_color = axis_label_colors['y']
         except Exception:
@@ -261,10 +283,19 @@ def apply_ec_style_config(
             left_s = wasd_state.get('left', {})
             right_s = wasd_state.get('right', {})
 
+            # Dual: never put capacity ticks/labels on primary top (ions on SecondaryAxis).
+            _xd_wasd = cfg.get('xaxis_dual') if isinstance(cfg.get('xaxis_dual'), dict) else {}
+            _dual_wasd = bool(_xd_wasd.get('mode') == 'dual')
             ax.tick_params(axis='x',
-                          top=bool(top_s.get('ticks', False)),
+                          top=(
+                              False if _dual_wasd
+                              else bool(top_s.get('ticks', False))
+                          ),
                           bottom=bool(bot_s.get('ticks', True)),
-                          labeltop=bool(top_s.get('labels', False)),
+                          labeltop=(
+                              False if _dual_wasd
+                              else bool(top_s.get('labels', False))
+                          ),
                           labelbottom=bool(bot_s.get('labels', True)))
             ax.tick_params(axis='y',
                           left=bool(left_s.get('ticks', True)),
@@ -273,15 +304,22 @@ def apply_ec_style_config(
                           labelright=bool(right_s.get('labels', False)))
 
             # Apply minor ticks - only set locator if minor ticks are enabled, otherwise clear it
-            if top_s.get('minor') or bot_s.get('minor'):
+            # Dual: top.minor is SecondaryAxis-only — do not enable primary top minors.
+            _prim_x_minor = bool(bot_s.get('minor')) or (
+                bool(top_s.get('minor')) and not _dual_wasd
+            )
+            if _prim_x_minor:
                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
             else:
-                # Clear minor locator if no minor ticks are enabled
+                # Clear minor locator if no minor ticks are enabled on primary
                 ax.xaxis.set_minor_locator(NullLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
             ax.tick_params(axis='x', which='minor',
-                          top=bool(top_s.get('minor', False)),
+                          top=(
+                              False if _dual_wasd
+                              else bool(top_s.get('minor', False))
+                          ),
                           bottom=bool(bot_s.get('minor', False)),
                           labeltop=False, labelbottom=False)
 
@@ -297,23 +335,42 @@ def apply_ec_style_config(
                           right=bool(right_s.get('minor', False)),
                           labelleft=False, labelright=False)
 
-            # Apply axis titles
-            ax._top_xlabel_on = bool(top_s.get('title', False))
+            # Apply axis titles (all four sides — match session: clear text when hidden)
+            # Dual top title is SecondaryAxis — never enable capacity duplicate.
+            _xd_early = cfg.get('xaxis_dual') if isinstance(cfg.get('xaxis_dual'), dict) else {}
+            _will_dual = bool(_xd_early.get('mode') == 'dual')
+            ax._top_xlabel_on = False if _will_dual else bool(top_s.get('title', False))
             ax._right_ylabel_on = bool(right_s.get('title', False))
+            # Key-presence + store/clear (match apply_ec_wasd_chrome / interactive t).
+            if 'title' in bot_s:
+                set_primary_axis_title(
+                    ax, "x",
+                    on=bool(bot_s.get('title')),
+                    stored_attr="_stored_xlabel",
+                )
+            if 'title' in left_s:
+                set_primary_axis_title(
+                    ax, "y",
+                    on=bool(left_s.get('title')),
+                    stored_attr="_stored_ylabel",
+                )
 
-            # Update tick_state for consistency
-            tick_state['t_ticks'] = bool(top_s.get('ticks', False))
-            tick_state['t_labels'] = bool(top_s.get('labels', False))
-            tick_state['b_ticks'] = bool(bot_s.get('ticks', True))
-            tick_state['b_labels'] = bool(bot_s.get('labels', True))
-            tick_state['l_ticks'] = bool(left_s.get('ticks', True))
-            tick_state['l_labels'] = bool(left_s.get('labels', True))
-            tick_state['r_ticks'] = bool(right_s.get('ticks', False))
-            tick_state['r_labels'] = bool(right_s.get('labels', False))
-            tick_state['mtx'] = bool(top_s.get('minor', False))
-            tick_state['mbx'] = bool(bot_s.get('minor', False))
-            tick_state['mly'] = bool(left_s.get('minor', False))
-            tick_state['mry'] = bool(right_s.get('minor', False))
+            # Update tick_state for consistency (dump/session: legacy = ticks AND labels).
+            from ..common.spines import wasd_to_tick_state
+
+            tick_state.clear()
+            tick_state.update(
+                wasd_to_tick_state(
+                    {
+                        'top': top_s,
+                        'bottom': bot_s,
+                        'left': left_s,
+                        'right': right_s,
+                    },
+                    tick_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+                    label_defaults={'top': False, 'bottom': True, 'left': True, 'right': False},
+                )
+            )
             try:
                 setattr(fig, '_ec_wasd_state', {
                     'top': dict(top_s),
@@ -338,6 +395,11 @@ def apply_ec_style_config(
             if name in ax.spines:
                 if props.get('linewidth') is not None:
                     ax.spines[name].set_linewidth(props['linewidth'])
+                if props.get('visible') is not None:
+                    try:
+                        ax.spines[name].set_visible(bool(props['visible']))
+                    except Exception:
+                        pass
                 if props.get('color') is not None:
                     _apply_spine_color(ax, fig, tick_state, name, props['color'])
 
@@ -362,32 +424,24 @@ def apply_ec_style_config(
         if tick_direction:
             setattr(fig, '_tick_direction', tick_direction)
             ax.tick_params(axis='both', which='both', direction=tick_direction)
-        # Apply tick spacing and minor count
+        # Full locator restore (null major → AutoLocator; minor_off → NullLocator)
         ec_spacing = cfg.get('ticks', {}).get('spacing', {})
         if ec_spacing:
-            for axis_obj, maj_key, min_key, ndivs_key in [
-                (ax.xaxis, 'x_major_step', 'x_minor_step', 'x_minor_ndivs'),
-                (ax.yaxis, 'y_major_step', 'y_minor_step', 'y_minor_ndivs'),
-            ]:
-                try:
-                    maj_step = ec_spacing.get(maj_key)
-                    if maj_step is not None:
-                        axis_obj.set_major_locator(MultipleLocator(float(maj_step)))
-                    else:
-                        axis_obj.set_major_locator(AutoLocator())
-                except Exception:
-                    pass
-                try:
-                    min_step = ec_spacing.get(min_key)
-                    ndivs = ec_spacing.get(ndivs_key)
-                    if min_step is not None:
-                        axis_obj.set_minor_locator(MultipleLocator(float(min_step)))
-                    elif ndivs is not None:
-                        axis_obj.set_minor_locator(AutoMinorLocator(int(ndivs)))
-                    else:
-                        axis_obj.set_minor_locator(AutoMinorLocator())
-                except Exception:
-                    pass
+            try:
+                restore_axes_tick_locators(ax, ec_spacing, ('x', 'y'))
+            except Exception:
+                pass
+            # Re-apply WASD minor visibility after any locator changes
+            try:
+                from ...ui import apply_wasd_minor_ticks
+                _xd_m = cfg.get('xaxis_dual') if isinstance(cfg.get('xaxis_dual'), dict) else {}
+                apply_wasd_minor_ticks(
+                    ax,
+                    cfg.get('wasd_state') or {},
+                    x_top_on_primary=not bool(_xd_m.get('mode') == 'dual'),
+                )
+            except Exception:
+                pass
     except Exception: pass
     try:
         finalize_spine_colors(fig, ax, tick_state=tick_state)
@@ -427,10 +481,18 @@ def apply_ec_style_config(
     try:
         curve_markers = cfg.get('curve_markers', {})
         if curve_markers:
+            # Keep l-menu template on the figure (session load parity).
+            try:
+                fig._ec_curve_markers = dict(curve_markers)
+            except Exception:
+                pass
             for cyc, role, ln in _iter_cycle_lines(cycle_lines):
                 try:
                     if 'linestyle' in curve_markers:
                         ln.set_linestyle(curve_markers['linestyle'])
+                        clear_dash_pattern(ln)
+                    if curve_markers.get('dash_pattern'):
+                        restore_dash_pattern(ln, curve_markers['dash_pattern'])
                     if 'marker' in curve_markers:
                         ln.set_marker(curve_markers['marker'])
                     if 'markersize' in curve_markers:
@@ -454,8 +516,9 @@ def apply_ec_style_config(
                 fig._ec_legend_xy_in = _sanitize_legend_offset(fig, xy)
             else:
                 fig._ec_legend_xy_in = None
-            if 'title' in legend_cfg and legend_cfg['title']:
-                fig._ec_legend_title = legend_cfg['title']
+            if 'title' in legend_cfg:
+                title_val = legend_cfg.get('title')
+                fig._ec_legend_title = "" if title_val is None else str(title_val)
             fig._ec_legend_user_visible = bool(legend_visible)
     except Exception:
         legend_visible = None
@@ -476,17 +539,53 @@ def apply_ec_style_config(
         else:
             _apply_cycle_styles(cycle_lines, cycle_styles_cfg)
 
+    # Authoritative visible-cycle ids override per-line style flags when present
+    # (p/i parity with session save). Old style files omit these keys.
+    try:
+        vis_per_file = cfg.get('visible_cycles_per_file')
+        if (
+            vis_per_file is not None
+            and is_multi_file
+            and file_data
+            and len(vis_per_file) == len(file_data)
+        ):
+            for f, vis in zip(file_data, vis_per_file):
+                cl = f.get('cycle_lines') or {}
+                if cl and vis is not None:
+                    _apply_visible_cycle_numbers(cl, vis)
+        elif cfg.get('visible_cycles') is not None:
+            if is_multi_file and file_data:
+                for f in file_data:
+                    cl = f.get('cycle_lines') or {}
+                    if cl:
+                        _apply_visible_cycle_numbers(cl, cfg.get('visible_cycles'))
+            else:
+                _apply_visible_cycle_numbers(cycle_lines, cfg.get('visible_cycles'))
+    except Exception:
+        pass
+
     # Restore per-file visibility before display-mode filtering.
     # Cycle styles (above) already set per-curve visibility. Hidden files must
     # force all curves off; visible files keep the cycle-style visibility so a
     # re-show after hide does not depend on the peer's pre-apply line state.
     try:
         file_visibility = cfg.get('file_visibility')
+        vis_per_file = cfg.get('visible_cycles_per_file')
         if file_visibility and file_data and len(file_visibility) == len(file_data):
-            for f, visible in zip(file_data, file_visibility):
+            for i, (f, visible) in enumerate(zip(file_data, file_visibility)):
                 file_visible = bool(visible)
                 f['visible'] = file_visible
                 if not file_visible:
+                    # Stash selection so re-show / re-export keeps 1+31 etc.
+                    if (
+                        isinstance(vis_per_file, (list, tuple))
+                        and i < len(vis_per_file)
+                        and vis_per_file[i] is not None
+                    ):
+                        try:
+                            f['selected_cycles'] = sorted({int(c) for c in vis_per_file[i]})
+                        except Exception:
+                            pass
                     for _cyc, _role, ln in _iter_cycle_lines(f.get('cycle_lines') or {}):
                         try:
                             ln.set_visible(False)
@@ -497,6 +596,12 @@ def apply_ec_style_config(
 
     # Restore display mode (d command) from style-only exports too.
     try:
+        try:
+            cap_mode = cfg.get('capacity_mode', None)
+            if cap_mode in ('per_cycle', 'cumulative'):
+                fig._gc_capacity_mode = cap_mode
+        except Exception:
+            pass
         display_mode = cfg.get('display_mode')
         if display_mode in ('charge', 'discharge', 'both'):
             _apply_display_mode(
@@ -546,7 +651,8 @@ def apply_ec_style_config(
     except Exception:
         pass
 
-    # Restore dual x-axis state
+    # Restore dual x-axis state. Style-only ``ps`` export strips ``xaxis_dual``;
+    # when the key is present (``.bpsg`` / legacy ``.bps`` / in-memory sync) apply it.
     try:
         xaxis_dual_cfg = cfg.get('xaxis_dual')
         if xaxis_dual_cfg and isinstance(xaxis_dual_cfg, dict):
@@ -555,7 +661,7 @@ def apply_ec_style_config(
             swapped = xaxis_dual_cfg.get('swapped', False)
 
             # When ions/dual mode: prompt to use saved capacity or enter new
-            if mode in ('ions', 'dual') and c_th is not None:
+            if mode in ('ions', 'dual') and c_th is not None and not silent:
                 try:
                     c_th_val = float(c_th)
                     prompt = f"Imported style uses ions display (capacity {c_th_val:g} mAh/g). Use this [Enter] or enter new value: "
@@ -567,10 +673,12 @@ def apply_ec_style_config(
                 except (ValueError, EOFError):
                     pass
 
-            # Store state on fig
+            # Store state on fig (swapped only valid in dual)
+            from .style import sanitize_fig_xaxis_swapped
+
             fig._xaxis_mode = mode
             fig._xaxis_c_theoretical = c_th
-            fig._xaxis_swapped = swapped
+            swapped = sanitize_fig_xaxis_swapped(fig, mode=mode, swapped=swapped)
 
             # Remove existing secondary axis if any
             if hasattr(fig, '_xaxis_secondary') and fig._xaxis_secondary is not None:
@@ -633,8 +741,34 @@ def apply_ec_style_config(
                     else:
                         ax.set_xlabel(capacity_label)
                         secax.set_xlabel(ions_label)
-                    top_axis_cfg = xaxis_dual_cfg.get('top_axis') if isinstance(xaxis_dual_cfg, dict) else None
-                    apply_dual_top_axis_style(secax, top_axis_cfg if isinstance(top_axis_cfg, dict) else None)
+                    # Prefer style-stored custom xlabel (r rename) over defaults —
+                    # secondary_xaxis otherwise clobbers it (same as session restore).
+                    stored = (cfg.get('axis_labels') or {}).get('xlabel')
+                    if stored is not None:
+                        ax.set_xlabel(str(stored))
+                        try:
+                            ax._stored_xlabel = str(stored)
+                        except Exception:
+                            pass
+                    from .style import reapply_ec_dual_secondary_chrome
+
+                    ticks_cfg = cfg.get('ticks') if isinstance(cfg.get('ticks'), dict) else {}
+                    reapply_ec_dual_secondary_chrome(
+                        fig,
+                        ax,
+                        wasd_state=cfg.get('wasd_state') if isinstance(cfg.get('wasd_state'), dict) else None,
+                        tick_lengths=(ticks_cfg.get('lengths') if isinstance(ticks_cfg, dict) else None)
+                        or cfg.get('tick_lengths'),
+                        tick_widths=(ticks_cfg.get('widths') if isinstance(ticks_cfg, dict) else None)
+                        or cfg.get('tick_widths'),
+                        tick_direction=(ticks_cfg.get('direction') if isinstance(ticks_cfg, dict) else None)
+                        or cfg.get('tick_direction'),
+                        top_axis_cfg=(
+                            xaxis_dual_cfg.get('top_axis')
+                            if isinstance(xaxis_dual_cfg.get('top_axis'), dict)
+                            else None
+                        ),
+                    )
 
                     # Apply font settings
                     try:
@@ -647,19 +781,51 @@ def apply_ec_style_config(
                             secax.xaxis.label.set_size(font_size)
                     except Exception:
                         pass
+                    # Re-honor bottom title hide / custom xlabel after dual recreate
+                    wasd_state = cfg.get('wasd_state')
+                    bot_s = (wasd_state or {}).get('bottom', {}) if isinstance(wasd_state, dict) else {}
+                    if isinstance(bot_s, dict) and 'title' in bot_s and not bot_s.get('title'):
+                        ax.set_xlabel('')
+                        ax.xaxis.label.set_visible(False)
+                    else:
+                        stored = (cfg.get('axis_labels') or {}).get('xlabel')
+                        if stored is not None:
+                            ax.set_xlabel(str(stored))
+                            try:
+                                ax._stored_xlabel = str(stored)
+                            except Exception:
+                                pass
                 except Exception as e:
                     print(f"Warning: Could not recreate dual x-axis: {e}")
             elif mode == 'ions' and c_th is not None:
-                # Single ions mode
+                # Single ions mode — only rescale when capacity backup exists
                 for ln in ax.lines:
                     try:
-                        if not hasattr(ln, "_orig_xdata_gc"):
-                            x0 = np.asarray(ln.get_xdata(), dtype=float)
-                            setattr(ln, "_orig_xdata_gc", x0.copy())
-                        x_orig = getattr(ln, "_orig_xdata_gc")
-                        ln.set_xdata(x_orig / c_th)
+                        x_orig = getattr(ln, "_orig_xdata_gc", None)
+                        if x_orig is not None:
+                            ln.set_xdata(np.asarray(x_orig, dtype=float) / c_th)
                     except Exception:
                         continue
+                ions_label = f"Number of ions (C / {c_th:g} mAh g$^{{-1}}$)"
+                stored = (cfg.get('axis_labels') or {}).get('xlabel')
+                ax.set_xlabel(ions_label if stored is None else str(stored))
+                if stored is not None:
+                    try:
+                        ax._stored_xlabel = str(stored)
+                    except Exception:
+                        pass
+            elif mode == 'capacity' and c_th is not None:
+                # Reverse ions→capacity using stored original x when present.
+                for ln in ax.lines:
+                    try:
+                        x_orig = getattr(ln, "_orig_xdata_gc", None)
+                        if x_orig is not None:
+                            ln.set_xdata(np.asarray(x_orig, dtype=float))
+                    except Exception:
+                        continue
+                stored = (cfg.get('axis_labels') or {}).get('xlabel')
+                if stored is not None:
+                    ax.set_xlabel(str(stored))
     except Exception as e:
         print(f"Warning: Could not restore dual x-axis state: {e}")
 
@@ -667,13 +833,18 @@ def apply_ec_style_config(
     if has_geometry:
         try:
             geom = geometry_cfg or {}
-            if 'xlabel' in geom and geom['xlabel']:
-                ax.set_xlabel(geom['xlabel'])
-            if 'ylabel' in geom and geom['ylabel']:
-                ax.set_ylabel(geom['ylabel'])
-            if 'xlim' in geom and isinstance(geom['xlim'], list) and len(geom['xlim']) == 2:
+            # Key presence (not truthiness) so empty labels can clear — CPC parity.
+            if 'xlabel' in geom:
+                text = geom.get('xlabel') or ''
+                ax.set_xlabel(text)
+                ax._stored_xlabel = str(text)
+            if 'ylabel' in geom:
+                text = geom.get('ylabel') or ''
+                ax.set_ylabel(text)
+                ax._stored_ylabel = str(text)
+            if 'xlim' in geom and isinstance(geom['xlim'], (list, tuple)) and len(geom['xlim']) == 2:
                 ax.set_xlim(geom['xlim'][0], geom['xlim'][1])
-            if 'ylim' in geom and isinstance(geom['ylim'], list) and len(geom['ylim']) == 2:
+            if 'ylim' in geom and isinstance(geom['ylim'], (list, tuple)) and len(geom['ylim']) == 2:
                 ax.set_ylim(geom['ylim'][0], geom['ylim'][1])
             dm = geom.get('display_mode')
             if dm in ('charge', 'discharge', 'both'):
@@ -719,7 +890,17 @@ def apply_ec_style_config(
         font_changed = (font_cfg.get('family') is not None or font_cfg.get('size') is not None)
 
         # Always reposition titles to apply offsets (even if nothing else changed)
-        _ui_position_top_xlabel(ax, fig, tick_state)
+        if getattr(fig, '_xaxis_mode', 'capacity') != 'dual':
+            _ui_position_top_xlabel(ax, fig, tick_state)
+        else:
+            try:
+                from .style import reseal_ec_chrome
+
+                reseal_ec_chrome(
+                    fig, ax, wasd=cfg.get('wasd_state'), tick_state=tick_state,
+                )
+            except Exception:
+                pass
         _ui_position_bottom_xlabel(ax, fig, tick_state)
         _ui_position_left_ylabel(ax, fig, tick_state)
         _ui_position_right_ylabel(ax, fig, tick_state)
@@ -746,10 +927,17 @@ def apply_ec_style_config(
         except Exception:
             pass
     try:
-        # Trailing finalize after dual-top / label reposition / legend (tick_params may rebuild).
+        from .style import reseal_ec_chrome, sync_ec_dual_secax_x_locators
+
+        # Trailing reseal after dual-top / label reposition / legend.
+        reseal_ec_chrome(fig, ax, wasd=cfg.get('wasd_state'), tick_state=tick_state)
+        sync_ec_dual_secax_x_locators(fig, ax, cfg.get('wasd_state'))
         finalize_spine_colors(fig, ax, tick_state=tick_state, draw=True)
     except Exception:
-        pass
+        try:
+            finalize_spine_colors(fig, ax, tick_state=tick_state, draw=True)
+        except Exception:
+            pass
     try:
         apply_session_font_cfg(fig, cfg.get('font', {}), ax)
     except Exception:

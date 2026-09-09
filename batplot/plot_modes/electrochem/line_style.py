@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..common.line_dash import clear_dash_pattern, prompt_dash_pattern, set_dash_pattern
+from ..common.session_helpers import _artist_linewidth
 from ..common.spines import apply_frame_and_tick_widths, current_tick_width, parse_frame_tick_widths
 
 
@@ -56,8 +58,10 @@ def run_ec_line_style_menu(
             print(f"  {colorize_menu('l  : show only lines (no markers) for all curves')}")
             print(f"  {colorize_menu('ld : show line and dots (markers) for all curves')}")
             print(f"  {colorize_menu('d  : show only dots (no connecting line) for all curves')}")
+            print(f"  {colorize_menu('da : dashed line for all curves')}")
+            print(f"  {colorize_menu('dd : dash-dot line for all curves')}")
             print(f"  {colorize_menu('q  : return')}")
-            sub = safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/q): ")).strip().lower()
+            sub = safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
             if not sub:
                 continue
             if sub == "q":
@@ -76,7 +80,7 @@ def run_ec_line_style_menu(
                 _set_frame_tick_widths(fig=fig, ax=ax, push_state=push_state, safe_input=safe_input)
             elif sub == "g":
                 _toggle_grid(fig=fig, ax=ax, push_state=push_state)
-            elif sub in ("l", "ld", "d"):
+            elif sub in ("l", "ld", "d", "da", "dd"):
                 _apply_curve_style(
                     fig=fig,
                     ax=ax,
@@ -113,7 +117,7 @@ def _print_line_summary(fig: Any, ax: Any, line_target_list: list, iter_cycle_li
             for target_lines in line_target_list:
                 for _cyc, _role, line in iter_cycle_lines(target_lines):
                     try:
-                        cur_curve_lw = float(line.get_linewidth() or 1.0)
+                        cur_curve_lw = _artist_linewidth(line)
                         break
                     except Exception:
                         pass
@@ -142,34 +146,50 @@ def _set_curve_linewidth(*, fig: Any, ax: Any, line_target_list: list, iter_cycl
         if not spec or spec.lower() == "q":
             break
         try:
-            push_state("curve-linewidth")
             linewidth = float(spec)
-            setattr(fig, "_ec_curve_linewidth", linewidth)
-            for target_lines in line_target_list:
-                for _cyc, _role, line in iter_cycle_lines(target_lines):
-                    try:
-                        line.set_linewidth(linewidth)
-                    except Exception:
-                        pass
-            _redraw_with_legend(fig, ax, rebuild_legend)
-            print(f"Set all curve linewidths to {linewidth}")
         except ValueError:
             print("Invalid width value.")
+            continue
+        push_state("curve-linewidth")
+        setattr(fig, "_ec_curve_linewidth", linewidth)
+        for target_lines in line_target_list:
+            for _cyc, _role, line in iter_cycle_lines(target_lines):
+                try:
+                    line.set_linewidth(linewidth)
+                except Exception:
+                    pass
+        _redraw_with_legend(fig, ax, rebuild_legend)
+        print(f"Set all curve linewidths to {linewidth}")
 
 
 def _set_frame_tick_widths(*, fig: Any, ax: Any, push_state, safe_input) -> None:
+    from .style import ec_dual_width_axes
+
     while True:
         value = safe_input("Enter frame/tick width (e.g., 1.5) or 'm M' (major minor) or q=back: ").strip()
         if not value or value.lower() == "q":
             break
         try:
-            push_state("framewidth")
             frame_w, tick_major, tick_minor = parse_frame_tick_widths(value)
-            apply_frame_and_tick_widths([ax], frame_width=frame_w, major_width=tick_major, minor_width=tick_minor)
-            fig.canvas.draw()
-            print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
         except ValueError:
             print("Invalid numeric value(s).")
+            continue
+        push_state("framewidth")
+        # Dual: SecondaryAxis must get the same frame/tick widths as primary
+        apply_frame_and_tick_widths(
+            ec_dual_width_axes(fig, ax),
+            frame_width=frame_w,
+            major_width=tick_major,
+            minor_width=tick_minor,
+        )
+        try:
+            from .style import reseal_ec_chrome
+
+            reseal_ec_chrome(fig, ax)
+        except Exception:
+            pass
+        fig.canvas.draw()
+        print(f"Set frame width={frame_w}, major tick width={tick_major}, minor tick width={tick_minor}")
 
 
 def _toggle_grid(*, fig: Any, ax: Any, push_state) -> None:
@@ -211,12 +231,27 @@ def _apply_curve_style(
         print("Applied line-only style to all curves.")
         return
 
+    if style in ("da", "dd"):
+        kind = "dashdot" if style == "dd" else "dash"
+        dash_vals = prompt_dash_pattern(safe_input, kind=kind)
+        if dash_vals is None:
+            return
+        state_name = "dash-dot" if style == "dd" else "dashed-line"
+        push_state(state_name)
+        _style_lines(line_target_list, iter_cycle_lines, linestyle="-", marker="None", dash=dash_vals)
+        if is_dqdv and hasattr(fig, "_dqdv_smooth_settings"):
+            for target_lines in line_target_list:
+                apply_stored_smooth_settings(target_lines, fig)
+        _redraw_with_legend(fig, ax, rebuild_legend)
+        print(f"Applied {'dash-dot' if style == 'dd' else 'dashed'} lines to all curves.")
+        return
+
     state_name = "line+dots" if style == "ld" else "dots-only"
     message = "Applied line+dots style to all curves." if style == "ld" else "Applied dots-only style to all curves."
     while True:
         marker_size_input = safe_input("Marker size (blank=auto ~3*lw, q=back): ").strip().lower()
         if marker_size_input == "q":
-            break
+            return
         custom_marker_size = None
         if marker_size_input:
             try:
@@ -237,19 +272,37 @@ def _apply_curve_style(
                 apply_stored_smooth_settings(target_lines, fig)
         _redraw_with_legend(fig, ax, rebuild_legend)
         print(message)
+        return
 
 
-def _style_lines(line_target_list: list, iter_cycle_lines, *, linestyle: str, marker: str, custom_marker_size: float | None = None) -> None:
+def _style_lines(
+    line_target_list: list,
+    iter_cycle_lines,
+    *,
+    linestyle: str,
+    marker: str,
+    custom_marker_size: float | None = None,
+    dash: tuple | None = None,
+) -> None:
     for target_lines in line_target_list:
         for _cyc, _role, line in iter_cycle_lines(target_lines):
             try:
-                if linestyle == "-" and marker == "None":
+                if dash is None and linestyle == "-" and marker == "None":
                     current_ls = line.get_linestyle()
                     current_marker = line.get_marker()
-                    if current_ls not in ["None", "", " ", "none"] and current_marker in ["None", "", " ", "none", None]:
+                    has_custom_dash = getattr(line, "_bp_dash_pattern", None) is not None
+                    if (
+                        not has_custom_dash
+                        and current_ls == "-"
+                        and current_marker in ["None", "", " ", "none", None]
+                    ):
                         continue
-                linewidth = line.get_linewidth() or 1.0
-                line.set_linestyle(linestyle)
+                linewidth = _artist_linewidth(line)
+                if dash is not None:
+                    set_dash_pattern(line, dash)
+                else:
+                    line.set_linestyle(linestyle)
+                    clear_dash_pattern(line)
                 line.set_marker(marker)
                 if marker != "None":
                     marker_size = custom_marker_size if custom_marker_size is not None else max(3.0, linewidth * 3.0)

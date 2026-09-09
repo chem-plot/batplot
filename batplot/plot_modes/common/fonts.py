@@ -49,6 +49,9 @@ def apply_font_size_to_artists(artists: Iterable[Any], size: float) -> None:
     for artist in artists:
         if artist is None:
             continue
+        # Operando ion tags keep their own (smaller) annotation size.
+        if getattr(artist, "_bp_ion_annot", False):
+            continue
         try:
             if hasattr(artist, "set_fontsize"):
                 artist.set_fontsize(size)
@@ -145,6 +148,15 @@ def secondary_xaxis_text_artists(secax: Any) -> list[Any]:
         for tick in secax.xaxis.get_major_ticks():
             if hasattr(tick, "label1"):
                 artists.append(tick.label1)
+            # Dual top ticks use label2 (same as primary top side)
+            if hasattr(tick, "label2"):
+                artists.append(tick.label2)
+    except Exception:
+        pass
+    try:
+        for tick in secax.xaxis.get_minor_ticks():
+            if hasattr(tick, "label2"):
+                artists.append(tick.label2)
     except Exception:
         pass
     return artists

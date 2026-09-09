@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...color_utils import color_block, format_color_listing, resolve_color_token
+from ...color_utils import format_color_listing, manage_user_colors, prompt_screen_color, blank_means_back, last_screen_pick_count, resolve_color_token
 
 
 def get_ec_grid_state(ec_ax) -> dict:
@@ -98,15 +98,27 @@ def run_ec_grid_menu(
                 while True:
                     current = grid_state["color"]
                     print(f"Current color: {format_color_listing(current)}")
-                    val = safe_input("Color (q=back): ").strip()
-                    if not val or val.lower() == "q":
+                    print(colorize_inline_commands("e=pick/apply last (saves u#), u=manage, q=back"))
+                    val = safe_input(colorize_prompt("Color (e/u/q or name/#hex): ")).strip()
+                    if val.lower() == "q" or blank_means_back(val):
                         break
-                    resolved = resolve_color_token(val, fig)
+                    if val.lower() == "e":
+                        picked = prompt_screen_color(fig)
+                        if not picked:
+                            continue
+                        if last_screen_pick_count() > 1:
+                            continue
+                        resolved = picked
+                    elif val.lower() == "u":
+                        manage_user_colors(fig)
+                        continue
+                    else:
+                        resolved = resolve_color_token(val, fig)
                     if resolved:
                         snapshot("ec-grid")
                         grid_state["color"] = resolved
                         apply_ec_grid_state(ec_ax, grid_state)
-                        print(f"Color: {resolved}")
+                        print(f"Color: {format_color_listing(resolved)}")
                     else:
                         print("Could not resolve color.")
             elif sub == "w":

@@ -35,6 +35,7 @@ from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
     capture_axes_tick_locators,
     restore_axes_tick_locators,
+    finalize_spine_colors,
 )
 from .style import (
     print_style_info as _bp_print_style_info,
@@ -52,7 +53,7 @@ from ..common.terminal import (
     safe_input as _common_safe_input,
 )
 from ..common.menu_rendering import (
-    colorize_menu_item,
+    colorize_menu as _shared_colorize_menu,
     prompt_menu_key,
 )
 from ..common.sources import normalize_source_paths
@@ -69,6 +70,7 @@ from ..common.spines import (
     default_flat_tick_state,
     legacy_tick_state_to_flat,
     run_spine_tick_menu,
+    set_primary_axis_title,
     sync_legacy_tick_keys,
     sync_tick_state_from_wasd,
 )
@@ -93,9 +95,13 @@ from .derivative import run_derivative_menu
 from .game import play_jump_game
 from .labels import run_xy_rename_menu
 from .line_style import run_line_style_menu
+from ..common.line_dash import capture_dash_pattern, clear_dash_pattern, restore_dash_pattern
 from .menu import print_xy_menu
 from .peaks import run_peak_finder_menu
 from .smoothing import run_smoothing_menu
+from .axis_units import resolve_wavelength, run_axis_units_menu
+from .offset_menu import run_offset_menu
+from .undo_state import xy_push_state, xy_restore_state
 
 
 def _safe_input(prompt: str = "", *, cancel_on_interrupt: bool = True) -> str:
@@ -122,7 +128,7 @@ def normalize_xy_menu_kwargs(menu_kwargs: dict) -> dict:
 def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                      label_text_objects, delta, x_label, args,
                      x_full_list, raw_y_full_list, offsets_list,
-                     use_Q, use_r, use_E, use_k, use_rft,
+                     use_Q, use_r, use_E, use_k, use_rft, use_2th=False,
                      cif_globals: Optional[Dict[str, Any]] = None,
                      canvas_mode: bool = False,
                      labels_list: Optional[List[str]] = None):
@@ -142,7 +148,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         x_full_list: List of full x-data arrays (uncropped)
         raw_y_full_list: List of full raw y-data arrays
         offsets_list: List of current offset values per curve
-        use_Q, use_r, use_E, use_k, use_rft: Boolean flags for axis mode
+        use_Q, use_r, use_E, use_k, use_rft, use_2th: Boolean flags for axis mode
         cif_globals: Optional dict containing CIF-related state:
             - 'cif_tick_series': list of CIF tick data
             - 'cif_hkl_map': dict mapping filenames to hkl reflections
@@ -171,9 +177,23 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             }
         else:
             cif_globals = {}
-    
+
+    # Always provide a CIF state object so ``cif`` → ``a`` works without CLI CIF.
+    if not cif_globals:
+        cif_globals = {}
+    if cif_globals.get('cif_tick_series') is None:
+        cif_globals['cif_tick_series'] = []
+    if cif_globals.get('cif_hkl_map') is None:
+        cif_globals['cif_hkl_map'] = {}
+    if cif_globals.get('cif_hkl_label_map') is None:
+        cif_globals['cif_hkl_label_map'] = {}
+    cif_globals.setdefault('show_cif_hkl', False)
+    cif_globals.setdefault('show_cif_titles', True)
+    cif_globals.setdefault('cif_extend_suspended', False)
+    cif_globals.setdefault('keep_canvas_fixed', False)
+
     # Provide a consistent interface for accessing CIF state
-    _bp = type('CIFState', (), cif_globals)() if cif_globals else None
+    _bp = type('CIFState', (), cif_globals)()
 
     def _sync_fig_cif_tick_series():
         """Keep fig._batplot_cif_tick_series aligned with menu state for CIF redraw."""
@@ -277,16 +297,49 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     def _iter_lines():
         return enumerate(_lines_by_curve) if _lines_by_curve is not None else enumerate(ax.lines)
 
-    # ANSI color codes for menu highlighting
+    # ANSI color codes for menu highlighting (+ dashed description frame)
     def colorize_menu(text):
-        return colorize_menu_item(text)
+        return _shared_colorize_menu(text)
     
     colorize_prompt = _colorize_prompt
 
     colorize_inline_commands = _colorize_inline_commands
     
     # REPLACED print_main_menu with column layout (now hides 'd' and 'y' in --stack)
-    is_diffraction = use_Q or (not use_r and not use_E and not use_k and not use_rft)  # 2θ or Q
+    # Diffraction = known XRD mode only (never treat blank/unknown as 2θ).
+    try:
+        from .axis_units import AXIS_MODES, get_xy_axis_mode, set_xy_axis_mode
+
+        _mode0 = get_xy_axis_mode(
+            fig,
+            use_Q=use_Q,
+            use_r=use_r,
+            use_E=use_E,
+            use_k=use_k,
+            use_rft=use_rft,
+            use_2th=bool(use_2th),
+            xaxis=getattr(args, "xaxis", None),
+            ax=ax,
+        )
+        if _mode0 in AXIS_MODES:
+            # Never clobber a file:wl / pipeline λ with a conflicting --wl
+            _wl_set = None
+            if getattr(fig, "_xy_wavelength", None) is None:
+                _wl_set = getattr(args, "wl", None)
+            set_xy_axis_mode(fig, _mode0, wavelength=_wl_set)
+            is_diffraction = True
+        else:
+            is_diffraction = False
+    except Exception:
+        is_diffraction = use_Q or (
+            (not use_r) and (not use_E) and (not use_k) and (not use_rft)
+            and str(getattr(args, "xaxis", "") or "").lower() in (
+                "2theta", "2th", "tth", "two_theta", "q", "d",
+            )
+        )
+        if use_Q:
+            is_diffraction = True
+
     def print_main_menu():
         print_xy_menu(
             fig=fig,
@@ -295,13 +348,24 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             colorize_menu=colorize_menu,
         )
 
-    # --- Helper for spine visibility ---
+    # --- Helper for spine visibility (sync twin for --ry / --txaxis) ---
     def set_spine_visible(which, visible):
-        if which in ax.spines:
-            ax.spines[which].set_visible(visible)
+        from .spines import set_xy_spine_visible
+
+        set_xy_spine_visible(fig, ax, which, visible)
+        try:
             fig.canvas.draw_idle()
+        except Exception:
+            pass
 
     def get_spine_visible(which):
+        from .spines import xy_twin_context
+
+        ax2, use_top = xy_twin_context(fig)
+        if ax2 is not None and which == "right" and which in ax2.spines:
+            return ax2.spines[which].get_visible()
+        if ax2 is not None and use_top and which in ("top", "bottom") and which in ax2.spines:
+            return ax2.spines[which].get_visible()
         if which in ax.spines:
             return ax.spines[which].get_visible()
         return False
@@ -579,11 +643,14 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     # -------------------------------------------------------
 
     # --------- NEW: Resize only the plotting frame (axes), keep canvas (figure) size fixed ----------
-    def resize_plot_frame():
-        return _ui_resize_plot_frame(fig, ax, y_data_list, label_text_objects, args, update_labels)
+    def resize_plot_frame(*, on_before_change=None):
+        return _ui_resize_plot_frame(
+            fig, ax, y_data_list, label_text_objects, args, update_labels,
+            on_before_change=on_before_change,
+        )
 
-    def resize_canvas():
-        return _ui_resize_canvas(fig, ax)
+    def resize_canvas(*, on_before_change=None):
+        return _ui_resize_canvas(fig, ax, on_before_change=on_before_change)
     # -------------------------------------------------
 
     # ---- Tick / label visibility state ----
@@ -779,6 +846,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     def export_style_config(filename, base_path=None, overwrite_path=None, force_kind=None):
         cts = _cif_series_for_session()
         show_titles = bool(getattr(_bp, 'show_cif_titles', True)) if _bp is not None else True
+        hkl_map = getattr(_bp, 'cif_hkl_label_map', None) if _bp is not None else None
         return _export_style_config(
             filename,
             fig,
@@ -795,6 +863,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             show_cif_titles=show_titles,
             overwrite_path=overwrite_path,
             force_kind=force_kind,
+            cif_hkl_label_map=hkl_map,
         )
 
     # NEW: apply imported style config (restricted application)
@@ -819,6 +888,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             adjust_margins,
         )
         _sync_fig_cif_tick_series()
+        # Keep dual-wl / λ pairs live for Options ``u`` and crosshair after ``i``
+        try:
+            _fwi = list(getattr(fig, "_xy_file_wavelength_info", None) or [])
+            if isinstance(file_wavelength_info, list):
+                file_wavelength_info[:] = _fwi
+            if isinstance(cif_globals, dict):
+                cif_globals["file_wavelength_info"] = list(file_wavelength_info)
+        except Exception:
+            pass
         try:
             if _bp is not None:
                 if hasattr(fig, '_bp_show_cif_hkl'):
@@ -851,8 +929,18 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     update_tick_visibility()
 
     # --- Crosshair state & toggle function (UPDATED) ---
-    # Get wavelength info from cif_globals if available
-    file_wavelength_info = cif_globals.get('file_wavelength_info', []) if cif_globals else []
+    # Get wavelength info from cif_globals if available (prefer fig after session/style)
+    file_wavelength_info = []
+    if cif_globals:
+        file_wavelength_info = list(cif_globals.get('file_wavelength_info', []) or [])
+    if not file_wavelength_info:
+        file_wavelength_info = list(getattr(fig, '_xy_file_wavelength_info', None) or [])
+    if cif_globals is not None and isinstance(cif_globals, dict):
+        cif_globals['file_wavelength_info'] = file_wavelength_info
+    try:
+        fig._xy_file_wavelength_info = list(file_wavelength_info)
+    except Exception:
+        pass
     
     crosshair = {
         'active': False,
@@ -865,20 +953,44 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
 
     def toggle_crosshair():
         if not crosshair['active']:
-            # Only ask for wavelength if it's diffraction data, not using Q, and no file wavelength info
-            if is_diffraction and not use_Q and not file_wavelength_info:
-                try:
-                    wl_in = _safe_input("Enter wavelength in Å for Q,d display (blank=skip, q=cancel): ").strip()
-                    if wl_in.lower() == 'q':
-                        print("Canceled.")
-                        return
-                    if wl_in:
-                        crosshair['wavelength'] = float(wl_in)
+            from .axis_units import (
+                format_xrd_crosshair_x_lines,
+                get_xy_axis_mode,
+                resolve_wavelength,
+            )
+            axis_mode_ch = get_xy_axis_mode(
+                fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+                use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+            )
+            # Bind λ for full 2θ/Q/d readout. Dual-remapped 2θ uses both λs in
+            # on_move; otherwise resolve from --wl / file:wl / session attrs.
+            if is_diffraction and axis_mode_ch in ("2theta", "Q", "d"):
+                _dual_disp = bool(getattr(fig, "_xy_dual_wl_display", False))
+                if not (_dual_disp and axis_mode_ch == "2theta"):
+                    known = resolve_wavelength(
+                        fig=fig, args=args,
+                        cif_series=_cif_series_for_session(),
+                        file_wavelength_info=file_wavelength_info,
+                        axis_mode=axis_mode_ch,
+                    )
+                    if known is not None:
+                        crosshair['wavelength'] = float(known)
+                    elif axis_mode_ch == "2theta":
+                        # Prompt only for native 2θ (Q/d can still show Q↔d without λ).
+                        try:
+                            wl_in = _safe_input("Enter wavelength in Å for Q,d display (blank=skip, q=cancel): ").strip()
+                            if wl_in.lower() == 'q':
+                                print("Canceled.")
+                                return
+                            if wl_in:
+                                crosshair['wavelength'] = float(wl_in)
+                            else:
+                                crosshair['wavelength'] = None
+                        except ValueError:
+                            print("Invalid wavelength. Skipping Q,d calculation.")
+                            crosshair['wavelength'] = None
                     else:
                         crosshair['wavelength'] = None
-                except ValueError:
-                    print("Invalid wavelength. Skipping Q,d calculation.")
-                    crosshair['wavelength'] = None
             vline = ax.axvline(x=ax.get_xlim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
             hline = ax.axhline(y=ax.get_ylim()[0], color='0.35', ls='--', lw=0.8, alpha=0.85, zorder=9999)
             txt = ax.text(1.0, 1.0, "",
@@ -889,29 +1001,57 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                           bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='0.7', alpha=0.8))
 
             def on_move(event):
-                if event.inaxes != ax or event.xdata is None or event.ydata is None:
+                # Twin (--ry / --txaxis) sits on top for hit-testing; accept both.
+                ax2_xh = getattr(fig, "_xy_ax2", None)
+                allowed = (ax,) if ax2_xh is None else (ax, ax2_xh)
+                if event.inaxes not in allowed or event.x is None or event.y is None:
                     return
-                x = float(event.xdata)
-                y = float(event.ydata)
+                try:
+                    pt = ax.transData.inverted().transform((event.x, event.y))
+                    x = float(pt[0])
+                    y = float(pt[1])
+                except Exception:
+                    if event.xdata is None or event.ydata is None:
+                        return
+                    x = float(event.xdata)
+                    y = float(event.ydata)
+                y_right = None
+                if ax2_xh is not None:
+                    try:
+                        pt2 = ax2_xh.transData.inverted().transform((event.x, event.y))
+                        y_right = float(pt2[1])
+                    except Exception:
+                        y_right = None
                 vline.set_xdata([x, x])
                 hline.set_ydata([y, y])
 
-                # For diffraction data, show Q/d calculations
+                # For diffraction data, show 2θ / Q / d when λ is known
                 if is_diffraction:
-                    if use_Q:
-                        Q = x
-                        if Q != 0:
-                            d = 2 * np.pi / Q
-                            txt.set_text(f"Q={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
-                        else:
-                            txt.set_text(f"Q={Q:.6g}\nd=∞\ny={y:.6g}")
+                    mode = get_xy_axis_mode(
+                        fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+                        use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+                    )
+                    if mode == "Q" or (mode not in ("2theta", "d") and use_Q):
+                        x_lines = format_xrd_crosshair_x_lines(
+                            x, axis_mode="Q", wavelength=crosshair.get("wavelength"),
+                        )
+                        txt.set_text("\n".join(x_lines + [f"y={y:.6g}"]))
+                    elif mode == "d":
+                        x_lines = format_xrd_crosshair_x_lines(
+                            x, axis_mode="d", wavelength=crosshair.get("wavelength"),
+                        )
+                        txt.set_text("\n".join(x_lines + [f"y={y:.6g}"]))
                     elif use_r:
                         txt.set_text(f"r={x:.6g} Å\ny={y:.6g}")
                     else:
-                        # 2θ mode
-                        # Check if we have file wavelength info (dual wavelength conversion)
+                        # 2θ mode — dual UI only when data were dual-remapped to λ₂ 2θ
                         wl_info = file_wavelength_info[0] if file_wavelength_info else None
-                        if wl_info and wl_info.get('original_wl') is not None and wl_info.get('conversion_wl') is not None:
+                        if (
+                            bool(getattr(fig, "_xy_dual_wl_display", False))
+                            and wl_info
+                            and wl_info.get('original_wl') is not None
+                            and wl_info.get('conversion_wl') is not None
+                        ):
                             # Dual wavelength: show original 2theta and current 2theta
                             orig_wl = wl_info['original_wl']
                             conv_wl = wl_info['conversion_wl']
@@ -929,20 +1069,19 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                                 txt.set_text(f"2θ={x:.6g}° (λ₂={conv_wl:.5f})\n2θ₀={orig_2theta:.6g}° (λ₁={orig_wl:.5f})\nQ={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
                             else:
                                 txt.set_text(f"2θ={x:.6g}° (λ₂={conv_wl:.5f})\n2θ₀={orig_2theta:.6g}° (λ₁={orig_wl:.5f})\nQ=0\nd=∞\ny={y:.6g}")
-                        elif crosshair['wavelength'] is not None:
-                            lam = crosshair['wavelength']
-                            theta_rad = np.radians(x / 2.0)
-                            Q = 4 * np.pi * np.sin(theta_rad) / lam
-                            if Q != 0:
-                                d = 2 * np.pi / Q
-                                txt.set_text(f"2θ={x:.6g}°\nQ={Q:.6g}\nd={d:.6g} Å\ny={y:.6g}")
-                            else:
-                                txt.set_text(f"2θ={x:.6g}°\nQ=0\nd=∞\ny={y:.6g}")
                         else:
-                            txt.set_text(f"2θ={x:.6g}°\ny={y:.6g}")
+                            x_lines = format_xrd_crosshair_x_lines(
+                                x,
+                                axis_mode="2theta",
+                                wavelength=crosshair.get("wavelength"),
+                            )
+                            txt.set_text("\n".join(x_lines + [f"y={y:.6g}"]))
                 else:
                     # For non-diffraction data, just show x and y values
-                    txt.set_text(f"x={x:.6g}\ny={y:.6g}")
+                    if y_right is not None:
+                        txt.set_text(f"x={x:.6g}\ny={y:.6g}\ny₂={y_right:.6g}")
+                    else:
+                        txt.set_text(f"x={x:.6g}\ny={y:.6g}")
 
                 fig.canvas.draw_idle()
 
@@ -1024,14 +1163,30 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
     def _ensure_original_data():
         """Ensure original data is stored for all curves.
 
-        Prefer untrimmed ``x_full_list`` / ``raw_y_full_list`` when they cover more
-        than the current display window so later X expansion / smooth-reset does
-        not freeze a cropped viewport as the "original".
+        Prefer untrimmed ``x_full_list`` / ``raw_y_full_list`` (and fig master
+        backups) when they cover more than the current display window so later
+        X expansion / smooth-reset does not freeze a cropped viewport as the
+        "original".
 
         ``_original_y_data_list`` is always stored **without** stack offsets
         (``_reset_to_original`` re-adds them).
         """
-        if hasattr(fig, '_original_x_data_list'):
+        from .full_data import sync_live_full_lists, upgrade_originals_from_full
+
+        # Keep live full lists / master at the longest known domain first.
+        sync_live_full_lists(
+            fig,
+            x_full_list,
+            raw_y_full_list,
+            x_data_list=x_data_list,
+            y_fallback_list=[
+                (np.asarray(y_data_list[i], dtype=float).flatten()
+                 - (float(offsets_list[i]) if i < len(offsets_list) else 0.0))
+                for i in range(len(y_data_list))
+            ],
+        )
+        if hasattr(fig, "_original_x_data_list"):
+            upgrade_originals_from_full(fig, x_full_list, raw_y_full_list)
             return
         n = len(x_data_list)
         ox: list = []
@@ -1050,6 +1205,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 oy.append(np.array(yd - off, copy=True))
         fig._original_x_data_list = ox
         fig._original_y_data_list = oy
+        upgrade_originals_from_full(fig, x_full_list, raw_y_full_list)
 
     def _update_full_processed_data():
         """Store processed curve buffers for X-range filtering.
@@ -1087,7 +1243,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                             sy = _savgol_smooth(oy, int(settings.get('window', 5)), int(settings.get('poly', 2)))
                         else:
                             from .data_ops import _fft_smooth
-                            sy = _fft_smooth(oy, float(settings.get('cutoff', 0.1)))
+                            sy = _fft_smooth(
+                                oy,
+                                cutoff=float(settings.get('cutoff', 0.1)),
+                            )
                         fx.append(np.array(ox, copy=True))
                         fy.append(np.asarray(sy, dtype=float).flatten() + off)
                         continue
@@ -1120,9 +1279,18 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 total_points += len(orig_x)
             except Exception:
                 pass
-        # Clear processing settings
-        if hasattr(fig, '_smooth_settings'):
-            delattr(fig, '_smooth_settings')
+        # Clear processing settings and stale full-processed buffers so X-expand /
+        # session save (s) / style capture (p) do not keep smoothed crops.
+        for attr in (
+            '_smooth_settings',
+            '_full_processed_x_data_list',
+            '_full_processed_y_data_list',
+        ):
+            if hasattr(fig, attr):
+                try:
+                    delattr(fig, attr)
+                except Exception:
+                    pass
         return (reset_count > 0, reset_count, total_points)
 
     def _apply_data_changes():
@@ -1132,6 +1300,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 _line(i).set_data(x_data_list[i], y_data_list[i])
             except Exception:
                 pass
+        try:
+            from .axis_range import relim_xy_twins
+
+            relim_xy_twins(fig, ax, scalex=False, scaley=True)
+        except Exception:
+            pass
         try:
             fig.canvas.draw_idle()
         except Exception:
@@ -1153,7 +1327,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         if not hasattr(fig, '_pre_derivative_x_data_list'):
             fig._pre_derivative_x_data_list = [np.array(a, copy=True) for a in x_data_list]
             fig._pre_derivative_y_data_list = [np.array(a, copy=True) for a in y_data_list]
-            fig._pre_derivative_ylabel = ax.get_ylabel() or ""
+            from ..common.axis_state import primary_axis_label_text
+            fig._pre_derivative_ylabel = primary_axis_label_text(ax, "y")
 
     def _reset_from_derivative():
         """Reset all curves from derivative back to pre-derivative state."""
@@ -1165,14 +1340,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             try:
                 pre_x = fig._pre_derivative_x_data_list[i]
                 pre_y = fig._pre_derivative_y_data_list[i]
-                # Restore offsets
-                if i < len(offsets_list):
-                    pre_y_with_offset = pre_y + offsets_list[i]
-                else:
-                    pre_y_with_offset = pre_y.copy()
-                _line(i).set_data(pre_x, pre_y_with_offset)
-                x_data_list[i] = pre_x.copy()
-                y_data_list[i] = pre_y_with_offset.copy()
+                # Pre-derivative snapshots are taken from y_data_list (already
+                # includes stack offsets) — do not add offsets again.
+                pre_y = np.asarray(pre_y, dtype=float).copy()
+                _line(i).set_data(pre_x, pre_y)
+                x_data_list[i] = np.asarray(pre_x, dtype=float).copy()
+                y_data_list[i] = pre_y
                 reset_count += 1
                 total_points += len(pre_x)
             except Exception:
@@ -1180,552 +1353,54 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         # Restore y-axis label
         if hasattr(fig, '_pre_derivative_ylabel'):
             ax.set_ylabel(fig._pre_derivative_ylabel)
-        # Clear derivative settings
-        if hasattr(fig, '_derivative_order'):
-            delattr(fig, '_derivative_order')
-        return (reset_count > 0, reset_count, total_points)
-
-    def _capture_tick_minor_count(ax_obj):
-        """Return {x, y} AutoMinorLocator ndivs, or None if not AutoMinorLocator."""
-        def _ndivs(locator):
-            try:
-                if isinstance(locator, AutoMinorLocator):
-                    return int(locator._ndivs)
-            except Exception:
-                pass
-            return None
-        return {
-            'x': _ndivs(ax_obj.xaxis.get_minor_locator()),
-            'y': _ndivs(ax_obj.yaxis.get_minor_locator()),
-        }
-
-    def _restore_tick_minor_count(ax_obj, counts):
-        """Restore minor tick count from a dict captured by _capture_tick_minor_count."""
-        if not counts:
-            return
-        for axis_obj, key in ((ax_obj.xaxis, 'x'), (ax_obj.yaxis, 'y')):
-            val = counts.get(key)
-            if val is not None:
+            ax._stored_ylabel = fig._pre_derivative_ylabel
+        # Clear derivative settings and stale processed buffers so X-expand
+        # (and p/i/s/b round-trips) do not reuse derivative-smoothed arrays.
+        for attr in (
+            '_derivative_order',
+            '_derivative_reversed',
+            '_full_processed_x_data_list',
+            '_full_processed_y_data_list',
+            '_smooth_settings',
+        ):
+            if hasattr(fig, attr):
                 try:
-                    axis_obj.set_minor_locator(AutoMinorLocator(int(val)))
+                    delattr(fig, attr)
                 except Exception:
                     pass
+        return (reset_count > 0, reset_count, total_points)
 
     def push_state(note=""):
         """Snapshot current editable state (before a modifying action)."""
-        try:
-            # Helper to capture a representative tick line width
-            def _tick_width(axis_obj, which):
-                return current_tick_width(axis_obj, which)
-            _cts_for_snap = _cif_series_for_session()
-            snap = {
-                "note": note,
-                "xlim": ax.get_xlim(),
-                "ylim": ax.get_ylim(),
-                "tick_state": tick_state.copy(),
-                "font_size": plt.rcParams.get('font.size'),
-                "font_chain": list(plt.rcParams.get('font.sans-serif', [])),
-                "mathtext_fontset": plt.rcParams.get('mathtext.fontset'),
-                "labels": list(labels),
-                "delta": delta,
-                "lines": [],
-                "fig_size": list(fig.get_size_inches()),
-                "fig_dpi": fig.dpi,
-                "axes_bbox": [float(v) for v in ax.get_position().bounds],  # x0,y0,w,h
-                "axis_labels": {"xlabel": ax.get_xlabel(), "ylabel": ax.get_ylabel()},
-                "axis_titles": {"top_x": bool(getattr(ax, '_top_xlabel_on', False)),
-                                 "right_y": bool(getattr(ax, '_right_ylabel_on', False)),
-                                 "has_bottom_x": bool(ax.xaxis.label.get_visible()),
-                                 "has_left_y": bool(ax.yaxis.label.get_visible())},
-                "title_offsets": capture_title_offsets(ax),
-                "spines": {name: {"lw": sp.get_linewidth(), "color": sp.get_edgecolor(), "visible": sp.get_visible()} for name, sp in ax.spines.items()},
-                "tick_widths": {
-                    "x_major": _tick_width(ax.xaxis, 'major'),
-                    "x_minor": _tick_width(ax.xaxis, 'minor'),
-                    "y_major": _tick_width(ax.yaxis, 'major'),
-                    "y_minor": _tick_width(ax.yaxis, 'minor')
-                },
-                "tick_lengths": dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
-                "tick_direction": getattr(fig, '_tick_direction', 'out'),
-                "tick_spacing": capture_axes_tick_locators(ax, ('x', 'y')),
-                "tick_minor_count": _capture_tick_minor_count(ax),
-                "cif_tick_series": (list(_cts_for_snap) if _cts_for_snap is not None else None),
-                "show_cif_hkl": (bool(getattr(_bp, 'show_cif_hkl')) if _bp is not None and hasattr(_bp, 'show_cif_hkl') else False),
-                "show_cif_titles": (bool(getattr(_bp, 'show_cif_titles')) if _bp is not None and hasattr(_bp, 'show_cif_titles') else True),
-                "rotation_angle": getattr(ax, '_rotation_angle', 0),
-                "stack_label_at_bottom": getattr(fig, '_stack_label_at_bottom', False),
-                "label_anchor_left": getattr(fig, '_label_anchor_left', False),
-                "grid": any(line.get_visible() for line in ax.get_xgridlines() + ax.get_ygridlines()),
-                "curve_palettes": list(getattr(fig, '_curve_palette_history', []) or []),
-                "axis_style": capture_xy_axis_style(ax),
-            }
-            # Optional per-set CIF visibility state for 1D mode
-            try:
-                _bp_module_snap = _sys_snap.modules.get('__main__')
-                if _bp_module_snap is not None and hasattr(_bp_module_snap, 'cif_set_visible'):
-                    snap["cif_set_visible"] = list(getattr(_bp_module_snap, 'cif_set_visible') or [])
-            except Exception:
-                pass
-            try:
-                snap["cif_stack_y_offsets"] = list(getattr(fig, '_bp_cif_stack_y_offsets', []) or [])
-            except Exception:
-                pass
-            # Line + data arrays
-            for i, ln in _iter_lines():
-                snap["lines"].append({
-                    "index": i,
-                    "x": np.array(ln.get_xdata(), copy=True),
-                    "y": np.array(ln.get_ydata(), copy=True),
-                    "color": ln.get_color(),
-                    "lw": ln.get_linewidth(),
-                    "ls": ln.get_linestyle(),
-                    "marker": ln.get_marker(),
-                    "markersize": getattr(ln, 'get_markersize', lambda: None)(),
-                    "mfc": getattr(ln, 'get_markerfacecolor', lambda: None)(),
-                    "mec": getattr(ln, 'get_markeredgecolor', lambda: None)(),
-                    "alpha": ln.get_alpha()
-                })
-            # Data lists
-            snap["x_data_list"] = [np.array(a, copy=True) for a in x_data_list]
-            snap["y_data_list"] = [np.array(a, copy=True) for a in y_data_list]
-            snap["orig_y"]      = [np.array(a, copy=True) for a in orig_y]
-            snap["offsets"]     = list(offsets_list)
-            # Processed data (for smooth/reduce operations)
-            if hasattr(fig, '_original_x_data_list'):
-                snap["original_x_data_list"] = [np.array(a, copy=True) for a in fig._original_x_data_list]
-                snap["original_y_data_list"] = [np.array(a, copy=True) for a in fig._original_y_data_list]
-            if hasattr(fig, '_full_processed_x_data_list'):
-                snap["full_processed_x_data_list"] = [np.array(a, copy=True) for a in fig._full_processed_x_data_list]
-                snap["full_processed_y_data_list"] = [np.array(a, copy=True) for a in fig._full_processed_y_data_list]
-            if hasattr(fig, '_smooth_settings'):
-                snap["smooth_settings"] = dict(fig._smooth_settings)
-            if hasattr(fig, '_last_smooth_settings'):
-                snap["last_smooth_settings"] = dict(fig._last_smooth_settings)
-            # Derivative data (for derivative operations)
-            if hasattr(fig, '_pre_derivative_x_data_list'):
-                snap["pre_derivative_x_data_list"] = [np.array(a, copy=True) for a in fig._pre_derivative_x_data_list]
-                snap["pre_derivative_y_data_list"] = [np.array(a, copy=True) for a in fig._pre_derivative_y_data_list]
-                snap["pre_derivative_ylabel"] = str(getattr(fig, '_pre_derivative_ylabel', ''))
-            if hasattr(fig, '_derivative_order'):
-                snap["derivative_order"] = int(fig._derivative_order)
-            if hasattr(fig, '_derivative_reversed'):
-                snap["derivative_reversed"] = bool(fig._derivative_reversed)
-            # Label text content
-            snap["label_texts"] = [t.get_text() for t in label_text_objects]
-            snap["label_text_visible"] = [bool(t.get_visible()) for t in label_text_objects]
-            state_history.append(snap)
-            if len(state_history) > 40:
-                state_history.pop(0)
-        except Exception as e:
-            print(f"Warning: could not snapshot state: {e}")
+        return xy_push_state(
+            state_history=state_history, fig=fig, ax=ax, tick_state=tick_state,
+            labels=labels, delta=delta,
+            x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
+            offsets_list=offsets_list, x_full_list=x_full_list,
+            raw_y_full_list=raw_y_full_list, label_text_objects=label_text_objects,
+            bp=_bp, cif_series_for_session=_cif_series_for_session,
+            iter_lines=_iter_lines, note=note,
+        )
 
     def restore_state():
-        nonlocal delta
-        if not state_history:
-            print("No undo history.")
-            return
-        snap = state_history.pop()
-        try:
-            # Basic numeric state
-            ax.set_xlim(*snap["xlim"]) 
-            ax.set_ylim(*snap["ylim"]) 
-            # Tick state
-            snap_ts = snap.get("tick_state", {})
-            for k, v in snap_ts.items():
-                if k in tick_state:
-                    tick_state[k] = v
-            # If snapshot was legacy-only, map bx/tx/ly/ry into new keys
-            if not any(k in snap_ts for k in ('b_ticks','t_ticks','l_ticks','r_ticks')):
-                if 'bx' in snap_ts:
-                    tick_state['b_ticks'] = bool(snap_ts.get('bx', tick_state['bx']))
-                    tick_state['b_labels'] = bool(snap_ts.get('bx', tick_state['bx']))
-                if 'tx' in snap_ts:
-                    tick_state['t_ticks'] = bool(snap_ts.get('tx', tick_state['tx']))
-                    tick_state['t_labels'] = bool(snap_ts.get('tx', tick_state['tx']))
-                if 'ly' in snap_ts:
-                    tick_state['l_ticks'] = bool(snap_ts.get('ly', tick_state['ly']))
-                    tick_state['l_labels'] = bool(snap_ts.get('ly', tick_state['ly']))
-                if 'ry' in snap_ts:
-                    tick_state['r_ticks'] = bool(snap_ts.get('ry', tick_state['ry']))
-                    tick_state['r_labels'] = bool(snap_ts.get('ry', tick_state['ry']))
-            _sync_legacy_tick_keys()
-            update_tick_visibility()
-
-            # Fonts
-            if snap["font_chain"]:
-                plt.rcParams['font.family'] = 'sans-serif'
-                plt.rcParams['font.sans-serif'] = snap["font_chain"]
-            if snap["font_size"]:
-                try:
-                    plt.rcParams['font.size'] = snap["font_size"]
-                except Exception:
-                    pass
-            if snap.get("mathtext_fontset"):
-                try:
-                    plt.rcParams['mathtext.fontset'] = snap["mathtext_fontset"]
-                except Exception:
-                    pass
-            # Apply restored font settings to all existing text objects
-            # This ensures labels, tick labels, etc. update to match restored font size/family
-            try:
-                sync_fonts()
-            except Exception:
-                pass
-
-            # Figure size & dpi
-            if snap.get("fig_size") and isinstance(snap["fig_size"], (list, tuple)) and len(snap["fig_size"])==2:
-                try:
-                    fig.set_size_inches(snap["fig_size"][0], snap["fig_size"][1], forward=True)
-                except Exception:
-                    pass
-                # No message needed - canvas size is managed by system
-            # Don't restore DPI from undo - use system default to avoid display-dependent issues
-            
-            # Restore axes (plot frame) via stored bbox if present
-            if snap.get("axes_bbox") and isinstance(snap["axes_bbox"], (list, tuple)) and len(snap["axes_bbox"])==4:
-                try:
-                    x0,y0,w,h = snap["axes_bbox"]
-                    left = x0; bottom = y0; right = x0 + w; top = y0 + h
-                    if 0 < left < right <=1 and 0 < bottom < top <=1:
-                        fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
-                except Exception:
-                    pass
-
-            # Axis labels (use low-level API to avoid layout recalculation)
-            axis_labels = snap.get("axis_labels", {})
-            if axis_labels.get("xlabel") is not None:
-                ax.xaxis.label.set_text(axis_labels["xlabel"])
-            if axis_labels.get("ylabel") is not None:
-                ax.yaxis.label.set_text(axis_labels["ylabel"])
-            at = snap.get("axis_titles", {})
-            try:
-                if "has_bottom_x" in at:
-                    ax.xaxis.label.set_visible(bool(at["has_bottom_x"]))
-                if "has_left_y" in at:
-                    ax.yaxis.label.set_visible(bool(at["has_left_y"]))
-            except Exception:
-                pass
-            # Manual offsets for all titles - support both old and new format
-            restore_title_offsets(ax, snap.get("title_offsets", {}))
-
-            # Axis title duplicates (top X / right Y)
-            # Top X
-            try:
-                ax._top_xlabel_on = bool(at.get('top_x', False))
-                position_top_xlabel()
-            except Exception:
-                pass
-            # Right Y
-            try:
-                ax._right_ylabel_on = bool(at.get('right_y', False))
-                position_right_ylabel()
-            except Exception:
-                pass
-            # Note: Do NOT call position_bottom_xlabel() / position_left_ylabel() here
-            # as it causes title drift when combined with fig.canvas.draw() below.
-            # Title offsets are already restored from snapshot above.
-
-            # Spines (linewidth, color, visibility)
-            for name, spec in snap.get("spines", {}).items():
-                sp_obj = ax.spines.get(name)
-                if sp_obj is None:
-                    continue
-                try:
-                    if "lw" in spec:
-                        sp_obj.set_linewidth(spec["lw"])
-                    if "color" in spec and spec["color"] is not None:
-                        _ui_set_spine_side_color(ax, name, spec["color"], fig=fig)
-                    if "visible" in spec:
-                        try:
-                            sp_obj.set_visible(bool(spec["visible"]))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            # Tick widths
-            tw = snap.get("tick_widths", {})
-            try:
-                if tw.get("x_major") is not None:
-                    ax.tick_params(axis='x', which='major', width=tw["x_major"])
-                if tw.get("x_minor") is not None:
-                    ax.tick_params(axis='x', which='minor', width=tw["x_minor"]) 
-                if tw.get("y_major") is not None:
-                    ax.tick_params(axis='y', which='major', width=tw["y_major"]) 
-                if tw.get("y_minor") is not None:
-                    ax.tick_params(axis='y', which='minor', width=tw["y_minor"]) 
-            except Exception:
-                pass
-
-            # Tick lengths
-            tl = snap.get("tick_lengths", {})
-            try:
-                if tl.get("major") is not None:
-                    ax.tick_params(axis='both', which='major', length=tl["major"])
-                if tl.get("minor") is not None:
-                    ax.tick_params(axis='both', which='minor', length=tl["minor"])
-                if tl:
-                    fig._tick_lengths = dict(tl)
-            except Exception:
-                pass
-
-            # Tick direction
-            try:
-                tick_dir = snap.get("tick_direction", 'out')
-                ax.tick_params(axis='both', which='both', direction=tick_dir)
-                fig._tick_direction = tick_dir
-            except Exception:
-                pass
-
-            # Tick spacing (n command)
-            try:
-                restore_axes_tick_locators(ax, snap.get("tick_spacing"), ('x', 'y'))
-            except Exception:
-                pass
-
-            # Minor tick count (m command)
-            try:
-                _restore_tick_minor_count(ax, snap.get("tick_minor_count"))
-            except Exception:
-                pass
-
-            # Tick/label colors and labelpads
-            try:
-                axis_style = snap.get("axis_style")
-                if axis_style:
-                    spine_specs = {
-                        name: {"color": spec.get("color")}
-                        for name, spec in snap.get("spines", {}).items()
-                    }
-                    apply_xy_axis_style(ax, axis_style, fig=fig, spines_cfg=spine_specs)
-                    _ui_position_bottom_xlabel(ax, fig, tick_state)
-                    _ui_position_left_ylabel(ax, fig, tick_state)
-            except Exception:
-                pass
-
-            # Labels list
-            labels[:] = snap["labels"]
-
-            # Data & lines
-            if len(snap["lines"]) == _nlines():
-                for item in snap["lines"]:
-                    i = item["index"]
-                    ln = _line(i)
-                    ln.set_data(item["x"], item["y"])
-                    ln.set_linewidth(item["lw"])
-                    ln.set_linestyle(item["ls"])
-                    if item["marker"] is not None:
-                        ln.set_marker(item["marker"])
-                    if item.get("markersize") is not None:
-                        try:
-                            ln.set_markersize(item["markersize"])
-                        except Exception:
-                            pass
-                    if item["alpha"] is not None:
-                        ln.set_alpha(item["alpha"])
-                    apply_curve_color(ln, item["color"])
-                    if item.get("mfc") is not None:
-                        try:
-                            if str(item["mfc"]).lower() == "none":
-                                ln.set_markerfacecolor("none")
-                        except Exception:
-                            pass
-                    if item.get("mec") is not None:
-                        try:
-                            if str(item["mec"]).lower() == "none":
-                                ln.set_markeredgecolor("none")
-                        except Exception:
-                            pass
-
-            # Replace lists
-            x_data_list[:] = [np.array(a, copy=True) for a in snap["x_data_list"]]
-            y_data_list[:] = [np.array(a, copy=True) for a in snap["y_data_list"]]
-            orig_y[:]      = [np.array(a, copy=True) for a in snap["orig_y"]]
-            offsets_list[:] = list(snap["offsets"]) 
-            delta = snap.get("delta", delta)
-            
-            # Restore processed data (for smooth/reduce operations)
-            if "original_x_data_list" in snap:
-                fig._original_x_data_list = [np.array(a, copy=True) for a in snap["original_x_data_list"]]
-                fig._original_y_data_list = [np.array(a, copy=True) for a in snap["original_y_data_list"]]
-            elif hasattr(fig, '_original_x_data_list'):
-                # Clear if not in snapshot
-                delattr(fig, '_original_x_data_list')
-                delattr(fig, '_original_y_data_list')
-            if "full_processed_x_data_list" in snap:
-                fig._full_processed_x_data_list = [np.array(a, copy=True) for a in snap["full_processed_x_data_list"]]
-                fig._full_processed_y_data_list = [np.array(a, copy=True) for a in snap["full_processed_y_data_list"]]
-            elif hasattr(fig, '_full_processed_x_data_list'):
-                # Clear if not in snapshot
-                delattr(fig, '_full_processed_x_data_list')
-                delattr(fig, '_full_processed_y_data_list')
-            if "smooth_settings" in snap:
-                fig._smooth_settings = dict(snap["smooth_settings"])
-            elif hasattr(fig, '_smooth_settings'):
-                delattr(fig, '_smooth_settings')
-            if "last_smooth_settings" in snap:
-                fig._last_smooth_settings = dict(snap["last_smooth_settings"])
-            elif hasattr(fig, '_last_smooth_settings'):
-                delattr(fig, '_last_smooth_settings')
-            # Restore derivative data (for derivative operations)
-            if "pre_derivative_x_data_list" in snap:
-                fig._pre_derivative_x_data_list = [np.array(a, copy=True) for a in snap["pre_derivative_x_data_list"]]
-                fig._pre_derivative_y_data_list = [np.array(a, copy=True) for a in snap["pre_derivative_y_data_list"]]
-                fig._pre_derivative_ylabel = str(snap.get("pre_derivative_ylabel", ""))
-            elif hasattr(fig, '_pre_derivative_x_data_list'):
-                delattr(fig, '_pre_derivative_x_data_list')
-                delattr(fig, '_pre_derivative_y_data_list')
-                if hasattr(fig, '_pre_derivative_ylabel'):
-                    delattr(fig, '_pre_derivative_ylabel')
-            if "derivative_order" in snap:
-                fig._derivative_order = int(snap["derivative_order"])
-            elif hasattr(fig, '_derivative_order'):
-                delattr(fig, '_derivative_order')
-            if "derivative_reversed" in snap:
-                fig._derivative_reversed = bool(snap["derivative_reversed"])
-            elif hasattr(fig, '_derivative_reversed'):
-                delattr(fig, '_derivative_reversed')
-            # Restore y-axis label if derivative was applied
-            if "derivative_order" in snap:
-                try:
-                    current_ylabel = ax.get_ylabel() or ""
-                    order = int(snap["derivative_order"])
-                    is_reversed = snap.get("derivative_reversed", False)
-                    new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
-                    ax.set_ylabel(new_ylabel)
-                except Exception:
-                    pass
-            
-            # DON'T recalculate y_data_list - trust the snapshotted data to avoid offset drift
-            # The snapshot already captured the correct y_data_list with offsets applied.
-            # Recalculating from orig_y + offsets_list can introduce floating-point errors
-            # or inconsistencies if the data underwent transformations (normalize, etc.)
-            
-            # Update line data with restored values from snapshot
-            # This ensures line visual data matches the snapshotted data lists exactly
-            for i in range(min(_nlines(), len(x_data_list), len(y_data_list))):
-                try:
-                    _line(i).set_data(x_data_list[i], y_data_list[i])
-                except Exception:
-                    pass
-
-            # Restore rotation angle
-            if 'rotation_angle' in snap:
-                ax._rotation_angle = snap['rotation_angle']
-
-            # Restore legend position (stack_label_at_bottom)
-            if 'stack_label_at_bottom' in snap:
-                fig._stack_label_at_bottom = bool(snap['stack_label_at_bottom'])
-            if 'label_anchor_left' in snap:
-                fig._label_anchor_left = bool(snap['label_anchor_left'])
-
-            if snap.get("curve_palettes"):
-                fig._curve_palette_history = [
-                    {
-                        'palette': rec.get('palette'),
-                        'indices': list(rec.get('indices', [])),
-                        'low_clip': float(rec.get('low_clip', 0.08)),
-                        'high_clip': float(rec.get('high_clip', 0.85)),
-                    }
-                    for rec in snap["curve_palettes"]
-                    if rec.get('palette') and rec.get('indices')
-                ]
-            elif hasattr(fig, '_curve_palette_history'):
-                delattr(fig, '_curve_palette_history')
-
-            # Restore grid state
-            if 'grid' in snap:
-                try:
-                    if snap['grid']:
-                        ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
-                    else:
-                        ax.grid(False)
-                except Exception:
-                    pass
-
-            # CIF tick sets & label visibility (write back to batplot module globals)
-            if _bp is not None and snap.get("cif_tick_series") is not None and hasattr(_bp, 'cif_tick_series'):
-                try:
-                    getattr(_bp, 'cif_tick_series')[:] = [tuple(t) for t in snap["cif_tick_series"]]
-                except Exception:
-                    pass
-                _sync_fig_cif_tick_series()
-            if _bp is not None and 'show_cif_hkl' in snap:
-                try:
-                    new_state = bool(snap['show_cif_hkl'])
-                    setattr(_bp, 'show_cif_hkl', new_state)
-                    # Also store in __main__ module so draw function can access it
-                    try:
-                        _bp_module = sys.modules.get('__main__')
-                        if _bp_module is not None:
-                            setattr(_bp_module, 'show_cif_hkl', new_state)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            if _bp is not None and 'show_cif_titles' in snap:
-                try:
-                    new_state = bool(snap['show_cif_titles'])
-                    setattr(_bp, 'show_cif_titles', new_state)
-                    # Also update figure attribute and __main__ module
-                    fig._bp_show_cif_titles = new_state
-                    try:
-                        _bp_module = sys.modules.get('__main__')
-                        if _bp_module is not None:
-                            setattr(_bp_module, 'show_cif_titles', new_state)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            # Restore CIF per-set visibility if present
-            if 'cif_set_visible' in snap:
-                try:
-                    _bp_module = sys.modules.get('__main__')
-                    if _bp_module is not None:
-                        setattr(_bp_module, 'cif_set_visible', list(snap['cif_set_visible']))
-                except Exception:
-                    pass
-            if 'cif_stack_y_offsets' in snap:
-                try:
-                    fig._bp_cif_stack_y_offsets = list(snap['cif_stack_y_offsets'])
-                except Exception:
-                    pass
-            # Redraw CIF ticks after restoration if available
-            if hasattr(ax, '_cif_draw_func'):
-                try:
-                    ax._cif_draw_func()
-                except Exception:
-                    pass
-
-            # Restore label texts (keep numbering style)
-            for i, txt in enumerate(label_text_objects):
-                base = labels[i] if i < len(labels) else ""
-                txt.set_text(f"{i+1}: {base}")
-
-            update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-            label_vis = snap.get("label_text_visible")
-            if isinstance(label_vis, list):
-                for txt, visible in zip(label_text_objects, label_vis):
-                    try:
-                        txt.set_visible(bool(visible))
-                    except Exception:
-                        pass
-                try:
-                    fig._curve_names_visible = any(bool(v) for v in label_vis)
-                except Exception:
-                    pass
-            try:
-                globals()['tick_state'] = tick_state
-            except Exception:
-                pass
-            try:
-                fig.canvas.draw()
-            except Exception:
-                try: fig.canvas.draw_idle()
-                except Exception: pass
-            print("Undo: restored previous state.")
-        except Exception as e:
-            print(f"Error restoring state: {e}")
+        nonlocal delta, use_Q, use_2th
+        delta, use_Q, use_2th = xy_restore_state(
+            state_history=state_history, fig=fig, ax=ax, args=args,
+            tick_state=tick_state, labels=labels,
+            x_data_list=x_data_list, y_data_list=y_data_list, orig_y=orig_y,
+            offsets_list=offsets_list, x_full_list=x_full_list,
+            raw_y_full_list=raw_y_full_list, label_text_objects=label_text_objects,
+            bp=_bp, delta=delta, use_Q=use_Q, use_2th=use_2th,
+            file_wavelength_info=file_wavelength_info, cif_globals=cif_globals,
+            sync_legacy_tick_keys=_sync_legacy_tick_keys,
+            update_tick_visibility=update_tick_visibility,
+            sync_fonts=sync_fonts,
+            position_top_xlabel=position_top_xlabel,
+            position_right_ylabel=position_right_ylabel,
+            update_ylabel_for_derivative=_update_ylabel_for_derivative,
+            sync_fig_cif_tick_series=_sync_fig_cif_tick_series,
+            line=_line, nlines=_nlines,
+        )
 
     def pop_undo():
         """Drop the most recently pushed undo snapshot.
@@ -1783,8 +1458,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         if not key:
             continue
 
-        # NEW: disable 'y' and 'd' in stack mode
-        if args.stack and key in ('y', 'd'):
+        # Disable keys hidden from the stack-mode menu
+        if args.stack and key in ('y', 'd', 'o'):
             print("Option disabled in --stack mode.")
             continue
 
@@ -1803,7 +1478,25 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 continue
             else:
                 continue
-        elif key in ('cif', 'z', 'j'):
+        elif key in ('cif', 'z'):
+            # Note: top-level `j` is CIF title toggle (handled below), not CIF menu.
+            try:
+                from .axis_units import get_xy_axis_mode
+                _axis_is_2th = get_xy_axis_mode(
+                    fig, use_Q=use_Q, use_r=use_r, use_E=use_E, use_k=use_k, use_rft=use_rft,
+                    use_2th=bool(use_2th), xaxis=getattr(args, "xaxis", None), ax=ax,
+                ) == "2theta"
+            except Exception:
+                _mode_fb = getattr(fig, "_xy_axis_mode", None)
+                if _mode_fb in ("2theta", "Q", "d"):
+                    _axis_is_2th = _mode_fb == "2theta"
+                else:
+                    # Prefer stored hint; never treat unknown as 2θ
+                    _hint = getattr(args, "xaxis", None) or getattr(fig, "_xy_xaxis_hint", None)
+                    if _hint is not None and str(_hint).lower() in ("2theta", "2th", "tth", "two_theta"):
+                        _axis_is_2th = True
+                    else:
+                        _axis_is_2th = False
             run_cif_ticks_menu(
                 ax=ax, fig=fig, _bp=_bp,
                 colorize_menu=colorize_menu, colorize_prompt=colorize_prompt,
@@ -1811,7 +1504,75 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 _print_cif_phase_list=_print_cif_phase_list,
                 _apply_cif_phase_label_rename=_apply_cif_phase_label_rename,
                 _sync_fig_cif_tick_series=_sync_fig_cif_tick_series,
+                use_2th=_axis_is_2th,
+                default_wl=getattr(args, 'wl', None) or getattr(fig, '_xy_wavelength', None),
+                y_data_list=y_data_list,
+                # On failed CIF add, restore the pre-add snap (not discard-only).
+                pop_undo=restore_state,
             )
+        elif key == 'u':
+            if not is_diffraction:
+                print("Unknown option.")
+                continue
+            try:
+                def _set_use_Q(flag: bool):
+                    nonlocal use_Q, use_2th
+                    use_Q = bool(flag)
+                    if flag:
+                        use_2th = False
+
+                def _set_use_2th(flag: bool):
+                    nonlocal use_Q, use_2th
+                    use_2th = bool(flag)
+                    if flag:
+                        use_Q = False
+
+                new_mode = run_axis_units_menu(
+                    fig=fig,
+                    ax=ax,
+                    args=args,
+                    x_data_list=x_data_list,
+                    x_full_list=x_full_list,
+                    y_data_list=y_data_list,
+                    use_Q=use_Q,
+                    use_r=use_r,
+                    use_E=use_E,
+                    use_k=use_k,
+                    use_rft=use_rft,
+                    use_2th=bool(use_2th),
+                    get_cif_series=_cif_series_for_session,
+                    sync_fig_cif_tick_series=_sync_fig_cif_tick_series,
+                    file_wavelength_info=file_wavelength_info,
+                    push_state=push_state,
+                    # On failed convert: full restore (not discard-only pop)
+                    pop_undo=restore_state,
+                    set_use_Q=_set_use_Q,
+                    set_use_2th=_set_use_2th,
+                    _safe_input=_safe_input,
+                    colorize_menu=colorize_menu,
+                    colorize_prompt=colorize_prompt,
+                )
+                if new_mode:
+                    use_Q = new_mode == "Q"
+                    use_2th = new_mode == "2theta"
+                    is_diffraction = new_mode in ("2theta", "Q", "d")
+                # Keep active crosshair λ in sync after convert to/from 2θ
+                if new_mode and crosshair.get("active"):
+                    try:
+                        wl_ch = resolve_wavelength(
+                            fig=fig,
+                            args=args,
+                            cif_series=_cif_series_for_session(),
+                            file_wavelength_info=file_wavelength_info,
+                            axis_mode=new_mode,
+                        )
+                        if wl_ch is not None:
+                            crosshair["wavelength"] = float(wl_ch)
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Error in axis units menu: {e}")
+            continue
         elif key == 'h':  # legend submenu
             try:
                 while True:
@@ -1868,9 +1629,13 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
             # Check if CIF files exist before allowing this command
             has_cif = False
             try:
-                has_cif = any(f.split(':')[0].lower().endswith('.cif') for f in args.files)
-                if not has_cif and _bp is not None:
-                    has_cif = bool(getattr(_bp, 'cif_tick_series', None))
+                # Windows-safe CIF detect (drive letter colon is not a suffix).
+                from ..common.sources import cif_present
+
+                has_cif = cif_present(
+                    getattr(args, "files", None),
+                    (lambda: getattr(_bp, "cif_tick_series", None)) if _bp is not None else None,
+                )
             except Exception:
                 pass
             if not has_cif:
@@ -1952,6 +1717,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 push_state=push_state,
                 safe_input=_safe_input,
                 colorize_prompt=colorize_prompt,
+                tick_state=tick_state,
             )
         elif key == 'r':
             run_xy_rename_menu(
@@ -2012,220 +1778,18 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 _update_full_processed_data=_update_full_processed_data,
                 _update_ylabel_for_derivative=_update_ylabel_for_derivative,
                 colorize_menu=colorize_menu, colorize_prompt=colorize_prompt,
+                pop_undo=pop_undo,
             )
-        elif key == 'o':  # <-- OFFSET HANDLER (now only reachable if not args.stack)
-            print("\n\033[1mOffset adjustment menu:\033[0m")
-            print(f"  {colorize_menu('1-{}: adjust individual curve offset'.format(len(labels)))}")
-            print(f"  {colorize_menu('a: set spacing between curves')}")
-            print(f"  {colorize_menu('r: reset all offsets to 0')}")
-            print(f"  {colorize_menu('d: change delta spacing (original behavior)')}")
-            print(f"  {colorize_menu('q: back to main menu')}")
-            
-            while True:
-                offset_cmd = _safe_input("Offset> ").strip().lower()
-                
-                if offset_cmd == 'q' or offset_cmd == '':
-                    break
-                    
-                elif offset_cmd == 'r':
-                    # Reset all offsets to 0
-                    try:
-                        push_state("reset-offsets")
-                        for i in range(len(labels)):
-                            if i >= _nlines():
-                                continue
-                            # Get current x-data from the line
-                            current_x = np.asarray(_line(i).get_xdata(), dtype=float)
-                            # Reset to normalized data without any offset
-                            y_norm = orig_y[i]
-                            y_data_list[i] = y_norm.copy()
-                            offsets_list[i] = 0.0
-                            # Update x_data_list to match current line data
-                            x_data_list[i] = current_x.copy()
-                            _line(i).set_data(current_x, y_norm)
-                        
-                        ax.relim()
-                        ax.autoscale_view(scalex=False, scaley=True)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        fig.canvas.draw()
-                        print("All offsets reset to 0")
-                    except Exception as e:
-                        print(f"Error resetting offsets: {e}")
-                    
-                elif offset_cmd == 'a':
-                    # Set spacing between curves (separates all curves)
-                    try:
-                        if len(labels) <= 1:
-                            print("Warning: Only one curve loaded; spacing cannot be applied.")
-                            continue
-                        
-                        # Calculate current spacing (average difference between consecutive offsets)
-                        current_spacing = 0.0
-                        if len(offsets_list) > 1:
-                            spacing_diffs = []
-                            sorted_indices = sorted(range(len(offsets_list)), key=lambda i: offsets_list[i] if i < len(offsets_list) else 0.0)
-                            for j in range(len(sorted_indices) - 1):
-                                idx1, idx2 = sorted_indices[j], sorted_indices[j + 1]
-                                off1 = offsets_list[idx1] if idx1 < len(offsets_list) else 0.0
-                                off2 = offsets_list[idx2] if idx2 < len(offsets_list) else 0.0
-                                spacing_diffs.append(abs(off2 - off1))
-                            if spacing_diffs:
-                                current_spacing = sum(spacing_diffs) / len(spacing_diffs)
-                        
-                        spacing_input = _safe_input("Enter spacing value between curves (current avg: {:.4g}): ".format(current_spacing)).strip()
-                        if not spacing_input:
-                            print("Canceled.")
-                            continue
-                        
-                        spacing_value = float(spacing_input)
-                        push_state("curve-spacing")
-                        
-                        # Apply spacing to separate all curves
-                        # Find the minimum current offset to use as baseline
-                        min_offset = min(offsets_list) if offsets_list else 0.0
-                        
-                        # Sort curves by their current offset to maintain order
-                        curve_order = sorted(range(len(labels)), key=lambda i: offsets_list[i] if i < len(offsets_list) else 0.0)
-                        
-                        # Apply cumulative spacing starting from the minimum offset
-                        current_offset = min_offset
-                        for i, curve_idx in enumerate(curve_order):
-                            if curve_idx >= _nlines():
-                                continue
-                            # Get current x-data from the line
-                            current_x = np.asarray(_line(curve_idx).get_xdata(), dtype=float)
-                            y_norm = orig_y[curve_idx]
-                            
-                            # Set new offset with spacing
-                            offsets_list[curve_idx] = current_offset
-                            y_with_offset = y_norm + current_offset
-                            y_data_list[curve_idx] = y_with_offset
-                            x_data_list[curve_idx] = current_x.copy()
-                            _line(curve_idx).set_data(current_x, y_with_offset)
-                            
-                            # Calculate spacing for next curve based on current curve's range
-                            if i < len(curve_order) - 1:  # Not the last curve
-                                y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
-                                if args.stack:
-                                    # In stack mode, spacing is relative to curve range
-                                    gap = y_range + (spacing_value * (y_range if args.autoscale else 1.0))
-                                    current_offset -= gap
-                                else:
-                                    # In normal mode, spacing is absolute or relative
-                                    increment = (y_range * spacing_value) if (args.autoscale and y_norm.size) else spacing_value
-                                    current_offset += increment
-                        
-                        ax.relim()
-                        ax.autoscale_view(scalex=False, scaley=True)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        fig.canvas.draw()
-                        print("Spacing of {:.4g} applied to separate all curves".format(spacing_value))
-                        
-                    except ValueError:
-                        print("Invalid spacing value")
-                    except Exception as e:
-                        print(f"Error applying spacing: {e}")
-                        
-                elif offset_cmd == 'd':
-                    # Original delta spacing behavior
-                    if len(labels) <= 1:
-                        print("Warning: Only one curve loaded; applying an offset is not recommended.")
-                    try:
-                        new_delta_str = _safe_input(f"Enter new offset spacing (current={delta}): ").strip()
-                        if not new_delta_str:
-                            print("Canceled.")
-                            continue
-                        new_delta = float(new_delta_str)
-                        push_state("delta-spacing")
-                        delta = new_delta
-                        offsets_list[:] = []
-                        if args.stack:
-                            current_offset = 0.0
-                            for i, y_norm in enumerate(orig_y):
-                                if i >= _nlines():
-                                    continue
-                                # Get current x-data from the line
-                                current_x = np.asarray(_line(i).get_xdata(), dtype=float)
-                                y_with_offset = y_norm + current_offset
-                                y_data_list[i] = y_with_offset
-                                offsets_list.append(current_offset)
-                                # Update x_data_list to match current line data
-                                x_data_list[i] = current_x.copy()
-                                _line(i).set_data(current_x, y_with_offset)
-                                y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
-                                gap = y_range + (delta * (y_range if args.autoscale else 1.0))
-                                current_offset -= gap
-                        else:
-                            current_offset = 0.0
-                            for i, y_norm in enumerate(orig_y):
-                                if i >= _nlines():
-                                    continue
-                                # Get current x-data from the line
-                                current_x = np.asarray(_line(i).get_xdata(), dtype=float)
-                                y_with_offset = y_norm + current_offset
-                                y_data_list[i] = y_with_offset
-                                offsets_list.append(current_offset)
-                                # Update x_data_list to match current line data
-                                x_data_list[i] = current_x.copy()
-                                _line(i).set_data(current_x, y_with_offset)
-                                increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
-                                current_offset += increment
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        ax.relim(); ax.autoscale_view(scalex=False, scaley=True)
-                        fig.canvas.draw()
-                        print(f"Offsets updated with delta={delta}")
-                    except ValueError:
-                        print("Invalid delta value")
-                    except Exception as e:
-                        print(f"Error updating offsets: {e}")
-                        
-                elif offset_cmd.isdigit():
-                    # Adjust individual curve offset
-                    try:
-                        curve_num = int(offset_cmd)
-                        if curve_num < 1 or curve_num > len(labels):
-                            print("Invalid curve number (1-{})".format(len(labels)))
-                            continue
-                        
-                        idx = curve_num - 1
-                        if idx >= _nlines():
-                            print("Invalid curve number.")
-                            continue
-                        
-                        current_offset = offsets_list[idx] if idx < len(offsets_list) else 0.0
-                        
-                        individual_offset_input = _safe_input("Enter offset for curve {} (current: {:.4g}): ".format(
-                            curve_num, current_offset)).strip()
-                        if not individual_offset_input:
-                            print("Canceled.")
-                            continue
-                        
-                        individual_offset = float(individual_offset_input)
-                        push_state("curve-{}-offset".format(curve_num))
-                        
-                        # Get current x-data from the line to ensure we're working with actual displayed data
-                        current_x = np.asarray(_line(idx).get_xdata(), dtype=float)
-                        # Apply individual offset to this curve
-                        y_norm = orig_y[idx]
-                        offsets_list[idx] = individual_offset
-                        y_with_offset = y_norm + individual_offset
-                        y_data_list[idx] = y_with_offset
-                        # Update x_data_list to match current line data
-                        x_data_list[idx] = current_x.copy()
-                        _line(idx).set_data(current_x, y_with_offset)
-                        
-                        ax.relim()
-                        ax.autoscale_view(scalex=False, scaley=True)
-                        update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        fig.canvas.draw()
-                        print("Curve {} offset set to: {:.4g}".format(curve_num, individual_offset))
-                        
-                    except ValueError:
-                        print("Invalid offset value")
-                    except Exception as e:
-                        print(f"Error setting curve offset: {e}")
-                else:
-                    print("Unknown command. Use 1-{}, a, r, d, or q".format(len(labels)))
+        elif key == 'o':  # offset (blocked above when args.stack)
+            delta = run_offset_menu(
+                ax=ax, fig=fig, args=args, labels=labels, orig_y=orig_y,
+                x_data_list=x_data_list, y_data_list=y_data_list,
+                offsets_list=offsets_list, delta=delta,
+                line=_line, nlines=_nlines,
+                push_state=push_state, safe_input=_safe_input,
+                colorize_menu=colorize_menu,
+                label_text_objects=label_text_objects,
+            )
         elif key == 'l':
             run_line_style_menu(
                 ax=ax,
@@ -2239,18 +1803,77 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 colorize_prompt=colorize_prompt,
             )
         elif key == 'f':
+            from ..common.font_extras import (
+                apply_fig_font_weight,
+                apply_fig_text_highlight,
+                get_fig_font_weight,
+                get_fig_text_highlight,
+                get_fig_text_highlight_style,
+            )
+            from ..common.fonts import collect_fig_font_artists
+
+            def _xy_font_artists():
+                ax2 = getattr(fig, "_xy_ax2", None)
+                return collect_fig_font_artists(
+                    ax,
+                    fig,
+                    include_title=True,
+                    include_axes_texts=True,
+                    extra_axes=[ax2] if ax2 is not None else None,
+                    extra_artists=list(label_text_objects or []),
+                )
+
+            def _draw_xy_font_change():
+                position_top_xlabel()
+                position_right_ylabel()
+                try:
+                    fig.canvas.draw()
+                except Exception:
+                    fig.canvas.draw_idle()
+
             def _apply_xy_font_family(family):
                 push_state("font-change")
                 apply_font_changes(new_family=family)
-                position_top_xlabel()
-                position_right_ylabel()
-                fig.canvas.draw()
+                _draw_xy_font_change()
+
             def _apply_xy_font_size(size):
                 push_state("font-change")
                 apply_font_changes(new_size=size)
-                position_top_xlabel()
-                position_right_ylabel()
-                fig.canvas.draw()
+                _draw_xy_font_change()
+
+            def _apply_xy_font_weight(weight):
+                push_state("font-weight")
+                apply_fig_font_weight(fig, _xy_font_artists(), weight)
+                _draw_xy_font_change()
+
+            def _toggle_xy_highlight():
+                push_state("font-highlight")
+                apply_fig_text_highlight(
+                    fig, _xy_font_artists(), not get_fig_text_highlight(fig)
+                )
+                _draw_xy_font_change()
+
+            def _set_xy_hl_fc(fc):
+                push_state("font-highlight")
+                apply_fig_text_highlight(
+                    fig, _xy_font_artists(), get_fig_text_highlight(fig), fc=fc
+                )
+                _draw_xy_font_change()
+
+            def _set_xy_hl_alpha(alpha):
+                push_state("font-highlight")
+                apply_fig_text_highlight(
+                    fig, _xy_font_artists(), get_fig_text_highlight(fig), alpha=alpha
+                )
+                _draw_xy_font_change()
+
+            def _set_xy_hl_pad(pad):
+                push_state("font-highlight")
+                apply_fig_text_highlight(
+                    fig, _xy_font_artists(), get_fig_text_highlight(fig), pad=pad
+                )
+                _draw_xy_font_change()
+
             run_font_menu(
                 safe_input=_safe_input,
                 colorize_menu=colorize_menu,
@@ -2259,17 +1882,24 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 get_current_size=lambda: plt.rcParams.get('font.size', None),
                 apply_family=_apply_xy_font_family,
                 apply_size=_apply_xy_font_size,
+                get_current_weight=lambda: get_fig_font_weight(fig),
+                apply_weight=_apply_xy_font_weight,
+                get_current_highlight=lambda: get_fig_text_highlight(fig),
+                get_highlight_style=lambda: get_fig_text_highlight_style(fig),
+                apply_highlight_toggle=_toggle_xy_highlight,
+                apply_highlight_facecolor=_set_xy_hl_fc,
+                apply_highlight_alpha=_set_xy_hl_alpha,
+                apply_highlight_pad=_set_xy_hl_pad,
+                highlight_fig=fig,
                 fonts=['Arial', 'Helvetica', 'Times New Roman', 'STIXGeneral', 'DejaVu Sans'],
             )
         elif key == 'g':
             try:
                 def _resize_xy_frame():
-                    push_state("resize-frame")
-                    resize_plot_frame()
+                    resize_plot_frame(on_before_change=lambda: push_state("resize-frame"))
                     update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                 def _resize_xy_canvas():
-                    push_state("resize-canvas")
-                    resize_canvas()
+                    resize_canvas(on_before_change=lambda: push_state("resize-canvas"))
                 run_option_menu(
                     prompt="Resize (p/c/q): ",
                     options={
@@ -2311,39 +1941,30 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     except Exception:
                         pass
                 def _apply_xy_wasd(changed_sides=None):
+                    from .spines import sync_xy_twin_wasd, xy_twin_context
+
                     if changed_sides is None:
                         changed_sides = {'bottom', 'top', 'left', 'right'}
                     for side in ('top', 'bottom', 'left', 'right'):
                         set_spine_visible(side, bool(wasd[side]['spine']))
                     apply_flat_tick_params(ax, tick_state)
-                    if bool(wasd['bottom']['title']):
-                        if hasattr(ax, '_stored_xlabel') and isinstance(ax._stored_xlabel, str) and ax._stored_xlabel:
-                            ax.xaxis.label.set_text(ax._stored_xlabel)
-                        ax.xaxis.label.set_visible(True)
-                    else:
-                        if not hasattr(ax, '_stored_xlabel'):
-                            try:
-                                ax._stored_xlabel = ax.xaxis.label.get_text()
-                            except Exception:
-                                ax._stored_xlabel = ''
-                        ax.xaxis.label.set_visible(False)
+                    sync_xy_twin_wasd(ax, fig, wasd)
+                    set_primary_axis_title(
+                        ax, "x",
+                        on=bool(wasd['bottom']['title']),
+                        stored_attr="_stored_xlabel",
+                    )
                     ax._top_xlabel_on = bool(wasd['top']['title'])
                     if not ax._top_xlabel_on and hasattr(ax, '_top_xlabel_artist') and ax._top_xlabel_artist is not None:
                         try:
                             ax._top_xlabel_artist.set_visible(False)
                         except Exception:
                             pass
-                    if bool(wasd['left']['title']):
-                        if hasattr(ax, '_stored_ylabel') and isinstance(ax._stored_ylabel, str) and ax._stored_ylabel:
-                            ax.yaxis.label.set_text(ax._stored_ylabel)
-                        ax.yaxis.label.set_visible(True)
-                    else:
-                        if not hasattr(ax, '_stored_ylabel'):
-                            try:
-                                ax._stored_ylabel = ax.yaxis.label.get_text()
-                            except Exception:
-                                ax._stored_ylabel = ''
-                        ax.yaxis.label.set_visible(False)
+                    set_primary_axis_title(
+                        ax, "y",
+                        on=bool(wasd['left']['title']),
+                        stored_attr="_stored_ylabel",
+                    )
                     ax._right_ylabel_on = bool(wasd['right']['title'])
                     if not ax._right_ylabel_on and hasattr(ax, '_right_ylabel_artist') and ax._right_ylabel_artist is not None:
                         try:
@@ -2361,6 +1982,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     )
                 def _draw_xy_spine_menu():
                     try:
+                        finalize_spine_colors(fig, ax, tick_state=tick_state, draw=False)
+                    except Exception:
+                        pass
+                    try:
                         fig.canvas.draw()
                     except Exception:
                         fig.canvas.draw_idle()
@@ -2377,8 +2002,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                     mode_label="stack plot axes",
                     back_label="stack plot menu",
                     axis_map={'x': ax.xaxis, 'y': ax.yaxis},
-                    direction_axes=[ax],
-                    length_axes=[ax],
+                    direction_axes=(
+                        lambda _ax2: [ax, _ax2] if _ax2 is not None else [ax]
+                    )(getattr(fig, "_xy_ax2", None)),
+                    length_axes=(
+                        lambda _ax2: [ax, _ax2] if _ax2 is not None else [ax]
+                    )(getattr(fig, "_xy_ax2", None)),
                     title_offset_handler=_title_offset_menu,
                     on_quit=lambda: setattr(ax, '_saved_tick_state', dict(tick_state)),
                     print_state=print_tick_state,
@@ -2410,6 +2039,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 safe_input=_safe_input,
                 colorize_menu=colorize_menu,
                 colorize_prompt=colorize_prompt,
+                pop_undo=pop_undo,
             )
         elif key == 'v':
             run_peak_finder_menu(
@@ -2423,5 +2053,7 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 colorize_menu=colorize_menu,
                 colorize_prompt=_colorize_prompt,
             )
+        else:
+            print("Unknown option.")
 
 __all__ = ["interactive_menu"]

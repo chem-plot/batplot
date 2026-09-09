@@ -1,7 +1,7 @@
 {
-  "version": "1.8.48",
-  "custom_message": "- Bug fixes on session reload",
+  "version": "1.8.52",
+  "custom_message": "- Bug fixes",
   "update_notes": [
-    "- Bug fixes on session reload"
+    "- Bug fixes"
   ]
 }

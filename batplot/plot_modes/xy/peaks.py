@@ -44,12 +44,20 @@ def run_peak_finder_menu(
                 if len(parts) != 2:
                     print("Need exactly two numbers or 'current'.")
                     continue
-                x_min, x_max = map(float, parts)
+                try:
+                    x_min, x_max = float(parts[0]), float(parts[1])
+                except ValueError:
+                    print("Invalid number format.")
+                    continue
                 if x_min > x_max:
                     x_min, x_max = x_max, x_min
 
             frac_in = safe_input("Min relative peak height (0–1, default 0.1): ").strip()
-            min_frac = float(frac_in) if frac_in else 0.1
+            try:
+                min_frac = float(frac_in) if frac_in else 0.1
+            except ValueError:
+                print("Invalid relative height.")
+                continue
             if min_frac < 0: min_frac = 0.0
             if min_frac > 1: min_frac = 1.0
 
@@ -155,7 +163,7 @@ def run_peak_finder_menu(
                                 print("Export canceled.")
                         if do_write:
                             try:
-                                with open(target, 'w') as f:
+                                with open(target, 'w', encoding='utf-8') as f:
                                     f.write("# Curve\tLabel\tPeak x\tPeak y\n")
                                     for curve_idx, label, peak_xy_list in all_peak_results:
                                         for px, py in peak_xy_list:

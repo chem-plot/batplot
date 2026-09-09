@@ -22,6 +22,8 @@ from ...color_utils import (
     format_color_listing,
     palette_preview,
     manage_user_colors,
+    prompt_screen_color,
+    blank_means_back,
     get_user_color_list,
     resolve_color_token,
     ensure_colormap,
@@ -109,22 +111,11 @@ def run_xy_color_menu(
 
         _spine_keys = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
 
+        from ..common.menu_rendering import menu_block_begin
+
         while True:
-            # Header: show current curves
-            print("\n\033[1mColors>\033[0m  Current curves (visible only):")
-            any_curve = False
-            for idx, label in enumerate(labels):
-                try:
-                    ln = _line(idx)
-                    if ln is not None and not ln.get_visible():
-                        continue
-                    cur = ln.get_color() if ln is not None else None
-                except Exception:
-                    cur = None
-                any_curve = True
-                print(f"  {idx+1}: {format_color_listing(cur)} {label}")
-            if not any_curve:
-                print("  (none visible)")
+            menu_block_begin(force_new=True)
+            print("\033[1mColors>\033[0m")
             # Saved user colors
             user_colors = get_user_color_list(fig)
             if user_colors:
@@ -145,42 +136,86 @@ def run_xy_color_menu(
                     print(f"      {bar}")
             _C = '\033[96m'; _R = '\033[0m'
             print(f"Spine/tick keys : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
-            print(f"Curve colors    : {_C}1:red{_R}  {_C}2:u3{_R}  {_C}3:#00FF00{_R}")
-            print(f"Palette         : {_C}all viridis{_R}   {_C}1-3 magma_r{_R}   {_C}1-2,4 2{_R}")
-            print(f"Spine colors    : {_C}w:red{_R}  {_C}a:#4561F7{_R}")
+            print()
+            print("How to set color:")
+            print(f"  curve:   {_C}1:red{_R}  {_C}2:u3{_R}  {_C}3:#00FF00{_R}")
+            print(f"  palette: {_C}all viridis{_R}   {_C}1-3 magma_r{_R}   {_C}1-2,4 2{_R}")
+            print(f"  spine:   {_C}w:red{_R}  {_C}a:#4561F7{_R}")
             if has_cif and (bp is not None and getattr(bp, 'cif_tick_series', None)):
                 print(f"CIF tick colors : {_C}t{_R} (enter 't' to open CIF color submenu)")
-            print(f"Other           : {_C}u{_R}=manage saved colors   {_C}q{_R}=back")
+            print(
+                f"Other           : {_C}v{_R}: show current colors   "
+                f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+            )
             line = safe_input(colorize_prompt("Colors> ")).strip()
-            if not line or line.lower() == 'q':
+            if line.lower() == 'q' or blank_means_back(line):
                 break
             low = line.lower()
             # Special single-key commands
+            if low == 'v':
+                print("Current curves (visible only):")
+                any_curve = False
+                for idx, label in enumerate(labels):
+                    try:
+                        ln = _line(idx)
+                        if ln is not None and not ln.get_visible():
+                            continue
+                        cur = ln.get_color() if ln is not None else None
+                    except Exception:
+                        cur = None
+                    any_curve = True
+                    print(f"  {idx+1}: {format_color_listing(cur)} {label}")
+                if not any_curve:
+                    print("  (none visible)")
+                continue
             if low == 'u':
                 manage_user_colors(fig)
+                continue
+            if low == 'e':
+                prompt_screen_color(fig)
                 continue
             if low == 't':
                 if has_cif and (bp is not None and getattr(bp, 'cif_tick_series', None)):
                     cts = getattr(bp, 'cif_tick_series', [])
                     while True:
+                        from ..common.menu_rendering import menu_block_begin, menu_block_end
+
                         _C = '\033[96m'; _R = '\033[0m'
+                        menu_block_begin(force_new=True)
                         print("CIF color (per set).")
-                        for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
-                            print(f"  {i+1}: {format_color_listing(col)}  {lab}")
-                        print("Examples:")
+                        print()
+                        print("How to set color:")
                         print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
                         print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
                         print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
                         print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
+                        print(
+                            f"Other: {_C}v{_R}: show current colors   "
+                            f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+                        )
+                        menu_block_end()
                         cif_line = safe_input("Enter mappings or range+palette (q=back): ").strip()
-                        if not cif_line or cif_line.lower() == 'q':
+                        if cif_line.lower() == 'q' or blank_means_back(cif_line):
                             break
+                        cif_low = cif_line.lower()
+                        if cif_low == 'v':
+                            cts = getattr(bp, 'cif_tick_series', []) or cts
+                            print("Current CIF colors:")
+                            for i, (lab, fname, peaksQ, wl_e, qmax, col) in enumerate(cts):
+                                print(f"  {i+1}: {format_color_listing(col)}  {lab}")
+                            if not cts:
+                                print("  (none)")
+                            continue
+                        if cif_low == 'u':
+                            manage_user_colors(fig)
+                            continue
+                        if cif_low == 'e':
+                            prompt_screen_color(fig)
+                            continue
                         cif_tokens = cif_line.split()
                         if any(':' in t for t in cif_tokens):
-                            try:
-                                push_state("cif-color")
-                            except Exception:
-                                pass
+                            # Validate-then-push (mirror spine/manual color paths).
+                            planned: list[tuple[int, object]] = []
                             for tok in cif_tokens:
                                 if ':' not in tok:
                                     print(f"Skip malformed token: {tok}")
@@ -198,6 +233,14 @@ def run_xy_color_menu(
                                     resolved = resolve_color_token(color_spec, fig)
                                 except Exception:
                                     resolved = color_spec
+                                planned.append((idx, resolved))
+                            if not planned:
+                                continue
+                            try:
+                                push_state("cif-color")
+                            except Exception:
+                                pass
+                            for idx, resolved in planned:
                                 lab, fname, peaksQ, wl_e, qmax, _old = cts[idx]
                                 cts[idx] = (lab, fname, peaksQ, wl_e, qmax, resolved)
                             if bp is not None:
@@ -250,8 +293,7 @@ def run_xy_color_menu(
             # Detect spine: all tokens are spine-key:color pairs (w/a/s/d prefix)
             _is_spine = all(':' in t and t.split(':', 1)[0].lower() in _spine_keys for t in tokens if t)
             if _is_spine and tokens:
-                push_state("color-spine")
-                changed_spines: list[tuple[str, str]] = []
+                planned_spines: list[tuple[str, str]] = []
                 for tok in tokens:
                     key_part, color_spec = tok.split(':', 1)
                     spine_name = _spine_keys[key_part.lower()]
@@ -260,6 +302,16 @@ def run_xy_color_menu(
                         continue
                     try:
                         resolved = resolve_color_token(color_spec, fig)
+                    except Exception as e:
+                        print(f"Error setting {spine_name} color: {e}")
+                        continue
+                    planned_spines.append((spine_name, resolved))
+                if not planned_spines:
+                    continue
+                push_state("color-spine")
+                changed_spines: list[tuple[str, str]] = []
+                for spine_name, resolved in planned_spines:
+                    try:
                         apply_xy_spine_color(fig, ax, tick_state or {}, spine_name, resolved)
                         changed_spines.append((spine_name, resolved))
                         print(f"Set {spine_name} spine to {format_color_listing(resolved)}")
@@ -296,7 +348,7 @@ def run_xy_color_menu(
             # Mixed: some tokens have ':' — treat as curve index:color pairs
             if _has_colon:
                 n_curves = len(labels)
-                push_state("color-manual")
+                planned_curves: list[tuple[int, Any]] = []
                 for tok in tokens:
                     if ':' not in tok:
                         print(f"Skip: {tok}")
@@ -311,6 +363,11 @@ def run_xy_color_menu(
                         print(f"Index out of range: {idx_str}")
                         continue
                     resolved = resolve_color_token(color_spec, fig)
+                    planned_curves.append((line_idx, resolved))
+                if not planned_curves:
+                    continue
+                push_state("color-manual")
+                for line_idx, resolved in planned_curves:
                     apply_curve_color(_line(line_idx), resolved)
                 update_labels(ax, y_data_list, label_text_objects, stack, getattr(fig, '_stack_label_at_bottom', False))
                 try:

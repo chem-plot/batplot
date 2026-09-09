@@ -45,15 +45,11 @@ def handle_operando_mode(args) -> int:
                     exit(1)
             else:
                 # CIF file (optionally with :wl), e.g. phase.cif:1.54
-                parts = f.split(":")
-                if len(parts) >= 1:
-                    fname = parts[0]
-                    if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
-                        # Windows drive letter: C:\path\to\file.cif:1.54
-                        fname = parts[0] + ":" + parts[1]
-                        parts = [fname] + (parts[2:] if len(parts) > 2 else [])
-                    if os.path.splitext(fname)[1].lower() == '.cif':
-                        cif_files.append(f)
+                from ..common.sources import split_path_token
+
+                fname, _rest = split_path_token(f)
+                if os.path.splitext(fname)[1].lower() == '.cif':
+                    cif_files.append(f)
         if folder is None:
             folder = os.getcwd()
 
@@ -110,7 +106,7 @@ def handle_operando_mode(args) -> int:
         from ...session import dump_operando_session
 
         def _do_operando_cli_save(target: str) -> None:
-            dump_operando_session(
+            ok = dump_operando_session(
                 target,
                 fig=fig,
                 ax=ax,
@@ -119,7 +115,8 @@ def handle_operando_mode(args) -> int:
                 ec_ax=ec_ax,
                 skip_confirm=True,
             )
-            fig._last_session_save_path = os.path.abspath(target)
+            if not ok:
+                raise RuntimeError(f"Failed to save operando session to {target}")
 
         op_sources = [folder] + [os.path.abspath(f) for f in (args.files or []) if f]
         if run_cli_save_if_requested(

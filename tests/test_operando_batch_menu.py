@@ -49,11 +49,12 @@ def test_operando_batch_menu_lists_layout_keys(capsys):
     for token in (
         "op colormap", "EC curve style", "toggle colorbar",
         "spines/ticks", "line widths", "font", "size", "reverse Y",
-        "X range", "Y range", "intensity range", "rename labels", "CIF ticks", "peak search",
-        "EC time range", "EC X range", "y axis type", "rename EC labels", "grid",
+        "X range", "Y range", "intensity range", "rename", "CIF ticks", "peak search",
+        "time range", "x range", "ion labels", "grid",
         "export style", "import style", "save session", "undo",
     ):
         assert token in out, f"missing {token!r} in menu"
+    assert "Not in batch" not in out
     plt.close(p.fig)
 
 

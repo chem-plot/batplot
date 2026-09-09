@@ -5,25 +5,26 @@ from __future__ import annotations
 from ..common.menu_rendering import (
     append_last_action_shortcuts,
     command_keys_from_columns,
-    colorize_menu_item,
+    colorize_menu,
     print_menu_columns,
 )
 
 
 def _colorize_menu(text: str) -> str:
-    return colorize_menu_item(text)
+    return colorize_menu(text)
 
 
 def build_cpc_menu_columns(fig=None):
     """Build CPC interactive menu columns without printing them."""
     col1 = [
         "f: font",
-        "l: line",
+        "l: line style",
         "m: marker sizes",
         "c: colors",
+        "k: spine colors",
         "d: display (Chg/Dch)",
         "ry: show/hide efficiency",
-        "t: toggle spines",
+        "t: spines/ticks",
         "h: legend",
         "g: size",
         "v: show/hide files",
@@ -35,7 +36,9 @@ def build_cpc_menu_columns(fig=None):
         "ie: invert efficiency",
     ]
     col3 = [
+        "a: add file(s)",
         "n: crosshair",
+        "o: overview",
         "p: print(export) style/geom",
         "i: import style/geom",
         "e: export figure",
@@ -66,9 +69,9 @@ def print_cpc_menu(fig=None) -> None:
     print_menu_columns(
         title="CPC Interactive Menu",
         columns=[
-            ("(Styles)", col1),
-            ("(Geometries)", col2),
-            ("(Options)", col3),
+            ("Styles", col1),
+            ("Geometries", col2),
+            ("Options", col3),
         ],
         min_widths=(18, 18, 12),
     )

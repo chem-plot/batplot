@@ -22,7 +22,11 @@ Example config.json structure:
       "recent_axis_names": [
         "Potential (V)",
         "dQ/dV (mAh V$^{-1}$)"
-      ]
+      ],
+      "recent_axis_names_by_mode": {
+        "xy": ["2$\\theta$ ($^\\circ$)"],
+        "ec": ["Potential (V)"]
+      }
     }
 
 The config file is created automatically the first time you save a preference.
@@ -108,7 +112,7 @@ def load_config() -> Dict[str, Any]:
     
     # Try to read and parse JSON file
     try:
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             return json.load(f)  # Parse JSON string into Python dictionary
     except (json.JSONDecodeError, IOError):
         # File exists but is corrupted or unreadable
@@ -116,35 +120,20 @@ def load_config() -> Dict[str, Any]:
         return {}
 
 
-def save_config(config: Dict[str, Any]) -> None:
+def save_config(config: Dict[str, Any]) -> bool:
     """
     Save configuration dictionary to JSON file.
-    
-    HOW IT WORKS:
-    ------------
-    1. Get path to config file (~/.batplot/config.json)
-    2. Write dictionary as formatted JSON (indented for readability)
-    3. If write fails (permissions, disk full, etc.), silently ignore
-    
-    WHY SILENT FAILURE?
-    ------------------
-    Configuration saving is not critical for program operation. If it fails,
-    the program should continue working (just won't remember preferences).
-    We don't want to interrupt the user's workflow with error messages about
-    config file issues.
-    
-    Args:
-        config: Dictionary with configuration values to save.
-                Example: {'user_colors': ['#FF0000', '#00FF00']}
+
+    Returns True on success, False if the write failed (permissions/disk).
     """
     config_file = get_config_file()
     try:
-        with open(config_file, 'w') as f:
+        with open(config_file, 'w', encoding='utf-8') as f:
             # indent=2 makes JSON file human-readable (pretty-printed)
             json.dump(config, f, indent=2)
+        return True
     except IOError:
-        # Silently ignore write errors (permissions, disk full, etc.)
-        pass
+        return False
 
 
 def get_user_colors() -> List[str]:
@@ -172,37 +161,24 @@ def get_user_colors() -> List[str]:
     return config.get('user_colors', [])
 
 
-def save_user_colors(colors: List[str]) -> None:
+def save_user_colors(colors: List[str]) -> bool:
     """
     Save user-defined color list to configuration file.
     
-    HOW IT WORKS:
-    ------------
-    1. Load existing config (to preserve other settings)
-    2. Update 'user_colors' key with new list
-    3. Save entire config back to file
-    
-    WHY UPDATE ENTIRE CONFIG?
-    ------------------------
-    The config file might contain other settings in the future (font preferences,
-    default styles, etc.). We want to preserve those when updating colors.
-    
-    Args:
-        colors: List of color codes to save.
-                Example: ['#FF0000', '#00FF00', 'red', 'blue']
+    Returns True if the config file write succeeded.
     """
     config = load_config()  # Load existing config (preserves other settings)
     config['user_colors'] = colors  # Update user_colors key
-    save_config(config)  # Save entire config back to file
+    return bool(save_config(config))
 
 
 _RECENT_AXIS_NAMES_KEY = 'recent_axis_names'
+_RECENT_AXIS_NAMES_BY_MODE_KEY = 'recent_axis_names_by_mode'
 RECENT_AXIS_NAMES_MAX = 20
 
 
-def get_recent_axis_names() -> List[str]:
-    """Return up to :data:`RECENT_AXIS_NAMES_MAX` recently typed axis labels (newest first)."""
-    raw = load_config().get(_RECENT_AXIS_NAMES_KEY, [])
+def _clean_recent_names(raw: Any) -> List[str]:
+    """Normalize a stored list: strings only, stripped, deduped, capped."""
     if not isinstance(raw, list):
         return []
     out: List[str] = []
@@ -215,21 +191,61 @@ def get_recent_axis_names() -> List[str]:
     return out
 
 
-def record_recent_axis_name(name: str) -> None:
-    """Add an axis label to the shared recent list (dedupe, newest first, max 20)."""
+def get_recent_axis_names(mode: Optional[str] = None) -> List[str]:
+    """Return up to :data:`RECENT_AXIS_NAMES_MAX` recently typed axis labels (newest first).
+
+    With ``mode`` (e.g. ``'xy'``, ``'ec'``, ``'cpc'``, ``'operando'``,
+    ``'histo'``) the per-mode list is returned. On first access for a mode the
+    list is lazily seeded from the legacy shared ``recent_axis_names`` list so
+    history from older batplot versions is preserved. Without ``mode`` the
+    legacy shared list is returned unchanged (backward compatible).
+    """
+    config = load_config()
+    if mode is None:
+        return _clean_recent_names(config.get(_RECENT_AXIS_NAMES_KEY, []))
+    by_mode = config.get(_RECENT_AXIS_NAMES_BY_MODE_KEY)
+    if isinstance(by_mode, dict) and mode in by_mode:
+        return _clean_recent_names(by_mode.get(mode))
+    # Lazy migration: seed this mode from the legacy shared list (once).
+    legacy = _clean_recent_names(config.get(_RECENT_AXIS_NAMES_KEY, []))
+    if legacy:
+        if not isinstance(by_mode, dict):
+            by_mode = {}
+        by_mode[mode] = list(legacy)
+        config[_RECENT_AXIS_NAMES_BY_MODE_KEY] = by_mode
+        save_config(config)
+    return legacy
+
+
+def record_recent_axis_name(name: str, mode: Optional[str] = None) -> None:
+    """Add an axis label to the recent list (dedupe, newest first, max 20).
+
+    With ``mode`` the name is stored in that mode's own list (seeding it from
+    the legacy shared list first, if needed). Without ``mode`` the legacy
+    shared list is updated as before.
+    """
     s = str(name or '').strip()
     if not s:
         return
     config = load_config()
-    raw = config.get(_RECENT_AXIS_NAMES_KEY, [])
-    names: List[str] = []
-    if isinstance(raw, list):
-        for item in raw:
-            t = str(item).strip()
-            if t and t != s:
-                names.append(t)
+    if mode is None:
+        names = [t for t in _clean_recent_names(config.get(_RECENT_AXIS_NAMES_KEY, [])) if t != s]
+        names.insert(0, s)
+        config[_RECENT_AXIS_NAMES_KEY] = names[:RECENT_AXIS_NAMES_MAX]
+        save_config(config)
+        return
+    by_mode = config.get(_RECENT_AXIS_NAMES_BY_MODE_KEY)
+    if not isinstance(by_mode, dict):
+        by_mode = {}
+    if mode in by_mode:
+        current = _clean_recent_names(by_mode.get(mode))
+    else:
+        # First per-mode write: seed from the legacy shared list.
+        current = _clean_recent_names(config.get(_RECENT_AXIS_NAMES_KEY, []))
+    names = [t for t in current if t != s]
     names.insert(0, s)
-    config[_RECENT_AXIS_NAMES_KEY] = names[:RECENT_AXIS_NAMES_MAX]
+    by_mode[mode] = names[:RECENT_AXIS_NAMES_MAX]
+    config[_RECENT_AXIS_NAMES_BY_MODE_KEY] = by_mode
     save_config(config)
 
 

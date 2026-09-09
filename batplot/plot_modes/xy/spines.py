@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional, Tuple
 
 from matplotlib import colors as mcolors  # type: ignore[import]
 
 from ...ui import (
+    _resolve_tick_state,
     finalize_spine_colors,
     position_bottom_xlabel,
     position_left_ylabel,
@@ -14,8 +15,75 @@ from ...ui import (
     position_top_xlabel,
     set_spine_side_color,
 )
+from ..common.axis_state import capture_axis_wasd_state
+from ..common.spines import apply_wasd_spines, apply_wasd_tick_params
 
 _SPINE_SIDES = ("top", "bottom", "left", "right")
+
+
+def xy_twin_context(fig) -> Tuple[Optional[Any], bool]:
+    """Return ``(ax2, use_top_x)`` for ``--ry`` / ``--txaxis`` dual chrome."""
+    ax2 = getattr(fig, "_xy_ax2", None)
+    use_top = bool(getattr(fig, "_xy_use_top_x", False))
+    return (ax2 if ax2 is not None else None), use_top
+
+
+def capture_xy_wasd_state(ax, fig, tick_state=None):
+    """Capture WASD using twin right/top axes when dual-Y is active (CPC parity)."""
+    ax2, use_top = xy_twin_context(fig)
+    return capture_axis_wasd_state(
+        ax,
+        tick_state=tick_state,
+        use_actual_major_visibility=True,
+        right_axis=ax2,
+        top_axis=ax2 if use_top else None,
+    )
+
+
+def sync_xy_twin_wasd(ax, fig, wasd: Mapping[str, Any] | None) -> None:
+    """Apply right (and top/bottom if ``--txaxis``) WASD chrome onto ``ax2``."""
+    ax2, use_top = xy_twin_context(fig)
+    if ax2 is None or not isinstance(wasd, dict):
+        return
+    sides = ("right",)
+    if use_top:
+        sides = ("top", "bottom", "right")
+    try:
+        apply_wasd_spines(ax2, wasd, sides=sides)
+    except Exception:
+        pass
+    try:
+        apply_wasd_tick_params(
+            ax2,
+            wasd,
+            x_sides=("top", "bottom") if use_top else (),
+            y_sides=("right",),
+            y_mode="right",
+        )
+    except Exception:
+        pass
+
+
+def set_xy_spine_visible(fig, ax, side: str, visible: bool) -> None:
+    """Toggle spine on primary and twin (right / txaxis top+bottom)."""
+    if side in ax.spines:
+        try:
+            ax.spines[side].set_visible(bool(visible))
+        except Exception:
+            pass
+    ax2, use_top = xy_twin_context(fig)
+    if ax2 is None:
+        return
+    if side == "right" and side in ax2.spines:
+        try:
+            ax2.spines[side].set_visible(bool(visible))
+        except Exception:
+            pass
+    if use_top and side in ("top", "bottom") and side in ax2.spines:
+        try:
+            ax2.spines[side].set_visible(bool(visible))
+        except Exception:
+            pass
 
 
 def _normalize_spine_color(color) -> str:
@@ -74,25 +142,8 @@ def _sync_xy_grid_color(ax, side: str, color) -> None:
 
 
 def ensure_xy_tick_state(ax, tick_state: Mapping[str, bool] | None = None) -> dict[str, bool]:
-    if isinstance(tick_state, dict) and tick_state:
-        return dict(tick_state)
-    saved = getattr(ax, "_saved_tick_state", None)
-    if isinstance(saved, dict) and saved:
-        return dict(saved)
-    return {
-        "b_ticks": True,
-        "b_labels": True,
-        "t_ticks": False,
-        "t_labels": False,
-        "l_ticks": True,
-        "l_labels": True,
-        "r_ticks": False,
-        "r_labels": False,
-        "bx": True,
-        "tx": False,
-        "ly": True,
-        "ry": False,
-    }
+    """Resolve flat tick state; empty dict is authoritative (shared UI contract)."""
+    return _resolve_tick_state(ax, tick_state)
 
 
 def get_xy_spine_colors(fig) -> dict[str, str]:
@@ -153,7 +204,13 @@ def apply_xy_spine_color(
         fig._xy_spine_colors = {}  # type: ignore[attr-defined]
     fig._xy_spine_colors[side] = hex_color  # type: ignore[attr-defined]
     try:
-        set_spine_side_color(ax, side, hex_color, fig=fig)
+        set_spine_side_color(ax, side, hex_color, fig=fig, tick_state=ts)
+        ax2, use_top = xy_twin_context(fig)
+        # Dual-Y: right chrome (and txaxis top/bottom) lives on ax2.
+        if ax2 is not None and (
+            side == "right" or (use_top and side in ("top", "bottom"))
+        ):
+            set_spine_side_color(ax2, side, hex_color, fig=fig, tick_state=ts)
         if side == "top":
             ax._stored_top_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_top_xlabel(ax, fig, ts)
@@ -174,7 +231,12 @@ def apply_xy_spine_color(
     _apply_stored_xy_axis_colors(ax)
     # Per-tick artists again after tick_params (labels/lines must match)
     try:
-        set_spine_side_color(ax, side, hex_color, fig=None)
+        set_spine_side_color(ax, side, hex_color, fig=None, tick_state=ts)
+        ax2, use_top = xy_twin_context(fig)
+        if ax2 is not None and (
+            side == "right" or (use_top and side in ("top", "bottom"))
+        ):
+            set_spine_side_color(ax2, side, hex_color, fig=None, tick_state=ts)
     except Exception:
         pass
 
@@ -235,10 +297,15 @@ def apply_xy_spine_specs(
             except Exception:
                 pass
         if spec.get("visible") is not None:
+            # Twin-aware: primary ``sp.set_visible`` leaves ``--ry``/``--txaxis``
+            # ax2 spines stale when wasd_state is missing or disagrees.
             try:
-                sp.set_visible(bool(spec["visible"]))
+                set_xy_spine_visible(fig, ax, name, bool(spec["visible"]))
             except Exception:
-                pass
+                try:
+                    sp.set_visible(bool(spec["visible"]))
+                except Exception:
+                    pass
         if spec.get("color") is not None:
             colors[name] = spec["color"]
         elif spec.get("lw") is not None:
@@ -253,6 +320,10 @@ __all__ = [
     "apply_xy_spine_color",
     "apply_xy_spine_colors",
     "apply_xy_spine_specs",
+    "capture_xy_wasd_state",
     "ensure_xy_tick_state",
     "get_xy_spine_colors",
+    "set_xy_spine_visible",
+    "sync_xy_twin_wasd",
+    "xy_twin_context",
 ]

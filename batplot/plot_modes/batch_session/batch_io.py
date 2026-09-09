@@ -149,7 +149,7 @@ def _prompt_one_session_path(
             print("Invalid number.")
             return None
     else:
-        fname = choice
+        fname = os.path.expanduser(choice)
         if not os.path.splitext(fname)[1]:
             fname += ".pkl"
         if os.path.isabs(fname):
@@ -235,8 +235,14 @@ def _save_sessions_as_new(
             continue
         try:
             save_panel(panels[i], target)
+            abspath = os.path.abspath(target)
             fig = _panel_fig(panels[i])
-            fig._last_session_save_path = os.path.abspath(target)  # type: ignore[attr-defined]
+            fig._last_session_save_path = abspath  # type: ignore[attr-defined]
+            # Keep panel.path aligned so next "save to original" uses the new file.
+            try:
+                panels[i].path = abspath
+            except Exception:
+                pass
             print(f"Saved [{i + 1}] to {target}")
             saved += 1
         except Exception as exc:
@@ -296,13 +302,17 @@ def run_batch_import_style(
     if indices is None:
         print("Import canceled.")
         return None
-    path = safe_input(colorize_prompt(path_prompt), cancel_on_interrupt=True).strip()
+    path = os.path.expanduser(
+        safe_input(colorize_prompt(path_prompt), cancel_on_interrupt=True).strip()
+    )
     if not path or path.lower() == "q":
         print("Import canceled.")
         return None
     payload = load_style(path)
     if payload is None:
         return None
+    # Capture pre-import snaps for selected panels, then drop frames for any
+    # panel that rejects/fails so ``b`` never restores unchanged peers.
     if prepare:
         prepare(indices)
     succeeded: list[int] = []
@@ -316,9 +326,19 @@ def run_batch_import_style(
                 succeeded.append(i)
         except Exception as exc:
             print(f"Import failed for [{i + 1}]: {exc}")
-            return None
+            # This index + any not-yet-processed peers need prepare frames dropped.
+            skipped.append(i)
+            skipped.extend(j for j in indices if j not in succeeded and j not in skipped)
+            break
+    if skipped and prepare is not None:
+        pop_skipped = getattr(prepare, "pop_skipped", None)
+        if callable(pop_skipped):
+            try:
+                pop_skipped(skipped)
+            except Exception:
+                pass
     if skipped:
-        names = ", ".join(str(i + 1) for i in skipped)
+        names = ", ".join(str(i + 1) for i in sorted(set(skipped)))
         print(f"Skipped plot(s) {names} (incompatible or rejected).")
     if not succeeded:
         print("Style import did not apply to any panels.")
@@ -351,7 +371,9 @@ def run_batch_export_style(
 
     if len(indices) == 1:
         i = indices[0]
-        out = safe_input(colorize_prompt(path_prompt_single), cancel_on_interrupt=True).strip()
+        out = os.path.expanduser(
+            safe_input(colorize_prompt(path_prompt_single), cancel_on_interrupt=True).strip()
+        )
         if not out or out.lower() == "q":
             print("Export canceled.")
             return

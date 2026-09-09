@@ -32,6 +32,10 @@ def load_histo_session(path: str) -> Tuple[Any, Any, HistoState] | None:
         normalize_histo_title(state)
         refresh_histo_figure(fig, ax, state)
         fig._last_session_save_path = os.path.abspath(path)  # type: ignore[attr-defined]
+        # Seed last figure export path so 'oe' overwrite is available immediately
+        from ..common.session_helpers import restore_last_figure_export_path
+
+        restore_last_figure_export_path(fig, payload, session_filename=path)
         fig._bp_histo_state = state  # type: ignore[attr-defined]
         return fig, ax, state
     except Exception as exc:
@@ -61,10 +65,45 @@ def apply_histo_snapshot(fig, ax, state: HistoState, snap: dict) -> None:
 
 
 def apply_histo_style_snapshot(fig, ax, state: HistoState, snap: dict) -> None:
-    """Apply exported style (``p``/``i``) without replacing histogram data (``setup``)."""
+    """Apply exported style (``p``/``i``) without replacing histogram data (``setup``).
+
+    Style-only exports omit figsize/axes_fraction/ylim — preserve the live
+    geometry so ``ps`` import does not reset the canvas (p/i/s/b contract).
+    """
     saved_setup = state.setup
     saved_source = state.source_path
+    prev_figsize = tuple(state.style.figsize) if state.style.figsize else None
+    prev_axes_fraction = state.style.axes_fraction
+    prev_ylim = state.style.ylim
     restored = _restore_snapshot(snap)
+    style_dict = {}
+    try:
+        style_dict = (snap.get("style") or {}) if isinstance(snap, dict) else {}
+    except Exception:
+        style_dict = {}
+    # If export stripped geometry keys, keep live canvas geometry (prefer
+    # fig/ax over possibly-stale state.style.*). Never bake ax.get_ylim()
+    # into fixed ylim — auto vs fixed is style-owned.
+    if "figsize" not in style_dict:
+        try:
+            fw, fh = fig.get_size_inches()
+            restored.style.figsize = (float(fw), float(fh))
+        except Exception:
+            if prev_figsize is not None:
+                restored.style.figsize = prev_figsize
+    if "axes_fraction" not in style_dict:
+        try:
+            b = ax.get_position().bounds
+            restored.style.axes_fraction = (
+                float(b[0]),
+                float(b[1]),
+                float(b[2]),
+                float(b[3]),
+            )
+        except Exception:
+            restored.style.axes_fraction = prev_axes_fraction
+    if "ylim" not in style_dict:
+        restored.style.ylim = prev_ylim
     state.style = restored.style
     state.setup = saved_setup
     state.source_path = saved_source
@@ -73,7 +112,9 @@ def apply_histo_style_snapshot(fig, ax, state: HistoState, snap: dict) -> None:
 
     sync_histo_font_rcparams(state)
     apply_histo_spine_snapshot(fig, ax, snap)
-    apply_histo_geometry(fig, ax, state)
+    # Only push geometry when the style payload actually carried it (psg / s).
+    if any(k in style_dict for k in ("figsize", "axes_fraction", "ylim")):
+        apply_histo_geometry(fig, ax, state)
     refresh_histo_figure(fig, ax, state)
     try:
         fig.canvas.draw_idle()

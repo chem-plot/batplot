@@ -56,6 +56,7 @@ from ...readers import (
     read_biologic_txt_file,
 )
 from .interactive import electrochem_interactive_menu
+from .capacity_cum import apply_gc_capacity_mode, stamp_gc_capacity_mode
 from ..common.palettes import TAB10_HEX
 
 
@@ -64,7 +65,7 @@ def _ec_combined_cli_save(args, fig, ax, file_data) -> bool:
     paths = [os.path.abspath(f.get("filepath", "")) for f in file_data if f.get("filepath")]
 
     def _save(target: str) -> None:
-        dump_ec_session(
+        ok = dump_ec_session(
             target,
             fig=fig,
             ax=ax,
@@ -72,7 +73,8 @@ def _ec_combined_cli_save(args, fig, ax, file_data) -> bool:
             file_data=file_data,
             skip_confirm=True,
         )
-        fig._last_session_save_path = os.path.abspath(target)
+        if not ok:
+            raise RuntimeError(f"Failed to save EC session to {target}")
 
     if run_cli_save_if_requested(
         args,
@@ -96,7 +98,7 @@ def _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file) -> bool:
     default_stem = os.path.splitext(os.path.basename(ec_file))[0]
 
     def _save(target: str) -> None:
-        dump_ec_session(
+        ok = dump_ec_session(
             target,
             fig=fig,
             ax=ax,
@@ -104,7 +106,8 @@ def _ec_single_cli_save(args, fig, ax, cycle_lines, ec_file) -> bool:
             file_data=None,
             skip_confirm=True,
         )
-        fig._last_session_save_path = os.path.abspath(target)
+        if not ok:
+            raise RuntimeError(f"Failed to save EC session to {target}")
 
     if run_cli_save_if_requested(
         args,
@@ -251,6 +254,9 @@ def handle_gc_mode(args) -> int:
                                 print("         Pass --mass <mg> to plot specific capacity (mAh g^-1) instead of raw mAh.")
                 else:
                     continue
+                cap_x, x_label_gc, _ = apply_gc_capacity_mode(
+                    args, cap_x, charge_mask, discharge_mask, x_label_gc
+                )
                 color_offset = (file_idx * 5) % len(base_colors)
                 if cycle_numbers is not None:
                     cyc_int_raw = np.array(np.rint(cycle_numbers), dtype=int)
@@ -341,6 +347,11 @@ def handle_gc_mode(args) -> int:
             ax.set_ylabel('Potential (V)', labelpad=8.0)
         ax.legend(title='Cycle')
         fig._ec_legend_title = "Cycle"
+        stamp_gc_capacity_mode(fig, cumulative=bool(getattr(args, "cum", False)))
+        try:
+            fig._ro_active = bool(getattr(args, "ro", False))
+        except Exception:
+            pass
         _apply_default_ec_layout(fig)
         if style_cfg:
             try:
@@ -485,6 +496,10 @@ def handle_gc_mode(args) -> int:
                     continue
                 else:
                     exit(1)
+
+            cap_x, x_label_gc, _cum_gc = apply_gc_capacity_mode(
+                args, cap_x, charge_mask, discharge_mask, x_label_gc
+            )
 
             # Create the plot
             fig, ax = plt.subplots(figsize=_default_ec_figsize())
@@ -660,6 +675,11 @@ def handle_gc_mode(args) -> int:
                     pass
                 sync_legend_title_fontsize(legend)
             fig._ec_legend_title = "Cycle"
+            stamp_gc_capacity_mode(fig, cumulative=_cum_gc)
+            try:
+                fig._ro_active = bool(getattr(args, "ro", False))
+            except Exception:
+                pass
             # No background grid by default for GC plots
         
             # Adjust layout to ensure top and bottom labels/titles are visible

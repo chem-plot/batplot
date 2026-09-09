@@ -84,21 +84,42 @@ def read_bruker_raw(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nda
     if n_total < 1000:
         raise ValueError(f"File too small to be a valid Bruker .raw: {fname}")
 
-    # Intensity at end: largest n such that last n*4 bytes are n non-negative float32, max > 1
+    # Intensity at end: largest n such that last n*4 bytes look like float32 counts.
+    # Allow Bruker missing-value sentinels (-9999 / -999); sanitize later.
+    def _is_plausible_intensity_block(floats) -> bool:
+        vals = np.asarray(floats, dtype=float)
+        if vals.size == 0:
+            return False
+        finite = np.isfinite(vals)
+        if not np.any(finite):
+            return False
+        # Treat known sentinels as acceptable "missing" counts
+        sentinel_mask = np.zeros(vals.shape, dtype=bool)
+        for sentinel in _BRUKER_INVALID_INTENSITIES:
+            sentinel_mask |= vals == sentinel
+        ok = finite & ((vals >= 0) | sentinel_mask) & (vals < 1e10)
+        if not np.all(ok):
+            return False
+        real = vals[finite & ~sentinel_mask]
+        if real.size == 0:
+            return False
+        return float(np.nanmax(real)) > 1.0
+
     n = None
+    y_arr = None
     for candidate in range(min(20000, (n_total - 500) // 4), 500 - 1, -1):
         if candidate * 4 > n_total - 100:
             continue
         try:
             block = data[n_total - candidate * 4 : n_total]
             floats = struct.unpack("<%df" % candidate, block)
-            if all(f >= 0 and f < 1e10 and f == f for f in floats) and max(floats) > 1:
+            if _is_plausible_intensity_block(floats):
                 n = candidate
                 y_arr = np.array(floats, dtype=float)
                 break
         except Exception:
             continue
-    if n is None:
+    if n is None or y_arr is None:
         raise ValueError(f"Could not find valid intensity block in {fname}")
 
     header_len = n_total - n * 4
@@ -222,7 +243,10 @@ def read_bruker_brml(fname: str) -> Tuple[np.ndarray, np.ndarray, Optional[np.nd
                 raise ValueError(f"No RawDataReferenceList in {fname}")
             x_list, y_list = [], []
             for raw_path in raw_list:
-                x_arr, y_arr, start_deg, step_deg = _parse_raw_xml(zf, raw_path)
+                # Prefer the shared ScaleAxisInfo-aware parser (same as extract_bruker_brml_scans).
+                x_arr, y_arr, start_deg, step_deg = _parse_brml_raw_xml(zf, raw_path)
+                if x_arr is None or y_arr is None:
+                    x_arr, y_arr, start_deg, step_deg = _parse_raw_xml(zf, raw_path)
                 if x_arr is not None and y_arr is not None:
                     x_list.append(x_arr)
                     y_list.append(y_arr)

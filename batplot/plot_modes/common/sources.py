@@ -20,7 +20,9 @@ def normalize_source_paths(
         if not path:
             continue
         try:
-            abs_path = os.path.abspath(path)
+            # expanduser first so ``~/data.xy`` works on Windows/macOS/Linux
+            # (plain abspath leaves ``~`` as a literal path segment).
+            abs_path = os.path.abspath(os.path.expanduser(str(path)))
         except Exception:
             continue
         if require_exists and not os.path.exists(abs_path):
@@ -34,6 +36,47 @@ def normalize_source_paths(
     return out
 
 
+def split_path_token(token: Any) -> tuple[str, list[str]]:
+    """Split a path token from trailing ``:suffix`` parts (``:wl``, ``:q``, …).
+
+    Preserves Windows drive colons for both normal and extended-length paths:
+
+    - ``C:\\dir\\file.cif:1.54``
+    - ``\\\\?\\C:\\dir\\file.cif:1.54``
+    - UNC ``\\\\server\\share\\file.cif:1.54`` (no drive colon to preserve)
+    - POSIX ``/tmp/file.cif:1.54``
+
+    Returns ``(path, rest_parts)`` where ``rest_parts`` are the suffix segments
+    after the path (may be empty).
+    """
+    s = str(token)
+    parts = s.split(":")
+    if len(parts) <= 1:
+        return s, []
+
+    head = parts[0]
+    # Normal drive letter: C:\...
+    if len(head) == 1 and head.isalpha():
+        return head + ":" + parts[1], parts[2:]
+
+    # Extended-length DOS device path: \\?\C:\... or //?/C:/...
+    # After split(':'), head is '\\?\C' or '//?/C' (length 5).
+    if (
+        len(head) == 5
+        and head[4].isalpha()
+        and (head.startswith("\\\\?\\") or head.startswith("//?/"))
+    ):
+        return head + ":" + parts[1], parts[2:]
+
+    return parts[0], parts[1:]
+
+
+def path_token_without_suffix(token: Any) -> str:
+    """Strip ``:wl`` / ``:label`` from a path token; keep Windows drive letters."""
+    path, _rest = split_path_token(token)
+    return path
+
+
 def cif_present(args_files: Iterable[Any] | None, series_getter: Any = None) -> bool:
     """Return True if any input file is a ``.cif`` or a CIF tick series exists.
 
@@ -42,16 +85,9 @@ def cif_present(args_files: Iterable[Any] | None, series_getter: Any = None) -> 
     ``series_getter`` is an optional zero-arg callable returning the current CIF
     tick series (truthy when overlays exist).
     """
-    def _path_without_suffix(token: str) -> str:
-        parts = str(token).split(":")
-        if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha():
-            # Windows drive letter: C:\path\to\file.cif[:wl]
-            return parts[0] + ":" + parts[1]
-        return parts[0]
-
     try:
         if any(
-            _path_without_suffix(str(f)).lower().endswith(".cif")
+            path_token_without_suffix(f).lower().endswith(".cif")
             for f in (args_files or [])
         ):
             return True
@@ -127,6 +163,16 @@ def resolve_xy_source_files(
     for lbl in labels or []:
         if _looks_like_data_path(lbl):
             candidates.append(lbl)
+            continue
+        # Curve labels often look like ``file.raw (λ=1.54 Å)``.
+        try:
+            from ..xy.full_data import parse_label_source
+
+            path, _wl = parse_label_source(lbl)
+            if path:
+                candidates.append(path)
+        except Exception:
+            pass
 
     candidates.extend(cif_paths_from_tick_series(cif_tick_series))
 

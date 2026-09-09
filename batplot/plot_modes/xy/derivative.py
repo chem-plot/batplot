@@ -91,6 +91,7 @@ def run_derivative_menu(
     _update_ylabel_for_derivative: Callable[..., Any],
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
+    pop_undo: Callable[[], Any] | None = None,
 ) -> None:
         while True:
             try:
@@ -106,14 +107,15 @@ def run_derivative_menu(
                 if not sub or sub == 'q':
                     break
                 if sub == 'reset':
+                    if not hasattr(fig, '_pre_derivative_x_data_list'):
+                        print("No derivative data to reset.")
+                        continue
                     push_state("derivative-reset")
                     success, reset_count, total_points = _reset_from_derivative()
                     if success:
                         print(f"Reset {reset_count} curve(s) from derivative to original data ({total_points} total points restored).")
-                        ax.relim()
-                        ax.autoscale_view(scalex=False, scaley=True)
                         update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
-                        _apply_data_changes()
+                        _apply_data_changes()  # includes primary + --ry twin relim
                     else:
                         print("No derivative data to reset.")
                     continue
@@ -157,17 +159,17 @@ def run_derivative_menu(
                             except Exception as e:
                                 print(f"Error processing curve {i+1}: {e}")
                         if processed > 0:
-                            # Update y-axis label
-                            current_ylabel = ax.get_ylabel() or ""
+                            # Update y-axis label (prefer stored text when title hidden).
+                            from ..common.axis_state import primary_axis_label_text
+                            current_ylabel = primary_axis_label_text(ax, "y")
                             new_ylabel = _update_ylabel_for_derivative(order, current_ylabel, is_reversed=is_reversed)
                             ax.set_ylabel(new_ylabel)
+                            ax._stored_ylabel = new_ylabel
                             # Store derivative order and reversed flag
                             fig._derivative_order = order
                             fig._derivative_reversed = is_reversed
-                            # Update plot
+                            # Update plot (relim primary + --ry twin)
                             _apply_data_changes()
-                            ax.relim()
-                            ax.autoscale_view(scalex=False, scaley=True)
                             update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                             fig.canvas.draw_idle()
                             order_name = "1st" if order == 1 else "2nd"
@@ -176,6 +178,12 @@ def run_derivative_menu(
                             print(f"Y-axis label updated to: {new_ylabel}")
                             _update_full_processed_data()  # Store full processed data for X-range filtering
                         else:
+                            # No mutate — drop the tip pushed above.
+                            if pop_undo is not None:
+                                try:
+                                    pop_undo()
+                                except Exception:
+                                    pass
                             print("No curves were processed.")
                     except ValueError:
                         print("Invalid input.")

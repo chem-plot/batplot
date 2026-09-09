@@ -29,6 +29,7 @@ pip install batplot
 
 ## Quick Start
 
+- User manual: https://chem-plot.github.io/batplot/
 - Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
 - Tutorial files: https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip
 
@@ -435,6 +436,8 @@ With `--interactive`:
 
 ## Help & Documentation
 
+Illustrated user manual (GitHub Pages): https://chem-plot.github.io/batplot/
+
 ```bash
 batplot --h              # General help
 batplot --h xy           # XY mode guide
@@ -442,7 +445,7 @@ batplot --h ec           # Electrochemistry guide
 batplot --h op           # Operando guide
 batplot --h histo        # Histogram mode guide
 batplot --v           # Version and release notes
-batplot --m            # Open online user manual (GitHub Pages)
+batplot --m            # Open online user manual (https://chem-plot.github.io/batplot/)
 ```
 
 ---

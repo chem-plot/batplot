@@ -54,9 +54,14 @@ class XyActionContext:
     pop_undo: Callable[[], Any]
 
 
-def _dump_session(ctx: XyActionContext, target_path: str, *, skip_confirm: bool) -> None:
+def _dump_session(ctx: XyActionContext, target_path: str, *, skip_confirm: bool) -> bool:
     bp = ctx.bp
-    _bp_dump_session(
+    show_hkl = None
+    if bp is not None and hasattr(bp, 'show_cif_hkl'):
+        show_hkl = bool(getattr(bp, 'show_cif_hkl'))
+    elif hasattr(ctx.fig, '_bp_show_cif_hkl'):
+        show_hkl = bool(getattr(ctx.fig, '_bp_show_cif_hkl'))
+    return bool(_bp_dump_session(
         target_path,
         fig=ctx.fig,
         ax=ctx.ax,
@@ -73,10 +78,10 @@ def _dump_session(ctx: XyActionContext, target_path: str, *, skip_confirm: bool)
         cif_tick_series=ctx.cif_series_for_session(),
         cif_hkl_map=(getattr(bp, 'cif_hkl_map', None) if bp is not None else None),
         cif_hkl_label_map=(getattr(bp, 'cif_hkl_label_map', None) if bp is not None else None),
-        show_cif_hkl=(bool(getattr(bp, 'show_cif_hkl', False)) if bp is not None else False),
+        show_cif_hkl=show_hkl,
         show_cif_titles=(bool(getattr(bp, 'show_cif_titles', True)) if bp is not None else True),
         skip_confirm=skip_confirm,
-    )
+    ))
 
 
 def _save_figure_to_target(ctx: XyActionContext, export_target: str) -> None:
@@ -154,9 +159,8 @@ def handle_quick_overwrite_session(ctx: XyActionContext) -> None:
         )
         if not last_session_path:
             return
-        _dump_session(ctx, last_session_path, skip_confirm=True)
-        ctx.fig._last_session_save_path = last_session_path
-        print(f"Overwritten session to {last_session_path}")
+        if _dump_session(ctx, last_session_path, skip_confirm=True):
+            print(f"Overwritten session to {last_session_path}")
     except Exception as exc:
         print(f"Error overwriting session: {exc}")
 
@@ -211,6 +215,8 @@ def handle_quick_overwrite_figure(ctx: XyActionContext) -> None:
 
 def handle_save_session(ctx: XyActionContext) -> None:
     try:
+        from ..common.session_helpers import resolve_session_save_path
+
         folder = choose_save_path(ctx.source_file_paths, purpose="project save")
         if not folder:
             print("Save canceled.")
@@ -255,11 +261,10 @@ def handle_save_session(ctx: XyActionContext) -> None:
             yn = ctx.safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ")
             if yn.strip().lower() != 'y':
                 return
-            _dump_session(ctx, last_session_path, skip_confirm=True)
-            print(f"Overwritten session to {last_session_path}")
+            if _dump_session(ctx, last_session_path, skip_confirm=True):
+                print(f"Overwritten session to {last_session_path}")
             return
 
-        target_path = None
         if choice.isdigit() and files:
             idx = int(choice)
             if 1 <= idx <= len(files):
@@ -268,19 +273,15 @@ def handle_save_session(ctx: XyActionContext) -> None:
                 if yn != 'y':
                     print("Canceled.")
                     return
-                target_path = os.path.join(folder, name)
-                _dump_session(ctx, target_path, skip_confirm=True)
-                ctx.fig._last_session_save_path = target_path
+                target_path = resolve_session_save_path(name, folder)
+                if _dump_session(ctx, target_path, skip_confirm=True):
+                    print(f"Overwritten session to {target_path}")
                 return
             print("Invalid number.")
             return
 
         if choice.lower() != 'o':
-            name = choice
-            _root, ext = os.path.splitext(name)
-            if ext == '':
-                name = name + '.pkl'
-            target_path = name if os.path.isabs(name) else os.path.join(folder, name)
+            target_path = resolve_session_save_path(choice, folder)
             skip_confirm = False
             if os.path.exists(target_path):
                 yn = ctx.safe_input(
@@ -291,7 +292,6 @@ def handle_save_session(ctx: XyActionContext) -> None:
                     return
                 skip_confirm = True
             _dump_session(ctx, target_path, skip_confirm=skip_confirm)
-            ctx.fig._last_session_save_path = target_path
     except Exception as exc:
         print(f"Error saving session: {exc}")
 
@@ -385,6 +385,7 @@ def handle_style_export(ctx: XyActionContext) -> None:
 
 
 def handle_style_import(ctx: XyActionContext) -> None:
+    pushed = False
     try:
         fname = choose_style_file(ctx.source_file_paths, purpose="style import")
         if not fname:
@@ -398,10 +399,22 @@ def handle_style_import(ctx: XyActionContext) -> None:
             print("Style import canceled.")
             return
         ctx.push_state("style-import")
+        pushed = True
         try:
-            ctx.apply_style_config(fname)
+            ok = ctx.apply_style_config(fname)
+            # Soft/hard failure after push: full restore (not discard-only) so a
+            # partial apply cannot leave cracked artists with a burned undo tip.
+            if ok is False:
+                ctx.restore_state()
         except Exception:
-            ctx.pop_undo()
+            if pushed:
+                try:
+                    ctx.restore_state()
+                except Exception:
+                    try:
+                        ctx.pop_undo()
+                    except Exception:
+                        pass
             raise
     except Exception as exc:
         print(f"Error importing style: {exc}")

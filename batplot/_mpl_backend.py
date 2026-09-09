@@ -58,7 +58,7 @@ def is_interactive_backend() -> bool:
 
 
 def _headless_context() -> bool:
-    """True when batplot must stay on a non-interactive backend (CI/pytest)."""
+    """True when batplot must stay on a non-interactive backend (CI/pytest/SSH)."""
     if os.environ.get("BATPLOT_HEADLESS", "").lower() in ("1", "true", "yes"):
         return True
     if os.environ.get("CI", "").lower() in ("1", "true", "yes"):
@@ -67,11 +67,16 @@ def _headless_context() -> bool:
         return True
     if "pytest" in sys.modules:
         return True
+    # Linux SSH / containers without a graphical session: do not try Tk/Qt.
+    # macOS/Windows GUI apps do not rely on DISPLAY/WAYLAND_DISPLAY.
+    if sys.platform.startswith("linux"):
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return True
     return False
 
 
 def running_headless() -> bool:
-    """True under pytest, CI, or when ``BATPLOT_HEADLESS`` is set."""
+    """True under pytest, CI, no Linux display, or ``BATPLOT_HEADLESS``."""
     return _headless_context()
 
 
@@ -147,6 +152,12 @@ def ensure_gui_backend(args=None) -> bool:
 
     if _should_respect_env_agg():
         return False
+
+    # Linux without DISPLAY/WAYLAND: skip Tk/Qt attempts (SSH/containers).
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return is_interactive_backend()
 
     if _USER_SET_MPLBACKEND:
         env_be = os.environ.get("MPLBACKEND")

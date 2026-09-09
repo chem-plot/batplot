@@ -4,6 +4,32 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Docs (README + ``--h`` link to GitHub Pages manual) — 2026-09-09
+- **Issue**: README Quick Start / Help and ``batplot --h`` still pointed at an
+  old PDF-manual wording and did not show the live manual URL.
+- **Solution**: Add ``https://chem-plot.github.io/batplot/`` to README (Quick
+  Start + Help & Documentation) and to general help (``--m`` line + Contact).
+- **Compatibility**: Docs/help text only; ``--m`` already opened that URL.
+- **Affected files**: ``README.md``, ``batplot/args.py``, ``BUGFIXES.md``
+
+### Docs (Sidebar nav matches home chapter titles) — 2026-09-09
+- **Issue**: MkDocs sidebar labels differed from the home-page Chapters list
+  (e.g. ``5. 1D / XY`` vs ``5. 1D Mode``; short EC/Operando/Histogram names).
+- **Solution**: Set ``mkdocs.yml`` ``nav`` titles to the same strings as each
+  chapter H1 / ``docs/index.md`` Chapters list, including Mode(s) wording.
+- **Compatibility**: Docs-only.
+- **Affected files**: ``mkdocs.yml``, ``BUGFIXES.md``
+
+### Docs (Ch.5/11 ``--readcol`` uses TD_R02) — 2026-09-08
+- **Issue**: ``--readcol`` examples used the synthetic 4-column ``demo_cols`` file.
+- **Solution**: Use real three-column ``TD_R02.dat`` (``--readcol 1 3`` /
+  ``1 2-3``) with matching regenerated figures; keep ``demo_cols`` for
+  showcol/strip-header only.
+- **Compatibility**: Docs-only.
+- **Affected files**: ``docs/05-*.md``, ``docs/11-utilities.md``,
+  ``docs/images/manual/manual-xy-readcol*.png``,
+  ``scripts/capture_manual_figures.py``, ``BUGFIXES.md``
+
 ### Docs (Drop premature two_col / ``--xaxis`` aside in Ch.5) — 2026-09-08
 - **Issue**: Ch.5 opened with a ``two_col.txt`` tutorial and “without needing
   ``--xaxis``” before ``--xaxis`` was introduced.

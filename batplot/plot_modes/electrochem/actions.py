@@ -110,6 +110,15 @@ def _build_ec_style_export_config(ctx: ElectrochemActionContext, exp_choice: str
             ".bpsg",
         )
     cfg["kind"] = "ec_style"
+    # Style-only must not hitchhike canvas/frame keys (apply already gates them).
+    fig_block = cfg.get("figure")
+    if isinstance(fig_block, dict):
+        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
+            fig_block.pop(key, None)
+        if not fig_block:
+            cfg.pop("figure", None)
+    # Capacity↔ions↔dual is structural geometry (parity with XY dual-y on ``ps``).
+    cfg.pop("xaxis_dual", None)
     return cfg, ".bps"
 
 
@@ -417,6 +426,7 @@ def handle_import_style_command(ctx: ElectrochemActionContext) -> None:
     pop_undo = ctx.pop_undo
 
     for _action_once in range(1):
+        pushed = False
         try:
             path = choose_style_file(source_paths, purpose="style import")
             if not path:
@@ -449,6 +459,7 @@ def handle_import_style_command(ctx: ElectrochemActionContext) -> None:
                 continue
 
             push_state("import-style")
+            pushed = True
             ok = apply_ec_style_config(
                 cfg,
                 fig=fig,
@@ -463,14 +474,21 @@ def handle_import_style_command(ctx: ElectrochemActionContext) -> None:
                 print(f"Applied style from {path}")
             else:
                 try:
-                    pop_undo()
+                    ctx.restore_state()
                 except Exception:
-                    pass
+                    try:
+                        pop_undo()
+                    except Exception:
+                        pass
         except Exception as e:
-            try:
-                pop_undo()
-            except Exception:
-                pass
+            if pushed:
+                try:
+                    ctx.restore_state()
+                except Exception:
+                    try:
+                        pop_undo()
+                    except Exception:
+                        pass
             print(f"Error importing style: {e}")
         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
 
@@ -492,6 +510,8 @@ def handle_save_session_command(ctx: ElectrochemActionContext) -> None:
 
     for _action_once in range(1):
         try:
+            from ..common.session_helpers import resolve_session_save_path
+
             last_session_path = getattr(fig, '_last_session_save_path', None)
             folder = choose_save_path(source_paths, purpose="EC session save")
             if not folder:
@@ -528,8 +548,15 @@ def handle_save_session_command(ctx: ElectrochemActionContext) -> None:
                 yn = _safe_input(f"Overwrite '{os.path.basename(last_session_path)}'? (y/n): ").strip().lower()
                 if yn != 'y':
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
-                dump_ec_session(last_session_path, fig=fig, ax=ax, cycle_lines=cycle_lines, file_data=file_data if is_multi_file else None, skip_confirm=True)
-                print(f"Overwritten session to {last_session_path}")
+                if dump_ec_session(
+                    last_session_path,
+                    fig=fig,
+                    ax=ax,
+                    cycle_lines=cycle_lines,
+                    file_data=file_data if is_multi_file else None,
+                    skip_confirm=True,
+                ):
+                    print(f"Overwritten session to {last_session_path}")
                 _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
             if choice.isdigit() and files:
                 idx = int(choice)
@@ -538,25 +565,34 @@ def handle_save_session_command(ctx: ElectrochemActionContext) -> None:
                     yn = _safe_input(f"Overwrite '{name}'? (y/n): ").strip().lower()
                     if yn != 'y':
                         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
-                    target = os.path.join(folder, name)
-                    dump_ec_session(target, fig=fig, ax=ax, cycle_lines=cycle_lines, file_data=file_data if is_multi_file else None, skip_confirm=True)
-                    fig._last_session_save_path = target
+                    target = resolve_session_save_path(name, folder)
+                    if dump_ec_session(
+                        target,
+                        fig=fig,
+                        ax=ax,
+                        cycle_lines=cycle_lines,
+                        file_data=file_data if is_multi_file else None,
+                        skip_confirm=True,
+                    ):
+                        print(f"Overwritten session to {target}")
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
                 else:
                     print("Invalid number.")
                     _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
             if choice.lower() != 'o':
-                name = choice
-                root, ext = os.path.splitext(name)
-                if ext == '':
-                    name = name + '.pkl'
-                target = name if os.path.isabs(name) else os.path.join(folder, name)
+                target = resolve_session_save_path(choice, folder)
                 if os.path.exists(target):
                     yn = _safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
                     if yn != 'y':
                         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode); continue
-            dump_ec_session(target, fig=fig, ax=ax, cycle_lines=cycle_lines, file_data=file_data if is_multi_file else None, skip_confirm=True)
-            fig._last_session_save_path = target
+                dump_ec_session(
+                    target,
+                    fig=fig,
+                    ax=ax,
+                    cycle_lines=cycle_lines,
+                    file_data=file_data if is_multi_file else None,
+                    skip_confirm=True,
+                )
         except Exception as e:
             print(f"Save failed: {e}")
         _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
@@ -634,15 +670,15 @@ def handle_quick_overwrite_session_command(ctx: ElectrochemActionContext) -> Non
         if not last_session_path:
             _redraw_menu(ctx)
             return
-        dump_ec_session(
+        if dump_ec_session(
             last_session_path,
             fig=fig,
             ax=ctx.ax,
             cycle_lines=ctx.cycle_lines,
             file_data=ctx.file_data if ctx.is_multi_file else None,
             skip_confirm=True,
-        )
-        print(f"Overwritten session to {last_session_path}")
+        ):
+            print(f"Overwritten session to {last_session_path}")
     except Exception as e:
         print(f"Overwrite failed: {e}")
     _redraw_menu(ctx)

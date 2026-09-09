@@ -5,13 +5,13 @@ from __future__ import annotations
 from ..common.menu_rendering import (
     append_last_action_shortcuts,
     command_keys_from_columns,
-    colorize_menu_item,
+    colorize_menu,
     print_menu_columns,
 )
 
 
 def _colorize_menu(text: str) -> str:
-    return colorize_menu_item(text)
+    return colorize_menu(text)
 
 
 def build_operando_ec_menu_columns(fig, ec_ax=None):
@@ -20,12 +20,13 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
         col1 = [
             "oc: op colormap",
             "el: ec curve",
-            " v: toggle colorbar/ec",
-            " t: toggle spines",
-            " l: line",
-            " f: fonts",
-            " g: size",
-            " r: reverse plot",
+            "v: toggle colorbar/ec",
+            "t: spines/ticks",
+            "k: spine colors",
+            "l: line style",
+            "f: font",
+            "g: size",
+            "r: reverse plot",
         ]
         col2 = [
             "ox: X range",
@@ -38,12 +39,13 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
         col3 = [
             "et: time range",
             "ex: x range",
-            "ey: y axis type",
+            "ey: ion labels (time Y)",
             "er: rename",
             "eg: grid",
         ]
         col4 = [
             "n: crosshair",
+            "u: axis units (XRD only)",
             "p: print(export) style/geom",
             "i: import style/geom",
             "e: export figure",
@@ -51,22 +53,30 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
             "b: undo",
             "q: quit",
         ]
+        # Hide XRD-only axis convert for non-XRD / dQdV contours
+        try:
+            from .axis_units import is_operando_xrd_axis
+            if not is_operando_xrd_axis(fig):
+                col4 = [item for item in col4 if not item.startswith("u:")]
+        except Exception:
+            pass
         append_last_action_shortcuts(col4, fig)
         return [
-            ("(Styles)", col1),
-            ("(Operando)", col2),
-            ("(Side Panel)", col3),
-            ("(Options)", col4),
+            ("Styles", col1),
+            ("Operando", col2),
+            ("Side Panel", col3),
+            ("Options", col4),
         ], (12, 14, 14, 16)
     else:
         col1 = [
             "oc: op colormap",
-            " v: toggle colorbar",
-            " t: toggle spines",
-            " l: line",
-            " f: fonts",
-            " g: size",
-            " r: reverse plot",
+            "v: toggle colorbar",
+            "t: spines/ticks",
+            "k: spine colors",
+            "l: line style",
+            "f: font",
+            "g: size",
+            "r: reverse plot",
         ]
         col2 = [
             "ox: X range",
@@ -78,6 +88,7 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
         ]
         col3 = [
             "n: crosshair",
+            "u: axis units (XRD only)",
             "p: print(export) style/geom",
             "i: import style/geom",
             "e: export figure",
@@ -85,11 +96,17 @@ def build_operando_ec_menu_columns(fig, ec_ax=None):
             "b: undo",
             "q: quit",
         ]
+        try:
+            from .axis_units import is_operando_xrd_axis
+            if not is_operando_xrd_axis(fig):
+                col3 = [item for item in col3 if not item.startswith("u:")]
+        except Exception:
+            pass
         append_last_action_shortcuts(col3, fig)
         return [
-            ("(Styles)", col1),
-            ("(Operando)", col2),
-            ("(Options)", col3),
+            ("Styles", col1),
+            ("Operando", col2),
+            ("Options", col3),
         ], (12, 14, 16)
 
 

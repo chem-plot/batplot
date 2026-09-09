@@ -67,6 +67,7 @@ def _font_menu(fig: Any, artists: list) -> None:
         apply_highlight_pad=lambda p: apply_fig_text_highlight(
             fig, artists, get_fig_text_highlight(fig), pad=p
         ),
+        highlight_fig=fig,
     )
 
 

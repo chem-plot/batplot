@@ -9,6 +9,7 @@ import json
 import pickle
 
 import numpy as np
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pytest
 from matplotlib.ticker import MultipleLocator
@@ -125,6 +126,183 @@ def test_load_preserves_explicit_ec_right_ticks_off_with_title_on(session_path):
     assert not any(t.label2.get_visible() for t in major)
 
 
+def test_load_ions_keeps_time_spine_and_overlays(session_path):
+    """ey→n is overlay-only: reload must not remap Y ticks to ions or force WASD."""
+    fig, ax, im, cbar, ec_ax = _build_operando_figure()
+    t = np.linspace(0.0, 20.0, 30)
+    v = np.linspace(3.0, 4.2, 30)
+    i = np.ones(30) * 0.1
+    ec_ax._ec_time_h = t
+    ec_ax._ec_voltage_v = v
+    ec_ax._ec_current_mA = i
+    (ln,) = ec_ax.plot(v, t)
+    ec_ax._ec_line = ln
+    ions = np.linspace(1.0, 2.5, 30)
+    ec_ax._ec_y_mode = "ions"
+    ec_ax._ions_abs = ions
+    ec_ax._ion_params = {
+        "mass_mg": 10.0, "cap_per_ion_mAh_g": 50.0, "start_ions": 1.0,
+    }
+    from batplot.plot_modes.operando.ions_axis import (
+        install_ec_ions_y_display,
+        place_ec_ion_segment_labels,
+    )
+
+    install_ec_ions_y_display(ec_ax, t, ions)
+    place_ec_ion_segment_labels(ec_ax, t, ions, voltage=v, current_mA=i)
+    ec_ax.set_ylabel("Time (h)")
+    # User intentionally hid right tick numbers — must survive reload
+    ec_ax.tick_params(axis="y", right=True, labelright=False, left=False, labelleft=False)
+    ec_ax._saved_tick_state = {
+        "r_ticks": True, "r_labels": False, "l_ticks": False, "l_labels": False,
+        "ry": False, "ly": False,
+    }
+    p = session_path("operando_ions_overlay_only.pkl")
+    S.dump_operando_session(p, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax,
+                            skip_confirm=True)
+
+    with open(p, "rb") as fh:
+        data = pickle.load(fh)
+    data["ec"]["mode"] = "ions"
+    data["ec"]["ions_abs"] = list(ions)
+    data["ec"]["ion_params"] = {
+        "mass_mg": 10.0, "cap_per_ion_mAh_g": 50.0, "start_ions": 1.0,
+    }
+    data["ec"].setdefault("wasd_state", {}).setdefault("right", {}).update({
+        "ticks": True,
+        "labels": False,
+        "title": True,
+        "spine": True,
+        "minor": False,
+    })
+    with open(p, "wb") as fh:
+        pickle.dump(data, fh)
+
+    fig2, ax2, im2, cbar2, ec_ax2 = loaded(S.load_operando_session(p))
+    assert getattr(ec_ax2, "_ec_y_mode", None) == "ions"
+    # Spine chrome preserved (not forced on)
+    assert ec_ax2.yaxis.get_tick_params().get("labelright") is not True
+    ylab = (ec_ax2.get_ylabel() or "").strip().lower()
+    assert ylab != "number of ions"
+    assert "time" in ylab or ylab == ""
+    # Segment ion labels restored
+    annots = getattr(ec_ax2, "_ion_annots", []) or []
+    assert len(annots) >= 1
+    # Tick formatter is not an ions FuncFormatter
+    assert type(ec_ax2.yaxis.get_major_formatter()).__name__ != "FuncFormatter"
+
+
+def test_ensure_ec_ions_right_tick_labels_is_noop():
+    from batplot.plot_modes.operando.ions_axis import ensure_ec_ions_right_tick_labels
+
+    fig, ax = plt.subplots()
+    ax.tick_params(axis="y", right=True, labelright=False)
+    ax._saved_tick_state = {"r_ticks": True, "r_labels": False}
+    wasd = {
+        "right": {"ticks": True, "labels": False, "title": True, "spine": True, "minor": False},
+    }
+    ensure_ec_ions_right_tick_labels(ax, wasd=wasd)
+    assert wasd["right"]["labels"] is False
+    assert ax._saved_tick_state["r_labels"] is False
+    assert ax.yaxis.get_tick_params().get("labelright") is not True
+    plt.close(fig)
+
+
+def test_place_ec_ion_segment_labels_does_not_change_spine():
+    from batplot.plot_modes.operando.ions_axis import place_ec_ion_segment_labels
+
+    fig, ax = plt.subplots()
+    t = np.linspace(0.0, 10.0, 21)
+    v = np.linspace(3.0, 4.0, 21)
+    # Two half-cycles
+    i = np.concatenate([np.ones(10), -np.ones(11)])
+    ions = np.linspace(2.0, 1.0, 21)
+    ax.plot(v, t)
+    ax.set_ylabel("Time (h)")
+    ax.tick_params(axis="y", right=True, labelright=True)
+    before = {
+        "ylabel": ax.get_ylabel(),
+        "labelright": ax.yaxis.get_tick_params().get("labelright"),
+        "xlim": ax.get_xlim(),
+        "ylim": ax.get_ylim(),
+    }
+    place_ec_ion_segment_labels(ax, t, ions, voltage=v, current_mA=i)
+    assert ax.get_ylabel() == before["ylabel"]
+    assert ax.yaxis.get_tick_params().get("labelright") == before["labelright"]
+    assert ax.get_xlim() == before["xlim"]
+    assert ax.get_ylim() == before["ylim"]
+    assert len(getattr(ax, "_ion_annots", [])) >= 1
+    assert len(getattr(ax, "_ion_guides", [])) >= 1
+    plt.close(fig)
+
+
+def test_ion_annots_stay_annotation_sized_after_session_font(session_path):
+    """Reload must not enlarge ion tags to axis tick size (left/right style clash)."""
+    fig, ax, im, cbar, ec_ax = _build_operando_figure()
+    t = np.linspace(0.0, 20.0, 40)
+    # Alternating high/low V so tags sit on both sides of the curve
+    v = np.where(np.arange(40) % 20 < 10, 1.1, 2.95)
+    i = np.where(np.arange(40) % 20 < 10, 0.1, -0.1).astype(float)
+    ions = np.linspace(1.0, 3.0, 40)
+    ec_ax._ec_time_h = t
+    ec_ax._ec_voltage_v = v
+    ec_ax._ec_current_mA = i
+    (ln,) = ec_ax.plot(v, t)
+    ec_ax._ec_line = ln
+    ec_ax._ec_y_mode = "ions"
+    ec_ax._ions_abs = ions
+    ec_ax._ion_params = {
+        "mass_mg": 10.0, "cap_per_ion_mAh_g": 50.0, "start_ions": 1.0,
+    }
+    from batplot.plot_modes.operando.ions_axis import (
+        ion_annot_fontsize,
+        place_ec_ion_segment_labels,
+    )
+
+    place_ec_ion_segment_labels(ec_ax, t, ions, voltage=v, current_mA=i)
+    # Simulate large axis font (as in user sessions)
+    for a in (ax, ec_ax):
+        for lab in list(a.get_xticklabels()) + list(a.get_yticklabels()):
+            lab.set_fontsize(16)
+        for tick in a.yaxis.get_major_ticks():
+            tick.label2.set_fontsize(16)
+    expected = ion_annot_fontsize(ec_ax)
+    for ann in getattr(ec_ax, "_ion_annots", []):
+        ann.set_fontsize(expected)
+
+    p = session_path("operando_ion_annot_font.pkl")
+    S.dump_operando_session(p, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax,
+                            skip_confirm=True)
+    with open(p, "rb") as fh:
+        data = pickle.load(fh)
+    data["font"] = {
+        "family": "DejaVu Sans",
+        "size": 16.0,
+        "chain": ["DejaVu Sans", "Arial"],
+        "weight": "normal",
+    }
+    data["ec"]["mode"] = "ions"
+    data["ec"]["ions_abs"] = list(ions)
+    with open(p, "wb") as fh:
+        pickle.dump(data, fh)
+
+    fig2, ax2, im2, cbar2, ec_ax2 = loaded(S.load_operando_session(p))
+    tick_fs = float(ec_ax2.yaxis.get_major_ticks()[1].label2.get_fontsize())
+    assert tick_fs == 16.0
+    annots = getattr(ec_ax2, "_ion_annots", []) or []
+    assert len(annots) >= 2
+    sizes = {float(a.get_fontsize()) for a in annots}
+    assert len(sizes) == 1
+    annot_fs = next(iter(sizes))
+    assert annot_fs < tick_fs
+    assert annot_fs <= 11.0
+    # All tags share style; none sit in the right Time-spine strip
+    x0, x1 = ec_ax2.get_xlim()
+    spine_zone = x0 + 0.85 * (x1 - x0)
+    assert all(float(a.xy[0]) <= spine_zone for a in annots)
+    assert all(getattr(a, "_bp_ion_annot", False) for a in annots)
+
+
 def test_legacy_operando_session_labelpad_and_ec_ticks(session_path):
     """Regression for older operando+EC pkls with left-side EC tick drift."""
     fig, ax, im, cbar, ec_ax = _build_operando_figure()
@@ -137,6 +315,12 @@ def test_legacy_operando_session_labelpad_and_ec_ticks(session_path):
     op = data.setdefault("operando", {}).setdefault("labels", {})
     op["ylabel"] = "Scan index"
     op["y_labelpad"] = 4.0
+    # Title must be on for the ylabel to be live (empty-label restore respects WASD).
+    data.setdefault("operando", {}).setdefault("wasd_state", {}).setdefault("left", {}).update({
+        "title": True,
+        "labels": True,
+        "ticks": True,
+    })
     data["ec"].setdefault("wasd_state", {}).setdefault("left", {}).update({
         "ticks": True,
         "labels": True,
@@ -204,9 +388,13 @@ def test_operando_style_export_preserves_pane_tick_lengths():
     assert cfg["ec"]["ticks"]["lengths"]["x_minor"] == 3.5
     assert cfg["ec"]["ticks"]["direction"] == "in"
     assert cfg["ec"]["ticks"]["locator_state"]["x_major_step"] == 0.25
-    assert cfg["ec"]["ions_abs"] == list(np.linspace(1.0, 2.0, 30))
-    assert cfg["ec"]["prev_ec_xlim"] == (3.0, 4.2)
-    assert cfg["ec"]["ions_xlim_expanded"] is True
+    # p/i contract: ions_abs is session-only; style recomputes from ion_params.
+    assert "ions_abs" not in cfg["ec"]
+    assert cfg["ec"]["ion_params"]["mass_mg"] == 10.0
+    # Style-only must not hitchhike view/limit bookkeeping (geometry / session).
+    assert cfg["ec"].get("prev_ec_xlim") in (None, ())
+    assert cfg["ec"].get("ions_xlim_expanded") in (None, False)
+    assert cfg["ec"].get("saved_time_ylim") is None
     assert cfg["ec"]["ion_guides"] == [5.0]
     assert cfg["ec"]["ion_annots"] == [{"text": "1.5", "xy": (4.0, 5.0)}]
 
@@ -248,11 +436,17 @@ def test_operando_session_preserves_pane_tick_lengths(session_path):
     assert getattr(cbar2.ax, "_colorbar_label_mode") == "highlow"
     assert {txt.get_text() for txt in cbar2.ax.texts} >= {"High", "Low"}
     assert getattr(ec_ax2, "_ec_y_mode") == "ions"
+    assert getattr(ec_ax2, "_ion_params", None) == {
+        "mass_mg": 10.0, "cap_per_ion_mAh_g": 50.0, "start_ions": 1.0,
+    }
     assert_allclose(ec_ax2._ions_abs, np.linspace(1.0, 2.0, 30))
     assert getattr(ec_ax2, "_prev_ec_xlim") == (3.0, 4.2)
     assert getattr(ec_ax2, "_ions_xlim_expanded") is True
-    assert [line.get_ydata()[0] for line in getattr(ec_ax2, "_ion_guides", [])] == [5.0]
-    assert [ann.get_text() for ann in getattr(ec_ax2, "_ion_annots", [])] == ["1.5"]
+    # Reload rebuilds ion overlays from ions_abs (not literal saved xy/guides).
+    assert len(getattr(ec_ax2, "_ion_guides", []) or []) >= 1
+    annots = getattr(ec_ax2, "_ion_annots", []) or []
+    assert len(annots) >= 1
+    assert all(getattr(a, "_bp_ion_annot", False) for a in annots)
 
 
 def test_operando_style_import_applies_ec_tick_state(session_path, monkeypatch):
@@ -413,7 +607,8 @@ def test_operando_ec_rename_helper_tracks_y_mode():
     )
 
     assert states == ["rename-ec-y"]
-    assert ec_ax.get_ylabel() == "Li content"
+    # Ions mode: rename updates tags only; time spine title stays intact (p/i/s parity).
+    assert ec_ax.get_ylabel() == "Time (h)"
     assert ec_ax._custom_labels["y_ions"] == "Li content"
 
 
@@ -458,7 +653,7 @@ def test_operando_ec_line_style_helper_updates_line():
     )
 
     assert states == ["ec-line-color", "ec-line-width"]
-    assert line.get_color() == "red"
+    assert mcolors.to_hex(line.get_color()) == "#ff0000"
     assert line.get_linewidth() == 2.5
 
 
@@ -511,15 +706,8 @@ def test_operando_ions_mode_status_bar_shows_full_precision():
     assert status.startswith("x=2.8663")
     assert "y=1.8," not in status
 
-    # Tick label at a time position must not round 1.746 -> "1.8"
-    t_arr = np.asarray(t, float)
-    ions_arr = np.asarray(ions_abs, float)
-    y_tick = float(t_arr[15])
-    ions_at_tick = ions_value_at_time(t_arr, ions_arr, y_tick)
-    fmt = ec_ax.yaxis.get_major_formatter()
-    tick_label = fmt(y_tick, 0)
-    assert tick_label != "1.8" or abs(ions_at_tick - 1.8) < 0.05
-    assert format_ions_value(ions_at_tick, precision=3) == tick_label
+    # Axis ticks stay on time (no ions FuncFormatter on the spine)
+    assert type(ec_ax.yaxis.get_major_formatter()).__name__ != "FuncFormatter"
 
 
 def test_operando_h_offset_pixel_nudge_persists_in_style(session_path, monkeypatch):
@@ -659,6 +847,7 @@ def test_operando_menu_printer_dual_panel_includes_side_panel_and_overwrites(cap
     assert "(Side Panel)" in out
     assert "el" in out and "ec curve" in out
     assert "et" in out and "time range" in out
+    assert "k" in out and "spine colors" in out
     assert "os" in out and "overwrite session" in out
     assert "ops" in out and "overwrite style" in out
     assert "opsg" in out and "overwrite style+geom" in out

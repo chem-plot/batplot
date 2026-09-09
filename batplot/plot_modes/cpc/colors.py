@@ -12,6 +12,8 @@ from ...color_utils import (
     get_user_color_list,
     manage_user_colors,
     palette_preview,
+    prompt_screen_color,
+    blank_means_back,
     resolve_color_token,
 )
 from ..common.palettes import build_palette_options, sample_palette_colors
@@ -134,6 +136,9 @@ def _print_color_targets(*, fig, file_data, series_key: str, colorize_menu) -> N
         print("  " + colorize_menu(f"{idx}: {format_color_listing(current)} {file_info['filename']}"))
     if not any_printed:
         print("  (none visible)")
+
+
+def _print_saved_colors(*, fig, colorize_menu) -> None:
     saved_colors = get_user_color_list(fig)
     if saved_colors:
         print("\nSaved colors (refer as number or u#):")
@@ -150,13 +155,18 @@ def _print_palette_help(palette_opts: list[str], colorize_menu) -> None:
             print(f"      {preview}")
     c, r = "\033[96m", "\033[0m"
     print()
-    print(f"Apply palette to ALL files:  {c}all 1{r}  or  {c}all viridis{r}  (or just  {c}1{r}  or  {c}viridis{r})")
-    print(f"Apply palette to file range:  {c}1-5 viridis{r}  or  {c}1 3 5 4{r}")
-    print(f"Apply per file (file:color):  {c}1:2{r}  {c}2:red{r}  {c}3:#455353{r}")
+    print("How to set color:")
+    print(f"  all / palette:  {c}all 1{r}  or  {c}all viridis{r}  (or just  {c}1{r}  or  {c}viridis{r})")
+    print(f"  file range:     {c}1-5 viridis{r}  or  {c}1 3 5 4{r}")
+    print(f"  per file:       {c}1:2{r}  {c}2:red{r}  {c}3:#455353{r}")
+    print(f"  {c}v{r}: show current colors")
     print(f"  {c}q{r}: cancel")
 
 
-def apply_capacity_color_tokens(tokens: list[str], *, fig, file_data, palette_opts: list[str]) -> None:
+def apply_capacity_color_tokens(
+    tokens: list[str], *, fig, file_data, palette_opts: list[str], commit: bool = True
+) -> bool:
+    """Apply capacity colors. Returns False when input is rejected (no mutation)."""
     spec = None
     file_range_result = parse_file_range_palette(tokens, len(file_data), palette_opts)
     if len(tokens) == 1 and ":" not in tokens[0]:
@@ -165,6 +175,8 @@ def apply_capacity_color_tokens(tokens: list[str], *, fig, file_data, palette_op
         spec = tokens[1]
 
     if spec is not None and file_range_result is None:
+        if not commit:
+            return True
         for idx, file_info in enumerate(file_data):
             charge_col = resolve_cpc_color(spec, fig, palette_opts, idx, len(file_data), default_cmap="tab10")
             if not charge_col:
@@ -175,21 +187,38 @@ def apply_capacity_color_tokens(tokens: list[str], *, fig, file_data, palette_op
         except (ValueError, IndexError):
             palette_name = spec
         print(f"Palette applied to all capacity curves ({palette_name}).")
-        return
+        return True
 
     if file_range_result is not None:
+        if not commit:
+            return True
         indices, palette_spec = file_range_result
         for idx, file_idx in enumerate(indices):
             charge_col = resolve_cpc_color(palette_spec, fig, palette_opts, idx, len(indices), default_cmap="tab10")
             if charge_col:
                 _apply_capacity_color_to_file(file_data[file_idx], charge_col)
         print(f"Palette '{palette_spec}' applied to files {[idx + 1 for idx in indices]}.")
-        return
+        return True
 
     if any(token and ":" not in token for token in tokens):
         print("Use file:color pairs (e.g. 1:2 2:red 3:#455353) or all 1 / all viridis for palette.")
-        return
+        return False
 
+    # Validate indices on dry-run too (reject junk before push).
+    for token in tokens:
+        if ":" not in token:
+            continue
+        idx_str, _color_spec = token.split(":", 1)
+        try:
+            file_idx = int(idx_str) - 1
+        except ValueError:
+            print(f"Bad index: {idx_str}")
+            return False
+        if not (0 <= file_idx < len(file_data)):
+            print(f"Index out of range: {idx_str}")
+            return False
+    if not commit:
+        return True
     for token in tokens:
         if ":" not in token:
             continue
@@ -207,9 +236,13 @@ def apply_capacity_color_tokens(tokens: list[str], *, fig, file_data, palette_op
         if charge_col:
             _apply_capacity_color_to_file(file_data[file_idx], charge_col)
     print("Colors applied to selected files.")
+    return True
 
 
-def apply_efficiency_color_tokens(tokens: list[str], *, fig, file_data, palette_opts: list[str]) -> None:
+def apply_efficiency_color_tokens(
+    tokens: list[str], *, fig, file_data, palette_opts: list[str], commit: bool = True
+) -> bool:
+    """Apply efficiency colors. Returns False when input is rejected (no mutation)."""
     spec = None
     file_range_result = parse_file_range_palette(tokens, len(file_data), palette_opts)
     if len(tokens) == 1 and ":" not in tokens[0]:
@@ -218,6 +251,8 @@ def apply_efficiency_color_tokens(tokens: list[str], *, fig, file_data, palette_
         spec = tokens[1]
 
     if spec is not None and file_range_result is None:
+        if not commit:
+            return True
         for idx, file_info in enumerate(file_data):
             color = resolve_cpc_color(spec, fig, palette_opts, idx, len(file_data), default_cmap="viridis")
             if color:
@@ -227,21 +262,37 @@ def apply_efficiency_color_tokens(tokens: list[str], *, fig, file_data, palette_
         except (ValueError, IndexError):
             palette_name = spec
         print(f"Palette applied to all efficiency curves ({palette_name}).")
-        return
+        return True
 
     if file_range_result is not None:
+        if not commit:
+            return True
         indices, palette_spec = file_range_result
         for idx, file_idx in enumerate(indices):
             color = resolve_cpc_color(palette_spec, fig, palette_opts, idx, len(indices), default_cmap="viridis")
             if color:
                 _apply_efficiency_color_to_file(file_data[file_idx], color)
         print(f"Palette '{palette_spec}' applied to files {[idx + 1 for idx in indices]}.")
-        return
+        return True
 
     if any(token and ":" not in token for token in tokens):
         print("Use file:color pairs (e.g. 1:2 2:red 3:#455353) or all 1 / all viridis for palette.")
-        return
+        return False
 
+    for token in tokens:
+        if ":" not in token:
+            continue
+        idx_str, _color_spec = token.split(":", 1)
+        try:
+            file_idx = int(idx_str) - 1
+        except ValueError:
+            print(f"Bad index: {idx_str}")
+            return False
+        if not (0 <= file_idx < len(file_data)):
+            print(f"Index out of range: {idx_str}")
+            return False
+    if not commit:
+        return True
     for token in tokens:
         if ":" not in token:
             continue
@@ -259,6 +310,7 @@ def apply_efficiency_color_tokens(tokens: list[str], *, fig, file_data, palette_
         if color:
             _apply_efficiency_color_to_file(file_data[file_idx], color)
     print("Colors applied to selected files.")
+    return True
 
 
 def run_cpc_color_menu(
@@ -283,26 +335,42 @@ def run_cpc_color_menu(
         print("Colors (CPC):")
         print("  " + colorize_menu("ly: capacity curve colors (left Y-axis)"))
         print("  " + colorize_menu("ry: efficiency marker colors (right Y-axis)"))
-        print("  " + colorize_menu("u: manage user colors (save/reuse palettes)"))
+        print("  " + colorize_menu("u: edit saved colors"))
+        print("  " + colorize_menu("e: pick color from screen"))
         print("  " + colorize_menu("s: spine colors (top/bottom/left/right, with optional auto mode)"))
-        print("  " + colorize_menu("q: back to main menu"))
-        sub = safe_input(colorize_prompt("Colors (ly/ry/u/s/q): ")).strip().lower()
-        if not sub:
-            break
-        if sub == "q":
+        print("  " + colorize_menu("q: back"))
+        sub = safe_input(colorize_prompt("Colors (ly/ry/u/e/s/q): ")).strip().lower()
+        if sub == "q" or blank_means_back(sub):
             break
         if sub == "u":
             manage_user_colors(fig)
             continue
+        if sub == "e":
+            prompt_screen_color(fig)
+            continue
         if sub == "ly":
             while True:
-                _print_color_targets(fig=fig, file_data=file_data, series_key="capacity", colorize_menu=colorize_menu)
+                _print_saved_colors(fig=fig, colorize_menu=colorize_menu)
                 _print_palette_help(palette_opts, colorize_menu)
-                color_input = safe_input(colorize_prompt("Colors (ly) (file:color or palette, q=back): ")).strip()
-                if not color_input or color_input.lower() == "q":
+                print("  " + colorize_menu("v: show current colors"))
+                print("  " + colorize_menu("e: pick color from screen"))
+                color_input = safe_input(colorize_prompt("Colors (ly) (file:color or palette, v/e/q): ")).strip()
+                if color_input.lower() == "q" or blank_means_back(color_input):
                     break
+                if color_input.lower() == "v":
+                    _print_color_targets(fig=fig, file_data=file_data, series_key="capacity", colorize_menu=colorize_menu)
+                    continue
+                if color_input.lower() == "e":
+                    prompt_screen_color(fig)
+                    continue
+                tokens = color_input.split()
+                # Validate-then-push: rejected tokens must not create junk undo.
+                if not apply_capacity_color_tokens(
+                    tokens, fig=fig, file_data=file_data, palette_opts=palette_opts, commit=False
+                ):
+                    continue
                 push_state("colors-ly")
-                apply_capacity_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
+                apply_capacity_color_tokens(tokens, fig=fig, file_data=file_data, palette_opts=palette_opts)
                 if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
                     try:
                         current = _color_of(sc_charge)
@@ -318,13 +386,27 @@ def run_cpc_color_menu(
             continue
         if sub == "ry":
             while True:
-                _print_color_targets(fig=fig, file_data=file_data, series_key="efficiency", colorize_menu=colorize_menu)
+                _print_saved_colors(fig=fig, colorize_menu=colorize_menu)
                 _print_palette_help(palette_opts, colorize_menu)
-                color_input = safe_input(colorize_prompt("Colors (ry) (file:color or palette, q=back): ")).strip()
-                if not color_input or color_input.lower() == "q":
+                print("  " + colorize_menu("v: show current colors"))
+                print("  " + colorize_menu("e: pick color from screen"))
+                color_input = safe_input(colorize_prompt("Colors (ry) (file:color or palette, v/e/q): ")).strip()
+                if color_input.lower() == "q" or blank_means_back(color_input):
                     break
+                if color_input.lower() == "v":
+                    _print_color_targets(fig=fig, file_data=file_data, series_key="efficiency", colorize_menu=colorize_menu)
+                    continue
+                if color_input.lower() == "e":
+                    prompt_screen_color(fig)
+                    continue
+                tokens = color_input.split()
+                # Validate-then-push: rejected tokens must not create junk undo.
+                if not apply_efficiency_color_tokens(
+                    tokens, fig=fig, file_data=file_data, palette_opts=palette_opts, commit=False
+                ):
+                    continue
                 push_state("colors-ry")
-                apply_efficiency_color_tokens(color_input.split(), fig=fig, file_data=file_data, palette_opts=palette_opts)
+                apply_efficiency_color_tokens(tokens, fig=fig, file_data=file_data, palette_opts=palette_opts)
                 if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
                     try:
                         current = _color_of(sc_eff)
@@ -347,18 +429,22 @@ def run_cpc_color_menu(
                     auto_enabled = getattr(fig, "_cpc_spine_auto", False)
                     auto_status = "ON" if auto_enabled else "OFF"
                     print("  " + colorize_menu(f"auto: auto-apply capacity/efficiency colors [{auto_status}]"))
+                print("  " + colorize_menu("e: pick color from screen"))
                 print("  " + colorize_menu("q: back"))
                 line = safe_input(colorize_prompt("Spine colors (e.g. w:red a:#4561F7, q=back): ")).strip()
-                if not line or line.lower() == "q":
+                if line.lower() == "q" or blank_means_back(line):
                     break
-                if not is_multi_file and line.lower() in ("a", "auto"):
+                if line.lower() == "e":
+                    prompt_screen_color(fig)
+                    continue
+                # Bare ``a`` is left-spine (a:color); only ``auto`` toggles auto.
+                if not is_multi_file and line.lower() == "auto":
                     auto_enabled = getattr(fig, "_cpc_spine_auto", False)
-                    if auto_enabled:
-                        push_state("color-spine-auto")
+                    # Always push before mutate so ``b`` can restore prior auto state.
+                    push_state("color-spine-auto")
                     fig._cpc_spine_auto = not auto_enabled
                     print(f"Auto mode: {'ON' if fig._cpc_spine_auto else 'OFF'}")
                     if fig._cpc_spine_auto:
-                        push_state("color-spine-auto")
                         try:
                             fig.canvas.draw_idle()
                             charge_col = _color_of(sc_charge)
@@ -370,26 +456,34 @@ def run_cpc_color_menu(
                         except Exception as exc:
                             print(f"Error applying auto colors: {exc}")
                     continue
-                push_state("color-spine")
-                try:
-                    fig.canvas.draw_idle()
-                except Exception:
-                    pass
-                manual_change = False
+                planned = []
                 for token in line.split():
                     if ":" not in token:
-                        print(f"Skip malformed token: {token}")
+                        if token.lower() != "auto":
+                            print(f"Skip malformed token: {token}")
                         continue
                     key_part, color = token.split(":", 1)
                     key_part = key_part.lower()
                     if key_part not in key_to_spine:
                         print(f"Unknown key: {key_part} (use w/a/s/d)")
                         continue
-                    resolved = resolve_color_token(color, fig)
-                    set_spine_color(key_to_spine[key_part], resolved)
-                    print(f"Set {key_to_spine[key_part]} spine to {resolved}")
-                    manual_change = True
-                if manual_change and not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
+                    try:
+                        resolved = resolve_color_token(color, fig)
+                    except Exception as exc:
+                        print(f"Skip {key_part}: {exc}")
+                        continue
+                    planned.append((key_to_spine[key_part], resolved))
+                if not planned:
+                    continue
+                push_state("color-spine")
+                try:
+                    fig.canvas.draw_idle()
+                except Exception:
+                    pass
+                for spine_name, resolved in planned:
+                    set_spine_color(spine_name, resolved)
+                    print(f"Set {spine_name} spine to {resolved}")
+                if not is_multi_file and getattr(fig, "_cpc_spine_auto", False):
                     fig._cpc_spine_auto = False
                     print("Auto mode disabled (manual spine color set)")
                 try:

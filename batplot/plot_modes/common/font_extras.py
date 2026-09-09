@@ -88,6 +88,16 @@ def apply_font_weight_to_artists(artists: Iterable[Any], weight: object) -> None
     for artist in artists:
         if artist is None:
             continue
+        # Ion segment tags stay regular weight (not bold axis chrome).
+        if getattr(artist, "_bp_ion_annot", False):
+            try:
+                if hasattr(artist, "set_fontweight"):
+                    artist.set_fontweight("normal")
+                elif hasattr(artist, "set_weight"):
+                    artist.set_weight("normal")
+            except Exception:
+                pass
+            continue
         try:
             if hasattr(artist, "set_fontweight"):
                 artist.set_fontweight(w)

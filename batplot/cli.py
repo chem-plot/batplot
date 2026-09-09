@@ -61,6 +61,12 @@ def main(argv: Optional[list] = None) -> int:
 		>>> main()
 		0
 	"""
+	# Windows cp1252-safe print/input for all interactive menus and errors.
+	try:
+		from .plot_modes.common.terminal import install_safe_builtins
+		install_safe_builtins()
+	except Exception:
+		pass
 	# ====================================================================
 	# STEP 0.5: CHECK FOR DEVELOPER UPGRADE COMMAND
 	# ====================================================================
@@ -163,7 +169,14 @@ def main(argv: Optional[list] = None) -> int:
 		# Other exceptions (unexpected bugs) will still show full traceback
 		# for debugging purposes.
 		# ====================================================================
-		print(f"Error: {e}", file=sys.stderr)
+		try:
+			from .plot_modes.common.terminal import safe_console_print
+			safe_console_print(f"Error: {e}", file=sys.stderr)
+		except Exception:
+			try:
+				sys.stderr.write(f"Error: {e}\n")
+			except Exception:
+				sys.stderr.write("Error: (message not printable on this console)\n")
 		return 1  # Non-zero exit code indicates error
 		
 	finally:

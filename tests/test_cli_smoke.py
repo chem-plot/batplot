@@ -128,6 +128,14 @@ def test_cpc_route_runs_clean(workdir):
     _write(workdir / "cpc.csv", _CPC_CSV)
     rc = _run(["cpc.csv", "--cpc", "--out", "cpc.png"])
     assert rc in (0, None)
+    assert (workdir / "cpc.png").is_file()
+
+
+def test_epc_route_saves_figure(workdir):
+    _write(workdir / "epc.csv", _CPC_CSV)
+    rc = _run(["epc.csv", "--epc", "--out", "epc.png"])
+    assert rc in (0, None)
+    assert (workdir / "epc.png").is_file()
 
 
 def test_cpc_multi_file_route_builds_compact_file_data(workdir, monkeypatch):
@@ -146,6 +154,7 @@ def test_cpc_multi_file_route_builds_compact_file_data(workdir, monkeypatch):
     rc = _run(["cpc_a.csv", "cpc_b.csv", "--cpc", "--out", "cpc_multi.png"])
 
     assert rc in (0, None)
+    assert (workdir / "cpc_multi.png").is_file()
     assert captured == {
         "filenames": ["cpc_a.csv", "cpc_b.csv"],
         "visible": [True, True],

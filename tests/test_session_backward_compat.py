@@ -43,6 +43,11 @@ def _collect_pkl_paths(root: str, *, recursive: bool) -> list[str]:
 
 @pytest.fixture(scope="module")
 def figures_pkls():
+    # Opt-in only: local OneDrive Figures trees are slow / flaky for default suite.
+    if os.environ.get("BATPLOT_RUN_USER_PKL_TESTS", "").lower() not in ("1", "true", "yes"):
+        pytest.skip(
+            "Set BATPLOT_RUN_USER_PKL_TESTS=1 to run local Figures .pkl backward-compat smoke"
+        )
     roots = [FIGURES_DIR, FIGURES_DIR2]
     if not any(os.path.isdir(r) for r in roots):
         pytest.skip(f"Figures pkl dirs not present: {roots}")
@@ -61,6 +66,7 @@ def test_figures_pkl_loads(pkl_path: str):
     smoke_session_path(pkl_path)
 
 
+@pytest.mark.integration
 def test_figures_pkls_all_load(pytestconfig, figures_pkls):
     """Load every .pkl in the user's Figures folder and exercise key submenus."""
     failures = []

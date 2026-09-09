@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ...session import load_cpc_session, load_ec_session, load_operando_session, load_xy_session
+from ..common.session_helpers import restore_last_figure_export_path
+from ..electrochem.dqdv_2d import restore_dqdv_2d_companion_figure
 from ..histo.session import load_histo_session
 from ..xy.interactive import normalize_xy_menu_kwargs
-from .kinds import detect_session_kind, kind_label
+from .kinds import load_session_dict, validate_batch_profiles
 
 
 @dataclass
@@ -74,47 +76,22 @@ def _seed_session_path(fig, path: str) -> None:
 
 
 def validate_same_kind(paths: List[str]) -> tuple[str | None, Dict[str, str], int | None]:
-    """Return (kind, path->label, error_code)."""
-    kinds: Dict[str, str] = {}
-    normalized: List[str] = []
-    for path in paths:
-        abspath = os.path.abspath(path)
-        if not os.path.isfile(abspath):
-            print(f"Session file not found: {path}")
-            return None, kinds, 1
-        if not abspath.lower().endswith(".pkl"):
-            print("Batch session mode requires .pkl session files only.")
-            return None, kinds, 1
-        kind = detect_session_kind(abspath)
-        if kind is None:
-            print(f"Not a valid batplot session: {path}")
-            return None, kinds, 1
-        kinds[abspath] = kind
-        normalized.append(abspath)
-    unique = set(kinds.values())
-    if len(unique) != 1:
-        print("\nError: All session files must be from the same plot mode.")
-        for path in normalized:
-            print(f"  {os.path.basename(path)}: {kind_label(kinds[path])}")
-        print(
-            "\nBatplot cannot open a mixed batch. Edit same-mode sessions together, "
-            "or use --canvas to combine different modes in one layout."
-        )
-        return None, kinds, 1
-    return next(iter(unique)), kinds, None
+    """Return (kind, path->kind, error_code).
+
+    Backward-compatible wrapper around :func:`validate_batch_profiles`.
+    Mixed top-level kinds and mismatched subtypes both abort (``error_code=1``);
+    subtype mismatches print a Warning instead of an Error.
+    """
+    kind, profiles, err = validate_batch_profiles(paths)
+    kinds = {path: profile.kind for path, profile in profiles.items()}
+    return kind, kinds, err
 
 
 def load_batch_panels(paths: List[str]) -> BatchLoadResult | int:
-    kind, _kinds, err = validate_same_kind(paths)
+    kind, _profiles, err = validate_batch_profiles(paths)
     if err is not None:
         return err
     assert kind is not None
-    if kind == "dqdv_2d_contour":
-        print(
-            "Batch session mode does not support dQ/dV 2D contour (.pkl kind=dqdv_2d_contour).\n"
-            "Open a single contour session instead, or use the 2d command from --dqdv interactive mode."
-        )
-        return 1
     panels: list = []
     for path in paths:
         abspath = os.path.abspath(path)
@@ -170,6 +147,13 @@ def _load_one_panel(kind: str, path: str):
             "mly": False,
             "mry": False,
         }
+        # Prefer axis attr even when {} (empty dict is authoritative, not "missing").
+        saved_ax = getattr(ax, "_saved_tick_state", None)
+        saved_fig = getattr(fig, "_saved_tick_state", None)
+        if isinstance(saved_ax, dict):
+            tick_state = dict(saved_ax)
+        elif isinstance(saved_fig, dict):
+            tick_state = dict(saved_fig)
         return CpcPanel(
             path=path,
             fig=fig,
@@ -188,6 +172,20 @@ def _load_one_panel(kind: str, path: str):
         fig, ax, im, cbar, ec_ax = res
         _seed_session_path(fig, path)
         return OperandoPanel(path=path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=ec_ax)
+    if kind == "dqdv_2d_contour":
+        sess = load_session_dict(path)
+        if not sess:
+            return None
+        res = restore_dqdv_2d_companion_figure(sess)
+        if not res:
+            return None
+        fig, ax, im, cbar = res
+        _seed_session_path(fig, path)
+        try:
+            restore_last_figure_export_path(fig, sess, session_filename=path)
+        except Exception:
+            pass
+        return OperandoPanel(path=path, fig=fig, ax=ax, im=im, cbar=cbar, ec_ax=None)
     if kind == "histo":
         res = load_histo_session(path)
         if not res:
@@ -207,4 +205,5 @@ __all__ = [
     "XyPanel",
     "load_batch_panels",
     "validate_same_kind",
+    "validate_batch_profiles",
 ]

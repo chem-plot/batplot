@@ -33,7 +33,9 @@ class HistoActionContext:
     save_session: Callable[[str], None]
     export_style: Callable[..., None]
     export_figure: Callable[[str], None]
-    apply_style_file: Callable[[str], None]
+    apply_style_file: Callable[[str], Any]
+    # Full undo restore (pop + apply). Optional for older test contexts.
+    restore_state: Callable[[], None] | None = None
 
 
 def handle_quick_overwrite_session(ctx: HistoActionContext) -> None:
@@ -101,6 +103,8 @@ def handle_quick_overwrite_figure(ctx: HistoActionContext) -> None:
 
 def handle_save_session(ctx: HistoActionContext) -> None:
     try:
+        from ..common.session_helpers import resolve_session_save_path
+
         folder = choose_save_path(ctx.source_file_paths, purpose="histogram session save")
         if not folder:
             print("Save canceled.")
@@ -156,18 +160,13 @@ def handle_save_session(ctx: HistoActionContext) -> None:
                 if yn != "y":
                     print("Canceled.")
                     return
-                target = ensure_exact_case_filename(os.path.join(folder, name))
+                target = resolve_session_save_path(name, folder)
                 ctx.save_session(target)
                 print(f"Saved session to {target}")
                 return
             print("Invalid number.")
             return
-        name = choice
-        root, ext = os.path.splitext(name)
-        if ext == "":
-            name = name + ".pkl"
-        target = name if os.path.isabs(name) else os.path.join(folder, name)
-        target = ensure_exact_case_filename(target)
+        target = resolve_session_save_path(choice, folder)
         if os.path.exists(target):
             yn = ctx.safe_input(f"'{os.path.basename(target)}' exists. Overwrite? (y/n): ").strip().lower()
             if yn != "y":
@@ -411,6 +410,7 @@ def handle_style_export(ctx: HistoActionContext) -> None:
 
 
 def handle_style_import(ctx: HistoActionContext) -> None:
+    pushed = False
     try:
         fname = choose_style_file(
             ctx.source_file_paths,
@@ -426,16 +426,38 @@ def handle_style_import(ctx: HistoActionContext) -> None:
             print("Style import canceled.")
             return
         ctx.push_state()
-        try:
-            ctx.apply_style_file(fname)
-            print("Imported style.")
-        except Exception:
-            ctx.pop_undo()
-            raise
+        pushed = True
+        ok = ctx.apply_style_file(fname)
+        if ok is False:
+            if ctx.restore_state is not None:
+                try:
+                    ctx.restore_state()
+                except Exception:
+                    ctx.pop_undo()
+            else:
+                ctx.pop_undo()
+            print("Style import canceled.")
+            return
+        print("Imported style.")
     except json.JSONDecodeError:
+        if pushed:
+            if ctx.restore_state is not None:
+                try:
+                    ctx.restore_state()
+                except Exception:
+                    ctx.pop_undo()
+            else:
+                ctx.pop_undo()
         print("Import failed: invalid JSON.")
-        ctx.pop_undo()
     except Exception as exc:
+        if pushed:
+            if ctx.restore_state is not None:
+                try:
+                    ctx.restore_state()
+                except Exception:
+                    ctx.pop_undo()
+            else:
+                ctx.pop_undo()
         print(f"Import failed: {exc}")
 
 

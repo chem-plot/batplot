@@ -253,7 +253,8 @@ def histo_y_grid_visible(ax) -> bool:
 def apply_histo_grid(ax, state: HistoState) -> None:
     """Apply y-grid visibility from ``state.style.show_grid`` (call after spine/tick ops)."""
     try:
-        lw = float(getattr(state.style, "grid_linewidth", 0.6) or 0.6)
+        _lw = getattr(state.style, "grid_linewidth", 0.6)
+        lw = float(0.6 if _lw is None else _lw)
         if state.style.show_grid:
             ax.grid(True, axis="y", alpha=0.35, linestyle="--", linewidth=lw)
         else:
@@ -302,25 +303,42 @@ def draw_histogram(fig: Figure, ax: Axes, state: HistoState) -> Dict[str, Any]:
     )
     ax.set_xlim(edges[0], edges[-1])
     ax.set_xlabel(state.style.xlabel, fontsize=state.style.label_fontsize)
-    ax.set_ylabel(state.style.ylabel or state.y_label_default(), fontsize=state.style.label_fontsize)
+    # Preserve intentional empty ylabel (p/i/s/b parity); do not coerce to default.
+    ax.set_ylabel(state.style.ylabel, fontsize=state.style.label_fontsize)
     if state.style.title:
         ax.set_title(state.style.title, fontsize=state.style.title_fontsize)
     else:
         ax.set_title("")
+    # Always sync (including clear): empty top_xlabel must drop a stale override
+    # so batch ``r``→``o``→``-`` peers fall back to bottom x (XY parity).
     if state.style.top_xlabel:
         ax._top_xlabel_text_override = state.style.top_xlabel  # type: ignore[attr-defined]
-    lw = float(getattr(state.style, "grid_linewidth", 0.6) or 0.6)
+    elif hasattr(ax, "_top_xlabel_text_override"):
+        try:
+            delattr(ax, "_top_xlabel_text_override")
+        except Exception:
+            ax._top_xlabel_text_override = ""  # type: ignore[attr-defined]
+    _lw = getattr(state.style, "grid_linewidth", 0.6)
+    lw = float(0.6 if _lw is None else _lw)
     if state.style.show_grid:
         ax.grid(True, axis="y", alpha=0.35, linestyle="--", linewidth=lw)
     else:
         ax.grid(False, axis="y")
     extras: Dict[str, Any] = {"bars": bars, "counts": counts, "edges": edges}
+    # Mean/median must use the same display window as bars/density (xmin/xmax).
     finite = state.setup.values[np.isfinite(state.setup.values)]
-    if state.style.show_mean_line and finite.size:
-        mean = float(np.mean(finite))
+    try:
+        xmin = float(state.setup.xmin)
+        xmax = float(state.setup.xmax)
+        in_range = (finite >= xmin) & (finite <= xmax)
+        finite_disp = finite[in_range]
+    except Exception:
+        finite_disp = finite
+    if state.style.show_mean_line and finite_disp.size:
+        mean = float(np.mean(finite_disp))
         extras["mean_line"] = ax.axvline(mean, color="crimson", ls="--", lw=1.2, label=f"mean={mean:.3g}")
-    if state.style.show_median_line and finite.size:
-        med = float(np.median(finite))
+    if state.style.show_median_line and finite_disp.size:
+        med = float(np.median(finite_disp))
         extras["median_line"] = ax.axvline(med, color="darkorange", ls=":", lw=1.2, label=f"median={med:.3g}")
     if state.style.show_density_curve and finite.size >= 2:
         from .density_curve import density_curve_xy
@@ -394,7 +412,7 @@ def create_histo_figure(state: HistoState) -> Tuple[Figure, Axes, Dict[str, Any]
 
 
 def refresh_histo_figure(fig: Figure, ax: Axes, state: HistoState) -> Dict[str, Any]:
-    state.style.ylabel = state.style.ylabel or state.y_label_default()
+    # Do not coerce empty ylabel → default (cleared titles must round-trip).
     meta = draw_histogram(fig, ax, state)
     from .spines import reapply_histo_spine_layout
 
