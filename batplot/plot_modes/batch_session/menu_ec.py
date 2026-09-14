@@ -279,8 +279,11 @@ def run_ec_batch_menu(panels: List[EcPanel]) -> None:
             continue
 
         if cmd == "q":
-            if batch_quit_or_save_all(panels, _save_ec_panel):
+            result = batch_quit_or_save_all(panels, _save_ec_panel)
+            if result is True:
                 break
+            if result in ("e", "s"):
+                pending = result
             continue
 
         if cmd == "b":

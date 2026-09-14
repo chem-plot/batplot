@@ -273,6 +273,27 @@ def ec_dual_width_axes(fig, ax) -> list:
     return axes
 
 
+def sync_ec_dual_frame_linewidths(fig, ax) -> None:
+    """Copy primary spine linewidths onto SecondaryAxis (line ``f`` / p/i/s/b).
+
+    Dual recreate reapplies tick widths via :func:`reapply_ec_dual_secondary_chrome`
+    but previously left frame (spine) linewidths only on the primary. No-op when
+    not dual or spines missing (backward compatible).
+    """
+    sec = ec_dual_secax(fig)
+    if sec is None or ax is None:
+        return
+    for name in ("bottom", "top", "left", "right"):
+        src = ax.spines.get(name)
+        dst = sec.spines.get(name)
+        if src is None or dst is None:
+            continue
+        try:
+            dst.set_linewidth(float(src.get_linewidth()))
+        except Exception:
+            pass
+
+
 def ec_dual_x_scale_factor(fig) -> float:
     """Primary→SecondaryAxis x scale: unswapped ions=cap/C_th; swapped cap=ions*C_th."""
     c_th = getattr(fig, '_xaxis_c_theoretical', None)
@@ -748,6 +769,11 @@ def reapply_ec_dual_secondary_chrome(
             pass
     # Re-assert after tick_params (length/width/dir can revive primary top on some mpl)
     seal_ec_dual_top_chrome(fig, ax, wasd_state)
+    # Frame widths from line submenu ``f`` live on primary spines; mirror to secax.
+    try:
+        sync_ec_dual_frame_linewidths(fig, ax)
+    except Exception:
+        pass
 
 
 def apply_dual_top_axis_style(secax, top_axis_cfg: Optional[Dict], fig=None) -> None:
@@ -1013,6 +1039,37 @@ def _get_style_snapshot(fig, ax, cycle_lines: Dict, tick_state: Dict, file_data:
         result['file_display_names'] = [f.get('display_name', f.get('filename', str(i))) for i, f in enumerate(file_data)]
         result['file_visibility'] = [bool(f.get('visible', True)) for f in file_data]
         result['legend_file_order'] = list(getattr(fig, '_ec_legend_file_order', None) or range(len(file_data)))
+    try:
+        from ..common.layout_compat import attach_layout, ec_layout_fingerprint
+        n_files = len(file_data) if isinstance(file_data, list) and file_data else 1
+        dual = False
+        xdual = result.get('xaxis_dual')
+        if isinstance(xdual, dict) and str(xdual.get('mode', '')).lower() == 'dual':
+            dual = True
+        family = 'gc'
+        if bool(getattr(ax, '_is_dqdv_mode', False)) or bool(getattr(fig, '_is_dqdv', False)):
+            family = 'dqdv'
+        else:
+            try:
+                xl = (ax.get_xlabel() or '').lower()
+                yl = (ax.get_ylabel() or '').lower()
+                if ('current' in xl or 'current' in yl or 'i (' in xl or 'i (' in yl
+                        or 'i/' in xl or 'i/' in yl):
+                    family = 'cv'
+            except Exception:
+                pass
+        attach_layout(
+            result,
+            ec_layout_fingerprint(
+                is_multi_file=n_files > 1,
+                n_files=max(1, n_files),
+                plot_family=family,
+                dual_x=dual,
+                ro_active=bool(getattr(fig, '_ro_active', False)),
+            ),
+        )
+    except Exception:
+        pass
     return result
 
 

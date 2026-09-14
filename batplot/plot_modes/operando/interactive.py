@@ -37,6 +37,7 @@ from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
     finalize_spine_colors_for_axes,
 )
+from .spine_colors import operando_pane_tick_entries
 from ..common.crosshair_export import register_crosshair
 from ..common.interactive_state import right_y_major_visibility
 from ..common.files import format_file_timestamp as _format_file_timestamp
@@ -45,6 +46,7 @@ from ..common.menu_rendering import prompt_menu_key
 from ..common.terminal import (
     colorize_prompt as _colorize_prompt,
     colorize_single_key_inline_commands as _colorize_inline_commands,
+    confirm_quit_interactive,
     imk_stderr_guard as _imk_stderr_guard,
     safe_input as _safe_input,
 )
@@ -1925,6 +1927,23 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 y_positions.append(y_base + len(y_positions) * dy)
             while True:
                 print(_colorize_inline_commands("CIF tick labels:"))
+                # Numbered set list (indices + names) before command keys.
+                try:
+                    from ...color_utils import format_color_listing
+                    for i, entry in enumerate(cif_series):
+                        try:
+                            lab, _fname, _p, _w, _q, col = entry
+                        except Exception:
+                            lab, col = (entry[0] if entry else f"set {i+1}"), None
+                        print("  " + " ".join([f"{i+1}:", format_color_listing(col), str(lab)]))
+                except Exception:
+                    for i, entry in enumerate(cif_series):
+                        try:
+                            lab = entry[0]
+                        except Exception:
+                            lab = f"set {i+1}"
+                        print(f"  {i+1}: {lab}")
+                print("------------------------------------------------------------")
                 print("  " + _colorize_menu(f"z: toggle hkl labels (currently {'on' if show_hkl else 'off'})"))
                 print("  " + _colorize_menu(f"t: toggle CIF titles (currently {'on' if show_titles else 'off'})"))
                 show_highlight = getattr(fig, '_operando_cif_highlight', False)
@@ -2539,7 +2558,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         right=None if is_ec else lambda: _ui_position_right_ylabel(axis, fig, current_tick_state),
                     )
                     try:
-                        finalize_spine_colors_for_axes(fig, [(axis, current_tick_state)])
+                        # Always reseal both panes so peer tick colors survive
+                        # tick_params rebuilds on the edited pane.
+                        entries = operando_pane_tick_entries(ax, ec_ax)
+                        # Prefer the live tick_state for the pane being edited.
+                        patched = []
+                        for pane_ax, pane_ts in entries:
+                            if pane_ax is axis:
+                                patched.append((pane_ax, current_tick_state))
+                            else:
+                                patched.append((pane_ax, pane_ts))
+                        finalize_spine_colors_for_axes(fig, patched)
                     except Exception:
                         pass
                 
@@ -2568,14 +2597,20 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     _apply_wasd_axis(target, wasd, changed_sides)
                 def _draw_operando_spine_menu():
                     try:
-                        ts = getattr(target, "_saved_tick_state", None)
-                        finalize_spine_colors_for_axes(fig, [(target, ts)])
+                        entries = operando_pane_tick_entries(ax, ec_ax)
+                        finalize_spine_colors_for_axes(fig, entries)
                     except Exception:
                         pass
                     try:
                         fig.canvas.draw()
                     except Exception:
                         fig.canvas.draw_idle()
+                _ec_alias_help = None
+                if target is ec_ax:
+                    _ec_alias_help = [
+                        "  Note: on EC pane, a toggles the visible right Y "
+                        "(alias). Color menu k still uses literal a=left / d=right.",
+                    ]
                 run_spine_tick_menu(
                     fig=fig,
                     wasd=wasd,
@@ -2592,6 +2627,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                     direction_axes=[ax] + ([ec_ax] if ec_ax is not None else []),
                     length_axes=[ax] + ([ec_ax] if ec_ax is not None else []),
                     side_aliases={'left': 'right'} if target is ec_ax else None,
+                    extra_help_lines=_ec_alias_help,
                 )
                 continue
             print_menu()
@@ -2904,17 +2940,17 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 except Exception:
                     pass
                 break
-            try:
-                ans = _safe_input(_colorize_inline_commands("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
-            except Exception:
-                ans = 'y'
+            ans = confirm_quit_interactive(
+                safe_input_fn=_safe_input,
+                colorize_fn=_colorize_prompt,
+            )
             if ans == 'y':
                 try:
                     plt.close(fig)
                 except Exception:
                     pass
                 break
-            elif ans in ('e', 's'):
+            if ans in ('e', 's'):
                 cmd = ans  # Fall through to export/save handler
             else:
                 print_menu()
@@ -3069,6 +3105,7 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
             # Line widths submenu for both operando and EC panes
             while True:
                 print("Line widths: set frame (spines) and tick widths for both operando and EC")
+                print("  (Curve look for the EC voltage line is under el → s)")
                 print(_colorize_inline_commands("Enter frame/tick width (e.g., '1.5' or 'f t' for frame/tick separately)"))
                 print("Format examples:")
                 print(_colorize_inline_commands("  1.5      - set both frame and ticks to 1.5"))
@@ -3100,6 +3137,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                         major_width=tick_w,
                         minor_width=tick_minor,
                     )
+                    try:
+                        from .style import stash_cbar_line_widths
+
+                        stash_cbar_line_widths(fig, cbar)
+                    except Exception:
+                        pass
                     try:
                         axis_entries = [(ax, getattr(ax, "_saved_tick_state", None))]
                         if ec_ax is not None:

@@ -7,6 +7,7 @@ application that is identical across modes.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence, cast
 
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
@@ -520,6 +521,119 @@ def _format_axis_map(axis_map: Mapping[str, Any]) -> str:
     return "  ".join(labels.get(key, key) for key in axis_map)
 
 
+def _wasd_figure_visible_len(text: str) -> int:
+    """Visible column width ignoring ANSI CSI sequences (for help padding)."""
+    return len(re.sub(r"\033\[[0-9;]*m", "", text))
+
+
+def _wasd_box_chars(*, ascii_box: bool) -> tuple[str, str, str, str, str, str]:
+    if ascii_box:
+        return "+", "+", "+", "+", "-", "|"
+    return "┌", "┐", "└", "┘", "─", "│"
+
+
+def wasd_side_box_lines(
+    *,
+    title: str = "Plot sides (WASD):",
+    use_ansi: bool | None = None,
+) -> list[str]:
+    """Return the WASD plot-frame diagram lines (no right-hand legend)."""
+    from .menu_rendering import ansi_menu_enabled
+    from .terminal import stream_needs_console_safe
+
+    if use_ansi is None:
+        use_ansi = ansi_menu_enabled()
+    cyan = "\033[96m" if use_ansi else ""
+    reset = "\033[0m" if use_ansi else ""
+    w = f"{cyan}w{reset}"
+    a = f"{cyan}a{reset}"
+    s = f"{cyan}s{reset}"
+    d = f"{cyan}d{reset}"
+
+    ascii_box = stream_needs_console_safe()
+    tl, tr, bl, br, h, v = _wasd_box_chars(ascii_box=ascii_box)
+    bar = h * 15
+    # Left label is visually 9 cols so the box ``│`` lines up with rows above/below.
+    return [
+        f"  {title}",
+        f"              {w} = top",
+        f"         {tl}{bar}{tr}",
+        f"         {v}{'':^15}{v}",
+        f" {a}=left  {v}{'':^15}{v}  {d}=right",
+        f"         {v}{'':^15}{v}",
+        f"         {bl}{bar}{br}",
+        f"            {s} = bottom",
+    ]
+
+
+def _print_wasd_figure_with_legend(
+    left_lines: list[str],
+    right_lines: list[str],
+    *,
+    gap: str = "  ",
+) -> None:
+    left_width = max(_wasd_figure_visible_len(line) for line in left_lines)
+    for idx, left in enumerate(left_lines):
+        pad = " " * (left_width - _wasd_figure_visible_len(left))
+        if idx < len(right_lines):
+            print(f"{left}{pad}{gap}{right_lines[idx]}")
+        else:
+            print(left)
+
+
+def print_wasd_side_figure(*, use_ansi: bool | None = None) -> None:
+    """Print WASD plot-frame diagram with 1–5 toggle legend on the right.
+
+    Uses box-drawing on UTF-8 terminals; ASCII ``+``/``-``/``|`` on classic
+    Windows consoles (via ``stream_needs_console_safe``). The numbered
+    ``What to toggle`` list is vertically aligned beside the box so it stays
+    visually separate from the command lines that follow (examples, ``i``/``l``…).
+    """
+    from .menu_rendering import ansi_menu_enabled
+
+    if use_ansi is None:
+        use_ansi = ansi_menu_enabled()
+    cyan = "\033[96m" if use_ansi else ""
+    reset = "\033[0m" if use_ansi else ""
+    left_lines = wasd_side_box_lines(title="Plot sides (WASD):", use_ansi=use_ansi)
+    right_lines = [
+        "What to toggle:",
+        f"{cyan}1{reset} = spine line",
+        f"{cyan}2{reset} = major ticks",
+        f"{cyan}3{reset} = minor ticks",
+        f"{cyan}4{reset} = labels",
+        f"{cyan}5{reset} = axis title",
+    ]
+    _print_wasd_figure_with_legend(left_lines, right_lines)
+
+
+def print_wasd_color_side_figure(*, use_ansi: bool | None = None) -> None:
+    """Print WASD plot-frame diagram for spine-color help (``c`` / ``k`` menus).
+
+    Same rectangle as :func:`print_wasd_side_figure`, without the 1–5 toggle
+    legend (color menus use ``w/a/s/d:color``, not visibility digits).
+    """
+    from .menu_rendering import ansi_menu_enabled
+
+    if use_ansi is None:
+        use_ansi = ansi_menu_enabled()
+    cyan = "\033[96m" if use_ansi else ""
+    reset = "\033[0m" if use_ansi else ""
+    left_lines = wasd_side_box_lines(
+        title="Spine color sides (WASD):",
+        use_ansi=use_ansi,
+    )
+    right_lines = [
+        "Type side:color:",
+        f"{cyan}w{reset}:red",
+        f"{cyan}a{reset}:#4561F7",
+        f"{cyan}s{reset}:blue",
+        f"{cyan}d{reset}:green",
+        f"(combine: {cyan}w:red a:blue{reset})",
+    ]
+    _print_wasd_figure_with_legend(left_lines, right_lines)
+
+
 def print_wasd_state(
     wasd: Mapping[str, Mapping[str, object]],
     *,
@@ -635,8 +749,7 @@ def run_spine_tick_menu(
     axis_examples = _format_axis_map(axis_map) or "x  y  all"
     menu_block_begin(force_new=True)
     print("\033[1mToggle spines>\033[0m")
-    print(f"  Side keys       : {cyan}w{reset}=top  {cyan}a{reset}=left  {cyan}s{reset}=bottom  {cyan}d{reset}=right")
-    print(f"  What to toggle  : {cyan}1{reset}=spine line  {cyan}2{reset}=major ticks  {cyan}3{reset}=minor ticks  {cyan}4{reset}=labels  {cyan}5{reset}=axis title")
+    print_wasd_side_figure()
     print(f"  Toggle examples : {cyan}s2{reset}  {cyan}w5{reset}  {cyan}a4{reset}  {cyan}s2 w5 a4{reset}  (combine {cyan}w/a/s/d{reset}+{cyan}1-5{reset} only)")
     print(f"  Tick direction  : {cyan}i{reset}=invert (in/out)")
     print(f"  Tick length     : {cyan}l{reset}=set major length (minor auto-set to 70%)")
@@ -926,6 +1039,9 @@ __all__ = [
     "sync_legacy_tick_keys",
     "sync_tick_state_from_wasd",
     "wasd_to_tick_state",
+    "print_wasd_side_figure",
+    "print_wasd_color_side_figure",
     "print_wasd_state",
+    "wasd_side_box_lines",
     "run_spine_tick_menu",
 ]

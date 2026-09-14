@@ -17,11 +17,9 @@ from ..xy.style import apply_style_config, export_style_config
 from ...plotting import apply_curve_color, update_labels
 from ...color_utils import (
     format_color_listing,
-    get_user_color_list,
     manage_user_colors,
     prompt_screen_color,
     blank_means_back,
-    last_screen_pick_count,
     resolve_color_token,
 )
 
@@ -357,8 +355,11 @@ def run_xy_batch_menu(panels: List[XyPanel]) -> None:
             continue
 
         if cmd == "q":
-            if batch_quit_or_save_all(panels, dump_xy_panel):
+            result = batch_quit_or_save_all(panels, dump_xy_panel)
+            if result is True:
                 break
+            if result in ("e", "s"):
+                pending = result
             continue
 
         if cmd == "b":
@@ -430,20 +431,34 @@ def run_xy_batch_menu(panels: List[XyPanel]) -> None:
 
             _spine_keys = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
             while True:
+                from ..common.color_menu_help import (
+                    join_cyan_samples,
+                    join_cyan_samples_spaced,
+                    print_color_action_keys,
+                    print_how_to_set_color_methods,
+                    print_saved_colors_block,
+                    print_spine_tick_keys_note,
+                )
+
                 fig_ref = getattr(ref, "fig", None)
-                user_colors = get_user_color_list(fig_ref)
-                if user_colors:
-                    print("Saved colors (refer as number or u#):")
-                    for idx, col in enumerate(user_colors, 1):
-                        print(f"  {idx}: {format_color_listing(col)}")
-                print("  " + _colorize_menu("Spine colors: w:red a:#4561F7 (syncs to all plots)"))
-                print("  " + _colorize_menu("v: show current colors"))
-                print("  " + _colorize_menu("u: edit saved colors"))
-                print("  " + _colorize_menu("e: pick color from screen"))
+                print_how_to_set_color_methods(
+                    [
+                        (
+                            "Same color for all curves (name / #hex / saved index)",
+                            join_cyan_samples_spaced("red", "#00FF00", "u3"),
+                        ),
+                        (
+                            "Spine color (w/a/s/d) — syncs to all plots",
+                            join_cyan_samples("w:red", "a:#4561F7"),
+                        ),
+                    ]
+                )
+                print_spine_tick_keys_note()
+                print("  (applies to ALL plots in this batch)")
+                print_saved_colors_block(fig_ref)
+                print_color_action_keys()
                 color = safe_input(
-                    colorize_prompt(
-                        "Curve or spine color for ALL plots (name/#hex, w:red…, v/e/u, q=back): "
-                    ),
+                    colorize_prompt("Selection: "),
                     cancel_on_interrupt=True,
                 ).strip()
                 if color.lower() == "q" or blank_means_back(color):
@@ -453,6 +468,9 @@ def run_xy_batch_menu(panels: List[XyPanel]) -> None:
                     continue
                 if color.lower() == "u":
                     manage_user_colors(fig_ref)
+                    continue
+                if color.lower() == "e":
+                    prompt_screen_color(fig_ref)
                     continue
                 tokens = color.split()
                 is_spine = bool(tokens) and all(
@@ -477,28 +495,18 @@ def run_xy_batch_menu(panels: List[XyPanel]) -> None:
                         print(f"Set {spine_name} spine to {format_color_listing(resolved)} on all plots.")
                     draw_panels(panels)
                     continue
-                if color.lower() == "e":
-                    picked = prompt_screen_color(fig_ref)
-                    if not picked:
-                        continue
-                    if last_screen_pick_count() > 1:
-                        # Palette grab — saved as u#; do not recolor all curves
-                        # with only the last pick.
-                        continue
-                    color = picked
-                else:
-                    try:
-                        color = resolve_color_token(color, fig_ref)
-                    except Exception:
-                        print(f"Invalid color: {color!r}")
-                        continue
-                    try:
-                        from matplotlib.colors import to_rgba
+                try:
+                    color = resolve_color_token(color, fig_ref)
+                except Exception:
+                    print(f"Invalid color: {color!r}")
+                    continue
+                try:
+                    from matplotlib.colors import to_rgba
 
-                        to_rgba(color)
-                    except Exception:
-                        print(f"Invalid color: {color!r}")
-                        continue
+                    to_rgba(color)
+                except Exception:
+                    print(f"Invalid color: {color!r}")
+                    continue
                 undo.push_all([_capture_panel(p) for p in panels])
                 for p in panels:
                     for ln in _iter_panel_curve_lines(p):
@@ -854,6 +862,37 @@ def run_xy_batch_menu(panels: List[XyPanel]) -> None:
             # Minimal CIF submenu: add-only (full CIF editor stays single-session).
             while True:
                 print("\nCIF (batch — add only):")
+                # Show numbered CIF sets already on panels (same indices as single-session).
+                try:
+                    any_listed = False
+                    for pi, p in enumerate(panels):
+                        kw = normalize_xy_menu_kwargs(p.menu_kwargs)
+                        cg = kw.get("cif_globals") or {}
+                        cts = list(cg.get("cif_tick_series") or [])
+                        if not cts:
+                            cts = list(getattr(p.fig, "_batplot_cif_tick_series", None) or [])
+                        if not cts:
+                            continue
+                        any_listed = True
+                        if len(panels) > 1:
+                            print(f"  Panel {pi + 1}:")
+                        for i, ent in enumerate(cts):
+                            try:
+                                lab = ent[0]
+                                fname = ent[1] if len(ent) > 1 else ""
+                            except Exception:
+                                lab, fname = f"set {i+1}", ""
+                            base = os.path.basename(str(fname)) if fname else ""
+                            prefix = "    " if len(panels) > 1 else "  "
+                            if base:
+                                print(f"{prefix}{i+1}: {lab} ({base})")
+                            else:
+                                print(f"{prefix}{i+1}: {lab}")
+                    if not any_listed:
+                        print("  (no CIF sets yet — use a to add)")
+                except Exception:
+                    pass
+                print("------------------------------------------------------------")
                 print("  " + _colorize_menu("a: add CIF file(s) to all plots"))
                 print("  " + _colorize_menu("q: back"))
                 sub = safe_input(

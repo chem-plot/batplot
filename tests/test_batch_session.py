@@ -855,11 +855,11 @@ def test_operando_export_includes_panel_gaps():
     data = np.random.rand(10, 10)
     im = ax.imshow(data)
     cbar = fig.colorbar(im, ax=ax)
-    # Style-only (ps / p→ps): must NOT embed geometry so import does not resize.
+    # Style-only (ps / p→ps): keeps canvas size (``g``); panel gaps stay psg-only.
     cfg_ps, ext_ps = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "ps")
     assert ext_ps == ".bps"
     assert not (cfg_ps.get("geometry") or {})
-    assert "canvas_size" not in (cfg_ps.get("figure") or {})
+    assert "canvas_size" in (cfg_ps.get("figure") or {})
     # Style+geometry (psg): must include panel gap / width inches for p/i/s/b.
     cfg, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "psg")
     geom = cfg.get("geometry") or {}

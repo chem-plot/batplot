@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.54] - 2026-09-14
+- Fix --readcol after --wl / other option values (cols no longer stuck on 1–2)
+- Quit prompt: e=export and s=save work in every interactive / batch menu
+- Color menus (c/k): WASD side rectangle like spines t, for all modes
+- User manual homepage: GitHub repo + tutorial zip links
+
+
 ## [1.8.53] - 2026-09-09
 - Bug fixes
 

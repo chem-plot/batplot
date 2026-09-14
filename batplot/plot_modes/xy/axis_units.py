@@ -1,4 +1,4 @@
-"""Interactive XY axis unit conversion (``u``): 2θ ↔ Q ↔ d.
+"""Interactive XY axis unit conversion (``u``): 2θ ↔ Q.
 
 XRD data only (powder diffraction). Not for PDF (.gr), XAS (.nor / .chik /
 .chir), or other non-XRD axes.
@@ -6,6 +6,10 @@ XRD data only (powder diffraction). Not for PDF (.gr), XAS (.nor / .chik /
 Keeps XRD data arrays, axis labels/limits, and CIF tick *display* in sync.
 CIF peak storage stays in Q (existing schema); only the plotted domain and
 per-entry wavelength metadata change with the axis mode.
+
+Interactive ``u`` no longer offers d-spacing as a plot domain (conversion was
+unreliable); ``d`` remains recognized for old sessions / ``--xaxis d`` restore
+so users can convert back to Q or 2θ.
 """
 
 from __future__ import annotations
@@ -721,13 +725,15 @@ def run_axis_units_menu(
     colorize_menu: Callable[[str], str],
     colorize_prompt: Callable[[str], str],
 ) -> Optional[str]:
-    """Options ``u``: convert XRD axis among 2θ / Q / d (XRD data only).
+    """Options ``u``: convert XRD axis between 2θ and Q (XRD data only).
 
     Returns the new mode string when conversion succeeds, else ``None``.
     Respects launch mode from ``--xaxis 2theta`` / ``--wl`` (via fig/args/use_2th).
+    d-spacing is not offered as a convert target (removed); if the session is
+    already in ``d``, choose ``2`` or ``q`` to leave it.
     """
     if use_r or use_E or use_k or use_rft:
-        print("Axis unit convert is for XRD data only (2θ / Q / d).")
+        print("Axis unit convert is for XRD data only (2θ / Q).")
         return None
 
     def _current_mode() -> str:
@@ -745,23 +751,26 @@ def run_axis_units_menu(
 
     current = _current_mode()
     if current not in AXIS_MODES:
-        print("Axis unit convert is for XRD data only (2θ / Q / d).")
+        print("Axis unit convert is for XRD data only (2θ / Q).")
         return None
 
     while True:
         current = _current_mode()
         print("\n\033[1mAxis units (XRD only):\033[0m")
-        print("  Convert XRD axis among 2θ ↔ Q ↔ d (needs λ for 2θ).")
+        print("  Convert XRD axis between 2θ ↔ Q (needs λ for 2θ).")
         print(f"  Current: {current}")
         print("  " + colorize_menu("2: 2θ (deg)"))
         print("  " + colorize_menu("q: Q (Å⁻¹)"))
-        print("  " + colorize_menu("d: d (Å)"))
         print("  " + colorize_menu("b: back"))
-        choice = _safe_input(colorize_prompt("Axis units XRD (2/q/d/b): ")).strip().lower()
+        choice = _safe_input(colorize_prompt("Axis units XRD (2/q/b): ")).strip().lower()
         if not choice or choice in ("b", "back"):
             return None
+        if choice in ("d", "d-spacing", "dspacing"):
+            print("d-spacing plot domain was removed from Options u (conversion was wrong).")
+            print("Use 2 or q. (Old sessions already in d can still convert to 2θ/Q.)")
+            continue
         target_map = {"2": "2theta", "2theta": "2theta", "2th": "2theta", "t": "2theta",
-                      "q": "Q", "d": "d"}
+                      "q": "Q"}
         to = target_map.get(choice)
         if to is None:
             print("Unknown option.")

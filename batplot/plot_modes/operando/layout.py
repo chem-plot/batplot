@@ -195,6 +195,12 @@ def _draw_custom_colorbar(cbar_ax, im, label='Intensity', label_mode='highlow'):
     cbar_ax._colorbar_im = im
     cbar_ax._colorbar_label = label_text
     cbar_ax._colorbar_label_mode = label_mode
+    try:
+        from .style import reapply_stashed_cbar_line_widths
+
+        reapply_stashed_cbar_line_widths(cbar_ax)
+    except Exception:
+        pass
 
 
 def _update_custom_colorbar(cbar_ax, im=None, label=None, label_mode=None):

@@ -138,7 +138,7 @@ def _apply_fonts_and_canvas(
         pass
 
     # Canvas - support both 'size' (v1) and 'canvas_size' (v2).
-    # Style-only imports omit canvas_size so layout is preserved (p/i parity with batch).
+    # Missing keys leave the live canvas unchanged (old style-only BC).
     if apply_canvas:
         fig_cfg = cfg.get('figure', {})
         fig_sz = fig_cfg.get('canvas_size') or fig_cfg.get('size')
@@ -552,10 +552,15 @@ def _apply_ec_wasd_spines_ticks_curve(fig, ec_ax, cfg: Dict[str, Any], version) 
 
 def _finalize_spine_colors(fig, ax, ec_ax) -> None:
     try:
+        from ...ui import heal_live_axis_title_colors_from_spines
+
         axis_entries = [(ax, getattr(ax, '_saved_tick_state', None))]
         if ec_ax is not None:
             axis_entries.append((ec_ax, getattr(ec_ax, '_saved_tick_state', None)))
         finalize_spine_colors_for_axes(fig, axis_entries)
+        heal_live_axis_title_colors_from_spines(ax, fig)
+        if ec_ax is not None:
+            heal_live_axis_title_colors_from_spines(ec_ax, fig)
     except Exception:
         pass
 
@@ -573,7 +578,7 @@ def _apply_reverse_intensity_cif_ions(
 ) -> Optional[bool]:
     """Apply reverse, intensity, CIF, and ions. Returns False to abort; None to continue.
 
-    ``apply_view_geom=False`` skips reverse/clim (style-only ``.bps``); CIF/ions still apply.
+    ``apply_view_geom=False`` skips reverse/clim/CIF (style-only ``.bps``); ions still apply.
     """
     if apply_view_geom:
         # Apply reverse state (r command) — key presence so legacy missing key is a no-op.
@@ -627,10 +632,11 @@ def _apply_reverse_intensity_cif_ions(
             print(f"Warning: Could not apply intensity range: {e}")
 
     # Apply CIF tick config (c command), including sets added interactively.
+    # Geometry-only: style-only ``.bps`` must not mutate CIF (title font, etc.).
     # Missing ``cif`` key = legacy style (leave series alone). Present key with
     # ``tick_series: []`` clears series (batch undo after first add).
     try:
-        if "cif" in cfg:
+        if apply_view_geom and "cif" in cfg:
             cif_cfg = cfg.get('cif', {}) or {}
             from .plot import append_operando_cif_file
 
@@ -909,6 +915,18 @@ def _apply_visibility_colorbar_ec_grid(
             label_left = bool(colorbar_cfg['label_left'])
             cbar.ax._colorbar_label_left = label_left
             cbar.ax.yaxis.set_label_position('left' if label_left else 'right')
+        try:
+            from .style import apply_cbar_line_widths
+
+            apply_cbar_line_widths(
+                cbar,
+                {
+                    "spines": colorbar_cfg.get("spines") or {},
+                    "ticks": colorbar_cfg.get("ticks") or {},
+                },
+            )
+        except Exception:
+            pass
     except Exception:
         pass
     try:
@@ -1195,6 +1213,22 @@ def apply_operando_ec_style_config(
             print(f"Not an operando style file (kind={kind!r}).")
         return False
 
+    try:
+        from ..common.layout_compat import (
+            infer_operando_layout_from_cfg,
+            live_operando_layout,
+            operando_layouts_compatible,
+        )
+
+        file_layout = infer_operando_layout_from_cfg(cfg)
+        live_layout = live_operando_layout(fig=fig, ec_ax=ec_ax)
+        if not operando_layouts_compatible(file_layout, live_layout, silent=silent):
+            return False
+    except Exception as exc:
+        if not silent:
+            print(f"Warning: Could not validate operando style layout: {exc}")
+        return False
+
     cb_w_in, cb_gap_in, ec_gap_in, ec_w_in, ax_w_in, ax_h_in = _ensure_fixed_params(fig, ax, cbar.ax, ec_ax)
 
     has_geometry = (kind == 'operando_ec_style_geom')
@@ -1228,8 +1262,10 @@ def apply_operando_ec_style_config(
         except Exception:
             pass
 
+    # Canvas size (``g``) applies whenever present — style and style+geom.
+    # Panel-inch / clim / reverse stay gated on has_geometry below.
     _apply_fonts_and_canvas(
-        fig, ax, ec_ax, cbar, cfg, apply_canvas=has_geometry
+        fig, ax, ec_ax, cbar, cfg, apply_canvas=True
     )
 
     if apply_inch_geometry:

@@ -10,13 +10,21 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...color_utils import blank_means_back, prompt_screen_color, resolve_color_token
+from ...color_utils import blank_means_back, manage_user_colors, prompt_screen_color, resolve_color_token
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_saved_colors_block,
+    print_spine_tick_keys_note,
+)
 from ..common.spines import (
     apply_frame_and_tick_widths,
     current_tick_width,
     parse_frame_tick_widths,
     sync_tick_state_from_wasd,
 )
+from ..common.menu_rendering import print_menu_key_rows
 from .legend import _color_of, _normalize_spine_color, _rebuild_legend
 
 
@@ -173,20 +181,36 @@ def run_cpc_spine_color_menu(
     """Spine colors w/a/s/d mappings with auto mode (k). Former inline k block."""
     try:
         while True:
-            print("\nSet spine colors (with matching tick and label colors):")
-            print(colorize_inline_commands("  w : top spine    | a : left spine"))
-            print(colorize_inline_commands("  s : bottom spine | d : right spine"))
-            print(colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
+            print_how_to_set_color_methods(
+                [
+                    (
+                        "Spine color (w/a/s/d)",
+                        join_cyan_samples("w:red", "a:#4561F7", "s:blue", "d:green"),
+                    ),
+                ]
+            )
+            print_spine_tick_keys_note(colorize_menu=colorize_menu)
+            print_saved_colors_block(fig, colorize_menu=colorize_menu)
+            extras = None
             # Add auto function when only one file is loaded
             if not is_multi_file:
                 auto_enabled = getattr(fig, '_cpc_spine_auto', False)
                 auto_status = "ON" if auto_enabled else "OFF"
-                print(colorize_inline_commands(f"  auto : auto-apply capacity color to left y-axis, efficiency to right y-axis [{auto_status}]"))
-            print("  " + colorize_menu("e: pick color from screen"))
-            print("  " + colorize_menu("q: back to main menu"))
-            line = safe_input(colorize_prompt("Enter mappings (e.g., w:red a:#4561F7, q=back): ")).strip()
+                extras = [
+                    (
+                        "auto",
+                        f"auto-apply capacity→left / efficiency→right [{auto_status}]",
+                    )
+                ]
+            print_color_action_keys(
+                colorize_menu=colorize_menu, include_v=False, extras=extras
+            )
+            line = safe_input(colorize_prompt("Selection: ")).strip()
             if line.lower() == 'q' or blank_means_back(line):
                 break
+            if line.lower() == 'u':
+                manage_user_colors(fig)
+                continue
             if line.lower() == 'e':
                 prompt_screen_color(fig)
                 continue
@@ -483,9 +507,15 @@ def run_cpc_line_width_menu(
                       " ".join(f"{k}={v:.3g}" if isinstance(v,(int,float)) else f"{k}=?" for k,v in cur_sp_lw.items()))
             print(f"  Tick widths: xM={x_maj if x_maj is not None else '?'} xm={x_min if x_min is not None else '?'} lyM={ly_maj if ly_maj is not None else '?'} lym={ly_min if ly_min is not None else '?'} ryM={ry_maj if ry_maj is not None else '?'} rym={ry_min if ry_min is not None else '?'}")
             print("\033[1mLine submenu:\033[0m")
-            print(f"  {colorize_menu('f  : change frame (axes spines) and tick widths')}")
-            print(f"  {colorize_menu('g  : toggle grid lines')}")
-            print(f"  {colorize_menu('q  : return')}")
+            print("  Frame / grid (CPC uses markers via m; no line presets):")
+            print_menu_key_rows(
+                [
+                    "f: change frame (axes spines) and tick widths",
+                    "g: toggle grid lines",
+                    "q: return",
+                ],
+                colorize=colorize_menu,
+            )
             sub = safe_input(colorize_prompt("Choose (f/g/q): ")).strip().lower()
             if not sub:
                 continue

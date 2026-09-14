@@ -23,6 +23,7 @@ from ...utils import (
     normalize_xy_cif_stack_y_offsets,
     print_label_math_help,
     xy_cif_add_phase_title,
+    xy_cif_resolve_title_font,
     xy_cif_row_spacing_yr,
     xy_cif_stack_bottom_margin_yr,
     xy_cif_stack_y_offset,
@@ -50,6 +51,14 @@ from ..common.palettes import (
     parse_index_ranges,
     resolve_palette_token,
     sample_colormap,
+)
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    join_cyan_samples_spaced,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_recommended_palettes,
+    print_saved_colors_block,
 )
 
 
@@ -428,10 +437,10 @@ def ensure_xy_cif_draw_installed(
                             )
                             new_art.append(t_hkl)
                 if show_titles_local:
+                    _cif_fs, _cif_fam = xy_cif_resolve_title_font(fig)
                     xy_cif_add_phase_title(
                         ax, prev_xlim[0], y_line, tick_h, f" {lab}",
-                        max(8, int(0.55 * plt.rcParams.get("font.size", 16))),
-                        color, new_art,
+                        _cif_fs, color, new_art, fontfamily=_cif_fam,
                     )
             ax._cif_tick_art = new_art
             ax.set_xlim(prev_xlim)
@@ -752,6 +761,24 @@ def run_cif_ticks_menu(
             print("\n\033[1mCIF tick labels:\033[0m")
             if not cif_series:
                 print("  (no CIF sets yet — use a to add)")
+            else:
+                # Numbered phase list (same as r / rename) so users see indices + names
+                # before picking a/z/t/v/c/x/r. BC: empty series still shows the hint only.
+                try:
+                    _print_cif_phase_list(cif_series)
+                except Exception:
+                    for i, ent in enumerate(cif_series):
+                        try:
+                            lab = ent[0]
+                            fname = ent[1] if len(ent) > 1 else ""
+                        except Exception:
+                            lab, fname = f"set {i+1}", ""
+                        base = os.path.basename(str(fname)) if fname else ""
+                        if base:
+                            print(f"  {i+1}: {lab} ({base})")
+                        else:
+                            print(f"  {i+1}: {lab}")
+            print("------------------------------------------------------------")
             print("  " + colorize_menu("a: add CIF file(s)"))
             if cif_series:
                 hkl_desc = f"z: toggle hkl labels (currently {'on' if show_hkl else 'off'})"
@@ -766,6 +793,7 @@ def run_cif_ticks_menu(
                 print("  " + colorize_menu("x: show/hide CIF set"))
                 print("  " + colorize_menu("r: rename CIF phase label (same as main menu r→t)"))
             print("  " + colorize_menu("q: back to main menu"))
+            print("------------------------------------------------------------")
             prompt_keys = "a/z/t/v/p/c/x/r/q" if cif_series else "a/q"
             sub = _safe_input(colorize_prompt(f"CIF ({prompt_keys}): ")).strip().lower()
             if not sub or sub == 'q':
@@ -977,18 +1005,26 @@ def run_cif_ticks_menu(
                     else:
                         # Show current CIF sets and colors
                         while True:
-                            _C = '\033[96m'; _R = '\033[0m'
-                            print("CIF color (per set).")
-                            print("How to set color:")
-                            print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
-                            print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
-                            print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
-                            print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
-                            print(
-                                f"Other: {_C}v{_R}: show current colors   "
-                                f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+                            print_how_to_set_color_methods(
+                                [
+                                    (
+                                        "Colon per CIF set (multiple entries allowed)",
+                                        join_cyan_samples_spaced("1:red", "2:#00FF00", "1:2"),
+                                    ),
+                                    (
+                                        "Sets/ranges + palette as LAST token",
+                                        join_cyan_samples("all viridis", "1-2,4 magma_r"),
+                                    ),
+                                ]
                             )
-                            line = _safe_input("Enter mappings or range+palette (q=back): ").strip()
+                            print()
+                            print_recommended_palettes(
+                                build_xy_palette_options(ensure_colormap),
+                                max_digits=10,
+                            )
+                            print_saved_colors_block(fig)
+                            print_color_action_keys()
+                            line = _safe_input(colorize_prompt("Selection: ")).strip()
                             if line.lower() == 'q' or blank_means_back(line):
                                 break
                             cif_low = line.lower()

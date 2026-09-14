@@ -238,7 +238,8 @@ def test_resolve_wavelength_dual_wl_prefers_original_for_q():
     plt.close(fig)
 
 
-def test_run_axis_units_menu_q_to_d():
+def test_run_axis_units_menu_rejects_d_target():
+    """1D Options ``u`` no longer offers d-spacing as a convert target."""
     fig, ax = plt.subplots()
     x_data = [np.array([1.0, 2.0, 4.0])]
     x_full = [np.array([1.0, 2.0, 4.0])]
@@ -247,7 +248,7 @@ def test_run_axis_units_menu_q_to_d():
     fig._xy_lines_by_curve = [ln]
     AU.set_xy_axis_mode(fig, "Q", wavelength=1.54)
     args = SimpleNamespace(wl=1.54, xaxis="Q")
-    answers = iter(["d"])
+    answers = iter(["d", "b"])
     pushed = []
 
     def _inp(_p=""):
@@ -278,10 +279,59 @@ def test_run_axis_units_menu_q_to_d():
         colorize_menu=lambda s: s,
         colorize_prompt=lambda s: s,
     )
-    assert out == "d"
+    assert out is None
+    assert pushed == []
+    assert getattr(fig, "_xy_axis_mode") == "Q"
+    np.testing.assert_allclose(x_data[0], np.array([1.0, 2.0, 4.0]), rtol=1e-10)
+    plt.close(fig)
+
+
+def test_run_axis_units_menu_can_leave_d_via_q():
+    """Sessions already in ``d`` can still convert to Q via Options ``u``."""
+    fig, ax = plt.subplots()
+    x_d = AU.Q_to_d(np.array([1.0, 2.0, 4.0]))
+    x_data = [x_d.copy()]
+    x_full = [x_d.copy()]
+    y_data = [np.array([1.0, 1.0, 1.0])]
+    (ln,) = ax.plot(x_data[0], y_data[0])
+    fig._xy_lines_by_curve = [ln]
+    AU.set_xy_axis_mode(fig, "d", wavelength=1.54)
+    args = SimpleNamespace(wl=1.54, xaxis="d")
+    answers = iter(["q"])
+    pushed = []
+
+    def _inp(_p=""):
+        try:
+            return next(answers)
+        except StopIteration:
+            return "b"
+
+    out = AU.run_axis_units_menu(
+        fig=fig,
+        ax=ax,
+        args=args,
+        x_data_list=x_data,
+        x_full_list=x_full,
+        y_data_list=y_data,
+        use_Q=False,
+        use_r=False,
+        use_E=False,
+        use_k=False,
+        use_rft=False,
+        get_cif_series=lambda: [],
+        sync_fig_cif_tick_series=lambda: None,
+        file_wavelength_info=None,
+        push_state=lambda note: pushed.append(note) or True,
+        pop_undo=None,
+        set_use_Q=lambda f: None,
+        _safe_input=_inp,
+        colorize_menu=lambda s: s,
+        colorize_prompt=lambda s: s,
+    )
+    assert out == "Q"
     assert pushed == ["axis-units"]
-    assert getattr(fig, "_xy_axis_mode") == "d"
-    np.testing.assert_allclose(x_data[0], AU.Q_to_d(np.array([1.0, 2.0, 4.0])), rtol=1e-10)
+    assert getattr(fig, "_xy_axis_mode") == "Q"
+    np.testing.assert_allclose(x_data[0], np.array([1.0, 2.0, 4.0]), rtol=1e-10)
     plt.close(fig)
 
 

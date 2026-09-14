@@ -521,11 +521,11 @@ def test_operando_style_roundtrip_preserves_cif_labels(session_path, monkeypatch
     ]
     fig._operando_cif_show_hkl = False
     fig._operando_cif_show_titles = True
-    cfg, _ = OS.build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "ps")
+    cfg, _ = OS.build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, "psg")
     ax._operando_cif_tick_series = [
         ("Original phase", "phase.cif", [1.0, 2.0], None, 5.0, "#0000ff"),
     ]
-    style_path = session_path("operando_cif_labels.bps")
+    style_path = session_path("operando_cif_labels.bpsg")
     with open(style_path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh)
 

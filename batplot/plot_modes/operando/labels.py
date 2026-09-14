@@ -13,6 +13,7 @@ from ...utils import (
     resolve_recent_axis_name,
 )
 from ..common.spines import keep_yaxis_label_on_side
+from ..common.menu_rendering import print_menu_key_rows
 
 _RECENT_MODE = "operando"
 
@@ -32,11 +33,16 @@ def run_operando_rename_menu(
         if not hasattr(ax, "_custom_labels"):
             ax._custom_labels = {"x": None, "y": None}
         print("Rename Operando Axes:")
-        print("  " + colorize_menu("x: x-axis"))
-        print("  " + colorize_menu("y: y-axis"))
-        print("  " + colorize_menu("s: show recent axis names"))
-        print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
-        print("  " + colorize_menu("q: back"))
+        print_menu_key_rows(
+            [
+                "x: x-axis",
+                "y: y-axis",
+                "s: show recent axis names",
+                "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                "q: back",
+            ],
+            colorize=colorize_menu,
+        )
         while True:
             sub = safe_input(colorize_prompt("Rename operando axes (x/y/s/m/q): ")).strip().lower()
             if not sub:
@@ -79,11 +85,16 @@ def run_operando_ec_rename_menu(
         if not hasattr(ec_ax, "_custom_labels"):
             ec_ax._custom_labels = {"x": None, "y_time": None, "y_ions": None}
         print("Rename EC Axes:")
-        print("  " + colorize_menu("x: x-axis"))
-        print("  " + colorize_menu("y: y-axis (mode-aware)"))
-        print("  " + colorize_menu("s: show recent axis names"))
-        print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
-        print("  " + colorize_menu("q: back"))
+        print_menu_key_rows(
+            [
+                "x: x-axis",
+                "y: y-axis (mode-aware)",
+                "s: show recent axis names",
+                "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                "q: back",
+            ],
+            colorize=colorize_menu,
+        )
         while True:
             sub = safe_input(colorize_prompt("Rename EC axes (x/y/s/m/q): ")).strip().lower()
             if not sub:

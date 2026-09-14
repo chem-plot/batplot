@@ -148,7 +148,7 @@ def test_operando_style_only_ps_omits_geometry_and_ions_abs():
     assert ext == ".bps"
     assert cfg["kind"] == "operando_ec_style"
     assert "geometry" not in cfg
-    assert "canvas_size" not in (cfg.get("figure") or {})
+    assert "canvas_size" in (cfg.get("figure") or {})
     assert "ions_abs" not in (cfg.get("ec") or {})
     plt.close(fig)
 

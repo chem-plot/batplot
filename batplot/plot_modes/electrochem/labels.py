@@ -11,6 +11,7 @@ from ...utils import (
     remember_axis_name,
     resolve_recent_axis_name,
 )
+from ..common.menu_rendering import print_menu_key_rows
 
 _RECENT_MODE = "ec"
 
@@ -39,15 +40,20 @@ def run_ec_rename_menu(
         secax = getattr(fig, "_xaxis_secondary", None) if is_dual_xaxis else None
         while True:
             print("Rename:")
-            print("  " + colorize_menu("x: x-axis (bottom)"))
+            rows = ["x: x-axis (bottom)"]
             if is_dual_xaxis and secax is not None:
-                print("  " + colorize_menu("tx: x-axis (top)"))
-            print("  " + colorize_menu("y: y-axis"))
+                rows.append("tx: x-axis (top)")
+            rows.append("y: y-axis")
             if file_data:
-                print("  " + colorize_menu("f: file names (legend)"))
-            print("  " + colorize_menu("s: show recent axis names (type a number at a label prompt to reuse one)"))
-            print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
-            print("  " + colorize_menu("q: back"))
+                rows.append("f: file names (legend)")
+            rows.extend(
+                [
+                    "s: show recent axis names (type a number at a label prompt to reuse one)",
+                    "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                    "q: back",
+                ]
+            )
+            print_menu_key_rows(rows, colorize=colorize_menu)
             opts = "x/y" + ("/tx" if (is_dual_xaxis and secax) else "") + ("/f" if file_data else "") + "/s/m/q"
             sub = safe_input(colorize_prompt(f"Rename ({opts}): ")).strip().lower()
             if not sub:

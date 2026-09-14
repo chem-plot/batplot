@@ -37,7 +37,15 @@ from ..common.palettes import (
     sample_colormap,
 )
 from ..common.sources import cif_present
-
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    join_cyan_samples_spaced,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_recommended_palettes,
+    print_saved_colors_block,
+    print_spine_tick_keys_note,
+)
 
 def run_xy_color_menu(
     *,
@@ -111,43 +119,43 @@ def run_xy_color_menu(
 
         _spine_keys = {'w': 'top', 'a': 'left', 's': 'bottom', 'd': 'right'}
 
-        from ..common.menu_rendering import menu_block_begin
+        from ..common.menu_rendering import menu_block_begin, colorize_menu
 
         while True:
             menu_block_begin(force_new=True)
-            print("\033[1mColors>\033[0m")
-            # Saved user colors
-            user_colors = get_user_color_list(fig)
-            if user_colors:
-                print("Saved colors (refer as number or u#):")
-                for idx, col in enumerate(user_colors, 1):
-                    print(f"  {idx}: {format_color_listing(col)}")
-            # Palettes
+            print_how_to_set_color_methods(
+                [
+                    (
+                        "Colon per curve (multiple entries allowed)",
+                        join_cyan_samples_spaced("1:red", "2:u3", "3:#00FF00"),
+                    ),
+                    (
+                        "Curves/ranges + palette as LAST token (digit or name)",
+                        join_cyan_samples("all viridis", "1-3 magma_r", "1-2,4 2"),
+                    ),
+                    (
+                        "Spine color (w/a/s/d)",
+                        join_cyan_samples("w:red", "a:#4561F7"),
+                    ),
+                ]
+            )
+            print_spine_tick_keys_note(colorize_menu=colorize_menu)
+            print()
             history = getattr(fig, '_curve_palette_history', [])
             cur_pal = history[-1]['palette'] if history else None
-            if cur_pal:
-                print(f"Current palette: {cur_pal}")
-            print("Palettes:")
-            for idx, name in enumerate(_palette_options, 1):
-                bar = palette_preview(name)
-                desc = _desc_map.get(name, '')
-                print(f"  {idx}. {name}" + (f" - {desc}" if desc else ""))
-                if bar:
-                    print(f"      {bar}")
-            _C = '\033[96m'; _R = '\033[0m'
-            print(f"Spine/tick keys : {_C}w{_R}=top  {_C}a{_R}=left  {_C}s{_R}=bottom  {_C}d{_R}=right")
-            print()
-            print("How to set color:")
-            print(f"  curve:   {_C}1:red{_R}  {_C}2:u3{_R}  {_C}3:#00FF00{_R}")
-            print(f"  palette: {_C}all viridis{_R}   {_C}1-3 magma_r{_R}   {_C}1-2,4 2{_R}")
-            print(f"  spine:   {_C}w:red{_R}  {_C}a:#4561F7{_R}")
-            if has_cif and (bp is not None and getattr(bp, 'cif_tick_series', None)):
-                print(f"CIF tick colors : {_C}t{_R} (enter 't' to open CIF color submenu)")
-            print(
-                f"Other           : {_C}v{_R}: show current colors   "
-                f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+            print_recommended_palettes(
+                _palette_options,
+                descriptions=_desc_map,
+                colorize_menu=colorize_menu,
+                current=cur_pal,
+                max_digits=10,
             )
-            line = safe_input(colorize_prompt("Colors> ")).strip()
+            print_saved_colors_block(fig, colorize_menu=colorize_menu)
+            extras = None
+            if has_cif and (bp is not None and getattr(bp, 'cif_tick_series', None)):
+                extras = [("t", "CIF tick colors submenu")]
+            print_color_action_keys(colorize_menu=colorize_menu, extras=extras)
+            line = safe_input(colorize_prompt("Selection: ")).strip()
             if line.lower() == 'q' or blank_means_back(line):
                 break
             low = line.lower()
@@ -180,21 +188,30 @@ def run_xy_color_menu(
                     while True:
                         from ..common.menu_rendering import menu_block_begin, menu_block_end
 
-                        _C = '\033[96m'; _R = '\033[0m'
                         menu_block_begin(force_new=True)
-                        print("CIF color (per set).")
-                        print()
-                        print("How to set color:")
-                        print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
-                        print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
-                        print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
-                        print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
-                        print(
-                            f"Other: {_C}v{_R}: show current colors   "
-                            f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+                        print_how_to_set_color_methods(
+                            [
+                                (
+                                    "Colon per CIF set (multiple entries allowed)",
+                                    join_cyan_samples_spaced("1:red", "2:#00FF00", "1:2"),
+                                ),
+                                (
+                                    "Sets/ranges + palette as LAST token",
+                                    join_cyan_samples("all viridis", "1-2,4 magma_r"),
+                                ),
+                            ]
                         )
+                        print()
+                        print_recommended_palettes(
+                            _palette_options,
+                            descriptions=_desc_map,
+                            colorize_menu=colorize_menu,
+                            max_digits=10,
+                        )
+                        print_saved_colors_block(fig, colorize_menu=colorize_menu)
+                        print_color_action_keys(colorize_menu=colorize_menu)
                         menu_block_end()
-                        cif_line = safe_input("Enter mappings or range+palette (q=back): ").strip()
+                        cif_line = safe_input(colorize_prompt("Selection: ")).strip()
                         if cif_line.lower() == 'q' or blank_means_back(cif_line):
                             break
                         cif_low = cif_line.lower()

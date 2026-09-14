@@ -56,6 +56,222 @@ def test_set_spine_side_color_on_primary_syncs_secondary():
     plt.close(fig)
 
 
+def test_top_spine_color_does_not_recolor_bottom_xlabel():
+    """XY: coloring top spine must not change the bottom axis title color."""
+    fig, ax = plt.subplots()
+    ax.plot([0.0, 1.0], [0.0, 1.0])
+    ax.set_xlabel(r"Q ($\mathrm{\AA}^{-1}$)")
+    ax.set_ylabel("Intensity")
+    set_spine_side_color(ax, "bottom", "#0000ff", fig=fig)
+    set_spine_side_color(ax, "left", "#ff0000", fig=fig)
+    set_spine_side_color(ax, "top", "#d47cbe", fig=fig)
+    fig.canvas.draw()
+    assert _rgb(ax.spines["bottom"].get_edgecolor()) == _rgb("#0000ff")
+    assert _rgb(ax.spines["top"].get_edgecolor()) == _rgb("#d47cbe")
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb("#0000ff")
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb("#ff0000")
+    plt.close(fig)
+
+
+def test_old_pkl_hitchhiked_title_color_heals_on_restore():
+    """Old dumps that saved top-spine color as xlabel_color must heal to bottom."""
+    import pickle
+    import tempfile
+    from pathlib import Path
+
+    from batplot.ui import (
+        heal_axis_label_colors_dict,
+        heal_restored_axis_title_color,
+        set_spine_side_color,
+    )
+
+    top_c = "#d47cbe"
+    bottom_c = "#0000ff"
+    left_c = "#ff0000"
+    right_c = "#00aa00"
+
+    # Heal helper: hitchhiked title == opposite spine → matching spine wins
+    assert _rgb(
+        heal_restored_axis_title_color(
+            top_c, matching_spine_color=bottom_c, opposite_spine_color=top_c
+        )
+    ) == _rgb(bottom_c)
+    # Intentional distinct title color is preserved
+    assert _rgb(
+        heal_restored_axis_title_color(
+            "#123456", matching_spine_color=bottom_c, opposite_spine_color=top_c
+        )
+    ) == _rgb("#123456")
+
+    healed = heal_axis_label_colors_dict(
+        {"x": top_c, "y": right_c},
+        {
+            "top": {"color": top_c},
+            "bottom": {"color": bottom_c},
+            "left": {"color": left_c},
+            "right": {"color": right_c},
+        },
+    )
+    assert _rgb(healed["x"]) == _rgb(bottom_c)
+    assert _rgb(healed["y"]) == _rgb(left_c)
+
+    # Simulate EC-style restore: apply spines then heal hitchhiked xlabel_color
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    ax.set_xlabel("Q")
+    ax.set_ylabel("I")
+    sp_meta = {
+        "top": {"color": top_c, "visible": True},
+        "bottom": {"color": bottom_c, "visible": True},
+        "left": {"color": left_c, "visible": True},
+        "right": {"color": right_c, "visible": True},
+    }
+    blob = {
+        "version": 2,
+        "axis": {
+            "xlabel": "Q",
+            "ylabel": "I",
+            "xlabel_color": top_c,  # hitchhiked
+            "ylabel_color": right_c,  # hitchhiked onto left title
+        },
+        "spines": sp_meta,
+    }
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "legacy_hitchhike.pkl"
+        with p.open("wb") as fh:
+            pickle.dump(blob, fh, protocol=4)
+        with p.open("rb") as fh:
+            sess = pickle.load(fh)
+
+    for name, spec in sess["spines"].items():
+        set_spine_side_color(ax, name, spec["color"], fig=fig)
+    healed_x = heal_restored_axis_title_color(
+        sess["axis"]["xlabel_color"],
+        matching_spine_color=sess["spines"]["bottom"]["color"],
+        opposite_spine_color=sess["spines"]["top"]["color"],
+    )
+    healed_y = heal_restored_axis_title_color(
+        sess["axis"]["ylabel_color"],
+        matching_spine_color=sess["spines"]["left"]["color"],
+        opposite_spine_color=sess["spines"]["right"]["color"],
+    )
+    ax.xaxis.label.set_color(healed_x)
+    ax.yaxis.label.set_color(healed_y)
+    fig.canvas.draw()
+    assert _rgb(ax.spines["top"].get_edgecolor()) == _rgb(top_c)
+    assert _rgb(ax.spines["bottom"].get_edgecolor()) == _rgb(bottom_c)
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(bottom_c)
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(left_c)
+    plt.close(fig)
+
+
+def test_wasd_spine_colors_isolate_axis_titles_all_modes():
+    """Each WASD side recolors only its own spine (+ matching-side title)."""
+    from batplot.plot_modes.histo.spines import set_histo_spine_color
+    from batplot.plot_modes.operando.spine_colors import apply_operando_spine_color
+    from batplot.plot_modes.xy.spines import apply_xy_spine_color, ensure_xy_tick_state
+
+    colors = {
+        "top": "#cc0000",
+        "bottom": "#0033aa",
+        "left": "#00aa00",
+        "right": "#aa00aa",
+    }
+
+    def _paint_wasd(apply_fn):
+        for side, col in colors.items():
+            apply_fn(side, col)
+
+    # --- XY (labels on bottom/left) ---
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ts = ensure_xy_tick_state(ax, {})
+    _paint_wasd(lambda s, c: apply_xy_spine_color(fig, ax, ts, s, c))
+    fig.canvas.draw()
+    for side, col in colors.items():
+        assert _rgb(ax.spines[side].get_edgecolor()) == _rgb(col)
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(colors["left"])
+    plt.close(fig)
+
+    # --- Histogram ---
+    fig, ax = plt.subplots()
+    ax.hist([1, 2, 2, 3])
+    ax.set_xlabel("Size")
+    ax.set_ylabel("Count")
+    _paint_wasd(lambda s, c: set_histo_spine_color(fig, ax, s, c))
+    fig.canvas.draw()
+    for side, col in colors.items():
+        assert _rgb(ax.spines[side].get_edgecolor()) == _rgb(col)
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(colors["left"])
+    plt.close(fig)
+
+    # --- Operando + EC (ylabel on right): left must not steal EC title ---
+    fig = plt.figure()
+    ax = fig.add_subplot(121)
+    ec = fig.add_subplot(122)
+    ax.imshow([[0.0, 1.0], [1.0, 0.0]])
+    ax.set_xlabel("Q")
+    ax.set_ylabel("Scan")
+    ec.plot([1.0, 2.0], [3.0, 2.0])
+    ec.set_xlabel("Capacity")
+    ec.set_ylabel("Potential")
+    ec.yaxis.tick_right()
+    ec.yaxis.set_label_position("right")
+    _paint_wasd(lambda s, c: apply_operando_spine_color(fig, ax, s, c, peer_ax=ec))
+    _paint_wasd(lambda s, c: apply_operando_spine_color(fig, ec, s, c, peer_ax=ax))
+    fig.canvas.draw()
+    for side, col in colors.items():
+        assert _rgb(ax.spines[side].get_edgecolor()) == _rgb(col)
+        assert _rgb(ec.spines[side].get_edgecolor()) == _rgb(col)
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(colors["left"])
+    assert _rgb(ec.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ec.yaxis.label.get_color()) == _rgb(colors["right"])
+    plt.close(fig)
+
+    # --- Dual GC: top colors secondary title; primary bottom title stays ---
+    fig, ax, sec = _make_dual_gc_fig()
+    set_spine_side_color(ax, "bottom", colors["bottom"], fig=fig)
+    set_spine_side_color(ax, "left", colors["left"], fig=fig)
+    set_spine_side_color(ax, "right", colors["right"], fig=fig)
+    set_spine_side_color(ax, "top", colors["top"], fig=fig)
+    fig.canvas.draw()
+    finalize_spine_colors(fig, ax, draw=True)
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(colors["left"])
+    assert _rgb(sec.xaxis.label.get_color()) == _rgb(colors["top"])
+    assert _rgb(ax.spines["top"].get_edgecolor()) == _rgb(colors["top"])
+    plt.close(fig)
+
+    # --- CPC twin: right title on ax2 only ---
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    ax.set_xlabel("Cycle")
+    ax.set_ylabel("Capacity")
+    ax2 = ax.twinx()
+    ax2.plot([0, 1], [1, 0])
+    ax2.set_ylabel("Efficiency")
+    ax2.yaxis.set_label_position("right")
+    set_spine_side_color(ax, "bottom", colors["bottom"], fig=fig)
+    set_spine_side_color(ax, "left", colors["left"], fig=fig)
+    set_spine_side_color(ax, "top", colors["top"], fig=fig)
+    set_spine_side_color(ax2, "right", colors["right"], fig=fig)
+    fig.canvas.draw()
+    assert _rgb(ax.xaxis.label.get_color()) == _rgb(colors["bottom"])
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb(colors["left"])
+    assert _rgb(ax2.yaxis.label.get_color()) == _rgb(colors["right"])
+    # Left on primary must not recolor right twin title
+    set_spine_side_color(ax, "left", "#112233", fig=fig)
+    fig.canvas.draw()
+    assert _rgb(ax.yaxis.label.get_color()) == _rgb("#112233")
+    assert _rgb(ax2.yaxis.label.get_color()) == _rgb(colors["right"])
+    plt.close(fig)
+
+
 def test_style_snapshot_and_apply_preserves_dual_top_color(tmp_path: Path):
     fig, ax, sec = _make_dual_gc_fig()
     set_spine_side_color(sec, "top", "#008000", fig=fig)

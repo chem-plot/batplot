@@ -121,13 +121,26 @@ def apply_ec_style_config(
             print(f"Not an EC style file (kind={kind!r}).")
         return False
 
-    file_ro = bool(cfg.get('ro_active', False))
-    current_ro = bool(getattr(fig, '_ro_active', False))
-    if file_ro != current_ro:
-        if not silent:
-            from ..common.state_capture import ro_states_compatible
+    try:
+        from ..common.layout_compat import (
+            ec_layouts_compatible,
+            infer_ec_layout_from_cfg,
+            live_ec_layout,
+        )
 
-            ro_states_compatible(cfg, fig, mode_label="EC style/geometry")
+        file_layout = infer_ec_layout_from_cfg(cfg)
+        live_layout = live_ec_layout(
+            fig=fig,
+            is_multi_file=is_multi_file,
+            file_data=file_data,
+            is_dqdv=bool(getattr(fig, '_is_dqdv', False) or getattr(ax, '_is_dqdv_mode', False)),
+            is_cv=bool(getattr(fig, '_is_cv', False)),
+        )
+        if not ec_layouts_compatible(file_layout, live_layout, silent=silent):
+            return False
+    except Exception as exc:
+        if not silent:
+            print(f"Warning: Could not validate EC style layout: {exc}")
         return False
 
     geometry_cfg = cfg.get('geometry')
@@ -158,22 +171,22 @@ def apply_ec_style_config(
         saved_ylabelpad = pads_cfg['y']
 
     # --- Apply comprehensive style (no curve data) ---
-    # Figure and font
-    # Canvas/frame geometry belongs to style+geometry (``.bpsg`` / ``ec_style_geom``).
-    # Style-only (``.bps`` / ``ec_style``) must not resize the figure (parity with operando/histo).
-    apply_canvas_geom = (kind == 'ec_style_geom')
+    # Canvas/frame (``g``) apply whenever present. Older style-only dumps omit
+    # these keys → leave live size (BC). Data geometry stays on ``ec_style_geom``.
     try:
-        fig_cfg = cfg.get('figure', {})
+        fig_cfg = cfg.get('figure', {}) if isinstance(cfg.get('figure'), dict) else {}
         # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
-        axes_frac = fig_cfg.get('axes_fraction') if apply_canvas_geom else None
-        frame_size = fig_cfg.get('frame_size') if apply_canvas_geom else None
+        axes_frac = fig_cfg.get('axes_fraction')
+        frame_size = fig_cfg.get('frame_size')
 
-        canvas_size = fig_cfg.get('canvas_size') if apply_canvas_geom else None
+        canvas_size = fig_cfg.get('canvas_size') or fig_cfg.get('size')
+        applied_canvas_or_frame = False
         # Accept list or tuple (session dumps use tuples; JSON .bpsg uses lists).
         if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
-            # forward=True so interactive/batch undo and .bpsg import resize the
+            # forward=True so interactive/batch undo and style import resize the
             # GUI window (parity with live g→c and dedicated EC undo).
             fig.set_size_inches(canvas_size[0], canvas_size[1], forward=True)
+            applied_canvas_or_frame = True
 
         # Frame position: prefer axes_fraction (exact position), fall back to centering based on frame_size
         axes_position_changed = False
@@ -221,7 +234,7 @@ def apply_ec_style_config(
                     axes_position_changed = True
                     ax.set_position([left, bottom, w_frac, h_frac])
 
-        if apply_canvas_geom:
+        if applied_canvas_or_frame or axes_position_changed:
             sync_figure_geometry_caches(fig, ax)
 
         font_cfg = cfg.get('font', {})
@@ -402,6 +415,12 @@ def apply_ec_style_config(
                         pass
                 if props.get('color') is not None:
                     _apply_spine_color(ax, fig, tick_state, name, props['color'])
+        try:
+            from .style import sync_ec_dual_frame_linewidths
+
+            sync_ec_dual_frame_linewidths(fig, ax)
+        except Exception:
+            pass
 
         tick_widths = cfg.get('ticks', {}).get('widths', {})
         if tick_widths.get('x_major') is not None: ax.tick_params(axis='x', which='major', width=tick_widths['x_major'])

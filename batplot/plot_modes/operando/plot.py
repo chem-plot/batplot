@@ -204,6 +204,8 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
         title_visible = getattr(fig, '_operando_cif_title_visible', None)
     if set_visible is None:
         set_visible = getattr(fig, '_operando_cif_set_visible', None)
+    # Freeze CIF title font independently of global / ``.bps`` font chrome.
+    title_font = dict(title_font or {})
     default_title_fontsize = max(8, int(0.55 * plt.rcParams.get('font.size', 12)))
     title_fs = title_font.get('size')
     if title_fs is not None:
@@ -211,7 +213,24 @@ def _draw_operando_cif_ticks(op_ax, fig, cif_tick_series, cif_hkl_label_map,
             default_title_fontsize = max(6, int(float(title_fs)))
         except (ValueError, TypeError):
             pass
+    else:
+        title_font['size'] = float(default_title_fontsize)
     title_family = title_font.get('family')
+    if not title_family:
+        try:
+            sans = plt.rcParams.get('font.sans-serif')
+            if isinstance(sans, (list, tuple)) and sans:
+                title_family = str(sans[0])
+            else:
+                fam = plt.rcParams.get('font.family', 'sans-serif')
+                title_family = fam[0] if isinstance(fam, (list, tuple)) and fam else str(fam)
+        except Exception:
+            title_family = 'sans-serif'
+        title_font['family'] = title_family
+    try:
+        fig._operando_cif_title_font = dict(title_font)
+    except Exception:
+        pass
     from ..xy.axis_units import domain_peak_to_Q, peaks_Q_to_domain
 
     mode = str(axis_mode or "")

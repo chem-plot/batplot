@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ...color_utils import color_block, format_color_listing, get_user_color_list, manage_user_colors, prompt_screen_color, blank_means_back, resolve_color_token
+from ...color_utils import (
+    format_color_listing,
+    manage_user_colors,
+    prompt_screen_color,
+    blank_means_back,
+    resolve_color_token,
+)
 from ...ui import set_spine_side_color
-from ..common.terminal import colorize_inline_commands
-
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_saved_colors_block,
+    print_spine_tick_keys_note,
+)
 
 def run_ec_spine_color_menu(
     *,
@@ -29,9 +40,15 @@ def run_ec_spine_color_menu(
         is_dual_xaxis = getattr(fig, "_xaxis_mode", "capacity") == "dual"
         key_to_spine = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
         while True:
-            print("\nSet spine colors (with matching tick and label colors):")
-            print(colorize_inline_commands("  w : top spine      | s : bottom spine"))
-            print(colorize_inline_commands("  a : left y-spine   | d : right y-spine"))
+            print_how_to_set_color_methods(
+                [
+                    (
+                        "Spine color (w/a/s/d)",
+                        join_cyan_samples("w:red", "a:#4561F7", "s:blue", "d:green"),
+                    ),
+                ]
+            )
+            print_spine_tick_keys_note(colorize_menu=colorize_menu)
             if is_dual_xaxis and getattr(fig, "_xaxis_secondary", None) is not None:
                 swapped = bool(getattr(fig, "_xaxis_swapped", False))
                 top_role = "capacity" if swapped else "ions"
@@ -40,16 +57,9 @@ def run_ec_spine_color_menu(
                     f"  Dual x-axis: w=top ({top_role}), s=bottom ({bot_role}) "
                     "(follows a-menu / swap)"
                 )
-            print(colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
-            user_colors = get_user_color_list(fig)
-            if user_colors:
-                print("\nSaved colors (enter number or u# to reuse):")
-                for idx, color in enumerate(user_colors, 1):
-                    print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
-                print("  " + colorize_menu("u: edit saved colors"))
-            print("  " + colorize_menu("e: pick color from screen"))
-            print("  " + colorize_menu("q: back to main menu"))
-            line = safe_input(colorize_prompt("Enter mappings (e.g., w:red a:blue, q=back): ")).strip()
+            print_saved_colors_block(fig, colorize_menu=colorize_menu)
+            print_color_action_keys(colorize_menu=colorize_menu, include_v=False)
+            line = safe_input(colorize_prompt("Selection: ")).strip()
             if line.lower() == "q" or blank_means_back(line):
                 break
             if line.lower() == "u":

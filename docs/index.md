@@ -6,6 +6,11 @@ Interactive CLI plotting for battery and materials characterization data.
 
 Use the **left sidebar** to open each chapter.
 
+## Source & tutorial
+
+- **GitHub repository:** [https://github.com/chem-plot/batplot](https://github.com/chem-plot/batplot)  
+- **Tutorial files (zip on GitHub):** [batplot_tutorial.zip](https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip)
+
 ## Contact
 
 **Tian Dai** · University of Oslo  

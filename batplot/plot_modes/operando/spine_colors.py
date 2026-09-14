@@ -7,7 +7,6 @@ from typing import Any, Callable, Optional
 from ...color_utils import (
     blank_means_back,
     format_color_listing,
-    get_user_color_list,
     manage_user_colors,
     prompt_screen_color,
     resolve_color_token,
@@ -18,6 +17,13 @@ from ...ui import (
     set_spine_side_color,
 )
 from ..common.terminal import colorize_inline_commands
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_saved_colors_block,
+    print_spine_tick_keys_note,
+)
 from ..electrochem.spine_colors import _parse_spine_color_pairs
 
 
@@ -55,6 +61,16 @@ def _ensure_ec_tick_state(ax: Any) -> dict:
     except Exception:
         pass
     return ts
+
+
+def operando_pane_tick_entries(ax: Any, ec_ax: Optional[Any] = None) -> list[tuple[Any, Optional[dict]]]:
+    """Axis + tick_state pairs for dual-pane ``finalize_spine_colors_for_axes``."""
+    entries: list[tuple[Any, Optional[dict]]] = []
+    if ax is not None:
+        entries.append((ax, getattr(ax, "_saved_tick_state", None)))
+    if ec_ax is not None:
+        entries.append((ec_ax, getattr(ec_ax, "_saved_tick_state", None)))
+    return entries
 
 
 def apply_operando_spine_color(
@@ -156,28 +172,24 @@ def run_operando_spine_color_menu(
                 pass
             pane_label = "operando" if pane == "o" else "EC"
             while True:
-                print(f"\nSet {pane_label} spine colors (ticks/labels match):")
-                print(colorize_inline_commands("  w : top spine      | s : bottom spine"))
-                print(colorize_inline_commands("  a : left y-spine   | d : right y-spine"))
-                print(colorize_inline_commands("Example: w:red a:#4561F7 s:blue d:green"))
-                user_colors = get_user_color_list(fig)
-                if user_colors:
-                    print("\nSaved colors (enter number or u# to reuse):")
-                    for idx, color in enumerate(user_colors, 1):
-                        print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
-                    print("  " + colorize_menu("u: edit saved colors"))
-                print("  " + colorize_menu("e: pick color from screen"))
-                print(
-                    "  "
-                    + colorize_menu(
-                        "q: back"
-                        if fixed_pane is not None
-                        else "q: back to pane choice"
-                    )
+                print_how_to_set_color_methods(
+                    [
+                        (
+                            f"Spine color on {pane_label} pane (w/a/s/d)",
+                            join_cyan_samples("w:red", "a:#4561F7", "s:blue", "d:green"),
+                        ),
+                    ]
                 )
-                line = safe_input(
-                    colorize_prompt("Enter mappings (e.g., w:red a:blue, q=back): ")
-                ).strip()
+                print_spine_tick_keys_note(colorize_menu=colorize_menu)
+                if pane == "e":
+                    print(
+                        "  Note: color keys are literal "
+                        "(a=left, d=right). EC t aliases a→right for "
+                        "visibility only — use d:… here for the visible Y axis."
+                    )
+                print_saved_colors_block(fig, colorize_menu=colorize_menu)
+                print_color_action_keys(colorize_menu=colorize_menu, include_v=False)
+                line = safe_input(colorize_prompt("Selection: ")).strip()
                 if line.lower() == "q" or blank_means_back(line):
                     break
                 if line.lower() == "u":
@@ -232,11 +244,7 @@ def run_operando_spine_color_menu(
                     except Exception as exc:
                         print(f"Error setting {spine_name} color: {exc}")
                 try:
-                    entries = [(ax, getattr(ax, "_saved_tick_state", None))]
-                    if ec_ax is not None:
-                        entries.append(
-                            (ec_ax, getattr(ec_ax, "_saved_tick_state", None))
-                        )
+                    entries = operando_pane_tick_entries(ax, ec_ax)
                     finalize_spine_colors_for_axes(fig, entries, draw=True)
                 except Exception:
                     try:
@@ -252,5 +260,6 @@ def run_operando_spine_color_menu(
 
 __all__ = [
     "apply_operando_spine_color",
+    "operando_pane_tick_entries",
     "run_operando_spine_color_menu",
 ]

@@ -187,7 +187,7 @@ def test_ec_undo_restores_axes_bbox_after_set_position():
     plt.close(fig)
 
 
-def test_ec_style_only_ps_strips_canvas_keys():
+def test_ec_style_only_ps_keeps_canvas_keys():
     from batplot.plot_modes.electrochem.actions import (
         ElectrochemActionContext,
         _build_ec_style_export_config,
@@ -239,9 +239,10 @@ def test_ec_style_only_ps_strips_canvas_keys():
     assert ext == ".bps"
     assert cfg["kind"] == "ec_style"
     assert "geometry" not in cfg
+    assert "xaxis_dual" not in cfg
     fig_block = cfg.get("figure") or {}
-    assert "canvas_size" not in fig_block
-    assert "axes_fraction" not in fig_block
+    assert "canvas_size" in fig_block
+    assert "axes_fraction" in fig_block
     plt.close(fig)
 
 
@@ -358,7 +359,7 @@ def test_cpc_psg_apply_syncs_ax2_position_and_geometry_tuple_limits():
     plt.close(fig)
 
 
-def test_cpc_style_only_ps_strips_canvas_keys():
+def test_cpc_style_only_ps_keeps_canvas_keys():
     from batplot.plot_modes.cpc.actions import CpcActionContext, _build_cpc_style_export_config
 
     fig, ax, ax2, sc_c, sc_d, sc_e, file_data = _make_cpc_fig()
@@ -400,8 +401,8 @@ def test_cpc_style_only_ps_strips_canvas_keys():
     assert cfg["kind"] == "cpc_style"
     assert "geometry" not in cfg
     fig_block = cfg.get("figure") or {}
-    assert "canvas_size" not in fig_block
-    assert "axes_fraction" not in fig_block
+    assert "canvas_size" in fig_block
+    assert "axes_fraction" in fig_block
     plt.close(fig)
 
 

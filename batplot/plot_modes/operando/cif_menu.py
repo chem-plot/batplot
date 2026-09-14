@@ -175,6 +175,9 @@ def run_operando_cif_menu(
         print(colorize_inline_commands("CIF tick labels:"))
         if not cif_series:
             print("  (no CIF sets yet — use a to add)")
+        else:
+            _print_cif_set_list()
+        print("------------------------------------------------------------")
         print("  " + colorize_menu("a: add CIF file(s)"))
         if cif_series:
             print("  " + colorize_menu(f"z: toggle hkl labels (currently {'on' if show_hkl else 'off'})"))

@@ -358,6 +358,42 @@ def prompt_menu_key(
     return safe_input(colorize_prompt(prompt), cancel_on_interrupt=cancel_on_interrupt).strip().lower()
 
 
+def confirm_quit_interactive(
+    *,
+    label: str = "Quit interactive?",
+    safe_input_fn=None,
+    colorize_fn=None,
+    cancel_on_interrupt: bool = True,
+) -> str | None:
+    """Confirm leaving an interactive menu; allow jumping to export/save.
+
+    Prompt always offers ``e`` (export figure) and ``s`` (save project/session)
+    in addition to ``y``/``n``, so the advertised shortcuts are actionable.
+
+    Returns:
+        ``"y"`` to quit, ``"e"`` / ``"s"`` to run that main-menu command next,
+        or ``None`` to stay in the menu (``n``, blank, unknown, interrupt).
+    """
+    input_fn = safe_input_fn or safe_input
+    colorize = colorize_fn or colorize_prompt
+    prompt = (
+        f"{label} Remember to save (e=export, s=save). "
+        f"Quit now? (y/n/e/s): "
+    )
+    try:
+        raw = input_fn(colorize(prompt))
+        if cancel_on_interrupt and raw is None:
+            return None
+        ans = str(raw).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return None
+    if ans == "y":
+        return "y"
+    if ans in ("e", "s"):
+        return ans
+    return None
+
+
 def prompt_float(safe_input_fn, prompt_text: str, *, on_error: str = "Invalid number, using default."):
     """Prompt for a float, returning ``None`` on blank input, ``q``, or a parse error.
 
@@ -446,6 +482,7 @@ __all__ = [
     "imk_stderr_guard",
     "is_imk_noise",
     "prompt_menu_key",
+    "confirm_quit_interactive",
     "console_safe_text",
     "stream_needs_console_safe",
     "safe_console_print",

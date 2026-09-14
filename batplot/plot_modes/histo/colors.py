@@ -24,6 +24,15 @@ from ..common.palettes import (
     resolve_palette_token,
     sample_palette_colors,
 )
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    join_cyan_samples_spaced,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_recommended_palettes,
+    print_saved_colors_block,
+    print_spine_tick_keys_note,
+)
 from ...ui import format_spine_side_tick_report
 from .spines import (
     set_histo_spine_color,
@@ -124,36 +133,37 @@ def run_histo_color_menu(
 
     while True:
         menu_block_begin(force_new=True)
-        print("\033[1mColors>\033[0m")
-        user_colors = get_user_color_list(fig)
-        if user_colors:
-            print("Saved colors (refer as number or u#):")
-            for idx, col in enumerate(user_colors, 1):
-                print(f"  {idx}: {format_color_listing(col)}")
-
-        print("Palettes:")
-        for idx, name in enumerate(palette_opts, 1):
-            preview = palette_preview(name)
-            desc = PALETTE_DESCRIPTIONS.get(name, "")
-            print(f"  {idx}. {name}" + (f" - {desc}" if desc else ""))
-            if preview:
-                print(f"      {preview}")
-
-        c, r = "\033[96m", "\033[0m"
-        print()
-        print("How to set color:")
-        print(f"  bar/edge:  {c}bar:red{r}  {c}edge:#333{r}  {c}bar:2 edge:u3{r}")
+        from ..common.menu_rendering import colorize_menu
+        methods = [
+            (
+                "Bar/edge color (name / #hex / saved index)",
+                join_cyan_samples_spaced("bar:red", "edge:#333", "bar:2", "edge:u3"),
+            ),
+        ]
         if get_bar_alpha is not None and set_bar_alpha is not None:
-            print(f"  alpha:     {c}alpha:0.5{r}")
-        print(f"  palette:   {c}viridis{r}  or  {c}3{r}  (palette number/name)")
-        print(f"  spine:     {c}w:red{r}  {c}a:#4561F7{r}  ({c}w{r}=top {c}a{r}=left {c}s{r}=bottom {c}d{r}=right)")
-        print(
-            f"Other           : {c}v{r}: show current colors   "
-            f"{c}u{r}: edit saved colors   {c}e{r}: pick color from screen   {c}q{r}: back"
+            methods.append(
+                ("Bar alpha", join_cyan_samples_spaced("alpha:0.5"))
+            )
+        methods.append(
+            ("Palette (digit or name)", join_cyan_samples("viridis", "3"))
         )
+        methods.append(
+            ("Spine color (w/a/s/d)", join_cyan_samples("w:red", "a:#4561F7"))
+        )
+        print_how_to_set_color_methods(methods)
+        print_spine_tick_keys_note(colorize_menu=colorize_menu)
+        print()
+        print_recommended_palettes(
+            palette_opts,
+            descriptions=PALETTE_DESCRIPTIONS,
+            colorize_menu=colorize_menu,
+            max_digits=10,
+        )
+        print_saved_colors_block(fig, colorize_menu=colorize_menu)
+        print_color_action_keys(colorize_menu=colorize_menu)
 
         try:
-            line = safe_input(colorize_prompt("Colors> "), cancel_on_interrupt=True).strip()
+            line = safe_input(colorize_prompt("Selection: "), cancel_on_interrupt=True).strip()
         except (KeyboardInterrupt, EOFError):
             break
         if line.lower() == "q" or blank_means_back(line):

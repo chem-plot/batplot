@@ -1,6 +1,7 @@
 """Hard gates for histogram geometry keys across p / i / s / b.
 
-Geometry surface: ``figsize``, ``axes_fraction``, ``ylim`` (menu ``g`` / ``y``).
+Canvas/frame (``figsize``, ``axes_fraction``) belong in style ``ps`` and ``psg``.
+Y-limits (``ylim``) stay geometry-only (``psg`` / menu ``y``).
 Setup range/bins (``x``) is data geometry for ``s``/``b`` only.
 """
 
@@ -122,7 +123,7 @@ def test_histo_psg_applies_figsize_axes_and_ylim(tmp_path):
     plt.close(fig_d)
 
 
-def test_histo_ps_preserves_ylim_and_does_not_resize(tmp_path):
+def test_histo_ps_applies_canvas_preserves_ylim(tmp_path):
     donor = _make_state(ylim=(0.0, 99.0), bar_color="#112233")
     fig_d, ax_d, _ = create_histo_figure(donor)
     fig_d.set_size_inches(4.0, 3.0, forward=True)
@@ -131,8 +132,8 @@ def test_histo_ps_preserves_ylim_and_does_not_resize(tmp_path):
     path = tmp_path / "ps.bpsh"
     _export_style(fig_d, ax_d, donor, str(path), include_geometry=False)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert "figsize" not in payload["style"]
-    assert "axes_fraction" not in payload["style"]
+    assert "figsize" in payload["style"]
+    assert "axes_fraction" in payload["style"]
     assert "ylim" not in payload["style"]
 
     target = _make_state(ylim=(0.0, 7.0))
@@ -140,13 +141,11 @@ def test_histo_ps_preserves_ylim_and_does_not_resize(tmp_path):
     fig.set_size_inches(10.0, 8.0, forward=True)
     ax.set_position([0.2, 0.2, 0.55, 0.55])
     sync_histo_geometry(fig, ax, target)
-    before_size = tuple(fig.get_size_inches())
-    before_pos = tuple(ax.get_position().bounds)
     apply_histo_style_snapshot(fig, ax, target, payload)
     assert target.style.bar_color == "#112233"
     assert target.style.ylim == pytest.approx((0.0, 7.0))
-    assert tuple(fig.get_size_inches()) == pytest.approx(before_size, abs=1e-6)
-    assert tuple(ax.get_position().bounds) == pytest.approx(before_pos, abs=1e-6)
+    assert tuple(fig.get_size_inches()) == pytest.approx((4.0, 3.0), abs=1e-6)
+    assert tuple(ax.get_position().bounds) == pytest.approx((0.05, 0.05, 0.9, 0.9), abs=1e-6)
     plt.close(fig)
     plt.close(fig_d)
 

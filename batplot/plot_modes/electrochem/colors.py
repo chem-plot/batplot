@@ -17,14 +17,12 @@ from ...color_utils import (
     get_colormap,
     get_user_color_list,
     manage_user_colors,
-    palette_preview,
     prompt_screen_color,
     blank_means_back,
     resolve_color_token,
 )
 from ...plotting import apply_curve_color
 from ..common.palettes import DEFAULT_PALETTE_ALIASES, TAB10_HEX, palette_items, resolve_palette_token, sample_colormap
-
 
 def _coerce_cycle_id(cyc) -> Optional[int]:
     try:
@@ -722,13 +720,18 @@ def _parse_cycle_tokens(tokens: List[str], fig=None) -> Tuple[str, List[int], di
 
 def _print_ec_palette_choices(colorize_menu: Callable[[str], str]) -> None:
     """Print the recommended-palette list with previews (shared by prompts/help)."""
-    print("Recommended palettes for scientific publications:")
+    from ..common.color_menu_help import print_recommended_palettes
+
     rec_palettes = palette_items(DEFAULT_PALETTE_ALIASES.values())
-    for idx, (name, desc) in enumerate(rec_palettes, 1):
-        bar = palette_preview(name)
-        print("  " + colorize_menu(f"{idx}: {name} - {desc}"))
-        if bar:
-            print(f"      {bar}")
+    names = [name for name, _desc in rec_palettes]
+    descs = {name: desc for name, desc in rec_palettes}
+    print_recommended_palettes(
+        names,
+        descriptions=descs,
+        colorize_menu=colorize_menu,
+        show_digits_line=True,
+        max_digits=6,
+    )
 
 
 def run_ec_cycles_menu(
@@ -781,43 +784,35 @@ def run_ec_cycles_menu(
                 print(f"Visible cycles: {n_visible_cycles}")
             else:
                 print(f"Visible cycles: {n_visible_cycles} (of {len(acyc)} total)")
-            print()
-            print("How to set color:")
-            # Highlight only the typed examples (cyan when ANSI menus enabled).
-            from ..common.menu_rendering import ansi_menu_enabled
-
-            def _ex(sample: str) -> str:
-                if ansi_menu_enabled():
-                    return f"\033[96m{sample}\033[0m"
-                return sample
-
-            print("  1) Cycles + palette number as LAST token (digit 1-6 or name):")
-            print(
-                "       e.g. "
-                f"{_ex('2-30 1')}   |   {_ex('1 5 10 3')}   |   {_ex('1-3 viridis')}"
+            from ..common.color_menu_help import (
+                join_cyan_samples,
+                join_cyan_samples_spaced,
+                print_color_action_keys,
+                print_how_to_set_color_methods,
+                print_saved_colors_block,
             )
-            print("  2) Colon per cycle (multiple entries allowed):")
-            print(
-                "       name / #hex / saved index:  e.g. "
-                f"{_ex('1:red')} {_ex('5:#00B006')} {_ex('2:4')}"
-            )
-            print("  3) all + palette:")
-            print(
-                "       e.g. "
-                f"{_ex('all 1')}   |   {_ex('all 3')}   |   {_ex('all viridis')}"
+
+            print_how_to_set_color_methods(
+                [
+                    (
+                        "Cycles + palette number as LAST token (digit 1-6 or name)",
+                        join_cyan_samples("2-30 1", "1 5 10 3", "1-3 viridis"),
+                    ),
+                    (
+                        "Colon per cycle (multiple entries allowed)",
+                        "name / #hex / saved index:  "
+                        + join_cyan_samples_spaced("1:red", "5:#00B006", "2:4"),
+                    ),
+                    (
+                        "all + palette",
+                        join_cyan_samples("all 1", "all 3", "all viridis"),
+                    ),
+                ]
             )
             print()
             _print_ec_palette_choices(colorize_menu)
-            print("  " + colorize_menu("Palette digits: 1=tab10  2=Set2  3=Dark2  4=viridis  5=plasma  6=rainbow"))
-            user_colors = get_user_color_list(fig)
-            if user_colors:
-                print("\nSaved colors (use with colon form as number):")
-                for idx, color in enumerate(user_colors, 1):
-                    print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
-                print("  " + colorize_menu("u: edit saved colors"))
-            print("  " + colorize_menu("v: show current colors"))
-            print("  " + colorize_menu("e: pick color from screen"))
-            print("  " + colorize_menu("q: back"))
+            print_saved_colors_block(fig, colorize_menu=colorize_menu)
+            print_color_action_keys(colorize_menu=colorize_menu)
             line = safe_input(colorize_prompt("Selection: ")).strip()
             if line.lower() == 'q' or blank_means_back(line):
                 break

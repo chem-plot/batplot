@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from ..common.menu_rendering import print_menu_key_rows
 from ..common.spines import (
     apply_frame_and_tick_widths,
     current_tick_width,
@@ -105,12 +106,16 @@ def run_histo_line_style_menu(
             bottom_lw = ax.spines.get("bottom")
             frame_hint = f"{float(bottom_lw.get_linewidth()):g}" if bottom_lw else "?"
             print("\033[1mLine submenu:\033[0m")
-            print(f"  {colorize_menu('f  : frame (spine) and tick widths')}")
-            print(f"  {colorize_menu(f'g  : toggle grid lines (currently {_grid_status()})')}")
-            print(
-                f"  {colorize_menu(f'w  : grid line width (current {state.style.grid_linewidth:g})')}"
+            print("  Frame / grid (no curve styles in histo):")
+            print_menu_key_rows(
+                [
+                    "f: frame (spine) and tick widths",
+                    f"g: toggle grid lines (currently {_grid_status()})",
+                    f"w: grid line width (current {state.style.grid_linewidth:g})",
+                    "q: return",
+                ],
+                colorize=colorize_menu,
             )
-            print(f"  {colorize_menu('q  : return')}")
             sub = safe_input(colorize_prompt("Choose (f/g/w/q): ")).strip().lower()
             if sub in ("q", ""):
                 break

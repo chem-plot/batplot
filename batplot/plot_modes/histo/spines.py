@@ -133,13 +133,13 @@ def _apply_stored_histo_axis_colors(ax) -> None:
     """Re-apply stored duplicate axis title colors (same as EC ``_apply_stored_axis_colors``)."""
     try:
         color = getattr(ax, "_stored_xlabel_color", None)
-        if color:
+        if color and str(ax.xaxis.get_label_position()) == "bottom":
             ax.xaxis.label.set_color(color)
     except Exception:
         pass
     try:
         color = getattr(ax, "_stored_ylabel_color", None)
-        if color:
+        if color and str(ax.yaxis.get_label_position()) == "left":
             ax.yaxis.label.set_color(color)
     except Exception:
         pass
@@ -190,10 +190,18 @@ def _apply_histo_spine_color(fig, ax, side: str, color) -> None:
             ax._stored_top_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_top_xlabel(ax, fig, tick_state)
         elif side == "bottom":
-            ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
+            try:
+                if str(ax.xaxis.get_label_position()) == "bottom":
+                    ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
+            except Exception:
+                ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_bottom_xlabel(ax, fig, tick_state)
         elif side == "left":
-            ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
+            try:
+                if str(ax.yaxis.get_label_position()) == "left":
+                    ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
+            except Exception:
+                ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
             position_left_ylabel(ax, fig, tick_state)
             _sync_histo_ygrid_color(ax, hex_color, fig=fig)
         elif side == "right":

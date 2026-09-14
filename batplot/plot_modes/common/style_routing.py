@@ -80,8 +80,8 @@ def apply_xy_style_dict(
         os.close(fd)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh)
-        apply_style_config(path, fig, ax, **params)
-        return True
+        ok = apply_style_config(path, fig, ax, **params)
+        return bool(ok) if ok is not None else True
     except Exception as exc:
         if not silent:
             print(f"Warning: Error applying XY style: {exc}")

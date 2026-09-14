@@ -243,6 +243,10 @@ def xy_push_state(
             snap["cif_stack_y_offsets"] = list(getattr(fig, '_bp_cif_stack_y_offsets', []) or [])
         except Exception:
             pass
+        try:
+            snap["cif_title_font"] = dict(getattr(fig, '_bp_cif_title_font', None) or {})
+        except Exception:
+            pass
         # Line + data arrays
         for i, ln in iter_lines():
             snap["lines"].append({
@@ -619,17 +623,12 @@ def xy_restore_state(
                     set_xy_spine_visible(fig, ax, name, bool(spec["visible"]))
             except Exception:
                 pass
-        # Tick widths
+        # Tick widths (primary + twin for --ry / --txaxis; line submenu f)
         tw = snap.get("tick_widths", {})
         try:
-            if tw.get("x_major") is not None:
-                ax.tick_params(axis='x', which='major', width=tw["x_major"])
-            if tw.get("x_minor") is not None:
-                ax.tick_params(axis='x', which='minor', width=tw["x_minor"]) 
-            if tw.get("y_major") is not None:
-                ax.tick_params(axis='y', which='major', width=tw["y_major"]) 
-            if tw.get("y_minor") is not None:
-                ax.tick_params(axis='y', which='minor', width=tw["y_minor"]) 
+            from .spines import apply_xy_tick_widths
+
+            apply_xy_tick_widths(fig, ax, tw)
         except Exception:
             pass
 
@@ -935,6 +934,11 @@ def xy_restore_state(
         if 'cif_stack_y_offsets' in snap:
             try:
                 fig._bp_cif_stack_y_offsets = list(snap['cif_stack_y_offsets'])
+            except Exception:
+                pass
+        if 'cif_title_font' in snap and isinstance(snap.get('cif_title_font'), dict):
+            try:
+                fig._bp_cif_title_font = dict(snap.get('cif_title_font') or {})
             except Exception:
                 pass
         # Redraw CIF ticks after restoration if available

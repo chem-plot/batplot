@@ -12,9 +12,7 @@ from ...color_utils import (
     ensure_colormap,
     format_color_listing,
     get_colormap,
-    get_user_color_list,
     manage_user_colors,
-    palette_preview,
     prompt_screen_color,
     blank_means_back,
     resolve_color_token,
@@ -26,6 +24,14 @@ from ..common.palettes import (
     parse_index_ranges,
     resolve_palette_token,
     sample_colormap,
+)
+from ..common.color_menu_help import (
+    join_cyan_samples,
+    join_cyan_samples_spaced,
+    print_color_action_keys,
+    print_how_to_set_color_methods,
+    print_recommended_palettes,
+    print_saved_colors_block,
 )
 
 try:
@@ -148,14 +154,19 @@ def run_operando_colormap_menu(
 
     while True:
         menu_block_begin(force_new=True)
+        from ..common.color_menu_help import (
+            join_cyan_samples,
+            print_color_action_keys,
+            print_how_to_set_color_methods,
+            print_recommended_palettes,
+        )
+
         try:
             current_cmap = getattr(im, "_operando_cmap_name", None)
             if current_cmap is None:
                 current_cmap = getattr(im.get_cmap(), "name", None)
-            if current_cmap:
-                print(f"Current operando colormap: {current_cmap}")
         except Exception:
-            pass
+            current_cmap = None
 
         optional = []
         for extra in ("turbo", "batlow", "batlowK", "batlowW"):
@@ -166,18 +177,31 @@ def run_operando_colormap_menu(
                 _ensure_operando_colormap(extra)
                 optional.append(extra)
 
-        print("Recommended colormaps for scientific publications:")
         rec_palettes = recommended_operando_colormaps()
-        for idx, (name, desc) in enumerate(rec_palettes, 1):
-            preview = palette_preview(name)
-            print(f"  {idx}. {name} - {desc}")
-            if preview:
-                print(f"      {preview}")
+        names = [name for name, _desc in rec_palettes]
+        descs = {name: desc for name, desc in rec_palettes}
+
+        print_how_to_set_color_methods(
+            [
+                (
+                    "Colormap name / number / reverse with _r",
+                    join_cyan_samples("viridis", "1", "viridis_r", "1_r"),
+                ),
+            ]
+        )
+        print()
+        print_recommended_palettes(
+            names,
+            descriptions=descs,
+            current=current_cmap,
+            show_digits_line=True,
+            max_digits=len(names) if names else None,
+        )
         if optional:
             print("Other available: " + ", ".join(optional))
-        print(colorize_inline_commands("Append _r to reverse (e.g., viridis_r or 1_r). q=back."))
+        print_color_action_keys(include_v=False, include_u=False, include_e=False)
         choice = safe_input(
-            colorize_prompt(f"Palette name or number (1-{len(rec_palettes)}): ")
+            colorize_prompt("Selection: ")
         ).strip()
         if not choice or choice.lower() == "q":
             break
@@ -252,35 +276,31 @@ def run_operando_cif_color_menu(
 
     while True:
         cts = list(getattr(ax, "_operando_cif_tick_series", None) or cts)
-        _C, _R = "\033[96m", "\033[0m"
         menu_block_begin(force_new=True)
-        print("CIF color (per set).")
-        user_colors = get_user_color_list(fig)
-        if user_colors:
-            print("Saved colors (refer as number or u#):")
-            for idx, col in enumerate(user_colors, 1):
-                print(f"  {idx}: {format_color_listing(col)}")
-        cur_pal = getattr(fig, "_operando_cif_colormap", None)
-        if cur_pal:
-            print(f"Current palette: {cur_pal}")
-        print("Colormaps:")
-        for idx, name in enumerate(_palette_options, 1):
-            bar = palette_preview(name) or ""
-            print(f"  {idx}. {name}")
-            if bar:
-                print(f"      {bar}")
-        print()
-        print("How to set color:")
-        print(f"  {_C}1:red 2:#00FF00{_R}       (set colors directly)")
-        print(f"  {_C}1:2 2:3{_R}               (use saved user colors 2 and 3)")
-        print(f"  {_C}all viridis{_R}           (apply palette to all CIF sets)")
-        print(f"  {_C}1-2,4 magma_r{_R}         (apply palette to a subset)")
-        print(
-            f"Other: {_C}v{_R}: show current colors   "
-            f"{_C}u{_R}: edit saved colors   {_C}e{_R}: pick color from screen   {_C}q{_R}: back"
+        print_how_to_set_color_methods(
+            [
+                (
+                    "Colon per CIF set (multiple entries allowed)",
+                    join_cyan_samples_spaced("1:red", "2:#00FF00", "1:2"),
+                ),
+                (
+                    "Sets/ranges + palette as LAST token",
+                    join_cyan_samples("all viridis", "1-2,4 magma_r"),
+                ),
+            ]
         )
+        print()
+        cur_pal = getattr(fig, "_operando_cif_colormap", None)
+        print_recommended_palettes(
+            _palette_options,
+            colorize_menu=None,
+            current=cur_pal,
+            max_digits=10,
+        )
+        print_saved_colors_block(fig)
+        print_color_action_keys()
         menu_block_end()
-        cif_line = safe_input(prompt("CIF colors> ")).strip()
+        cif_line = safe_input(prompt("Selection: ")).strip()
         if cif_line.lower() == "q" or blank_means_back(cif_line):
             break
         low = cif_line.lower()

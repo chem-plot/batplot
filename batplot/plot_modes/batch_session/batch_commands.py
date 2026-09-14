@@ -26,20 +26,24 @@ def append_batch_io_shortcuts(options: List[str], panels: Sequence[Any]) -> None
 
 
 def batch_quit_confirm(*, allow_export: bool = True) -> str | None:
-    """Return ``y`` to quit, ``s`` to save all sessions first, or ``None`` to stay."""
-    try:
-        if allow_export:
-            prompt = "Quit batch interactive? (s=save all sessions, y/n): "
-        else:
-            prompt = "Quit batch interactive? Quit now? (y/n): "
-        confirm = safe_input(colorize_prompt(prompt), cancel_on_interrupt=True).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        return "y"
-    if confirm == "y":
-        return "y"
-    if allow_export and confirm == "s":
-        return "s"
-    return None
+    """Return ``y`` to quit, ``e``/``s`` to run export/save next, or ``None`` to stay."""
+    from ..common.terminal import confirm_quit_interactive
+
+    if not allow_export:
+        try:
+            confirm = safe_input(
+                colorize_prompt("Quit batch interactive? Quit now? (y/n): "),
+                cancel_on_interrupt=True,
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return "y"
+        return "y" if confirm == "y" else None
+
+    return confirm_quit_interactive(
+        label="Quit batch interactive?",
+        safe_input_fn=lambda prompt: safe_input(prompt, cancel_on_interrupt=True),
+        colorize_fn=colorize_prompt,
+    )
 
 
 def run_batch_save_all(panels: Sequence[Any], save_panel: Callable[[Any, str], None]) -> None:

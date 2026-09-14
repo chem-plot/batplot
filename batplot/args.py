@@ -173,7 +173,7 @@ def _print_general_help() -> None:
         "Features:\n"
         "  • Interactive (--i): styling, ranges, fonts, export, sessions\n"
         "  • XRD wavelength: --wl 1.54 or file.xye:1.5406 for Q conversion\n"
-        "  • XRD axis units (interactive): Options u converts 2θ ↔ Q ↔ d (XY + operando; needs λ for 2θ)\n"
+        "  • XRD axis units (interactive): Options u converts 2θ ↔ Q (XY; needs λ for 2θ); operando also offers d\n"
         "  • CIF phase ticks: add .cif (or file.cif:wl); ticks follow the current axis (2θ / Q / d)\n"
         "  • X-axis range: --xrange min max\n"
         "  • Save figure: --out filename (default .svg)\n"
@@ -218,8 +218,9 @@ def _print_xy_help() -> None:
         "A wavelength can be converted into a different wave length by file.xye:1.54:0.709.\n"
         "For electrochemistry CSV/MPT time-potential plots, use --xaxis time.\n\n"
         "Interactive XRD axis units (Options u):\n"
-        "  In --i, press u to convert the plotted XRD axis among 2θ ↔ Q ↔ d (XRD data only).\n"
+        "  In --i, press u to convert the plotted XRD axis between 2θ ↔ Q (XRD data only).\n"
         "  Conversions involving 2θ need λ (--wl, file:wl, or prompt). CIF ticks stay Bragg-aligned.\n"
+        "  d-spacing is not offered as a plot domain in 1D Options u.\n"
         "  Not for PDF (.gr), XAS (.nor/.chik/.chir), or other non-diffraction axes.\n"
         "  Example: batplot data.xye:0.709 --xaxis 2theta --i   then u → q  (uses λ=0.709 Å).\n\n"
         "CIF phase ticks:\n"
@@ -773,20 +774,66 @@ def parse_args(argv=None):
     # Keys use the exact file token (e.g. "file.xy:1.54") for wavelength match.
     # Style files (.bps, .bpsg, .bpcfg) are NOT treated as file tokens so that
     # "batplot --all style.bps --readcol 2 3" uses global readcol, not per-file.
+    #
+    # Values of known options (--wl 0.259, --xaxis q, --out out.svg, …) must
+    # NOT update last_file_token. Otherwise
+    #   batplot TD_R02.dat --wl 0.259 --readcol 1 3
+    # binds readcol to "0.259" and the plot silently falls back to cols 1,2.
     # ====================================================================
     readcol_by_file = {}
     global_readcol_expanded = None
     filtered_argv = []
     last_file_token = None
     _STYLE_EXTENSIONS = ('.bps', '.bpsg', '.bpcfg')
+    # Exact value counts for options that take fixed nargs (after short→long).
+    # store_true / flag-only options are omitted (0 values).
+    _OPTION_VALUE_COUNTS = {
+        '--wl': 1,
+        '--xaxis': 1,
+        '--out': 1,
+        '--savefig': 1,
+        '--delta': 1,
+        '--format': 1,
+        '--mass': 1,
+        '--cd': 1,
+        '--average': 1,
+        '--sum': 1,
+        '--histocol': 1,
+        '--binwidth': 1,
+        '--bins': 1,
+        '--ext': 1,
+        '--convert-ext': 1,
+        '--xrange': 2,
+        '--convert': 2,
+        '--pw': 2,
+        '--b': 2,
+        '--readcolxy': 2,
+        '--readcolxye': 2,
+        '--readcolqye': 2,
+        '--readcolnor': 2,
+        '--readcoldat': 2,
+        '--readcolcsv': 2,
+        '--readcolc': 2,
+        '--readcols': 2,
+    }
+    for _ext in custom_readcol_exts:
+        _OPTION_VALUE_COUNTS[f'--readcol{_ext}'] = 2
+    # Optional single value (nargs='?'): consume at most one non-option token.
+    _OPTIONAL_ONE_VALUE = {'--all', '--help', '--extract-brml-scans'}
+
+    def _option_value_count(flag: str) -> int:
+        if flag in _OPTION_VALUE_COUNTS:
+            return _OPTION_VALUE_COUNTS[flag]
+        if flag in _OPTIONAL_ONE_VALUE:
+            return 1
+        if flag == '--fullprof':
+            # nargs='+': consume following non-option tokens
+            return 10**9
+        return 0
+
     i = 0
     while i < len(argv):
         arg = argv[i]
-        # Track non-option tokens as potential file specs (exclude style files)
-        if not arg.startswith('-'):
-            arg_lower = arg.lower()
-            if not arg_lower.endswith(_STYLE_EXTENSIONS):
-                last_file_token = arg
         if arg == '--readcol' and i + 1 < len(argv):
             tokens = []
             j = i + 1
@@ -824,9 +871,23 @@ def parse_args(argv=None):
                     global_readcol_expanded = pairs[0] if len(pairs) == 1 else pairs
                 i = j
                 continue
+        if arg.startswith('-'):
+            filtered_argv.append(arg)
+            n_vals = _option_value_count(arg)
+            i += 1
+            taken = 0
+            while taken < n_vals and i < len(argv) and not argv[i].startswith('-'):
+                filtered_argv.append(argv[i])
+                i += 1
+                taken += 1
+            continue
+        # Non-option: potential file spec (exclude style files)
+        arg_lower = arg.lower()
+        if not arg_lower.endswith(_STYLE_EXTENSIONS):
+            last_file_token = arg
         filtered_argv.append(arg)
         i += 1
-    
+
     argv = filtered_argv
     
     # ====================================================================

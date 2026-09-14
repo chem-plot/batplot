@@ -1,6 +1,6 @@
 """Regression tests for non-interactive bugs found in deep audit.
 
-Covers session/batch tick-state seeding, style-only (ps) not resizing canvas,
+Covers session/batch tick-state seeding, style-only (ps) canvas/frame apply,
 XY --ro import undo rollback, and macOS AppleScript path escaping.
 """
 
@@ -171,7 +171,7 @@ def test_cpc_batch_load_uses_saved_tick_state(tmp_path):
     plt.close(fig2)
 
 
-def test_style_only_ps_does_not_resize_canvas_xy_ec_cpc(tmp_path, fake_args):
+def test_style_only_ps_applies_canvas_xy_ec_cpc(tmp_path, fake_args):
     # --- XY ---
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
     x = np.linspace(0, 1, 20)
@@ -192,7 +192,8 @@ def test_style_only_ps_does_not_resize_canvas_xy_ec_cpc(tmp_path, fake_args):
         update_labels_func=lambda *a, **k: None,
     )
     assert ok is True
-    assert tuple(fig.get_size_inches()) == pytest.approx((7.0, 5.0), abs=1e-6)
+    assert tuple(fig.get_size_inches()) == pytest.approx((11.0, 9.0), abs=1e-6)
+    assert ax.get_position().bounds == pytest.approx((0.2, 0.2, 0.5, 0.5), abs=1e-6)
     plt.close(fig)
 
     # --- EC ---
@@ -208,7 +209,8 @@ def test_style_only_ps_does_not_resize_canvas_xy_ec_cpc(tmp_path, fake_args):
         cfg, fig=fig, ax=ax, cycle_lines=cycle_lines, file_data=None,
         tick_state={}, is_multi_file=False, silent=True,
     )
-    assert tuple(fig.get_size_inches()) == pytest.approx((6.0, 4.0), abs=1e-6)
+    assert tuple(fig.get_size_inches()) == pytest.approx((12.0, 8.0), abs=1e-6)
+    assert ax.get_position().bounds == pytest.approx((0.1, 0.1, 0.8, 0.8), abs=1e-6)
     plt.close(fig)
 
     # --- CPC ---
@@ -223,6 +225,58 @@ def test_style_only_ps_does_not_resize_canvas_xy_ec_cpc(tmp_path, fake_args):
         "ro_active": False,
     }
     apply_cpc_style(fig, ax, ax2, sc_c, sc_d, sc_e, cfg)
+    assert tuple(fig.get_size_inches()) == pytest.approx((13.0, 10.0), abs=1e-6)
+    assert ax.get_position().bounds == pytest.approx((0.15, 0.15, 0.7, 0.7), abs=1e-6)
+    plt.close(fig)
+
+
+def test_style_only_ps_legacy_without_size_leaves_canvas_xy_ec_cpc(tmp_path, fake_args):
+    """Old style-only dumps without size keys leave the live canvas (BC)."""
+    # --- XY ---
+    fig, ax = plt.subplots(figsize=(7.0, 5.0))
+    x = np.linspace(0, 1, 20)
+    ax.plot(x, x)
+    style = tmp_path / "xy_legacy.bps"
+    export_style_config(
+        str(style), fig, ax, [x], ["c1"], 0.0, fake_args, {}, [0.0],
+        overwrite_path=str(style), force_kind="ps",
+    )
+    cfg = json.loads(style.read_text(encoding="utf-8"))
+    fig_block = cfg.get("figure") or {}
+    for key in ("size", "canvas_size", "frame_size", "axes_fraction"):
+        fig_block.pop(key, None)
+    cfg.pop("margins", None)
+    style.write_text(json.dumps(cfg), encoding="utf-8")
+    ok = apply_style_config(
+        str(style), fig, ax, [x], [x], [x], [0.0], [], fake_args, {}, ["c1"],
+        update_labels_func=lambda *a, **k: None,
+    )
+    assert ok is True
+    assert tuple(fig.get_size_inches()) == pytest.approx((7.0, 5.0), abs=1e-6)
+    plt.close(fig)
+
+    # --- EC ---
+    fig, ax = plt.subplots(figsize=(6.0, 4.0))
+    (chg,) = ax.plot([0, 1], [3, 4])
+    cycle_lines = {1: {"charge": chg, "discharge": None}}
+    assert apply_ec_style_config(
+        {"kind": "ec_style", "figure": {}, "ro_active": False},
+        fig=fig, ax=ax, cycle_lines=cycle_lines, file_data=None,
+        tick_state={}, is_multi_file=False, silent=True,
+    )
+    assert tuple(fig.get_size_inches()) == pytest.approx((6.0, 4.0), abs=1e-6)
+    plt.close(fig)
+
+    # --- CPC ---
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    ax2 = ax.twinx()
+    sc_c = ax.scatter([1], [100])
+    sc_d = ax.scatter([1], [90])
+    sc_e = ax2.scatter([1], [95])
+    apply_cpc_style(
+        fig, ax, ax2, sc_c, sc_d, sc_e,
+        {"kind": "cpc_style", "figure": {}, "ro_active": False},
+    )
     assert tuple(fig.get_size_inches()) == pytest.approx((5.5, 4.5), abs=1e-6)
     plt.close(fig)
 

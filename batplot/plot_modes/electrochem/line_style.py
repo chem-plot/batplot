@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..common.curve_look_help import (
+    CURVE_LOOK_CHOICES,
+    print_curve_line_chrome_rows,
+    print_curve_look_legend,
+)
 from ..common.line_dash import clear_dash_pattern, prompt_dash_pattern, set_dash_pattern
 from ..common.session_helpers import _artist_linewidth
 from ..common.spines import apply_frame_and_tick_widths, current_tick_width, parse_frame_tick_widths
@@ -52,16 +57,20 @@ def run_ec_line_style_menu(
         while True:
             _print_line_summary(fig, ax, line_target_list, iter_cycle_lines)
             print("\033[1mLine submenu:\033[0m")
-            print(f"  {colorize_menu('c  : change curve line widths')}")
-            print(f"  {colorize_menu('f  : change frame (axes spines) and tick widths')}")
-            print(f"  {colorize_menu('g  : toggle grid lines')}")
-            print(f"  {colorize_menu('l  : show only lines (no markers) for all curves')}")
-            print(f"  {colorize_menu('ld : show line and dots (markers) for all curves')}")
-            print(f"  {colorize_menu('d  : show only dots (no connecting line) for all curves')}")
-            print(f"  {colorize_menu('da : dashed line for all curves')}")
-            print(f"  {colorize_menu('dd : dash-dot line for all curves')}")
-            print(f"  {colorize_menu('q  : return')}")
-            sub = safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
+            print_curve_look_legend(scope="all curves")
+            print_curve_line_chrome_rows(
+                [
+                    "c: change curve line widths",
+                    "f: change frame (axes spines) and tick widths",
+                    "g: toggle grid lines",
+                    "q: return",
+                ],
+                colorize=colorize_menu,
+                heading="Widths / grid",
+            )
+            sub = safe_input(
+                colorize_prompt(f"Choose (c/f/g/{CURVE_LOOK_CHOICES}/q): ")
+            ).strip().lower()
             if not sub:
                 continue
             if sub == "q":

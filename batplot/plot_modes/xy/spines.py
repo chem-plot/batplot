@@ -86,6 +86,48 @@ def set_xy_spine_visible(fig, ax, side: str, visible: bool) -> None:
             pass
 
 
+def sync_xy_twin_spine_linewidth(fig, side: str, linewidth: float) -> None:
+    """Mirror spine linewidth onto ``--ry`` / ``--txaxis`` twin (line ``f`` parity)."""
+    ax2, use_top = xy_twin_context(fig)
+    if ax2 is None:
+        return
+    if side == "right" or (use_top and side in ("top", "bottom")):
+        sp = ax2.spines.get(side)
+        if sp is not None:
+            try:
+                sp.set_linewidth(float(linewidth))
+            except Exception:
+                pass
+
+
+def apply_xy_tick_widths(fig, ax, tick_widths: Mapping[str, Any] | None) -> None:
+    """Apply tick widths to primary and twin axes (``l``→``f`` / p/i/s/b)."""
+    if not tick_widths:
+        return
+    axes = [ax]
+    ax2, _ = xy_twin_context(fig)
+    if ax2 is not None:
+        axes.append(ax2)
+    xmaj = tick_widths.get("x_major", tick_widths.get("x_major_width"))
+    xminr = tick_widths.get("x_minor", tick_widths.get("x_minor_width"))
+    ymaj = tick_widths.get("y_major", tick_widths.get("y_major_width"))
+    yminr = tick_widths.get("y_minor", tick_widths.get("y_minor_width"))
+    for target in axes:
+        if target is None:
+            continue
+        try:
+            if xmaj is not None:
+                target.tick_params(axis="x", which="major", width=float(xmaj))
+            if xminr is not None:
+                target.tick_params(axis="x", which="minor", width=float(xminr))
+            if ymaj is not None:
+                target.tick_params(axis="y", which="major", width=float(ymaj))
+            if yminr is not None:
+                target.tick_params(axis="y", which="minor", width=float(yminr))
+        except Exception:
+            pass
+
+
 def _normalize_spine_color(color) -> str:
     try:
         return mcolors.to_hex(mcolors.to_rgb(color))
@@ -94,16 +136,21 @@ def _normalize_spine_color(color) -> str:
 
 
 def _apply_stored_xy_axis_colors(ax) -> None:
-    """Re-apply stored duplicate axis title colors (same as EC)."""
+    """Re-apply stored duplicate axis title colors (same as EC).
+
+    Only paints ``xaxis.label`` / ``yaxis.label`` when that label sits on the
+    matching side — otherwise left/top spine stores hitchhike onto right/bottom
+    titles (and the reverse).
+    """
     try:
         color = getattr(ax, "_stored_xlabel_color", None)
-        if color:
+        if color and str(ax.xaxis.get_label_position()) == "bottom":
             ax.xaxis.label.set_color(color)
     except Exception:
         pass
     try:
         color = getattr(ax, "_stored_ylabel_color", None)
-        if color:
+        if color and str(ax.yaxis.get_label_position()) == "left":
             ax.yaxis.label.set_color(color)
     except Exception:
         pass
@@ -215,10 +262,18 @@ def apply_xy_spine_color(
             ax._stored_top_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_top_xlabel(ax, fig, ts)
         elif side == "bottom":
-            ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
+            try:
+                if str(ax.xaxis.get_label_position()) == "bottom":
+                    ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
+            except Exception:
+                ax._stored_xlabel_color = hex_color  # type: ignore[attr-defined]
             position_bottom_xlabel(ax, fig, ts)
         elif side == "left":
-            ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
+            try:
+                if str(ax.yaxis.get_label_position()) == "left":
+                    ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
+            except Exception:
+                ax._stored_ylabel_color = hex_color  # type: ignore[attr-defined]
             position_left_ylabel(ax, fig, ts)
             _sync_xy_grid_color(ax, side, hex_color)
         elif side == "right":
@@ -294,6 +349,7 @@ def apply_xy_spine_specs(
         if spec.get("linewidth") is not None:
             try:
                 sp.set_linewidth(spec["linewidth"])
+                sync_xy_twin_spine_linewidth(fig, name, float(spec["linewidth"]))
             except Exception:
                 pass
         if spec.get("visible") is not None:
@@ -311,6 +367,7 @@ def apply_xy_spine_specs(
         elif spec.get("lw") is not None:
             try:
                 sp.set_linewidth(spec["lw"])
+                sync_xy_twin_spine_linewidth(fig, name, float(spec["lw"]))
             except Exception:
                 pass
     apply_xy_spine_colors(fig, ax, tick_state, colors)
@@ -320,10 +377,12 @@ __all__ = [
     "apply_xy_spine_color",
     "apply_xy_spine_colors",
     "apply_xy_spine_specs",
+    "apply_xy_tick_widths",
     "capture_xy_wasd_state",
     "ensure_xy_tick_state",
     "get_xy_spine_colors",
     "set_xy_spine_visible",
+    "sync_xy_twin_spine_linewidth",
     "sync_xy_twin_wasd",
     "xy_twin_context",
 ]

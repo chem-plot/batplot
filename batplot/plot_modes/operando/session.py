@@ -366,6 +366,16 @@ def dump_operando_session(
             'ec': ec_state,
             'font': merge_session_font_dump(fig),
         }
+        try:
+            from .style import capture_cbar_line_widths
+
+            _cb_lw = capture_cbar_line_widths(cbar)
+            if _cb_lw.get('spines'):
+                sess['colorbar']['spines'] = _cb_lw['spines']
+            if (_cb_lw.get('ticks') or {}).get('widths'):
+                sess['colorbar']['ticks'] = _cb_lw['ticks']
+        except Exception:
+            pass
         # CIF: dump whenever the interactive attr exists (including empty list)
         # so a cleared CIF round-trips via ``s`` (undo/psg parity).
         if hasattr(ax, '_operando_cif_tick_series'):
@@ -799,6 +809,18 @@ def load_operando_session(filename: str):
             _update_custom_colorbar(cbar.ax, im, label=label_text, label_mode=label_mode)
         except Exception:
             pass
+        try:
+            from .style import apply_cbar_line_widths
+
+            apply_cbar_line_widths(
+                cbar,
+                {
+                    "spines": cb_meta.get("spines") or {},
+                    "ticks": cb_meta.get("ticks") or {},
+                },
+            )
+        except Exception:
+            pass
     except Exception:
         try:
             cbar.ax.yaxis.set_ticks_position('left')
@@ -1167,6 +1189,11 @@ def load_operando_session(filename: str):
                 (ec_ax, getattr(ec_ax, '_saved_tick_state', None) if ec_ax is not None else None),
             ],
         )
+        from ...ui import heal_live_axis_title_colors_from_spines
+
+        heal_live_axis_title_colors_from_spines(ax, fig)
+        if ec_ax is not None:
+            heal_live_axis_title_colors_from_spines(ec_ax, fig)
     except Exception:
         pass
 

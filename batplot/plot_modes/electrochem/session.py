@@ -954,14 +954,66 @@ def load_ec_session(
                     )
                     if name == 'top':
                         ax._stored_top_xlabel_color = spec['color']
-                    elif name == 'bottom':
-                        ax._stored_xlabel_color = spec['color']
-                    elif name == 'left':
-                        ax._stored_ylabel_color = spec['color']
                     elif name == 'right':
                         ax._stored_right_ylabel_color = spec['color']
+                    # bottom/left title stores are healed below so old hitchhiked
+                    # xlabel_color/ylabel_color dumps cannot stick.
                 except Exception:
                     pass
+        try:
+            from .style import sync_ec_dual_frame_linewidths
+
+            sync_ec_dual_frame_linewidths(fig, ax)
+        except Exception:
+            pass
+        # Heal + re-apply bottom/left titles after all spines (old .pkl BC).
+        try:
+            from ...ui import heal_restored_axis_title_color
+
+            bottom_c = (sp_meta.get("bottom") or {}).get("color")
+            top_c = (sp_meta.get("top") or {}).get("color")
+            left_c = (sp_meta.get("left") or {}).get("color")
+            right_c = (sp_meta.get("right") or {}).get("color")
+            healed_x = heal_restored_axis_title_color(
+                xlabel_color,
+                matching_spine_color=bottom_c,
+                opposite_spine_color=top_c,
+            )
+            try:
+                y_pos = str(ax.yaxis.get_label_position())
+            except Exception:
+                y_pos = "left"
+            if y_pos == "right":
+                healed_y = heal_restored_axis_title_color(
+                    ylabel_color,
+                    matching_spine_color=right_c,
+                    opposite_spine_color=left_c,
+                )
+            else:
+                healed_y = heal_restored_axis_title_color(
+                    ylabel_color,
+                    matching_spine_color=left_c,
+                    opposite_spine_color=right_c,
+                )
+            if healed_x is not None:
+                ax._stored_xlabel_color = healed_x
+                try:
+                    if str(ax.xaxis.get_label_position()) == "bottom":
+                        ax.xaxis.label.set_color(healed_x)
+                except Exception:
+                    ax.xaxis.label.set_color(healed_x)
+            if healed_y is not None:
+                if y_pos == "right":
+                    ax._stored_right_ylabel_color = healed_y
+                else:
+                    ax._stored_ylabel_color = healed_y
+                try:
+                    if str(ax.yaxis.get_label_position()) == y_pos:
+                        ax.yaxis.label.set_color(healed_y)
+                except Exception:
+                    ax.yaxis.label.set_color(healed_y)
+        except Exception:
+            pass
     except Exception:
         pass
 

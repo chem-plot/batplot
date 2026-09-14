@@ -409,6 +409,12 @@ def ec_restore_state(
                     )
                 except Exception:
                     pass
+        try:
+            from .style import sync_ec_dual_frame_linewidths
+
+            sync_ec_dual_frame_linewidths(fig, ax)
+        except Exception:
+            pass
         # Tick widths
         tw = snap.get('tick_widths', {})
         try:

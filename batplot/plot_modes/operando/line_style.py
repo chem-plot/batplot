@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from ...color_utils import format_color_listing, get_user_color_list, manage_user_colors, prompt_screen_color, blank_means_back, last_screen_pick_count, resolve_color_token
+from ...color_utils import format_color_listing, manage_user_colors, prompt_screen_color, blank_means_back, last_screen_pick_count, resolve_color_token
+from ..common.curve_look_help import CURVE_LOOK_CHOICES, print_curve_look_legend
 from ..common.line_dash import clear_dash_pattern, prompt_dash_pattern, set_dash_pattern
+from ..common.menu_rendering import print_menu_key_rows
 from ..common.session_helpers import _artist_linewidth
 
 
@@ -28,12 +30,17 @@ def run_ec_line_style_menu(
             print("No EC line found to style.")
             return
 
-        print("  " + colorize_menu("c: color"))
-        print("  " + colorize_menu("l: linewidth"))
-        print("  " + colorize_menu("s: line style (solid/dots/dashed)"))
-        print("  " + colorize_menu("q: back"))
+        print_menu_key_rows(
+            [
+                "c: color",
+                "l: linewidth",
+                "s: line style (line / dots / dashed / dash-dot)",
+                "q: back",
+            ],
+            colorize=colorize_menu,
+        )
         while True:
-            sub = safe_input(colorize_prompt("EC line style (c=color, l=linewidth, s=style, q=back): ")).strip().lower()
+            sub = safe_input(colorize_prompt("EC line style (c/l/s/q): ")).strip().lower()
             if not sub:
                 continue
             if sub == "q":
@@ -69,20 +76,27 @@ def run_ec_line_style_menu(
 
 
 def _set_ec_line_color(*, fig, line, snapshot, safe_input, colorize_menu, colorize_prompt) -> None:
+    from ..common.color_menu_help import (
+        join_cyan_samples_spaced,
+        print_color_action_keys,
+        print_how_to_set_color_methods,
+        print_saved_colors_block,
+    )
+
     while True:
         current = line.get_color()
-        print(f"EC line color: {format_color_listing(current)}")
-        user_colors = get_user_color_list(fig)
-        if user_colors:
-            print("\nSaved colors (refer as number or u#):")
-            for idx, color in enumerate(user_colors, 1):
-                print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
-        else:
-            print("\nNo saved colors.")
-            print("  " + colorize_menu("u: edit saved colors"))
-        print("  " + colorize_menu("e: pick color from screen"))
-        print("  (Enter color name/hex, saved color number, e=pick/apply, or 'u' to manage)")
-        val = safe_input(colorize_prompt(f"Color (current={format_color_listing(current)}, q=back): ")).strip()
+        print(f"Current EC line color: {format_color_listing(current)}")
+        print_how_to_set_color_methods(
+            [
+                (
+                    "Line color (name / #hex / saved index)",
+                    join_cyan_samples_spaced("red", "#00FF00", "u3"),
+                ),
+            ]
+        )
+        print_saved_colors_block(fig, colorize_menu=colorize_menu)
+        print_color_action_keys(colorize_menu=colorize_menu, include_v=False)
+        val = safe_input(colorize_prompt("Selection: ")).strip()
         if val.lower() == "q" or blank_means_back(val):
             break
         if val.lower() == "u":
@@ -118,13 +132,9 @@ def _set_ec_line_color(*, fig, line, snapshot, safe_input, colorize_menu, colori
 
 def _set_ec_line_dash_style(*, fig, line, snapshot, safe_input, colorize_menu, colorize_prompt) -> None:
     """Apply line/dots/dashed presets to the EC voltage curve (same keys as XY/EC)."""
-    print("  " + colorize_menu("l  : line only (no markers)"))
-    print("  " + colorize_menu("ld : line and dots (markers)"))
-    print("  " + colorize_menu("d  : dots only (no connecting line)"))
-    print("  " + colorize_menu("da : dashed line"))
-    print("  " + colorize_menu("dd : dash-dot line"))
-    print("  " + colorize_menu("q  : back"))
-    sub = safe_input(colorize_prompt("Choose (l/ld/d/da/dd/q): ")).strip().lower()
+    print_curve_look_legend(scope="EC curve")
+    print_menu_key_rows(["q: back"], colorize=colorize_menu)
+    sub = safe_input(colorize_prompt(f"Choose ({CURVE_LOOK_CHOICES}/q): ")).strip().lower()
     if not sub or sub == "q":
         return
     if sub == "l":

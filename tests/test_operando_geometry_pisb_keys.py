@@ -106,7 +106,7 @@ def test_operando_ps_omits_view_geometry_and_does_not_apply_clim_or_reverse():
     assert cfg["kind"] == "operando_ec_style"
     assert "geometry" not in cfg
     assert "axes_geometry" not in cfg
-    assert "canvas_size" not in (cfg.get("figure") or {})
+    assert "canvas_size" in (cfg.get("figure") or {})
     assert "intensity_range" not in (cfg.get("operando") or {})
     assert "y_reversed" not in (cfg.get("operando") or {})
     assert "y_reversed" not in (cfg.get("ec") or {})

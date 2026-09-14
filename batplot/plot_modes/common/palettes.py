@@ -45,6 +45,23 @@ PALETTE_DESCRIPTIONS: Dict[str, str] = {
     "batlow": "Colorblind-friendly sequential (cmcrameri)",
 }
 
+# Short menu blurbs (Colors> list — matches interactive XY/EC help appearance).
+PALETTE_MENU_DESCRIPTIONS: Dict[str, str] = {
+    "viridis": "blue→yellow",
+    "cividis": "blue→olive",
+    "plasma": "purple→yellow",
+    "inferno": "dark→bright",
+    "magma": "dark→light purple",
+    "batlow": "colorblind-friendly",
+    "rainbow": "full-spectrum rainbow",
+    "turbo": "vibrant rainbow",
+    "batlowK": "dark-light batlow variant",
+    "batlowW": "warm batlow variant",
+    "tab10": "distinct categorical",
+    "Set2": "soft pastel",
+    "Dark2": "bold saturated",
+}
+
 
 def parse_index_ranges(spec: str, total: int, *, warn_out_of_range: bool = True) -> List[int]:
     """Parse a 1-based index spec into sorted, de-duplicated 0-based indices.
@@ -213,6 +230,7 @@ __all__ = [
     "resolve_palette_token",
     "DEFAULT_PALETTE_ALIASES",
     "PALETTE_DESCRIPTIONS",
+    "PALETTE_MENU_DESCRIPTIONS",
     "TAB10_HEX",
     "palette_items",
     "build_palette_options",

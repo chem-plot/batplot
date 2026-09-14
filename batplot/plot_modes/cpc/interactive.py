@@ -51,6 +51,7 @@ import numpy as np  # type: ignore[import]
 from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
     finalize_spine_colors_cpc,
+    _cpc_scoped_tick_state,
     resize_plot_frame, resize_canvas,
     update_tick_visibility as _ui_update_tick_visibility,
     position_top_xlabel as _ui_position_top_xlabel,
@@ -79,6 +80,7 @@ from ..common.menu_rendering import prompt_menu_key
 from ..common.terminal import (
     colorize_inline_commands as _colorize_inline_commands,
     colorize_prompt as _colorize_prompt,
+    confirm_quit_interactive,
     safe_input as _safe_input,
 )
 from ..common.files import format_file_timestamp as _format_file_timestamp
@@ -381,8 +383,14 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
             if curr_ax is None or spine_name not in curr_ax.spines:
                 continue
             try:
+                if spine_name == "left":
+                    ts = _cpc_scoped_tick_state(tick_state, y_owner="left")
+                elif spine_name == "right":
+                    ts = _cpc_scoped_tick_state(tick_state, y_owner="right")
+                else:
+                    ts = tick_state
                 _ui_set_spine_side_color(
-                    curr_ax, spine_name, color, fig=fig, tick_state=tick_state
+                    curr_ax, spine_name, color, fig=fig, tick_state=ts
                 )
             except Exception:
                 pass
@@ -666,17 +674,18 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
         if key == 'q':
             if canvas_mode:
                 break
-            try:
-                confirm = _safe_input(_colorize_prompt("Quit CPC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
-            except Exception:
-                confirm = 'y'
+            confirm = confirm_quit_interactive(
+                label="Quit CPC interactive?",
+                safe_input_fn=_safe_input,
+                colorize_fn=_colorize_prompt,
+            )
             if confirm == 'y':
                 break
-            elif confirm in ('e', 's'):
+            if confirm in ('e', 's'):
                 pending_key = confirm
                 continue
-            else:
-                _print_menu(fig); continue
+            _print_menu(fig)
+            continue
         elif key == 'b':
             handle_undo(action_ctx)
             continue

@@ -67,8 +67,8 @@ def apply_histo_snapshot(fig, ax, state: HistoState, snap: dict) -> None:
 def apply_histo_style_snapshot(fig, ax, state: HistoState, snap: dict) -> None:
     """Apply exported style (``p``/``i``) without replacing histogram data (``setup``).
 
-    Style-only exports omit figsize/axes_fraction/ylim — preserve the live
-    geometry so ``ps`` import does not reset the canvas (p/i/s/b contract).
+    Style-only exports keep figsize/axes_fraction (``g``) and omit ylim.
+    Older dumps without those keys leave the live canvas unchanged (BC).
     """
     saved_setup = state.setup
     saved_source = state.source_path

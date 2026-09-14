@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
-from .batch_commands import batch_quit_confirm, run_batch_overwrite_sessions, run_batch_save_all
+from .batch_commands import batch_quit_confirm, run_batch_overwrite_sessions
 from .batch_figure_io import run_batch_export_figures, run_batch_overwrite_figures
 from .batch_io import run_batch_export_style, run_batch_import_style, run_batch_save_sessions
 
@@ -12,13 +12,20 @@ from .batch_io import run_batch_export_style, run_batch_import_style, run_batch_
 def batch_quit_or_save_all(
     panels: Sequence[Any],
     save_panel: Callable[[Any, str], None],
-) -> bool:
-    """Handle ``q`` quit prompt. Returns True when the menu loop should exit."""
+) -> bool | str:
+    """Handle ``q`` quit prompt.
+
+    Returns:
+        ``True`` when the menu loop should exit,
+        ``"e"`` / ``"s"`` to dispatch export/save on the next loop iteration,
+        ``False`` to stay in the menu.
+    """
+    _ = (panels, save_panel)  # call-site signature unchanged; e/s use pending keys
     action = batch_quit_confirm(allow_export=True)
     if action == "y":
         return True
-    if action == "s":
-        run_batch_save_all(panels, save_panel)
+    if action in ("e", "s"):
+        return action
     return False
 
 

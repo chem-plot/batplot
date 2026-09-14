@@ -401,3 +401,33 @@ def test_parse_args_keeps_short_aliases_and_dynamic_readcol():
     assert args.out == "out.svg"
     assert args.readcol_by_ext[".afes"] == [3, 4]
     assert args.right_y_indices == frozenset({0})
+
+
+def test_parse_args_readcol_binds_to_file_not_option_values():
+    """--wl / --xaxis / --out values must not steal per-file --readcol binding."""
+    from batplot.args import parse_args
+
+    args = parse_args(["TD_R02.dat", "--wl", "0.259", "--readcol", "1", "3"])
+    assert args.files == ["TD_R02.dat"]
+    assert args.wl == 0.259
+    assert args.readcol is None
+    assert args.readcol_by_file == {"TD_R02.dat": (1, 3)}
+
+    args = parse_args([
+        "TD_R02.dat", "--wl", "0.259", "--readcol", "1", "2", "1", "3",
+    ])
+    assert args.readcol_by_file == {"TD_R02.dat": [(1, 2), (1, 3)]}
+
+    args = parse_args(["TD_R02.dat", "--xaxis", "q", "--readcol", "1", "3"])
+    assert args.xaxis == "q"
+    assert args.readcol_by_file == {"TD_R02.dat": (1, 3)}
+
+    args = parse_args(["TD_R02.dat", "--out", "out.svg", "--readcol", "1", "3"])
+    assert args.out == "out.svg"
+    assert args.readcol_by_file == {"TD_R02.dat": (1, 3)}
+
+    # Global --readcol before any file still works with --wl after the file
+    args = parse_args(["--readcol", "1", "3", "TD_R02.dat", "--wl", "0.259"])
+    assert args.readcol == (1, 3)
+    assert args.readcol_by_file == {}
+    assert args.wl == 0.259

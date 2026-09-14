@@ -138,19 +138,19 @@ def test_cif_color_in_style_ps_and_psg(tmp_path):
     fig._operando_cif_colormap = "plasma"  # type: ignore[attr-defined]
 
     cfg_ps, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, None, "ps")
-    assert cfg_ps["cif"]["colors"][0] == "#112233"
-    assert cfg_ps["cif"]["colors"][1] == "#aabbcc"
-    assert cfg_ps["cif"]["colormap"] == "plasma"
+    # CIF chrome is geometry-only — style-only ``.bps`` must omit it.
+    assert "cif" not in cfg_ps
 
     cfg_psg, _ = build_operando_ec_style_config_v2(fig, ax, im, cbar, None, "psg")
-    assert cfg_psg["cif"]["tick_series"][0][-1] == "#112233"
+    assert cfg_psg["cif"]["colors"][0] == "#112233"
+    assert cfg_psg["cif"]["colors"][1] == "#aabbcc"
     assert cfg_psg["cif"]["colormap"] == "plasma"
+    assert cfg_psg["cif"]["tick_series"][0][-1] == "#112233"
 
     fig2, ax2, im2, cbar2 = _minimal_operando_figure()
-    # Seed a series so color list length matches on apply (ps without tick_series)
     ax2._operando_cif_tick_series = _fake_series(2, "k")
     ok = apply_operando_ec_style_config(
-        cfg_ps, fig=fig2, ax=ax2, im=im2, cbar=cbar2, ec_ax=None, silent=True
+        cfg_psg, fig=fig2, ax=ax2, im=im2, cbar=cbar2, ec_ax=None, silent=True
     )
     assert ok
     s2 = ax2._operando_cif_tick_series

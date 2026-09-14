@@ -88,7 +88,22 @@ def axis_text_artists(ax: Any, *, include_title: bool = False, include_axes_text
         pass
     if include_axes_texts:
         try:
-            artists.extend(list(getattr(ax, "texts", [])))
+            texts = list(getattr(ax, "texts", []))
+            # CIF phase titles / ticks are geometry chrome — never ride global font menus.
+            skip = set()
+            try:
+                skip.update(getattr(ax, "_cif_tick_art", None) or [])
+            except Exception:
+                pass
+            try:
+                fig = getattr(ax, "figure", None)
+                if fig is not None:
+                    skip.update(getattr(fig, "_operando_cif_tick_art", None) or [])
+            except Exception:
+                pass
+            if skip:
+                texts = [t for t in texts if t not in skip]
+            artists.extend(texts)
         except Exception:
             pass
     return artists

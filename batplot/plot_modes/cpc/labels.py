@@ -11,6 +11,7 @@ from ...utils import (
     remember_axis_name,
     resolve_recent_axis_name,
 )
+from ..common.menu_rendering import print_menu_key_rows
 
 _RECENT_MODE = "cpc"
 
@@ -85,13 +86,18 @@ def run_cpc_rename_menu(
     """Run the CPC rename submenu."""
     while True:
         print("Rename:")
-        print("  " + colorize_menu("x: x-axis"))
-        print("  " + colorize_menu("ly: left y-axis"))
-        print("  " + colorize_menu("ry: right y-axis"))
-        print("  " + colorize_menu("f: file names (legend)"))
-        print("  " + colorize_menu("s: show recent axis names (type a number at a title prompt to reuse one)"))
-        print("  " + colorize_menu("m: math / science typing help ({sub()}, {super()}, Greek, …)"))
-        print("  " + colorize_menu("q: back"))
+        print_menu_key_rows(
+            [
+                "x: x-axis",
+                "ly: left y-axis",
+                "ry: right y-axis",
+                "f: file names (legend)",
+                "s: show recent axis names (type a number at a title prompt to reuse one)",
+                "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                "q: back",
+            ],
+            colorize=colorize_menu,
+        )
         sub = safe_input(colorize_prompt("Rename (x/ly/ry/f/s/m/q): ")).strip().lower()
         if not sub:
             continue

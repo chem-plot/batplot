@@ -37,6 +37,7 @@ from ...utils import (
     xy_cif_stack_y_offset,
     xy_cif_tick_stack_layout,
     xy_cif_add_phase_title,
+    xy_cif_resolve_title_font,
     xy_cif_row_spacing_yr,
     xy_cif_stack_bottom_margin_yr,
 )
@@ -1145,9 +1146,10 @@ def run_xy_pipeline(args) -> int:
                 if show_titles:
                     # Removed numbering; keep space padding
                     label_text = f" {lab}"
+                    _cif_fs, _cif_fam = xy_cif_resolve_title_font(fig)
                     xy_cif_add_phase_title(
                         ax, prev_xlim[0], y_line, tick_h, label_text,
-                        max(8, int(0.55 * plt.rcParams.get('font.size', 12))), color, new_art,
+                        _cif_fs, color, new_art, fontfamily=_cif_fam,
                     )
                 visible_idx += 1
                 continue
@@ -1196,9 +1198,10 @@ def run_xy_pipeline(args) -> int:
             # Only add title label if show_cif_titles is True
             if show_titles:
                 label_text = f" {lab}"
+                _cif_fs, _cif_fam = xy_cif_resolve_title_font(fig)
                 xy_cif_add_phase_title(
                     ax, prev_xlim[0], y_line, tick_h, label_text,
-                    max(8, int(0.55 * plt.rcParams.get('font.size', 12))), color, new_art,
+                    _cif_fs, color, new_art, fontfamily=_cif_fam,
                 )
             visible_idx += 1
         ax._cif_tick_art = new_art

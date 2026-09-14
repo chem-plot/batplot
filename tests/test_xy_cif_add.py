@@ -262,7 +262,9 @@ def test_xy_cif_style_psg_roundtrip(tmp_path):
     assert cfg.get("cif_ticks")
 
     fig2, ax2, bp2 = _minimal_xy_figure()
-    assert not bp2.cif_tick_series
+    # Layout gate requires matching CIF presence for ``.bpsg``.
+    append_xy_cif_file(fig2, ax2, str(CIF_PATH), _bp=bp2, use_2th=False, redraw=False)
+    assert bp2.cif_tick_series
     ok = ST.apply_style_config(
         out,
         fig2,
@@ -294,14 +296,14 @@ def test_xy_legacy_cif_ticks_style_still_applies_labels_colors(tmp_path):
     bp.cif_tick_series[0] = (lab, fname, peaks, wl, qmax, "#112233")
     cfg = {
         "version": 2,
-        "kind": "xy_style",
+        "kind": "xy_style_geom",
         "ro_active": False,
         "cif_ticks": [{"index": 0, "label": "RenamedPhase", "color": "#abcdef"}],
         "figure": {"size": [6, 4], "dpi": 100},
         "margins": {"left": 0.12, "right": 0.95, "bottom": 0.12, "top": 0.9},
         "curves": [],
     }
-    style_path = tmp_path / "legacy.bps"
+    style_path = tmp_path / "legacy.bpsg"
     style_path.write_text(json.dumps(cfg), encoding="utf-8")
     args = SimpleNamespace(stack=False, autoscale=True, norm=False, files=[])
     ST.apply_style_config(
@@ -322,6 +324,90 @@ def test_xy_legacy_cif_ticks_style_still_applies_labels_colors(tmp_path):
     )
     assert bp.cif_tick_series[0][0] == "RenamedPhase"
     assert str(bp.cif_tick_series[0][5]).lower() in ("#abcdef", "#abcdef")
+    plt.close(fig)
+
+
+def test_xy_cif_menu_lists_numbered_phase_names(capsys):
+    """CIF submenu must list ``N: label (basename)`` when sets exist."""
+    fig, ax, bp = _minimal_xy_figure()
+    bp.cif_tick_series[:] = [
+        ("Li2Se.cif", "/tmp/Li2Se.cif", [1.0], None, 5.0, "k"),
+        ("Li2FeSeO.cif", "/tmp/Li2FeSeO.cif", [2.0], None, 5.0, "k"),
+    ]
+    fig._batplot_cif_tick_series = bp.cif_tick_series  # type: ignore[attr-defined]
+
+    def _print_list(cts):
+        for i, (lab, fname, *_rest) in enumerate(cts):
+            print(f"  {i+1}: {lab} ({os.path.basename(fname)})")
+
+    run_cif_ticks_menu(
+        ax=ax,
+        fig=fig,
+        _bp=bp,
+        colorize_menu=lambda s: s,
+        colorize_prompt=lambda s: s,
+        _safe_input=lambda *_a, **_k: "q",
+        push_state=lambda *_a, **_k: None,
+        _print_cif_phase_list=_print_list,
+        _apply_cif_phase_label_rename=lambda *_a, **_k: None,
+        _sync_fig_cif_tick_series=lambda: None,
+        use_2th=False,
+        default_wl=None,
+        y_data_list=[np.asarray(ax.lines[0].get_ydata())],
+    )
+    out = capsys.readouterr().out
+    assert "1: Li2Se.cif (Li2Se.cif)" in out
+    assert "2: Li2FeSeO.cif (Li2FeSeO.cif)" in out
+    assert "a: add CIF file" in out
+    plt.close(fig)
+
+
+def test_xy_style_only_bps_does_not_mutate_cif(tmp_path):
+    """``.bps`` / ``xy_style`` must leave CIF labels/colors/font alone."""
+    fig, ax, bp = _minimal_xy_figure()
+    append_xy_cif_file(fig, ax, str(CIF_PATH), _bp=bp, use_2th=False, redraw=True)
+    lab0, fname0, peaks0, wl0, qmax0, col0 = bp.cif_tick_series[0]
+    fig._bp_cif_title_font = {"size": 9.0, "family": "DejaVu Sans"}
+    before_font = dict(fig._bp_cif_title_font)
+    cfg = {
+        "version": 2,
+        "kind": "xy_style",
+        "ro_active": False,
+        "font": {"size": 22.0, "family_chain": ["Comic Sans MS", "DejaVu Sans"]},
+        "show_cif_titles": False,
+        "show_cif_hkl": True,
+        "cif_ticks": [{"index": 0, "label": "ShouldNotApply", "color": "#abcdef"}],
+        "cif": {"labels": ["ShouldNotApply"], "files": [str(CIF_PATH)], "colors": ["#abcdef"]},
+        "figure": {"size": [6, 4], "dpi": 100},
+        "margins": {"left": 0.12, "right": 0.95, "bottom": 0.12, "top": 0.9},
+        "curves": [],
+    }
+    style_path = tmp_path / "style_only.bps"
+    style_path.write_text(json.dumps(cfg), encoding="utf-8")
+    args = SimpleNamespace(stack=False, autoscale=True, norm=False, files=[], xaxis=None, wl=None)
+    ST.apply_style_config(
+        str(style_path),
+        fig,
+        ax,
+        [np.linspace(1, 6, 50)],
+        [np.asarray(ax.lines[0].get_ydata())],
+        [np.asarray(ax.lines[0].get_ydata())],
+        [0.0],
+        [],
+        args,
+        {"x": True, "y": True},
+        ["curve"],
+        lambda *_a, **_k: None,
+        bp.cif_tick_series,
+        bp.cif_hkl_label_map,
+    )
+    assert bp.cif_tick_series[0][0] == lab0
+    assert bp.cif_tick_series[0][5] == col0
+    assert dict(fig._bp_cif_title_font) == before_font
+    # Redraw still uses frozen CIF font, not imported 22pt chrome.
+    if hasattr(ax, "_cif_draw_func"):
+        ax._cif_draw_func()
+    assert float(fig._bp_cif_title_font.get("size")) == 9.0
     plt.close(fig)
 
 
@@ -473,12 +559,12 @@ def test_failed_add_does_not_pop_unrelated_undo(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(not CIF_PATH.is_file(), reason="sample CIF not on this machine")
 def test_legacy_style_without_cif_block_still_applies(tmp_path):
-    """Old .bps with only cif_ticks must keep working (no cif key)."""
+    """Old style+geometry with only cif_ticks must keep working (no cif key)."""
     fig, ax, bp = _minimal_xy_figure()
     append_xy_cif_file(fig, ax, str(CIF_PATH), _bp=bp, use_2th=False, redraw=False)
     cfg = {
         "version": 2,
-        "kind": "xy_style",
+        "kind": "xy_style_geom",
         "ro_active": False,
         "cif_ticks": [{"index": 0, "label": "LegacyOnly", "color": "#fedcba"}],
         "figure": {"size": [6, 4], "dpi": 100},
@@ -487,7 +573,7 @@ def test_legacy_style_without_cif_block_still_applies(tmp_path):
     }
     # Explicitly no "cif" key — pre-feature style files
     assert "cif" not in cfg
-    style_path = tmp_path / "old.bps"
+    style_path = tmp_path / "old.bpsg"
     style_path.write_text(json.dumps(cfg), encoding="utf-8")
     args = SimpleNamespace(stack=False, autoscale=True, norm=False, files=[], xaxis=None, wl=None)
     ST.apply_style_config(

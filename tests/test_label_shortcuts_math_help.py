@@ -91,6 +91,37 @@ def test_cpc_style_apply_finalizes_legacy_shortcut_labels():
         plt.close(fig)
 
 
+def test_xy_rename_menu_lists_aligned_keys(capsys):
+    import matplotlib.pyplot as plt
+    from batplot.plot_modes.xy.labels import run_xy_rename_menu
+
+    fig, ax = plt.subplots()
+    answers = iter(["q"])
+    run_xy_rename_menu(
+        ax=ax,
+        fig=fig,
+        labels=["a"],
+        label_text_objects=[ax.text(0, 0, "1: a")],
+        args_files=["a.cif"],
+        get_cif_series=lambda: [("phase", "a.cif", [], None, None, "k")],
+        print_cif_phase_list=lambda cts: None,
+        apply_cif_phase_label_rename=lambda i, s: None,
+        position_top_xlabel=lambda: None,
+        position_bottom_xlabel=lambda: None,
+        position_right_ylabel=lambda: None,
+        position_left_ylabel=lambda: None,
+        sync_fonts=lambda: None,
+        push_state=lambda note="": None,
+        safe_input=lambda *a, **k: next(answers),
+    )
+    out = capsys.readouterr().out
+    assert "c:" in out or "c :" in out
+    assert "curve label" in out
+    assert "CIF phase label" in out
+    assert "x:" in out or "x :" in out
+    plt.close(fig)
+
+
 def test_xy_rename_menu_has_math_help_subkey(capsys):
     import matplotlib.pyplot as plt
     from batplot.plot_modes.xy.labels import run_xy_rename_menu

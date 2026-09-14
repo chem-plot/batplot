@@ -12,6 +12,8 @@ from ...utils import (
     remember_axis_name,
     resolve_recent_axis_name,
 )
+from ..common.menu_rendering import colorize_menu as _default_colorize_menu
+from ..common.menu_rendering import print_menu_key_rows
 
 _RECENT_MODE = "histo"
 from .plot import HistoState
@@ -40,8 +42,10 @@ def run_histo_rename_menu(
     refresh: Callable[[], None],
     safe_input: Callable[..., str],
     colorize_prompt: Callable[[str], str],
+    colorize_menu: Callable[..., str] | None = None,
 ) -> None:
     """Rename bottom x, left y, and top plot title (XY-style submenu)."""
+    _cm = colorize_menu or _default_colorize_menu
 
     def _top_x_display() -> str:
         if state.style.top_xlabel:
@@ -54,10 +58,20 @@ def run_histo_rename_menu(
         print(f"  y-axis:    {state.style.ylabel if state.style.ylabel else '(empty)'}")
         print(f"  top title: {state.style.title or '(empty)'}")
         print(f"  top x:     {_top_x_display()}")
+        print_menu_key_rows(
+            [
+                "x: bottom x-axis",
+                "y: y-axis",
+                "t: top plot title",
+                "o: top x-axis",
+                "s: show recent axis names",
+                "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                "q: return",
+            ],
+            colorize=_cm,
+        )
         choice = safe_input(
-            colorize_prompt(
-                "Rename (x=bottom x, y=y-axis, t=title, o=top x, s=recent, m=math help, q=return): "
-            ),
+            colorize_prompt("Rename (x/y/t/o/s/m/q): "),
             cancel_on_interrupt=True,
         ).strip().lower()
         if not choice or choice == "q":
@@ -130,6 +144,7 @@ def run_histo_rename_menu(
             refresh()
             _apply_histo_label_change(fig, ax, state)
             print("Label updated." if text else "Label cleared.")
+            break
 
 
 __all__ = ["run_histo_rename_menu"]

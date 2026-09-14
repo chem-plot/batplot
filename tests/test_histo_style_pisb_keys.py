@@ -122,7 +122,7 @@ def test_histo_density_toggle_preserves_custom_and_cleared_ylabel():
     assert state.style.ylabel == "Density"
 
 
-def test_histo_style_only_ps_does_not_resize(tmp_path):
+def test_histo_style_only_ps_applies_canvas_and_frame(tmp_path):
     state = _make_state()
     fig, ax, _ = create_histo_figure(state)
     fig.set_size_inches(11.0, 7.0)
@@ -131,7 +131,7 @@ def test_histo_style_only_ps_does_not_resize(tmp_path):
 
     sync_histo_geometry(fig, ax, state)
 
-    # Donor style with different geometry — stripped on style-only export
+    # Donor style with different canvas/frame — kept on style-only export (``g``).
     donor = _make_state(bar_color="#112233", alpha=0.4)
     fig_d, ax_d, _ = create_histo_figure(donor)
     fig_d.set_size_inches(5.0, 4.0)
@@ -140,16 +140,15 @@ def test_histo_style_only_ps_does_not_resize(tmp_path):
     style_path = tmp_path / "style.bpsh"
     _export_style(fig_d, ax_d, donor, str(style_path), include_geometry=False)
     payload = json.loads(style_path.read_text(encoding="utf-8"))
-    assert "figsize" not in payload["style"]
-    assert "axes_fraction" not in payload["style"]
+    assert "figsize" in payload["style"]
+    assert "axes_fraction" in payload["style"]
+    assert "ylim" not in payload["style"]
 
-    before_size = tuple(fig.get_size_inches())
-    before_pos = tuple(ax.get_position().bounds)
     apply_histo_style_snapshot(fig, ax, state, payload)
     assert state.style.bar_color == "#112233"
     assert state.style.alpha == pytest.approx(0.4)
-    assert tuple(fig.get_size_inches()) == pytest.approx(before_size, abs=1e-6)
-    assert tuple(ax.get_position().bounds) == pytest.approx(before_pos, abs=1e-6)
+    assert tuple(fig.get_size_inches()) == pytest.approx((5.0, 4.0), abs=1e-6)
+    assert tuple(ax.get_position().bounds) == pytest.approx((0.1, 0.1, 0.8, 0.8), abs=1e-6)
 
     plt.close(fig)
     plt.close(fig_d)

@@ -26,6 +26,7 @@ from ...utils import (
     xy_cif_stack_y_offset,
     xy_cif_tick_stack_layout,
     xy_cif_add_phase_title,
+    xy_cif_resolve_title_font,
     xy_cif_row_spacing_yr,
     xy_cif_stack_bottom_margin_yr,
 )
@@ -526,6 +527,7 @@ def dump_session(
             ),
             'show_cif_titles': bool(show_cif_titles) if show_cif_titles is not None else True,
             'cif_stack_y_offsets': list(getattr(fig, '_bp_cif_stack_y_offsets', []) or []),
+            'cif_title_font': dict(getattr(fig, '_bp_cif_title_font', None) or {}),
             # CIF row layout reference range. Without it, each save/load cycle
             # re-seeds _cif_initial_ylim from the already-extended limits and
             # the y-range creeps downward on every reload.
@@ -1043,14 +1045,8 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
 
         try:
             tw = sess.get('tick_widths', {})
-            if tw.get('x_major') is not None:
-                ax.tick_params(axis='x', which='major', width=float(tw['x_major']))
-            if tw.get('x_minor') is not None:
-                ax.tick_params(axis='x', which='minor', width=float(tw['x_minor']))
-            if tw.get('y_major') is not None:
-                ax.tick_params(axis='y', which='major', width=float(tw['y_major']))
-            if tw.get('y_minor') is not None:
-                ax.tick_params(axis='y', which='minor', width=float(tw['y_minor']))
+            from .spines import apply_xy_tick_widths
+            apply_xy_tick_widths(fig, ax, tw)
         except Exception:
             pass
 
@@ -1210,6 +1206,12 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 while len(olist) < len(cif_tick_series):
                     olist.append(0.0)
                 fig._bp_cif_stack_y_offsets = olist[: len(cif_tick_series)]
+        except Exception:
+            pass
+        try:
+            # Missing key (old .pkl) → leave unset; first CIF draw freezes from rcParams.
+            if "cif_title_font" in sess and isinstance(sess.get("cif_title_font"), dict):
+                fig._bp_cif_title_font = dict(sess.get("cif_title_font") or {})
         except Exception:
             pass
         try:
@@ -1493,9 +1495,10 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                                     new_art.append(t_hkl)
                         if show_titles_local:
                             label_text = f" {lab}"
+                            _cif_fs, _cif_fam = xy_cif_resolve_title_font(fig)
                             xy_cif_add_phase_title(
                                 ax, prev_xlim[0], y_line, tick_h, label_text,
-                                max(8, int(0.55 * plt.rcParams.get('font.size', 16))), color, new_art,
+                                _cif_fs, color, new_art, fontfamily=_cif_fam,
                             )
                     ax._cif_tick_art = new_art
                     ax.set_xlim(prev_xlim)
@@ -1624,9 +1627,20 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
             from .spines import apply_xy_spine_specs
             apply_xy_spine_specs(fig, ax, tick_state, fig_cfg_spines)
             # Spine re-apply may overwrite explicit axis title colors with spine edge color.
+            # Heal hitchhiked old dumps (title color == opposite spine) then re-apply.
             label_style = {}
             if axis_cfg.get("axis_label_colors"):
-                label_style["axis_label_colors"] = axis_cfg["axis_label_colors"]
+                from ...ui import heal_axis_label_colors_dict
+
+                try:
+                    y_pos = str(ax.yaxis.get_label_position())
+                except Exception:
+                    y_pos = "left"
+                label_style["axis_label_colors"] = heal_axis_label_colors_dict(
+                    axis_cfg.get("axis_label_colors"),
+                    fig_cfg_spines,
+                    y_label_position=y_pos,
+                )
             if label_style:
                 from .style import apply_xy_axis_style
                 apply_xy_axis_style(ax, label_style, fig=fig, spines_cfg={})

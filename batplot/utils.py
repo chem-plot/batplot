@@ -1583,6 +1583,53 @@ def xy_cif_stack_y_offset(fig, index: int) -> float:
 XY_CIF_TITLE_ABOVE_TICK_PT = 2.0
 
 
+def xy_cif_resolve_title_font(fig) -> tuple:
+    """Return ``(fontsize, family)`` for XY CIF phase titles.
+
+    CIF chrome is geometry (``.bpsg`` / session), not style (``.bps``). Freeze the
+    first resolved size/family on ``fig._bp_cif_title_font`` so later global font
+    / ``.bps`` imports do not rescale or re-family CIF labels. Empty dict or
+    missing attr → snapshot from current rcParams once (BC for old sessions).
+    """
+    import matplotlib.pyplot as plt
+
+    cur = getattr(fig, "_bp_cif_title_font", None)
+    if not isinstance(cur, dict):
+        cur = {}
+    else:
+        cur = dict(cur)
+    size = cur.get("size")
+    family = cur.get("family")
+    if size is None:
+        try:
+            size = max(8, int(0.55 * float(plt.rcParams.get("font.size", 16))))
+        except Exception:
+            size = 8
+        cur["size"] = float(size)
+    else:
+        try:
+            size = float(size)
+        except Exception:
+            size = max(8, int(0.55 * float(plt.rcParams.get("font.size", 16))))
+            cur["size"] = float(size)
+    if not family:
+        try:
+            sans = plt.rcParams.get("font.sans-serif")
+            if isinstance(sans, (list, tuple)) and sans:
+                family = str(sans[0])
+            else:
+                fam = plt.rcParams.get("font.family", "sans-serif")
+                family = fam[0] if isinstance(fam, (list, tuple)) and fam else str(fam)
+        except Exception:
+            family = "sans-serif"
+        cur["family"] = family
+    try:
+        fig._bp_cif_title_font = cur
+    except Exception:
+        pass
+    return float(cur.get("size", size)), cur.get("family")
+
+
 def xy_cif_add_phase_title(
     ax,
     x_left: float,
@@ -1592,6 +1639,7 @@ def xy_cif_add_phase_title(
     fontsize,
     color,
     new_art: list,
+    fontfamily=None,
 ) -> None:
     """Draw phase filename a fixed number of points above tick tops (uniform visual gap).
 
@@ -1606,10 +1654,7 @@ def xy_cif_add_phase_title(
         y=XY_CIF_TITLE_ABOVE_TICK_PT,
         units="points",
     )
-    txt = ax.text(
-        float(x_left),
-        float(y_line + tick_h),
-        label_text,
+    txt_kw = dict(
         transform=trans,
         ha="left",
         va="bottom",
@@ -1617,6 +1662,14 @@ def xy_cif_add_phase_title(
         color=color,
         clip_on=False,
         zorder=4,
+    )
+    if fontfamily:
+        txt_kw["fontfamily"] = fontfamily
+    txt = ax.text(
+        float(x_left),
+        float(y_line + tick_h),
+        label_text,
+        **txt_kw,
     )
     new_art.append(txt)
 

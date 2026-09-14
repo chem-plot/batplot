@@ -7,6 +7,7 @@ from typing import Callable, Tuple
 import numpy as np  # type: ignore[import]
 
 from ..common.menus import run_repeat_input_loop
+from ..common.curve_look_help import print_density_linestyle_legend
 from ...color_utils import blank_means_back, format_color_listing, run_color_token_input_loop
 from .plot import HistoState
 
@@ -165,11 +166,15 @@ def run_histo_density_curve_menu(
                 print(f"Density curve linestyle set to {linestyle_labels[st.density_curve_ls]}.")
                 return True
 
+            def _linestyle_prompt() -> str:
+                print_density_linestyle_legend()
+                return (
+                    f"Linestyle (s/d/t, current: "
+                    f"{linestyle_labels.get(st.density_curve_ls, st.density_curve_ls)}, q=back): "
+                )
+
             run_repeat_input_loop(
-                prompt=lambda: (
-                    f"Linestyle s=solid, d=dashed, t=dotted "
-                    f"(current: {linestyle_labels.get(st.density_curve_ls, st.density_curve_ls)}, q=back): "
-                ),
+                prompt=_linestyle_prompt,
                 safe_input=safe_input,
                 colorize_prompt=colorize_prompt,
                 process=_apply_curve_linestyle,

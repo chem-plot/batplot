@@ -25,6 +25,106 @@ def _axis_tick_length(axis_obj, which: str = "major"):
     return _current_tick_length(axis_obj, which)
 
 
+def capture_cbar_line_widths(cbar) -> dict:
+    """Capture colorbar spine/tick widths set by operando line submenu ``l``."""
+    try:
+        cax = getattr(cbar, "ax", None) if cbar is not None else None
+    except Exception:
+        cax = None
+    if cax is None:
+        return {}
+    spines: dict[str, dict[str, float]] = {}
+    for name in ("bottom", "top", "left", "right"):
+        sp = cax.spines.get(name)
+        if sp is None:
+            continue
+        try:
+            spines[name] = {"linewidth": float(sp.get_linewidth())}
+        except Exception:
+            pass
+    ticks = {
+        "x_major": _axis_tick_width(cax.xaxis, "major"),
+        "x_minor": _axis_tick_width(cax.xaxis, "minor"),
+        "y_major": _axis_tick_width(cax.yaxis, "major"),
+        "y_minor": _axis_tick_width(cax.yaxis, "minor"),
+    }
+    return {"spines": spines, "ticks": {"widths": ticks}}
+
+
+def apply_cbar_line_widths(cbar, payload: dict | None, *, stash: bool = True) -> None:
+    """Restore colorbar frame/tick widths; optionally stash for post-redraw reapply.
+
+    Old styles/sessions omit these keys — no-op when ``payload`` is empty.
+    """
+    if not payload or cbar is None:
+        return
+    cax = getattr(cbar, "ax", None)
+    if cax is None:
+        return
+    spines = payload.get("spines") if isinstance(payload, dict) else None
+    if isinstance(spines, dict):
+        for name, spec in spines.items():
+            sp = cax.spines.get(name)
+            if sp is None or not isinstance(spec, dict):
+                continue
+            lw = spec.get("linewidth")
+            if lw is None:
+                continue
+            try:
+                sp.set_linewidth(float(lw))
+            except Exception:
+                pass
+    ticks_cfg = payload.get("ticks") if isinstance(payload, dict) else None
+    widths = ticks_cfg.get("widths") if isinstance(ticks_cfg, dict) else None
+    if isinstance(widths, dict):
+        try:
+            if widths.get("x_major") is not None:
+                cax.tick_params(axis="x", which="major", width=float(widths["x_major"]))
+            if widths.get("x_minor") is not None:
+                cax.tick_params(axis="x", which="minor", width=float(widths["x_minor"]))
+            if widths.get("y_major") is not None:
+                cax.tick_params(axis="y", which="major", width=float(widths["y_major"]))
+            if widths.get("y_minor") is not None:
+                cax.tick_params(axis="y", which="minor", width=float(widths["y_minor"]))
+        except Exception:
+            pass
+    if stash:
+        try:
+            fig = cax.figure
+            fig._operando_cbar_line_widths = {  # type: ignore[attr-defined]
+                "spines": dict(spines or {}),
+                "ticks": {"widths": dict(widths or {})},
+            }
+        except Exception:
+            pass
+
+
+def stash_cbar_line_widths(fig, cbar) -> None:
+    """Store live colorbar widths on ``fig`` so custom colorbar redraws keep them."""
+    try:
+        payload = capture_cbar_line_widths(cbar)
+        if payload:
+            fig._operando_cbar_line_widths = payload  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def reapply_stashed_cbar_line_widths(cbar_ax) -> None:
+    """Re-apply ``fig._operando_cbar_line_widths`` after custom colorbar redraw."""
+    try:
+        fig = getattr(cbar_ax, "figure", None)
+        payload = getattr(fig, "_operando_cbar_line_widths", None) if fig is not None else None
+        if not payload:
+            return
+        # Build a tiny stand-in with .ax for apply_cbar_line_widths
+        class _CB:
+            ax = cbar_ax
+
+        apply_cbar_line_widths(_CB(), payload, stash=False)
+    except Exception:
+        pass
+
+
 def _actual_major_visibility(ax, side: str):
     try:
         if side in ("top", "bottom"):
@@ -334,10 +434,9 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         except Exception:
             return list(peaks) if peaks is not None else []
 
-    # Non-empty series: always export CIF metadata. Empty series: still embed
-    # tick_series=[] on psg so batch undo can clear a first interactive add.
-    # Style-only (.bps) with no CIF omits the block (legacy BC).
-    if series or exp_choice != "ps":
+    # Style-only (.bps) omits CIF entirely — CIF is geometry chrome.
+    # Style+geometry always embeds CIF (including empty tick_series for batch undo).
+    if exp_choice != "ps":
         cif_cfg = {
             "show_hkl": bool(getattr(fig, "_operando_cif_show_hkl", False)),
             "show_titles": bool(getattr(fig, "_operando_cif_show_titles", True)),
@@ -354,24 +453,25 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
         }
         # Embed peak data in style+geometry (psg) and batch capture so p/i/b
         # can round-trip CIF sets added interactively without re-reading files.
-        if exp_choice != "ps":
-            cif_cfg["tick_series"] = [
-                [
-                    str(e[0]),
-                    str(e[1]),
-                    _json_peaks(e[2]),
-                    (None if e[3] is None else float(e[3])),
-                    (None if e[4] is None else float(e[4])),
-                    _json_color(e[5]),
-                ]
-                for e in series
+        cif_cfg["tick_series"] = [
+            [
+                str(e[0]),
+                str(e[1]),
+                _json_peaks(e[2]),
+                (None if e[3] is None else float(e[3])),
+                (None if e[4] is None else float(e[4])),
+                _json_color(e[5]),
             ]
-            try:
-                cif_cfg["hkl_label_map"] = dict(
-                    getattr(ax, "_operando_cif_hkl_label_map", None) or {}
-                )
-            except Exception:
-                cif_cfg["hkl_label_map"] = {}
+            for e in series
+        ]
+        try:
+            cif_cfg["hkl_label_map"] = dict(
+                getattr(ax, "_operando_cif_hkl_label_map", None) or {}
+            )
+        except Exception:
+            cif_cfg["hkl_label_map"] = {}
+    else:
+        cif_cfg = None
 
     ec_payload = {
         "wasd_state": ec_wasd,
@@ -442,10 +542,26 @@ def build_operando_ec_style_config_v2(fig, ax, im, cbar, ec_ax, exp_choice: str)
             "label_left": cb_label_left,
         },
     }
-    # Style+geometry (psg): persist canvas/panel inches, clim, reverse, axes limits.
-    # Style-only (ps): omit view-geometry so import (i) does not resize/reclim/flip.
+    _cb_lw = capture_cbar_line_widths(cbar)
+    if _cb_lw.get("spines"):
+        cfg["colorbar"]["spines"] = _cb_lw["spines"]
+    if (_cb_lw.get("ticks") or {}).get("widths"):
+        cfg["colorbar"]["ticks"] = _cb_lw["ticks"]
+    # Style always persists canvas size (``g`` under Styles).
+    # Style+geometry (psg): also panel inches, clim, reverse, axes limits.
+    cfg["figure"]["canvas_size"] = [fig_w, fig_h]
+    try:
+        from ..common.layout_compat import attach_layout, operando_layout_fingerprint
+        attach_layout(
+            cfg,
+            operando_layout_fingerprint(
+                has_ec_panel=ec_ax is not None,
+                is_dqdv_2d=bool(getattr(fig, "_is_dqdv_2d_contour", False)),
+            ),
+        )
+    except Exception:
+        pass
     if exp_choice != "ps":
-        cfg["figure"]["canvas_size"] = [fig_w, fig_h]
         cfg["geometry"] = {
             "op_w_in": ax_w_in,
             "op_h_in": ax_h_in,

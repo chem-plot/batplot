@@ -733,8 +733,8 @@ def handle_export_style(ctx: OperandoActionContext) -> None:
                 break
             if sub == 'e':
                 print("Export options:")
-                print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
-                print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
+                print("  " + _colorize_inline_commands("ps  = style (.bps) — colors/fonts/spines/size"))
+                print("  " + _colorize_inline_commands("psg = style + data geometry (.bpsg) — also panel/clim/limits"))
                 exp_choice = _safe_input(_colorize_inline_commands("Export choice (ps/psg, q=cancel): ")).strip().lower()
                 if not exp_choice or exp_choice == 'q':
                     print("Style export canceled.")

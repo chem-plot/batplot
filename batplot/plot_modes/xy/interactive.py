@@ -50,6 +50,7 @@ import sys as _sys_snap
 from ..common.terminal import (
     colorize_inline_commands as _colorize_inline_commands,
     colorize_prompt as _colorize_prompt,
+    confirm_quit_interactive,
     safe_input as _common_safe_input,
 )
 from ..common.menu_rendering import (
@@ -683,11 +684,12 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         tick_state = _make_default_tick_state()
     _sync_legacy_tick_keys()
 
-    if hasattr(ax, '_saved_tick_state'):
-        try:
-            delattr(ax, '_saved_tick_state')
-        except Exception:
-            pass
+    # Keep authoritative bookkeeping on the axis for mid-session ``c``/finalize.
+    # (Previously deleted until first ``t`` toggle / quit — left color paths blind.)
+    try:
+        ax._saved_tick_state = dict(tick_state)
+    except Exception:
+        pass
 
     # NEW: dynamic margin adjustment for top/right ticks
     # Flag to preserve a manual/initial interactive top margin override
@@ -1466,18 +1468,15 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         if key == 'q':
             if canvas_mode:
                 break
-            try:
-                confirm = _safe_input(colorize_prompt("Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print("\nExiting interactive menu...")
-                break
+            confirm = confirm_quit_interactive(
+                safe_input_fn=_safe_input,
+                colorize_fn=colorize_prompt,
+            )
             if confirm == 'y':
                 break
-            elif confirm in ('e', 's'):
+            if confirm in ('e', 's'):
                 pending_key = confirm
-                continue
-            else:
-                continue
+            continue
         elif key in ('cif', 'z'):
             # Note: top-level `j` is CIF title toggle (handled below), not CIF menu.
             try:
@@ -1736,6 +1735,8 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
                 sync_fonts=sync_fonts,
                 push_state=push_state,
                 safe_input=_safe_input,
+                colorize_menu=colorize_menu,
+                colorize_prompt=colorize_prompt,
             )
         elif key == 'a':
             run_rearrange_menu(

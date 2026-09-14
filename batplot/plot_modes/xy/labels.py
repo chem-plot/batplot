@@ -17,7 +17,10 @@ from ...utils import (
     remember_axis_name,
     resolve_recent_axis_name,
 )
+from ..common.menu_rendering import colorize_menu as _default_colorize_menu
+from ..common.menu_rendering import print_menu_key_rows
 from ..common.sources import cif_present
+from ..common.terminal import colorize_prompt as _default_colorize_prompt
 
 _RECENT_MODE = "xy"
 
@@ -39,16 +42,31 @@ def run_xy_rename_menu(
     sync_fonts: Callable[[], Any],
     push_state: Callable[[str], Any],
     safe_input: Callable[[str], str],
+    colorize_menu: Optional[Callable[..., str]] = None,
+    colorize_prompt: Optional[Callable[[str], str]] = None,
 ) -> None:
     """Run the rename submenu (curve / CIF phase / axis labels)."""
+    _cm = colorize_menu or _default_colorize_menu
+    _cp = colorize_prompt or _default_colorize_prompt
     try:
         has_cif = cif_present(args_files, get_cif_series)
         while True:
-            rename_opts = "c=curve"
+            print("\033[1mRename:\033[0m")
+            rows = ["c: curve label"]
             if has_cif:
-                rename_opts += ", t=CIF phase label (same as cif→r)"
-            rename_opts += ", x=x-axis, y=y-axis, s=show recent, m=math help, q=return"
-            mode = safe_input(f"Rename ({rename_opts}): ").strip().lower()
+                rows.append("t: CIF phase label (same as cif→r)")
+            rows.extend(
+                [
+                    "x: x-axis",
+                    "y: y-axis",
+                    "s: show recent axis names",
+                    "m: math / science typing help ({sub()}, {super()}, Greek, …)",
+                    "q: return",
+                ]
+            )
+            print_menu_key_rows(rows, colorize=_cm)
+            keys = "c/t/x/y/s/m/q" if has_cif else "c/x/y/s/m/q"
+            mode = safe_input(_cp(f"Rename ({keys}): ")).strip().lower()
             if mode == 'q':
                 break
             if mode == '':
@@ -88,6 +106,9 @@ def run_xy_rename_menu(
                     fig.canvas.draw()
                     print(f"Curve {idx + 1} label updated.")
             elif mode == 't':
+                if not has_cif:
+                    print("Invalid choice.")
+                    continue
                 cts = get_cif_series()
                 if not cts:
                     print("No CIF phases to rename.")

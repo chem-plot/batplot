@@ -138,30 +138,74 @@ def _print_color_targets(*, fig, file_data, series_key: str, colorize_menu) -> N
         print("  (none visible)")
 
 
-def _print_saved_colors(*, fig, colorize_menu) -> None:
-    saved_colors = get_user_color_list(fig)
-    if saved_colors:
-        print("\nSaved colors (refer as number or u#):")
-        for idx, color in enumerate(saved_colors, 1):
-            print("  " + colorize_menu(f"{idx}: {format_color_listing(color)}"))
+def _print_ly_ry_color_help(*, fig, palette_opts: list[str], colorize_menu) -> None:
+    from ..common.color_menu_help import (
+        join_cyan_samples,
+        join_cyan_samples_spaced,
+        print_color_action_keys,
+        print_how_to_set_color_methods,
+        print_recommended_palettes,
+        print_saved_colors_block,
+    )
 
-
-def _print_palette_help(palette_opts: list[str], colorize_menu) -> None:
-    print("\nPalettes:")
-    for idx, name in enumerate(palette_opts, 1):
-        preview = palette_preview(name)
-        print("  " + colorize_menu(f"{idx}: {name}"))
-        if preview:
-            print(f"      {preview}")
-    c, r = "\033[96m", "\033[0m"
+    print_how_to_set_color_methods(
+        [
+            (
+                "Colon per file (multiple entries allowed)",
+                join_cyan_samples_spaced("1:2", "2:red", "3:#455353"),
+            ),
+            (
+                "Files/ranges + palette as LAST token (digit or name)",
+                join_cyan_samples("all viridis", "1-5 viridis", "1 3 5 4"),
+            ),
+        ]
+    )
     print()
-    print("How to set color:")
-    print(f"  all / palette:  {c}all 1{r}  or  {c}all viridis{r}  (or just  {c}1{r}  or  {c}viridis{r})")
-    print(f"  file range:     {c}1-5 viridis{r}  or  {c}1 3 5 4{r}")
-    print(f"  per file:       {c}1:2{r}  {c}2:red{r}  {c}3:#455353{r}")
-    print(f"  {c}v{r}: show current colors")
-    print(f"  {c}q{r}: cancel")
+    print_recommended_palettes(
+        palette_opts,
+        colorize_menu=colorize_menu,
+        max_digits=10,
+    )
+    print_saved_colors_block(fig, colorize_menu=colorize_menu)
+    print_color_action_keys(colorize_menu=colorize_menu)
 
+
+
+def _print_cpc_spine_help(*, fig, is_multi_file: bool, colorize_menu) -> None:
+    from ..common.color_menu_help import (
+        join_cyan_samples,
+        print_color_action_keys,
+        print_how_to_set_color_methods,
+        print_saved_colors_block,
+        print_spine_tick_keys_note,
+    )
+
+    print_how_to_set_color_methods(
+        [
+            (
+                "Spine color (w/a/s/d)",
+                join_cyan_samples("w:red", "a:#4561F7", "s:blue", "d:green"),
+            ),
+        ]
+    )
+    print_spine_tick_keys_note(colorize_menu=colorize_menu)
+    print_saved_colors_block(fig, colorize_menu=colorize_menu)
+    extras = None
+    if not is_multi_file:
+        auto_enabled = getattr(fig, "_cpc_spine_auto", False)
+        auto_status = "ON" if auto_enabled else "OFF"
+        extras = [
+            (
+                "auto",
+                f"auto-apply capacity→left / efficiency→right [{auto_status}]",
+            )
+        ]
+    print_color_action_keys(
+        colorize_menu=colorize_menu,
+        include_v=False,
+        include_u=True,
+        extras=extras,
+    )
 
 def apply_capacity_color_tokens(
     tokens: list[str], *, fig, file_data, palette_opts: list[str], commit: bool = True
@@ -350,15 +394,15 @@ def run_cpc_color_menu(
             continue
         if sub == "ly":
             while True:
-                _print_saved_colors(fig=fig, colorize_menu=colorize_menu)
-                _print_palette_help(palette_opts, colorize_menu)
-                print("  " + colorize_menu("v: show current colors"))
-                print("  " + colorize_menu("e: pick color from screen"))
-                color_input = safe_input(colorize_prompt("Colors (ly) (file:color or palette, v/e/q): ")).strip()
+                _print_ly_ry_color_help(fig=fig, palette_opts=palette_opts, colorize_menu=colorize_menu)
+                color_input = safe_input(colorize_prompt("Selection: ")).strip()
                 if color_input.lower() == "q" or blank_means_back(color_input):
                     break
                 if color_input.lower() == "v":
                     _print_color_targets(fig=fig, file_data=file_data, series_key="capacity", colorize_menu=colorize_menu)
+                    continue
+                if color_input.lower() == "u":
+                    manage_user_colors(fig)
                     continue
                 if color_input.lower() == "e":
                     prompt_screen_color(fig)
@@ -386,15 +430,15 @@ def run_cpc_color_menu(
             continue
         if sub == "ry":
             while True:
-                _print_saved_colors(fig=fig, colorize_menu=colorize_menu)
-                _print_palette_help(palette_opts, colorize_menu)
-                print("  " + colorize_menu("v: show current colors"))
-                print("  " + colorize_menu("e: pick color from screen"))
-                color_input = safe_input(colorize_prompt("Colors (ry) (file:color or palette, v/e/q): ")).strip()
+                _print_ly_ry_color_help(fig=fig, palette_opts=palette_opts, colorize_menu=colorize_menu)
+                color_input = safe_input(colorize_prompt("Selection: ")).strip()
                 if color_input.lower() == "q" or blank_means_back(color_input):
                     break
                 if color_input.lower() == "v":
                     _print_color_targets(fig=fig, file_data=file_data, series_key="efficiency", colorize_menu=colorize_menu)
+                    continue
+                if color_input.lower() == "u":
+                    manage_user_colors(fig)
                     continue
                 if color_input.lower() == "e":
                     prompt_screen_color(fig)
@@ -423,15 +467,10 @@ def run_cpc_color_menu(
         if sub == "s":
             key_to_spine = {"w": "top", "a": "left", "s": "bottom", "d": "right"}
             while True:
-                print("\nSet spine colors (w=top, a=left, s=bottom, d=right):")
-                print("  " + colorize_menu("Example: w:red a:#4561F7 s:blue d:green"))
-                if not is_multi_file:
-                    auto_enabled = getattr(fig, "_cpc_spine_auto", False)
-                    auto_status = "ON" if auto_enabled else "OFF"
-                    print("  " + colorize_menu(f"auto: auto-apply capacity/efficiency colors [{auto_status}]"))
-                print("  " + colorize_menu("e: pick color from screen"))
-                print("  " + colorize_menu("q: back"))
-                line = safe_input(colorize_prompt("Spine colors (e.g. w:red a:#4561F7, q=back): ")).strip()
+                _print_cpc_spine_help(
+                    fig=fig, is_multi_file=is_multi_file, colorize_menu=colorize_menu
+                )
+                line = safe_input(colorize_prompt("Selection: ")).strip()
                 if line.lower() == "q" or blank_means_back(line):
                     break
                 if line.lower() == "e":

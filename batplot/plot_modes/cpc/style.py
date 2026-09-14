@@ -368,6 +368,19 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
         except Exception:
             pass
     
+    try:
+        from ..common.layout_compat import attach_layout, cpc_layout_fingerprint
+        n_files = len(file_data) if isinstance(file_data, list) and file_data else 1
+        attach_layout(
+            cfg,
+            cpc_layout_fingerprint(
+                is_multi_file=n_files > 1,
+                n_files=max(1, n_files),
+                ro_active=bool(getattr(fig, '_ro_active', False)),
+            ),
+        )
+    except Exception:
+        pass
     return cfg
 
 def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, file_data: Optional[List[Dict]] = None):
@@ -380,6 +393,27 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
         file_data: Optional list of file dicts for multi-file mode
     """
     is_multi_file = file_data is not None and len(file_data) > 1
+    try:
+        from ..common.layout_compat import (
+            cpc_layouts_compatible,
+            infer_cpc_layout_from_cfg,
+            live_cpc_layout,
+        )
+        from ..common.state_capture import ro_states_compatible
+
+        kind = str(cfg.get('kind', '') or '')
+        if kind and kind not in ('cpc_style', 'cpc_style_geom'):
+            print(f"Not a CPC style file (kind={kind!r}).")
+            return False
+        if not ro_states_compatible(cfg, fig, mode_label="CPC style/geometry"):
+            return False
+        file_layout = infer_cpc_layout_from_cfg(cfg)
+        live_layout = live_cpc_layout(fig=fig, file_data=file_data, is_multi_file=is_multi_file)
+        if not cpc_layouts_compatible(file_layout, live_layout):
+            return False
+    except Exception as exc:
+        print(f"Warning: Could not validate CPC style layout: {exc}")
+        return False
     tick_state: Dict[str, bool] = {
         'bx': True, 'tx': False, 'ly': True, 'ry': True,
         'b_ticks': True, 't_ticks': False, 'l_ticks': True, 'r_ticks': True,
@@ -562,28 +596,29 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             pass
     _apply_font_config()
 
-    # Apply canvas and frame size only for style+geometry (``.bpsg`` / ``cpc_style_geom``).
-    # Style-only (``.bps`` / ``cpc_style``) must not resize the figure (parity with operando/histo).
+    # Canvas/frame (``g``) apply whenever present. Older style-only dumps omit
+    # these keys → leave live size (BC). Data geometry stays on ``cpc_style_geom``.
     try:
-        kind = str(cfg.get('kind', '') or '')
-        apply_canvas_geom = (kind == 'cpc_style_geom')
-        fig_cfg = cfg.get('figure', {}) if apply_canvas_geom else {}
+        fig_cfg = cfg.get('figure', {}) if isinstance(cfg.get('figure'), dict) else {}
         # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
         axes_frac = fig_cfg.get('axes_fraction')
         frame_size = fig_cfg.get('frame_size')
-        
-        canvas_size = fig_cfg.get('canvas_size')
+        applied_canvas_or_frame = False
+
+        canvas_size = fig_cfg.get('canvas_size') or fig_cfg.get('size')
         if canvas_size and isinstance(canvas_size, (list, tuple)) and len(canvas_size) == 2:
             # forward=True: interactive undo/import must resize the GUI window
             # (parity with live g→c and with EC/XY/operando undo). axes_fraction
             # is restored immediately below so auto subplot adjust cannot stick.
             fig.set_size_inches(canvas_size[0], canvas_size[1], forward=True)
-        
+            applied_canvas_or_frame = True
+
         # Frame position: prefer axes_fraction (exact position), fall back to preserving position with frame_size
         if axes_frac and isinstance(axes_frac, (list, tuple)) and len(axes_frac) == 4:
             # Restore exact position from axes_fraction (this overrides any automatic adjustments)
             x0, y0, w, h = axes_frac
             ax.set_position([float(x0), float(y0), float(w), float(h)])
+            applied_canvas_or_frame = True
         elif frame_size:
             # Fall back to preserving current position with frame_size (for backward compatibility)
             if frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
@@ -595,13 +630,14 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                     new_w = fw_in / canvas_w
                     new_h = fh_in / canvas_h
                     ax.set_position([current_pos.x0, current_pos.y0, new_w, new_h])
+                    applied_canvas_or_frame = True
         # Keep twin axis locked to primary frame (session load parity).
         if ax2 is not None:
             try:
                 ax2.set_position(ax.get_position())
             except Exception:
                 pass
-        if apply_canvas_geom:
+        if applied_canvas_or_frame:
             sync_figure_geometry_caches(fig, ax)
     except Exception:
         pass
@@ -1079,6 +1115,11 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
             pass
         try:
             finalize_spine_colors_cpc(fig, ax, ax2, tick_state=tick_state)
+            from ...ui import heal_live_axis_title_colors_from_spines
+
+            heal_live_axis_title_colors_from_spines(ax, fig)
+            if ax2 is not None:
+                heal_live_axis_title_colors_from_spines(ax2, fig)
         except Exception:
             pass
     _apply_spine_config()

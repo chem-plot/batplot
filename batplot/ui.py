@@ -63,6 +63,138 @@ def _hex_color(color) -> str:
         return str(color)
 
 
+def heal_restored_axis_title_color(
+    saved_title_color,
+    *,
+    matching_spine_color=None,
+    opposite_spine_color=None,
+):
+    """Resolve axis-title color when loading sessions (old .pkl safe).
+
+    Legacy spine coloring could hitchhike the opposite WASD spine onto the
+    bottom/left title and then dump that wrong color as ``xlabel_color`` /
+    ``axis_label_colors``. If the saved title matches the *opposite* spine and
+    differs from the matching spine, prefer the matching spine. Otherwise keep
+    an explicit saved title color; if missing, fall back to the matching spine.
+    """
+    if saved_title_color is None and matching_spine_color is None:
+        return None
+    if saved_title_color is None:
+        return matching_spine_color
+    if matching_spine_color is None:
+        return saved_title_color
+    if opposite_spine_color is None:
+        return saved_title_color
+    try:
+        saved_h = _hex_color(saved_title_color)
+        match_h = _hex_color(matching_spine_color)
+        opp_h = _hex_color(opposite_spine_color)
+        if saved_h == opp_h and saved_h != match_h:
+            return matching_spine_color
+    except Exception:
+        pass
+    return saved_title_color
+
+
+def heal_axis_label_colors_dict(
+    axis_label_colors,
+    spines_cfg=None,
+    *,
+    y_label_position: str = "left",
+):
+    """Return a healed copy of XY ``axis_label_colors`` for session/style load."""
+    if not isinstance(axis_label_colors, dict) or not axis_label_colors:
+        return axis_label_colors
+    spines_cfg = spines_cfg if isinstance(spines_cfg, dict) else {}
+    bottom_c = (spines_cfg.get("bottom") or {}).get("color")
+    top_c = (spines_cfg.get("top") or {}).get("color")
+    left_c = (spines_cfg.get("left") or {}).get("color")
+    right_c = (spines_cfg.get("right") or {}).get("color")
+    out = dict(axis_label_colors)
+    if "x" in out:
+        out["x"] = heal_restored_axis_title_color(
+            out.get("x"),
+            matching_spine_color=bottom_c,
+            opposite_spine_color=top_c,
+        )
+    if "y" in out:
+        if str(y_label_position) == "right":
+            out["y"] = heal_restored_axis_title_color(
+                out.get("y"),
+                matching_spine_color=right_c,
+                opposite_spine_color=left_c,
+            )
+        else:
+            out["y"] = heal_restored_axis_title_color(
+                out.get("y"),
+                matching_spine_color=left_c,
+                opposite_spine_color=right_c,
+            )
+    return out
+
+
+def heal_live_axis_title_colors_from_spines(ax, fig=None) -> None:
+    """Heal hitchhiked live axis titles using current spine color stores (BC).
+
+    Used after session/style spine recolor when dumps did not store a separate
+    ``axis_label_colors`` blob (operando / CPC). Respects
+    ``get_label_position()`` for left vs right Y titles.
+    """
+    if ax is None:
+        return
+    try:
+        bottom_c = resolve_spine_dump_color(ax, "bottom", fig)
+        top_c = resolve_spine_dump_color(ax, "top", fig)
+        left_c = resolve_spine_dump_color(ax, "left", fig)
+        right_c = resolve_spine_dump_color(ax, "right", fig)
+    except Exception:
+        return
+    try:
+        x_pos = str(ax.xaxis.get_label_position() or "bottom")
+    except Exception:
+        x_pos = "bottom"
+    try:
+        y_pos = str(ax.yaxis.get_label_position() or "left")
+    except Exception:
+        y_pos = "left"
+    try:
+        cur_x = ax.xaxis.label.get_color()
+        if x_pos == "bottom":
+            healed_x = heal_restored_axis_title_color(
+                cur_x, matching_spine_color=bottom_c, opposite_spine_color=top_c
+            )
+            if healed_x is not None:
+                ax.xaxis.label.set_color(healed_x)
+                ax._stored_xlabel_color = healed_x  # type: ignore[attr-defined]
+        elif x_pos == "top":
+            healed_x = heal_restored_axis_title_color(
+                cur_x, matching_spine_color=top_c, opposite_spine_color=bottom_c
+            )
+            if healed_x is not None:
+                ax.xaxis.label.set_color(healed_x)
+                ax._stored_top_xlabel_color = healed_x  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        cur_y = ax.yaxis.label.get_color()
+        if y_pos == "right":
+            healed_y = heal_restored_axis_title_color(
+                cur_y, matching_spine_color=right_c, opposite_spine_color=left_c
+            )
+            if healed_y is not None:
+                ax.yaxis.label.set_color(healed_y)
+                ax._stored_right_ylabel_color = healed_y  # type: ignore[attr-defined]
+        else:
+            healed_y = heal_restored_axis_title_color(
+                cur_y, matching_spine_color=left_c, opposite_spine_color=right_c
+            )
+            if healed_y is not None:
+                ax.yaxis.label.set_color(healed_y)
+                ax._stored_ylabel_color = healed_y  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 def format_spine_side_tick_report(
     ax,
     side: str,
@@ -265,6 +397,15 @@ def _tick_state_from_live_artists(ax) -> dict:
 
 
 def _resolve_tick_state(ax, tick_state=None) -> dict:
+    """Resolve tick visibility for spine/tick coloring.
+
+    Priority:
+      1. Explicit ``tick_state`` argument — including an empty ``{}`` (authoritative;
+         do **not** fall through to saved/live defaults). Callers that mean
+         "use saved or live" must pass ``None``, never ``{}``.
+      2. ``ax._saved_tick_state`` when present
+      3. Live tick artists via ``_tick_state_from_live_artists``
+    """
     # Empty dict is authoritative (do not fall through to hard-coded defaults).
     if isinstance(tick_state, dict):
         return dict(tick_state)
@@ -272,6 +413,28 @@ def _resolve_tick_state(ax, tick_state=None) -> dict:
     if isinstance(saved, dict):
         return dict(saved)
     return _tick_state_from_live_artists(ax)
+
+
+def _cpc_scoped_tick_state(tick_state, *, y_owner: str) -> dict:
+    """Scope a shared CPC ``tick_state`` to one Y host axis.
+
+    CPC keeps one flat dict with both ``l_*`` and ``r_*`` on. Passing that
+    unchanged into ``_sync_mpl_tick_params_for_side`` makes the opposite-side
+    guard skip axis-wide ``tick_params(colors=…)``. For the left host (``ax``)
+    clear right flags; for the right host (``ax2``) clear left flags so each
+    twin can reseal its own Y tick colors after WASD/draw rebuilds.
+    """
+    ts = dict(tick_state) if isinstance(tick_state, dict) else {}
+    owner = str(y_owner).lower()
+    if owner == "left":
+        ts["r_ticks"] = False
+        ts["r_labels"] = False
+        ts["ry"] = False
+    elif owner == "right":
+        ts["l_ticks"] = False
+        ts["l_labels"] = False
+        ts["ly"] = False
+    return ts
 
 
 def _is_colorbar_axes(ax) -> bool:
@@ -598,17 +761,28 @@ def finalize_spine_colors_cpc(
         "left": [ax],
         "right": [ax2] if ax2 is not None else [],
     }
+
+    def _ts_for(curr_ax, side: str) -> dict:
+        base = _resolve_tick_state(curr_ax, tick_state)
+        if side == "left":
+            return _cpc_scoped_tick_state(base, y_owner="left")
+        if side == "right":
+            return _cpc_scoped_tick_state(base, y_owner="right")
+        return base
+
     for side, hex_c in colors.items():
         if side not in ("top", "bottom", "left", "right"):
             continue
         for curr_ax in axes_map.get(side, [ax]):
             if curr_ax is None or curr_ax.spines.get(side) is None:
                 continue
-            ts = _resolve_tick_state(curr_ax, tick_state)
+            ts = _ts_for(curr_ax, side)
             _sync_mpl_tick_params_for_side(curr_ax, side, hex_c, ts)
             _apply_side_color_once(curr_ax, side, hex_c)
             _store_and_sync_tick_kw(curr_ax, side, hex_c)
     ensure_spine_color_draw_hook(fig, ax)
+    if ax2 is not None:
+        ensure_spine_color_draw_hook(fig, ax2)
     if draw:
         _refresh_canvas_after_spine_color(fig)
         for side, hex_c in colors.items():
@@ -617,7 +791,7 @@ def finalize_spine_colors_cpc(
             for curr_ax in axes_map.get(side, [ax]):
                 if curr_ax is None or curr_ax.spines.get(side) is None:
                     continue
-                ts = _resolve_tick_state(curr_ax, tick_state)
+                ts = _ts_for(curr_ax, side)
                 _apply_side_color_once(curr_ax, side, hex_c)
                 _sync_mpl_tick_params_for_side(curr_ax, side, hex_c, ts)
 
@@ -1007,11 +1181,13 @@ def _apply_side_color_once(ax, side: str, color) -> None:
             except Exception as e:
                 _debug_spine(f"[DEBUG spine]   top title (_top_xlabel_text): {e}")
         # SecondaryAxis / label-on-top: title is xaxis.label (not a duplicate artist).
+        # Only then — never when the primary label sits on the bottom (normal XY),
+        # otherwise ``k``/``c`` top-spine color wrongly recolors the bottom title.
         try:
             label_pos = ax.xaxis.get_label_position()
         except Exception:
             label_pos = "bottom"
-        if art is None or str(label_pos) == "top":
+        if str(label_pos) == "top":
             try:
                 ax.xaxis.label.set_color(title_c)
                 _debug_spine("[DEBUG spine]   top title (xaxis.label): set_color OK")
@@ -1019,20 +1195,32 @@ def _apply_side_color_once(ax, side: str, color) -> None:
                 _debug_spine(f"[DEBUG spine]   top title (xaxis.label): {e}")
     elif side == "bottom":
         _set_tick_side_color(ax.xaxis, use_tick1=True)
+        # Only recolor xaxis.label when it is the bottom title (not label-on-top).
         try:
-            ax.xaxis.label.set_color(color)
-            ax._stored_xlabel_color = color
-            _debug_spine("[DEBUG spine]   bottom title (xaxis.label): set_color OK")
-        except Exception as e:
-            _debug_spine(f"[DEBUG spine]   bottom title: {e}")
+            label_pos = ax.xaxis.get_label_position()
+        except Exception:
+            label_pos = "bottom"
+        if str(label_pos) == "bottom":
+            try:
+                ax.xaxis.label.set_color(color)
+                ax._stored_xlabel_color = color
+                _debug_spine("[DEBUG spine]   bottom title (xaxis.label): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   bottom title: {e}")
     elif side == "left":
         _set_tick_side_color(ax.yaxis, use_tick1=True)
+        # Only recolor yaxis.label when it is on the left (operando EC often uses right).
         try:
-            ax.yaxis.label.set_color(color)
-            ax._stored_ylabel_color = color
-            _debug_spine("[DEBUG spine]   left title (yaxis.label): set_color OK")
-        except Exception as e:
-            _debug_spine(f"[DEBUG spine]   left title: {e}")
+            label_pos = ax.yaxis.get_label_position()
+        except Exception:
+            label_pos = "left"
+        if str(label_pos) == "left":
+            try:
+                ax.yaxis.label.set_color(color)
+                ax._stored_ylabel_color = color
+                _debug_spine("[DEBUG spine]   left title (yaxis.label): set_color OK")
+            except Exception as e:
+                _debug_spine(f"[DEBUG spine]   left title: {e}")
     elif side == "right":
         _set_tick_side_color(ax.yaxis, use_tick1=False)
         try:
@@ -2329,5 +2517,7 @@ __all__ = [
     'get_fig_spine_colors',
     'register_spine_color_axis',
     'resolve_spine_dump_color',
+    'heal_restored_axis_title_color',
+    'heal_axis_label_colors_dict',
     'set_spine_side_color',
 ]

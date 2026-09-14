@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from batplot.plot_modes.common.font_extras import (
     apply_fig_font_weight,
@@ -135,11 +136,13 @@ def test_xy_undo_restores_font_extras():
     plt.close(fig)
 
 
-def test_xy_style_only_ps_does_not_apply_margins(tmp_path):
+def test_xy_style_only_ps_includes_and_applies_size_frame_margins(tmp_path):
+    """``ps`` keeps canvas/frame/margins (``g`` under Styles); data limits stay psg-only."""
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     ax.plot([0, 1], [1, 2])
-    fig.subplots_adjust(left=0.20, right=0.90, bottom=0.20, top=0.90)
-    before = dict(fig.subplotpars.__dict__)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_position([0.20, 0.20, 0.70, 0.70])
+    live_bbox = ax.get_position().bounds
     style_path = tmp_path / "style.bps"
     ST.export_style_config(
         str(style_path),
@@ -156,18 +159,22 @@ def test_xy_style_only_ps_does_not_apply_margins(tmp_path):
     )
     payload = json.loads(style_path.read_text(encoding="utf-8"))
     assert payload["kind"] == "xy_style"
-    # Style-only must not hitchhike canvas/frame/margins (parity with EC/CPC).
-    assert "margins" not in payload
+    assert "geometry" not in payload
     fig_block = payload.get("figure") or {}
-    assert "size" not in fig_block
-    assert "frame_size" not in fig_block
-    assert "axes_fraction" not in fig_block
-    # Move axes, then import style-only — live frame must stay put.
-    fig.subplots_adjust(left=0.05, right=0.99, bottom=0.05, top=0.99)
+    assert "size" in fig_block or "canvas_size" in fig_block
+    assert "frame_size" in fig_block
+    assert "axes_fraction" in fig_block
+    assert "margins" in payload
+    assert abs(payload["margins"]["left"] - live_bbox[0]) < 1e-9
+    # Different canvas + frame + xlim on target — ps restores size/frame, not xlim.
+    fig2, ax2 = plt.subplots(figsize=(9.0, 7.0))
+    ax2.plot([0, 1], [1, 2])
+    ax2.set_xlim(3.0, 4.0)
+    ax2.set_position([0.05, 0.05, 0.90, 0.90])
     ST.apply_style_config(
         str(style_path),
-        fig,
-        ax,
+        fig2,
+        ax2,
         [np.array([0, 1])],
         [np.array([1, 2])],
         [np.array([1, 2])],
@@ -178,11 +185,12 @@ def test_xy_style_only_ps_does_not_apply_margins(tmp_path):
         ["c1"],
         update_labels_func=_noop,
     )
-    after = fig.subplotpars
-    assert abs(after.left - 0.05) < 1e-6
-    assert abs(after.right - 0.99) < 1e-6
-    assert abs(before["left"] - 0.20) < 1e-6
+    assert tuple(fig2.get_size_inches()) == pytest.approx((6.0, 4.0), abs=1e-6)
+    after = ax2.get_position().bounds
+    assert all(abs(a - b) < 1e-6 for a, b in zip(after, live_bbox))
+    assert ax2.get_xlim() == (3.0, 4.0)
     plt.close(fig)
+    plt.close(fig2)
 
 
 def test_xy_undo_restores_axis_title_text_overrides():
@@ -306,7 +314,8 @@ def test_xy_export_cif_flags_from_fig_attrs(tmp_path):
         ("phase a", "a.cif", [1.0], None, 5.0, "#ff0000"),
         ("phase b", "b.cif", [2.0], None, 5.0, "#0000ff"),
     ]
-    style_path = tmp_path / "cif.bps"
+    style_path = tmp_path / "cif.bpsg"
+    ps_path = tmp_path / "cif.bps"
     try:
         ST.export_style_config(
             str(style_path),
@@ -320,12 +329,32 @@ def test_xy_export_cif_flags_from_fig_attrs(tmp_path):
             [0.0],
             cif_tick_series=cif_series,
             overwrite_path=str(style_path),
-            force_kind="ps",
+            force_kind="psg",
         )
         payload = json.loads(style_path.read_text(encoding="utf-8"))
         assert payload["show_cif_titles"] is False
         assert payload["show_cif_hkl"] is True
         assert payload["cif_set_visible"] == [True, False]
+        # Style-only must strip CIF chrome (geometry-only contract).
+        ST.export_style_config(
+            str(ps_path),
+            fig,
+            ax,
+            [np.array([1, 2])],
+            ["c1"],
+            0.0,
+            _Args(),
+            {},
+            [0.0],
+            cif_tick_series=cif_series,
+            overwrite_path=str(ps_path),
+            force_kind="ps",
+        )
+        ps_payload = json.loads(ps_path.read_text(encoding="utf-8"))
+        assert "show_cif_titles" not in ps_payload
+        assert "show_cif_hkl" not in ps_payload
+        assert "cif" not in ps_payload
+        assert "cif_ticks" not in ps_payload
     finally:
         if main is not None:
             if had_hkl:

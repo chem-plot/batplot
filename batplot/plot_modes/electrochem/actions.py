@@ -110,13 +110,8 @@ def _build_ec_style_export_config(ctx: ElectrochemActionContext, exp_choice: str
             ".bpsg",
         )
     cfg["kind"] = "ec_style"
-    # Style-only must not hitchhike canvas/frame keys (apply already gates them).
-    fig_block = cfg.get("figure")
-    if isinstance(fig_block, dict):
-        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
-            fig_block.pop(key, None)
-        if not fig_block:
-            cfg.pop("figure", None)
+    # Style-only keeps canvas/frame (``g`` under Styles). Data geometry
+    # (limits / dual axis) stays on ``psg`` only.
     # Capacity↔ions↔dual is structural geometry (parity with XY dual-y on ``ps``).
     cfg.pop("xaxis_dual", None)
     return cfg, ".bps"
@@ -366,8 +361,8 @@ def handle_style_command(ctx: ElectrochemActionContext) -> None:
                 if sub == 'e':
                     # Ask for ps or psg
                     print("Export options:")
-                    print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
-                    print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
+                    print("  " + _colorize_inline_commands("ps  = style (.bps) — colors/fonts/spines/size"))
+                    print("  " + _colorize_inline_commands("psg = style + data geometry (.bpsg) — also limits"))
                     exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                     if not exp_choice or exp_choice == 'q':
                         print("Style export canceled.")

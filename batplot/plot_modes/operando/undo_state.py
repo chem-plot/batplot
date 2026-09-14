@@ -294,6 +294,13 @@ def op_snapshot(
                     }
                 except Exception:
                     pass
+        cb_line_widths_snap = None
+        try:
+            from .style import capture_cbar_line_widths
+
+            cb_line_widths_snap = capture_cbar_line_widths(cbar) or None
+        except Exception:
+            cb_line_widths_snap = None
         state_history.append({
             'note': note,
             'fig_size': (fig_w, fig_h),
@@ -340,6 +347,7 @@ def op_snapshot(
             'ec_ticks': ec_ticks_snap,
             'ec_line_style': ec_line_style,
             'ec_grid': dict(getattr(ec_ax, '_ec_grid', None) or {}) if ec_ax is not None else None,
+            'cb_line_widths': cb_line_widths_snap,
             'operando_cif': {
                 'tick_series': list(getattr(ax, '_operando_cif_tick_series', None) or []),
                 'hkl_label_map': dict(getattr(ax, '_operando_cif_hkl_label_map', None) or {}),
@@ -551,6 +559,12 @@ def op_restore(
                     cbar.ax._colorbar_label = cb_label
                 fig._colorbar_label_mode = cb_label_mode
                 _update_custom_colorbar(cbar.ax, im, label=cb_label, label_mode=cb_label_mode)
+                try:
+                    from .style import apply_cbar_line_widths
+
+                    apply_cbar_line_widths(cbar, snap.get('cb_line_widths'))
+                except Exception:
+                    pass
         except Exception:
             pass
         # EC axes

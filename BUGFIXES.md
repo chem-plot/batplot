@@ -4,6 +4,325 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Color menus (``c`` / ``k``): WASD rectangle like spine ``t`` — 2026-09-14
+- **Issue**: Spine-color help in color settings only showed a one-line
+  ``Spine keys: w=top a=left…`` note, so users could not see which side was
+  which the way the ``t`` spines menu does with its WASD plot-frame diagram.
+- **Solution**: Shared ``print_wasd_color_side_figure()`` reuses the same
+  rectangle as ``print_wasd_side_figure()`` (box + w/a/s/d labels) with a
+  ``side:color`` example column instead of the 1–5 toggle legend.
+  ``print_spine_tick_keys_note()`` now prints that figure, so XY/histo ``c``,
+  EC/CPC/operando ``k`` (and batch color help that calls the same helper) all
+  get the diagram without per-mode copies.
+- **Compatibility**: Windows / macOS / Linux; ASCII box when stdout is not
+  UTF-8-safe (same as ``t``).
+- **Affected files**: ``common/spines.py``, ``common/color_menu_help.py``,
+  ``tests/test_spine_wasd_figure_help.py``, ``BUGFIXES.md``
+
+### Quit prompt ``e``/``s`` opens export/save in every interactive menu — 2026-09-11
+- **Issue**: The ``q`` confirm text advertised ``(e=export, s=save)`` but ended with
+  ``(y/n)`` only; batch quit offered save-all on ``s`` and no ``e``, so users could
+  not reliably enter the normal export/save flows from the quit prompt in every menu.
+- **Solution**: Shared ``confirm_quit_interactive`` prompt
+  ``… (e=export, s=save). Quit now? (y/n/e/s)`` returns ``y`` / ``e`` / ``s`` /
+  stay. XY, EC, CPC, histo, and operando dispatch ``e``/``s`` via pending key (or
+  fall-through). Batch quit uses the same wording and returns ``e``/``s`` so each
+  batch menu’s existing ``pending`` path runs full export/save (not silent save-all).
+- **Compatibility**: Windows / macOS / Linux; ``n``/blank/unknown still stay in menu.
+- **Affected files**: ``common/terminal.py``, ``xy/interactive.py``,
+  ``electrochem/interactive.py``, ``cpc/interactive.py``, ``histo/interactive.py``,
+  ``operando/interactive.py``, ``batch_session/batch_commands.py``,
+  ``batch_session/batch_menu_io.py``, ``batch_session/menu_*.py``,
+  ``tests/test_quit_confirm_export_save.py``, ``BUGFIXES.md``
+
+### ``--readcol`` ignored after ``--wl`` / other option values — 2026-09-10
+- **Issue**: Commands like ``batplot TD_R02.dat --wl 0.259 --readcol 1 3`` (and
+  ``--readcol 1 2 1 3``) always plotted columns 1–2. Different ``--readcol``
+  choices looked identical.
+- **Root cause**: Per-file ``--readcol`` pre-parse treated every non-option
+  token as the “last file”. Values such as ``0.259`` (``--wl``), ``q``
+  (``--xaxis``), or ``out.svg`` (``--out``) overwrote the real file token, so
+  ``readcol_by_file`` keyed on the wrong string, the data file had no match,
+  and XY fell back to default cols 1–2.
+- **Solution**: When scanning for the preceding file, skip value tokens of
+  known options (fixed nargs, optional one-value flags, ``--fullprof``).
+  Style-file exclusion and global ``--readcol`` before any file unchanged.
+- **Compatibility**: Windows / macOS / Linux; argv order with ``--wl`` /
+  ``--xaxis`` / ``--out`` between file and ``--readcol`` now correct.
+- **Affected files**: ``batplot/args.py``,
+  ``tests/test_contracts.py``, ``BUGFIXES.md``
+
+### Line submenu ``f`` widths: twin / dual / colorbar p/i/s/b — 2026-09-10
+- **Issue**: Curve look (``l/ld/d/da/dd``) already round-tripped via
+  ``dash_pattern`` / markers, but frame/tick widths from line ``f`` (and
+  operando top ``l``) did not fully:
+  1. XY ``--ry``/``--txaxis`` twin tick widths (and style apply spine lw) stayed
+     primary-only on p/i/s (undo already mirrored spine lw).
+  2. EC dual SecondaryAxis kept tick widths but not frame (spine) lw on p/i/s/b.
+  3. Operando colorbar widths from top ``l`` were never in style/session/undo
+     and were dropped when the custom colorbar redrew.
+- **Solution**: Twin-aware ``apply_xy_tick_widths`` / spine lw sync on XY apply;
+  ``sync_ec_dual_frame_linewidths`` after EC spine restore and dual chrome
+  reapply; operando ``capture/apply/stash`` colorbar widths in p/i/s/b plus
+  reapply after ``_draw_custom_colorbar``. Missing keys remain no-ops (BC).
+- **Compatibility**: Windows / macOS / Linux; old sessions/styles without the
+  new colorbar width keys unchanged.
+- **Affected files**: ``xy/spines.py``, ``xy/style.py``, ``xy/session.py``,
+  ``xy/undo_state.py``, ``electrochem/style.py``, ``electrochem/style_apply.py``,
+  ``electrochem/session.py``, ``electrochem/undo_state.py``,
+  ``operando/style.py``, ``operando/style_apply.py``, ``operando/session.py``,
+  ``operando/undo_state.py``, ``operando/layout.py``, ``operando/interactive.py``,
+  ``tests/test_line_submenu_pisb_widths.py``, ``BUGFIXES.md``
+
+### Line menus: illustrated curve-look legend (all modes) — 2026-09-10
+- **Issue**: Line submenu listed ``l/ld/d/da/dd`` as long text rows with no
+  visual of each look; operando ``el→s`` help still said ``solid/dots/dashed``
+  (missing dash-dot). Chrome-only menus (histo/CPC) looked like curve style.
+- **Solution**: Shared ``curve_look_help.print_curve_look_legend`` draws the five
+  presets (ASCII or UTF-8) beside short labels. XY/EC print Curve look + Also
+  (``c/f/g/q``); operando ``s`` uses the same legend; histo density ``l`` shows
+  ``s/d/t`` glyphs; histo/CPC ``l`` headers clarify frame/grid only. Dispatch,
+  prompts, ``_bp_dash_pattern``, and p/i/s/b capture/restore are unchanged —
+  old sessions without ``dash_pattern`` still no-op restore.
+- **Compatibility**: Windows / macOS / Linux; ``NO_COLOR`` / dumb TERM / ASCII
+  console fallback.
+- **Affected files**: ``common/curve_look_help.py``, ``xy/line_style.py``,
+  ``electrochem/line_style.py``, ``operando/line_style.py``,
+  ``histo/line_style.py``, ``histo/density_curve.py``, ``cpc/panel_menus.py``,
+  ``operando/interactive.py``, ``tests/test_curve_look_help.py``,
+  ``tests/test_line_dash_styles.py``, ``BUGFIXES.md``
+
+### Toggle spines: 1–5 legend beside WASD figure — 2026-09-10
+- **Issue**: ``What to toggle : 1=… 2=… 3=… 4=… 5=…`` sat on one long line under the
+  WASD box, so it blended into the following help (Toggle examples / Tick …).
+- **Solution**: ``print_wasd_side_figure()`` prints the numbered legend vertically
+  to the right of the plot-frame diagram (aligned by visible width, ANSI-safe).
+  The separate ``What to toggle`` line is removed. Parsing / ``t`` behavior
+  unchanged; shared by all modes using ``run_spine_tick_menu``.
+- **Compatibility**: Windows / macOS / Linux; ASCII box fallback unchanged.
+- **Affected files**: ``batplot/plot_modes/common/spines.py``,
+  ``tests/test_spine_wasd_figure_help.py``, ``BUGFIXES.md``
+
+### Rename / key menus: vertical cyan-aligned key lists — 2026-09-10
+- **Issue**: XY (and histo) rename used a one-line ``Rename (c=…, t=…, …)``
+  prompt with no vertically aligned, highlighted keys — unlike the line
+  submenu (``l``) and EC/CPC rename lists.
+- **Solution**: Shared ``print_menu_key_rows`` pads keys so colons align and
+  uses cyan highlighting via ``colorize_menu``. Applied to XY/histo/EC/CPC/
+  operando rename menus and XY/EC line submenus. Short ``Rename (c/t/…)``
+  prompts remain after the list. ``colorize_menu_item`` preserves intentional
+  key padding. Display-only; dispatch / p/i/s/b unchanged.
+- **Compatibility**: Windows / macOS / Linux; ``NO_COLOR`` / dumb TERM still
+  print plain aligned text.
+- **Affected files**: ``common/menu_rendering.py``, ``xy/labels.py``,
+  ``xy/line_style.py``, ``xy/interactive.py``, ``histo/labels.py``,
+  ``electrochem/labels.py``, ``electrochem/line_style.py``, ``cpc/labels.py``,
+  ``operando/labels.py``, tests, ``BUGFIXES.md``
+
+### CIF menu lists numbered phase names — 2026-09-10
+- **Issue**: After adding CIF files (1D ``cif`` / operando ``c`` / batch ``cif``),
+  re-entering the CIF submenu showed only command keys — no numbered list of
+  phase indices and names, so ``c``/``r``/``x``/``v`` indices were unclear.
+- **Solution**: Print the existing phase list helper at the top of every CIF
+  menu refresh when sets are present (``N: label (basename)`` for XY/batch;
+  numbered color+label for operando). Empty series still shows the “use a to
+  add” hint. Session/style/undo behavior unchanged.
+- **Compatibility**: Windows / macOS / Linux; display-only; BC for old sessions.
+- **Affected files**: ``xy/cif.py``, ``operando/cif_menu.py``,
+  ``operando/interactive.py``, ``batch_session/menu_xy.py``,
+  ``tests/test_xy_cif_add.py``, ``BUGFIXES.md``
+
+### CIF title font independent of ``.bps`` / global font — 2026-09-10
+- **Issue**: Applying a style-only ``.bps`` (or changing plot font size/family)
+  also changed CIF phase-title fonts (e.g. ``Li2FeSeO.cif`` under the XRD
+  stack). CIF chrome is geometry (``.bpsg`` / session), not style.
+- **Solution**: Freeze XY CIF title size/family on ``fig._bp_cif_title_font``
+  (and operando ``_operando_cif_title_font``) at first draw; redraw uses that
+  store, not live ``rcParams``. Style-only ``ps`` strips/skips all CIF keys;
+  only ``xy_style_geom`` / ``operando_ec_style_geom`` apply CIF. Session /
+  undo persist ``cif_title_font``. Font collectors skip CIF tick artists.
+  Old ``.pkl`` without the key still freeze from rcParams on first redraw.
+- **Compatibility**: Windows / macOS / Linux; old ``.bps`` with CIF keys
+  ignored on import (no CIF mutation); ``.bpsg`` / ``.pkl`` unchanged.
+- **Affected files**: ``batplot/utils.py``, ``xy/cif.py``, ``xy/pipeline.py``,
+  ``xy/session.py``, ``xy/style.py``, ``xy/undo_state.py``,
+  ``operando/plot.py``, ``operando/style.py``, ``operando/style_apply.py``,
+  ``common/fonts.py``, tests, ``BUGFIXES.md``
+
+### Style layout gates (``.bps`` / ``.bpsg`` must match live layout) — 2026-09-10
+- **Issue**: Style import could apply chrome/geometry onto a plot with a
+  different structural layout (different curve count, stack vs overlay, CIF
+  presence for XY ``.bpsg``, EC side panel for operando, multi-file vs single,
+  GC/CV/dQdV family, dQdV-2D vs XRD contour, histo density, etc.).
+- **Solution**: Shared ``layout_compat`` fingerprints are exported on every
+  style save and hard-checked at the start of each mode’s canonical applier
+  (no mutation on mismatch). Old styles without ``layout`` are inferred from
+  existing keys when possible. XY ``.bpsg`` requires matching CIF presence;
+  ``.bps`` still allows CIF-less targets for style-only chrome. ``.pkl``
+  sessions unchanged.
+- **Compatibility**: Windows / macOS / Linux; BC for old style files via
+  inference; ambiguous EC family allows when unknown.
+- **Affected files**: ``batplot/plot_modes/common/layout_compat.py``,
+  ``common/style_routing.py``, ``xy/style.py``, ``electrochem/style.py``,
+  ``electrochem/style_apply.py``, ``cpc/style.py``, ``cpc/actions.py``,
+  ``operando/style.py``, ``operando/style_apply.py``,
+  ``histo/interactive.py``, ``tests/test_style_layout_compat.py``,
+  ``BUGFIXES.md``
+
+### XY style key matrix (``.bps`` / ``.bpsg`` deep audit) — 2026-09-10
+- **Issue**: Deeper 1D style audit found remaining key/subkey gaps after
+  canvas-in-ps:
+  1. Interactive ``i`` could call ``adjust_margins`` (stale ``subplotpars``)
+     and wipe a just-restored ``axes_fraction`` / ``g`` frame.
+  2. ``curve_palettes`` recolored curves after ``lines[].color``, unlike
+     ``.pkl`` (manual colors after a palette were lost on style import).
+  3. ``cif_stack_y_offsets`` hitchhiked on style-only ``ps`` (data geometry).
+  4. ``curve_names_visible`` export ignored ``fig._curve_names_visible`` when
+     label artists were empty.
+- **Solution**: Skip ``adjust_margins_cb`` when canvas/frame was applied;
+  restore palette history only (no recolor); strip/gate CIF stack offsets to
+  ``psg``; export curve-name visibility from the fig attr. Grid restore no
+  longer forces a hardcoded gray style. Regression matrix:
+  ``tests/test_xy_bps_bpsg_key_matrix.py``.
+- **Compatibility**: Windows / macOS / Linux; old ``.bps`` without size /
+  CIF-offset keys unchanged; ``.pkl`` already history-only for palettes.
+- **Affected files**: ``batplot/plot_modes/xy/style.py``,
+  ``tests/test_xy_bps_bpsg_key_matrix.py``, ``BUGFIXES.md``
+
+### Style ``ps`` (Canvas/frame size in ``.bps``) — 2026-09-10
+- **Issue**: Interactive ``g`` (size) is under **Styles**, but style-only
+  ``ps`` / ``.bps`` stripped ``canvas_size`` / ``size`` / ``frame_size`` /
+  ``axes_fraction`` (and refused to apply them). Users exporting
+  ``style.bps`` after setting canvas/plot frame saw no size in the file and
+  no resize on import. Same gap affected EC/CPC/operando/histo.
+- **Root cause**: Earlier hitchhiker fixes treated canvas/frame as
+  geometry-only (``psg``), which conflicted with the menu taxonomy and with
+  what users expect from a style file.
+- **Solution**: Style-only ``ps`` keeps and applies canvas/frame whenever
+  those keys are present. Data geometry stays ``psg``-only (XY offsets /
+  limits / dual-y; EC dual; operando panel inches / clim / reverse; histo
+  ylim). Older ``.bps`` dumps without size keys still leave the live canvas
+  (BC). ``.pkl`` session schema unchanged (already stored size/frame).
+- **Compatibility**: Windows / macOS / Linux; old style files without size
+  keys unchanged; new ``ps`` exports include size.
+- **Affected files**: ``xy/style.py``, ``electrochem/actions.py``,
+  ``electrochem/style_apply.py``, ``cpc/actions.py``, ``cpc/style.py``,
+  ``operando/style.py``, ``operando/style_apply.py``,
+  ``histo/interactive.py``, ``histo/session.py``, related PISB tests,
+  ``BUGFIXES.md``
+
+### XY Options ``u`` (Remove d-spacing plot target) — 2026-09-09
+- **Issue**: 1D (XY) Options ``u`` offered ``d: d (Å)`` to replot the axis in
+  d-spacing, but that conversion/plot path was wrong.
+- **Solution**: Remove ``d`` from the interactive convert menu (choices are
+  ``2`` / ``q`` / ``b`` only). Old sessions already in ``d`` (or ``--xaxis d``)
+  can still convert *to* 2θ or Q. Internal ``convert_x_array`` / Bragg helpers
+  keep ``d`` for crosshair / peaks / CLI where needed. Operando ``u`` unchanged.
+- **Compatibility**: Windows / macOS / Linux; XY interactive only.
+- **Affected files**: ``batplot/plot_modes/xy/axis_units.py``, ``batplot/args.py``,
+  ``tests/test_xy_axis_units.py``, ``BUGFIXES.md``
+
+### Toggle spines (WASD plot-frame figure in ``t`` help) — 2026-09-09
+- **Issue**: ``Toggle spines>`` listed ``w/a/s/d`` only as a flat text line,
+  which was easy to miss for new users.
+- **Solution**: Shared ``print_wasd_side_figure()`` draws a plot-frame diagram
+  (``w`` top / ``a`` left / ``s`` bottom / ``d`` right) at the top of the
+  common ``run_spine_tick_menu`` help. Box-drawing on UTF-8; ASCII fallback on
+  classic Windows consoles.
+- **Compatibility**: Windows / macOS / Linux; help-only (all modes using the
+  shared ``t`` menu).
+- **Affected files**: ``batplot/plot_modes/common/spines.py``, ``BUGFIXES.md``
+
+### Colors menu (EC classic layout across all modes) — 2026-09-09
+- **Issue**: Color submenu help differed by mode (``Colors>`` vs EC classic
+  ``How to set color`` / recommended palettes / ``Selection:``). Users wanted
+  the EC ``c`` layout everywhere while keeping mode-specific targets.
+- **Solution**: Shared ``color_menu_help`` printers follow the EC classic
+  template (numbered methods with cyan ``e.g.`` samples, recommended palettes
+  + digits line, saved colors, ``u``/``v``/``e``/``q`` as separate lines,
+  ``Selection:``). Each mode keeps its own method rows (curve / cycle / file /
+  bar / CIF / spine / colormap) and parsers unchanged. Spine-only menus omit
+  ``v`` where unused; batch XY omits palettes (single-color-for-all).
+- **Compatibility**: Windows / macOS / Linux; help-only.
+- **Affected files**: ``batplot/plot_modes/common/color_menu_help.py``,
+  ``xy/colors.py``, ``xy/cif.py``, ``histo/colors.py``,
+  ``electrochem/colors.py``, ``electrochem/spine_colors.py``,
+  ``cpc/colors.py``, ``cpc/panel_menus.py``, ``operando/colors.py``,
+  ``operando/spine_colors.py``, ``operando/line_style.py``,
+  ``batch_session/menu_xy.py``, ``tests/test_ec_cycles_three_color_modes.py``,
+  ``BUGFIXES.md``
+
+### EC interactive (IndentationError on import) — 2026-09-09
+- **Issue**: ``batplot … --gc --i`` crashed on import with
+  ``IndentationError`` in ``electrochem/interactive.py`` (empty ``except`` /
+  mis-indented ``if`` / ``try`` suites around spine-color and dual-axis helpers).
+- **Solution**: Restore correct indentation for the broken ``except``/``if``/``try``
+  blocks so the module imports again. Behavior unchanged.
+- **Compatibility**: Windows / macOS / Linux.
+- **Affected files**: ``batplot/plot_modes/electrochem/interactive.py``,
+  ``BUGFIXES.md``
+
+### Tick display + tick color (Cross-mode contract) — 2026-09-09
+- **Issue**: Tick visibility (`t` / WASD) and spine/tick colors (`c` / `k`)
+  could desync after toggles, twin/dual rebuilds, multi-pane hitchhiking, or
+  old dumps that saved the opposite spine color as the axis title. Gaps
+  differed by mode (operando `t` finalized only one pane; CPC shared
+  `tick_state` blocked axis-wide Y reseal; XY cleared `_saved_tick_state`
+  until first `t` toggle).
+- **Contract**: After every WASD change → sync `tick_state` → apply visibility
+  → `finalize_spine_colors*` with that state. Color keys stay literal
+  `w/a/s/d`. Titles follow `get_label_position()`; restore heals hitchhiked
+  title colors (incl. right-ylabel). Operando EC `t` may alias `a→right` for
+  visibility only; color menus remain literal (`d:` for visible EC Y).
+- **Solution**:
+  - Document empty-`{}` `_resolve_tick_state` semantics; CPC
+    `_cpc_scoped_tick_state` so left/right hosts can reseal Y colors.
+  - Operando: finalize **both** panes after `t`/`k`; help notes `t` alias vs
+    `k` literal keys; `operando_pane_tick_entries` helper.
+  - XY: keep `ax._saved_tick_state` in sync from session start (not only on
+    quit).
+  - Session/style: `heal_live_axis_title_colors_from_spines` after finalize
+    for operando + CPC (right-ylabel BC).
+  - Regression matrix: `tests/test_tick_display_color_contract.py`.
+- **Compatibility**: Windows / macOS / Linux; old `.pkl` / style BC via heal +
+  finalize (no dump schema break).
+- **Affected files**: `batplot/ui.py`,
+  `batplot/plot_modes/xy/interactive.py`,
+  `batplot/plot_modes/operando/interactive.py`,
+  `batplot/plot_modes/operando/spine_colors.py`,
+  `batplot/plot_modes/operando/style_apply.py`,
+  `batplot/plot_modes/operando/session.py`,
+  `batplot/plot_modes/cpc/interactive.py`,
+  `batplot/plot_modes/cpc/wasd_menu.py`,
+  `batplot/plot_modes/cpc/session.py`,
+  `batplot/plot_modes/cpc/style.py`,
+  `tests/test_tick_display_color_contract.py`, `BUGFIXES.md`
+
+### Axis title hitchhiking (top/left spine recolor) — 2026-09-09
+- **Issue**: On normal XY plots, setting the top spine color (``w:…`` / ``k``)
+  also changed the bottom axis title (``ax.xaxis.label``) to the same color.
+  Symmetric risk: left spine could recolor a right-side ylabel (operando EC).
+  Old ``.pkl`` / style dumps could also *save* that hitchhiked title color and
+  re-apply it on load.
+- **Root cause**: ``_apply_side_color_once`` treated ``xaxis.label`` as the top
+  title whenever ``_top_xlabel_artist`` was missing; left always painted
+  ``yaxis.label``. Stored-color reapply helpers did the same without checking
+  label position. Session restore then trusted ``xlabel_color`` even when it
+  matched the opposite spine.
+- **Solution**: Only recolor ``xaxis.label`` / ``yaxis.label`` for the side
+  that matches ``get_label_position()``. Gate XY / histo / EC stored-title
+  reapply the same way. Add ``heal_restored_axis_title_color`` /
+  ``heal_axis_label_colors_dict`` and use them on EC/XY session + XY style
+  load so hitchhiked old dumps prefer the matching spine color.
+- **Compatibility**: Windows / macOS / Linux; XY, histo, EC, CPC, operando;
+  old ``.pkl`` / ``.bps`` BC.
+- **Affected files**: ``batplot/ui.py``, ``batplot/plot_modes/xy/spines.py``,
+  ``batplot/plot_modes/xy/session.py``, ``batplot/plot_modes/xy/style.py``,
+  ``batplot/plot_modes/histo/spines.py``,
+  ``batplot/plot_modes/electrochem/interactive.py``,
+  ``batplot/plot_modes/electrochem/session.py``,
+  ``tests/test_spine_colors_pisb.py``, ``BUGFIXES.md``
+
 ### Docs (Consistent ``N.`` chapter numbering) — 2026-09-09
 - **Issue**: Chapter titles mixed ``1 Title`` and ``3. Title`` (some with a
   period after the number, some without) in sidebar, home list, and H1s.

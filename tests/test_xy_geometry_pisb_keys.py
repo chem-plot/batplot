@@ -1,7 +1,7 @@
 """Hard gates for XY geometry keys across p / i / s / b.
 
 Covers: live axes frame after ``g``/set_position, psg geometry block,
-session axes_bbox authority, undo norm_*/cif_initial_ylim, style-only gate.
+session axes_bbox authority, undo norm_*/cif_initial_ylim, style-only canvas/frame.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from batplot import session as S
 from batplot.plot_modes.xy import style as ST
@@ -250,11 +251,13 @@ def test_psg_export_import_geometry_block(tmp_path):
     plt.close(fig2)
 
 
-def test_ps_does_not_apply_canvas_or_geometry_limits(tmp_path):
+def test_ps_applies_canvas_and_frame_but_not_geometry_limits(tmp_path):
+    """``ps`` restores canvas/frame; axis limits stay psg-only."""
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     ax.plot([0, 1], [1, 2])
     ax.set_xlim(0, 1)
     ax.set_position([0.15, 0.15, 0.70, 0.70])
+    live_bbox = ax.get_position().bounds
     style_path = tmp_path / "style.bps"
     ST.export_style_config(
         str(style_path),
@@ -272,10 +275,123 @@ def test_ps_does_not_apply_canvas_or_geometry_limits(tmp_path):
     payload = json.loads(style_path.read_text(encoding="utf-8"))
     assert payload["kind"] == "xy_style"
     assert "geometry" not in payload
+    fig_block = payload.get("figure") or {}
+    assert ("canvas_size" in fig_block) or ("size" in fig_block)
+    assert "axes_fraction" in fig_block
+    assert "frame_size" in fig_block
 
     fig2, ax2 = plt.subplots(figsize=(9.0, 7.0))
     ax2.plot([0, 1], [1, 2])
     ax2.set_xlim(3, 4)
+    ax2.set_position([0.05, 0.05, 0.90, 0.90])
+    ST.apply_style_config(
+        str(style_path),
+        fig2,
+        ax2,
+        [np.array([0, 1])],
+        [np.array([1, 2])],
+        [np.array([1, 2])],
+        [0.0],
+        [],
+        _Args(),
+        {},
+        ["c1"],
+        update_labels_func=_noop,
+    )
+    assert tuple(fig2.get_size_inches()) == pytest.approx((6.0, 4.0), abs=1e-6)
+    after = ax2.get_position().bounds
+    assert all(abs(a - b) < 1e-6 for a, b in zip(after, live_bbox))
+    assert ax2.get_xlim() == (3.0, 4.0)
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_ps_roundtrip_restores_canvas_and_frame_leaves_xlim(tmp_path):
+    """Export 10×6 with frame ~8.3×4.38; import onto other size restores canvas+frame, not xlim."""
+    # 8.3/10=0.83, 4.38/6=0.73 → center axes_fraction
+    left = (1.0 - 0.83) / 2.0
+    bottom = (1.0 - 0.73) / 2.0
+    fig, ax = plt.subplots(figsize=(10.0, 6.0))
+    ax.plot([0, 10], [0, 1])
+    ax.set_xlim(1.0, 9.0)
+    ax.set_position([left, bottom, 0.83, 0.73])
+    style_path = tmp_path / "size_frame.bps"
+    ST.export_style_config(
+        str(style_path),
+        fig,
+        ax,
+        [np.array([0, 1])],
+        ["c1"],
+        0.0,
+        _Args(),
+        {},
+        [0.0],
+        overwrite_path=str(style_path),
+        force_kind="ps",
+    )
+    payload = json.loads(style_path.read_text(encoding="utf-8"))
+    fig_block = payload["figure"]
+    sz = fig_block.get("canvas_size") or fig_block.get("size")
+    assert sz == pytest.approx([10.0, 6.0], abs=1e-6)
+    assert fig_block["frame_size"] == pytest.approx([8.3, 4.38], abs=1e-6)
+    assert fig_block["axes_fraction"] == pytest.approx([left, bottom, 0.83, 0.73], abs=1e-6)
+    assert "geometry" not in payload
+
+    fig2, ax2 = plt.subplots(figsize=(7.0, 5.0))
+    ax2.plot([0, 10], [0, 1])
+    ax2.set_xlim(2.0, 5.0)
+    ax2.set_position([0.05, 0.05, 0.90, 0.90])
+    ST.apply_style_config(
+        str(style_path),
+        fig2,
+        ax2,
+        [np.array([0, 10])],
+        [np.array([0, 1])],
+        [np.array([0, 1])],
+        [0.0],
+        [],
+        _Args(),
+        {},
+        ["c1"],
+        update_labels_func=_noop,
+    )
+    assert tuple(fig2.get_size_inches()) == pytest.approx((10.0, 6.0), abs=1e-6)
+    b = ax2.get_position().bounds
+    assert b == pytest.approx((left, bottom, 0.83, 0.73), abs=1e-6)
+    # Frame inches from restored canvas × fraction
+    assert (b[2] * 10.0, b[3] * 6.0) == pytest.approx((8.3, 4.38), abs=1e-6)
+    assert ax2.get_xlim() == (2.0, 5.0)
+    plt.close(fig)
+    plt.close(fig2)
+
+
+def test_ps_legacy_without_size_keys_leaves_live_canvas(tmp_path):
+    """Old ``.bps`` without size/frame keys must not resize the live figure (BC)."""
+    fig, ax = plt.subplots(figsize=(6.0, 4.0))
+    ax.plot([0, 1], [1, 2])
+    style_path = tmp_path / "legacy.bps"
+    ST.export_style_config(
+        str(style_path),
+        fig,
+        ax,
+        [np.array([1, 2])],
+        ["c1"],
+        0.0,
+        _Args(),
+        {},
+        [0.0],
+        overwrite_path=str(style_path),
+        force_kind="ps",
+    )
+    payload = json.loads(style_path.read_text(encoding="utf-8"))
+    fig_block = payload.get("figure") or {}
+    for key in ("size", "canvas_size", "frame_size", "axes_fraction"):
+        fig_block.pop(key, None)
+    payload.pop("margins", None)
+    style_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    fig2, ax2 = plt.subplots(figsize=(9.0, 7.0))
+    ax2.plot([0, 1], [1, 2])
     ax2.set_position([0.05, 0.05, 0.90, 0.90])
     before = ax2.get_position().bounds
     ST.apply_style_config(
@@ -292,8 +408,7 @@ def test_ps_does_not_apply_canvas_or_geometry_limits(tmp_path):
         ["c1"],
         update_labels_func=_noop,
     )
-    assert tuple(fig2.get_size_inches()) == (9.0, 7.0)
-    assert ax2.get_xlim() == (3.0, 4.0)
+    assert tuple(fig2.get_size_inches()) == pytest.approx((9.0, 7.0), abs=1e-6)
     after = ax2.get_position().bounds
     assert all(abs(a - b) < 1e-6 for a, b in zip(before, after))
     plt.close(fig)

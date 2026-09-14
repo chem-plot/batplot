@@ -44,6 +44,7 @@ from ..common.crosshair_export import register_crosshair
 from ..common.terminal import (
     colorize_inline_commands as _colorize_inline_commands,
     colorize_prompt as _colorize_prompt,
+    confirm_quit_interactive,
     safe_input as _safe_input,
 )
 from ..common.spines import (
@@ -160,13 +161,13 @@ from .undo_state import ec_push_state, ec_restore_state
 def _apply_stored_axis_colors(ax, fig=None):
     try:
         color = getattr(ax, '_stored_xlabel_color', None)
-        if color:
+        if color and str(ax.xaxis.get_label_position()) == "bottom":
             ax.xaxis.label.set_color(color)
     except Exception:
         pass
     try:
         color = getattr(ax, '_stored_ylabel_color', None)
-        if color:
+        if color and str(ax.yaxis.get_label_position()) == "left":
             ax.yaxis.label.set_color(color)
     except Exception:
         pass
@@ -226,10 +227,18 @@ def _apply_spine_color(ax, fig, tick_state, spine_name: str, color) -> None:
         if spine_name == 'top' and not is_dual:
             _ui_position_top_xlabel(ax, fig, tick_state)
         elif spine_name == 'bottom':
-            ax._stored_xlabel_color = color
+            try:
+                if str(ax.xaxis.get_label_position()) == "bottom":
+                    ax._stored_xlabel_color = color
+            except Exception:
+                pass
             _ui_position_bottom_xlabel(ax, fig, tick_state)
         elif spine_name == 'left':
-            ax._stored_ylabel_color = color
+            try:
+                if str(ax.yaxis.get_label_position()) == "left":
+                    ax._stored_ylabel_color = color
+            except Exception:
+                pass
             _ui_position_left_ylabel(ax, fig, tick_state)
         elif spine_name == 'right':
             _ui_position_right_ylabel(ax, fig, tick_state)
@@ -1455,18 +1464,18 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
         if key == 'q':
             if canvas_mode:
                 break
-            try:
-                confirm = _safe_input(_colorize_prompt("Quit EC interactive? Remember to save (e=export, s=save). Quit now? (y/n): ")).strip().lower()
-            except Exception:
-                confirm = 'y'
+            confirm = confirm_quit_interactive(
+                label="Quit EC interactive?",
+                safe_input_fn=_safe_input,
+                colorize_fn=_colorize_prompt,
+            )
             if confirm == 'y':
                 break
-            elif confirm in ('e', 's'):
+            if confirm in ('e', 's'):
                 pending_key = confirm
                 continue
-            else:
-                _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
-                continue
+            _print_menu(len(all_cycles), is_dqdv, fig, is_multi_file, menu_title, canvas_mode)
+            continue
         elif key == 'b':
             handle_undo_command(ec_actions)
             continue

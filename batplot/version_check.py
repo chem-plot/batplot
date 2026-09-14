@@ -101,10 +101,13 @@ def _wrap_line(text: str, width: int) -> List[str]:
 UPDATE_INFO = {
     # Custom message to include in update notification
     # (Auto-filled from RELEASE_NOTES.txt when using batplot --dev-upgrade)
-    'custom_message': '- Bug fixes',
+    'custom_message': '- Fix --readcol after --wl / other option values (cols no longer stuck on 1–2)',
     # Additional notes (auto-filled from RELEASE_NOTES.txt)
     'update_notes': [
-        '- Bug fixes'
+        '- Fix --readcol after --wl / other option values (cols no longer stuck on 1–2)',
+        '- Quit prompt: e=export and s=save work in every interactive / batch menu',
+        '- Color menus (c/k): WASD side rectangle like spines t, for all modes',
+        '- User manual homepage: GitHub repo + tutorial zip links'
     ],
     'show_update_notes': True,
 }

@@ -62,13 +62,8 @@ def _build_cpc_style_export_config(ctx: CpcActionContext, exp_choice: str) -> tu
         snap["geometry"] = ctx.get_geometry_snapshot(ctx.ax, ctx.ax2)
         return snap, ".bpsg"
     snap["kind"] = "cpc_style"
-    # Style-only must not hitchhike canvas/frame keys (apply already gates them).
-    fig_block = snap.get("figure")
-    if isinstance(fig_block, dict):
-        for key in ("canvas_size", "frame_size", "axes_fraction", "size"):
-            fig_block.pop(key, None)
-        if not fig_block:
-            snap.pop("figure", None)
+    # Style-only keeps canvas/frame (``g`` under Styles). Data geometry
+    # (axis limits etc.) stays on ``psg`` only.
     return snap, ".bps"
 
 
@@ -704,8 +699,8 @@ def handle_style_export(ctx: CpcActionContext) -> None:
             if sub == 'e':
                 # Ask for ps or psg
                 print("Export options:")
-                print("  " + _colorize_inline_commands("ps  = style only (.bps)"))
-                print("  " + _colorize_inline_commands("psg = style + geometry (.bpsg)"))
+                print("  " + _colorize_inline_commands("ps  = style (.bps) — colors/fonts/spines/size"))
+                print("  " + _colorize_inline_commands("psg = style + data geometry (.bpsg) — also limits"))
                 exp_choice = _safe_input(_colorize_prompt("Export choice (ps/psg, q=cancel): ")).strip().lower()
                 if not exp_choice or exp_choice == 'q':
                     print("Style export canceled.")
@@ -873,7 +868,8 @@ def handle_style_import(ctx: CpcActionContext) -> None:
         has_geometry = (kind == 'cpc_style_geom' and isinstance(geometry_cfg, dict))
 
         # Apply style
-        ctx.apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg, file_data)
+        if ctx.apply_style(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, cfg, file_data) is False:
+            return
 
         # Apply geometry if present (same helper as undo/batch — allows clearing labels)
         if has_geometry:

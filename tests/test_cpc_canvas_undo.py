@@ -8,6 +8,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from batplot.plot_modes.cpc import style as CS
 from batplot.plot_modes.cpc.snapshots import push_cpc_state, restore_cpc_state
@@ -103,16 +104,17 @@ def test_cpc_style_geom_apply_uses_forward_true(monkeypatch):
         plt.close(fig)
 
 
-def test_style_only_still_does_not_resize_cpc():
+def test_style_only_applies_canvas_resize_cpc():
     fig, ax, ax2, sc_c, sc_d, sc_e = _minimal_cpc_figure()
     try:
-        before = tuple(float(v) for v in fig.get_size_inches())
         cfg = CS._style_snapshot(fig, ax, ax2, sc_c, sc_d, sc_e)
-        cfg["kind"] = "cpc_style"  # style-only
+        cfg["kind"] = "cpc_style"  # style-only — still applies canvas/frame
         cfg["figure"]["canvas_size"] = [3.0, 2.0]
+        cfg["figure"]["axes_fraction"] = [0.1, 0.1, 0.8, 0.8]
         CS._apply_style(fig, ax, ax2, sc_c, sc_d, sc_e, cfg, None)
         after = tuple(float(v) for v in fig.get_size_inches())
-        assert abs(after[0] - before[0]) < 1e-9
-        assert abs(after[1] - before[1]) < 1e-9
+        assert abs(after[0] - 3.0) < 1e-9
+        assert abs(after[1] - 2.0) < 1e-9
+        assert ax.get_position().bounds == pytest.approx((0.1, 0.1, 0.8, 0.8), abs=1e-6)
     finally:
         plt.close(fig)

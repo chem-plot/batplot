@@ -72,27 +72,81 @@ def menu_block_end() -> None:
         _tls.open = False
 
 
-def colorize_menu_item(text: str) -> str:
-    """Colorize ``command: description`` menu rows consistently (pure, no I/O)."""
+def colorize_menu_item(text: str, *, key_width: int | None = None) -> str:
+    """Colorize ``command: description`` menu rows consistently (pure, no I/O).
+
+    When the key field has trailing spaces (e.g. ``\"c  : …\"`` / ``\"ld : …\"``)
+    those spaces set the display width so colons stay vertically aligned.
+    Pass ``key_width`` to force a common width for a whole block.
+    """
     raw = str(text).strip()
     if ":" not in raw:
         return raw
     command, description = raw.split(":", 1)
     cmd = command.strip()
     desc = description.strip()
+    if key_width is not None:
+        try:
+            width = max(int(key_width), len(cmd))
+        except Exception:
+            width = len(cmd)
+        display_key = f"{cmd:<{width}}"
+    elif len(command) > len(cmd):
+        # Preserve intentional padding from callers (``\"c  \"``, ``\"ld \"``).
+        display_key = f"{cmd:<{len(command)}}"
+    else:
+        display_key = cmd
     if not ansi_menu_enabled():
-        return f"{cmd}: {desc}"
-    return f"\033[96m{cmd}\033[0m: {desc}"
+        return f"{display_key}: {desc}"
+    return f"\033[96m{display_key}\033[0m: {desc}"
 
 
-def colorize_menu(text: str) -> str:
+def colorize_menu(text: str, *, key_width: int | None = None) -> str:
     """Colorize a key row and open the description block on first use.
 
     Prefer this (or a thin wrapper around it) when printing interactive key
     lists so the block is automatically closed by :func:`colorize_prompt`.
     """
     menu_block_begin()
-    return colorize_menu_item(text)
+    return colorize_menu_item(text, key_width=key_width)
+
+
+def print_menu_key_rows(
+    rows: Sequence[str],
+    *,
+    indent: str = "  ",
+    colorize: Any = None,
+) -> None:
+    """Print vertically aligned ``key: description`` rows with cyan keys.
+
+    ``rows`` are strings like ``\"c: curve\"`` or ``\"ld: line and dots\"``.
+    Keys in the block are padded to the longest key so colons line up
+    (same look as the XY/EC line submenu).
+    """
+    parsed: list[tuple[str, str]] = []
+    for row in rows:
+        raw = str(row).strip()
+        if not raw:
+            continue
+        if ":" not in raw:
+            # Non-key helper lines (rare) — print as-is inside the block.
+            menu_block_begin()
+            print(f"{indent}{raw}")
+            continue
+        key, desc = raw.split(":", 1)
+        parsed.append((key.strip(), desc.strip()))
+    if not parsed:
+        return
+    width = max(len(k) for k, _ in parsed)
+    painter = colorize if colorize is not None else colorize_menu
+    for key, desc in parsed:
+        # Pad in the source string so colorize_menu_item keeps alignment.
+        padded = f"{key:<{width}}: {desc}"
+        try:
+            print(f"{indent}{painter(padded, key_width=width)}")
+        except TypeError:
+            # Thin wrappers that only accept ``text``.
+            print(f"{indent}{painter(padded)}")
 
 
 def append_last_action_shortcuts(options: MutableSequence[str], fig: Any) -> None:
@@ -200,6 +254,7 @@ __all__ = [
     "menu_block_is_open",
     "normalize_menu_heading",
     "print_menu_columns",
+    "print_menu_key_rows",
     "print_menu_separator",
     "prompt_menu_key",
 ]

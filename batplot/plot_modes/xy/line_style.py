@@ -13,6 +13,11 @@ import re
 from typing import Any, Callable, List, Optional, Sequence
 
 from ...plotting import apply_curve_color
+from ..common.curve_look_help import (
+    CURVE_LOOK_CHOICES,
+    print_curve_line_chrome_rows,
+    print_curve_look_legend,
+)
 from ..common.line_dash import clear_dash_pattern, prompt_dash_pattern, set_dash_pattern
 from ..common.session_helpers import _artist_linewidth
 from ..common.spines import apply_frame_and_tick_widths, parse_frame_tick_widths
@@ -72,16 +77,20 @@ def run_line_style_menu(
 
         while True:
             print("\033[1mLine submenu:\033[0m")
-            print(f"  {colorize_menu('c  : change curve line widths')}")
-            print(f"  {colorize_menu('f  : change frame (axes spines) and tick widths')}")
-            print(f"  {colorize_menu('g  : toggle grid lines')}")
-            print(f"  {colorize_menu('l  : show only lines (no markers) for selected curves')}")
-            print(f"  {colorize_menu('ld : show line and dots for selected curves')}")
-            print(f"  {colorize_menu('d  : show only dots for selected curves')}")
-            print(f"  {colorize_menu('da : dashed line for selected curves')}")
-            print(f"  {colorize_menu('dd : dashed line + dots for selected curves')}")
-            print(f"  {colorize_menu('q  : return')}")
-            sub = safe_input(colorize_prompt("Choose (c/f/g/l/ld/d/da/dd/q): ")).strip().lower()
+            print_curve_look_legend(scope="selected curves")
+            print_curve_line_chrome_rows(
+                [
+                    "c: change curve line widths",
+                    "f: change frame (axes spines) and tick widths",
+                    "g: toggle grid lines",
+                    "q: return",
+                ],
+                colorize=colorize_menu,
+                heading="Widths / grid",
+            )
+            sub = safe_input(
+                colorize_prompt(f"Choose (c/f/g/{CURVE_LOOK_CHOICES}/q): ")
+            ).strip().lower()
             if sub == 'q':
                 break
             if sub == '':

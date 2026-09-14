@@ -258,6 +258,11 @@ def run_cpc_wasd_menu(
                 ax._saved_tick_state = dict(tick_state)
             except Exception:
                 pass
+            try:
+                if ax2 is not None:
+                    ax2._saved_tick_state = dict(tick_state)
+            except Exception:
+                pass
         def _draw_cpc_spine_menu():
             try:
                 finalize_spine_colors_cpc(fig, ax, ax2, tick_state=tick_state)

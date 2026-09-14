@@ -13,7 +13,7 @@ from ..common.crosshair_export import savefig_without_crosshair
 from ..common.files import format_file_timestamp
 from ..common.menu_rendering import append_last_action_shortcuts, print_menu_columns, prompt_menu_key
 from ..common.menus import run_option_menu
-from ..common.terminal import colorize_prompt, safe_input
+from ..common.terminal import colorize_prompt, confirm_quit_interactive, safe_input
 from ...ui import resize_canvas, resize_plot_frame
 from ...utils import finalize_axis_label_text
 from .actions import (
@@ -50,6 +50,21 @@ def _apply_style_file(fig, ax, state: HistoState, path: str) -> bool:
     kind = payload.get("kind", "") if isinstance(payload, dict) else ""
     if kind and kind != "histo_style":
         print(f"Not a histogram style file (kind={kind!r}).")
+        return False
+    try:
+        from ..common.layout_compat import (
+            histo_layouts_compatible,
+            infer_histo_layout_from_cfg,
+            live_histo_layout,
+        )
+
+        if not histo_layouts_compatible(
+            infer_histo_layout_from_cfg(payload),
+            live_histo_layout(state=state),
+        ):
+            return False
+    except Exception as exc:
+        print(f"Warning: Could not validate histogram style layout: {exc}")
         return False
     from .session import apply_histo_style_snapshot
 
@@ -385,9 +400,14 @@ def _export_style(fig, ax, state: HistoState, path: str, *, include_geometry: bo
     # p/i contract: style-only — never ship column data / source path.
     payload.pop("setup", None)
     payload.pop("source_path", None)
+    try:
+        from ..common.layout_compat import attach_layout, histo_layout_fingerprint, live_histo_layout
+        attach_layout(payload, live_histo_layout(state=state))
+    except Exception:
+        pass
     if not include_geometry:
-        for key in ("figsize", "axes_fraction", "ylim"):
-            payload.get("style", {}).pop(key, None)
+        # Style-only keeps figsize/axes_fraction (``g``). Y-limits stay geometry-only.
+        payload.get("style", {}).pop("ylim", None)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     fig._last_style_export_path = os.path.abspath(path)  # type: ignore[attr-defined]
@@ -509,21 +529,14 @@ def histo_interactive_menu(fig, ax, state: HistoState, *, table_loader=None) -> 
             continue
 
         if cmd == "q":
-            try:
-                confirm = safe_input(
-                    colorize_prompt(
-                        "Quit interactive? Remember to save (e=export, s=save). Quit now? (y/n): "
-                    ),
-                    cancel_on_interrupt=True,
-                ).strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print("\nExiting interactive menu...")
-                break
+            confirm = confirm_quit_interactive(
+                safe_input_fn=lambda p: safe_input(p, cancel_on_interrupt=True),
+                colorize_fn=colorize_prompt,
+            )
             if confirm == "y":
                 break
             if confirm in ("e", "s"):
                 pending_key = confirm
-                continue
             continue
 
         if cmd == "b":

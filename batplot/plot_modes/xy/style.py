@@ -19,7 +19,7 @@ from matplotlib.ticker import MultipleLocator, AutoLocator, AutoMinorLocator, Nu
 from ...utils import _confirm_overwrite, list_files_in_subdirectory, get_organized_path, ensure_exact_case_filename, _colorize_option_keys
 from ...plotting import apply_curve_color
 from ...color_utils import color_block, format_color_listing, get_colormap
-from .spines import apply_xy_spine_specs
+from .spines import apply_xy_spine_specs, apply_xy_tick_widths
 from ...ui import (
     ensure_text_visibility as _ui_ensure_text_visibility,
     update_tick_visibility as _ui_update_tick_visibility,
@@ -429,11 +429,14 @@ def print_style_info(
     bbox = ax.get_position()
     frame_w_in = bbox.width * fw
     frame_h_in = bbox.height * fh
-    sp = fig.subplotpars
-    print("--- Canvas & Geometry ---")
+    print("--- Canvas & frame (g / style) ---")
     print(f"Canvas size (g): {fw:.3f} x {fh:.3f} in")
     print(f"Plot frame: {frame_w_in:.3f} x {frame_h_in:.3f} in")
-    print(f"Margins: left={sp.left:.3f}, right={sp.right:.3f}, bottom={sp.bottom:.3f}, top={sp.top:.3f}")
+    # Live axes position (not stale subplotpars after g→set_position).
+    print(
+        f"Axes fraction: left={bbox.x0:.3f}, right={bbox.x0 + bbox.width:.3f}, "
+        f"bottom={bbox.y0:.3f}, top={bbox.y0 + bbox.height:.3f}"
+    )
 
     # ---- Font (f) ----
     if label_text_objects:
@@ -772,13 +775,16 @@ def export_style_config(
         cfg["right_y_curve_indices"] = list(getattr(fig, '_xy_right_y_curve_indices', frozenset()))
         cfg["txaxis"] = bool(getattr(fig, '_xy_use_top_x', False))
         
-        # Save curve names visibility
-        cfg["curve_names_visible"] = True  # Default to visible
-        if label_text_objects and len(label_text_objects) > 0:
+        # Save curve names visibility (fig attr is authoritative after ``h`` menu).
+        if hasattr(fig, "_curve_names_visible"):
+            cfg["curve_names_visible"] = bool(fig._curve_names_visible)
+        elif label_text_objects and len(label_text_objects) > 0:
             try:
                 cfg["curve_names_visible"] = bool(label_text_objects[0].get_visible())
             except Exception:
-                pass
+                cfg["curve_names_visible"] = True
+        else:
+            cfg["curve_names_visible"] = True
         
         # Save stack/legend anchor preferences
         cfg["stack_label_at_bottom"] = getattr(fig, '_stack_label_at_bottom', False)
@@ -849,6 +855,7 @@ def export_style_config(
                 "labels": [str(e[0]) for e in cif_tick_series],
                 "files": [str(e[1]) for e in cif_tick_series],
                 "colors": [_json_color(e[5]) for e in cif_tick_series],
+                "title_font": dict(getattr(fig, "_bp_cif_title_font", None) or {}),
             }
         palette_history = getattr(fig, '_curve_palette_history', None)
         serialized_palettes = serialize_curve_palette_history(fig)
@@ -869,6 +876,27 @@ def export_style_config(
         # as style files are for styling only, and the data would be specific
         # to the dataset. Session files (pickle) store this data instead.
         
+        # Layout fingerprint (survives ps strip of dual-y / CIF geometry keys).
+        try:
+            from ..common.layout_compat import attach_layout, xy_layout_fingerprint
+
+            _lines = cfg.get("lines") if isinstance(cfg.get("lines"), list) else []
+            _right = getattr(fig, "_xy_right_y_curve_indices", frozenset()) or frozenset()
+            _has_cif = bool(cif_tick_series)
+            attach_layout(
+                cfg,
+                xy_layout_fingerprint(
+                    n_curves=len(_lines),
+                    stack=bool(getattr(args, "stack", False)),
+                    dual_y=len(_right) > 0,
+                    txaxis=bool(getattr(fig, "_xy_use_top_x", False)),
+                    has_cif=_has_cif,
+                    ro_active=bool(getattr(fig, "_ro_active", False)),
+                ),
+            )
+        except Exception:
+            pass
+
         # If overwrite_path is provided, determine export type from existing file,
         # unless the caller explicitly forces style-only or style+geometry.
         if overwrite_path:
@@ -888,27 +916,43 @@ def export_style_config(
         else:
             # Ask user for style-only or style+geometry
             print("\nExport options:")
-            print(f"  \033[96mps\033[0m  = style only (.bps)")
-            print(f"  \033[96mpsg\033[0m = style + geometry (.bpsg)")
-            exp_prompt = _colorize_option_keys("ps: style only, psg: style+geometry, q: cancel")
+            print(f"  \033[96mps\033[0m  = style (.bps) — colors/fonts/spines/size/frame")
+            print(f"  \033[96mpsg\033[0m = style + data geometry (.bpsg) — also limits/offsets/axis units")
+            exp_prompt = _colorize_option_keys("ps: style, psg: style+geometry, q: cancel")
             exp_choice = safe_input(f"Export choice ({exp_prompt}): ", cancel_on_interrupt=True).strip().lower()
             if not exp_choice or exp_choice == 'q':
                 print("Style export canceled.")
                 return None
         
         # Determine file extension and add geometry if requested
+        # Always alias canvas_size ↔ size for cross-mode readers.
+        try:
+            fig_block = cfg.get('figure') if isinstance(cfg.get('figure'), dict) else {}
+            if isinstance(fig_block, dict):
+                if 'size' in fig_block and 'canvas_size' not in fig_block:
+                    fig_block['canvas_size'] = list(fig_block['size'])
+                elif 'canvas_size' in fig_block and 'size' not in fig_block:
+                    fig_block['size'] = list(fig_block['canvas_size'])
+        except Exception:
+            pass
         if exp_choice == 'ps':
             cfg['kind'] = 'xy_style'
             default_ext = '.bps'
-            # Style-only: strip canvas/frame hitchhikers (parity with EC/CPC/histo).
+            # Style-only keeps canvas/frame (``g`` lives under Styles). Strip
+            # data-geometry hitchhikers only (offsets / dual-y / --txaxis).
+            # CIF chrome belongs to geometry (``.bpsg`` / session) — never in ``.bps``.
             try:
-                fig_block = cfg.get('figure') if isinstance(cfg.get('figure'), dict) else {}
-                for _k in ('size', 'frame_size', 'axes_fraction'):
-                    fig_block.pop(_k, None)
-                cfg.pop('margins', None)
-                # Curve offsets / dual-y layout are geometry — not style-only ``p``.
                 cfg.pop('right_y_curve_indices', None)
                 cfg.pop('txaxis', None)
+                cfg.pop('cif_stack_y_offsets', None)
+                for _cif_k in (
+                    'show_cif_titles',
+                    'show_cif_hkl',
+                    'cif_ticks',
+                    'cif',
+                    'cif_set_visible',
+                ):
+                    cfg.pop(_cif_k, None)
                 for entry in (cfg.get('lines') or []):
                     if isinstance(entry, dict):
                         entry.pop('offset', None)
@@ -987,6 +1031,10 @@ def export_style_config(
                     "files": [str(e[1]) for e in cif_tick_series],
                     "colors": [_json_color2(e[5]) for e in cif_tick_series],
                 }
+            try:
+                cfg["cif"]["title_font"] = dict(getattr(fig, "_bp_cif_title_font", None) or {})
+            except Exception:
+                cfg["cif"]["title_font"] = {}
             cfg["cif"]["tick_series"] = [
                 [
                     str(e[0]),
@@ -1123,16 +1171,27 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
     if kind and kind not in ("xy_style", "xy_style_geom"):
         print(f"Not an XY style file (kind={kind!r}).")
         return False
-    # Enforce compatibility between style/geometry ro state and current figure ro state.
-    # Styles saved from a plot using --ro (swapped x/y) must not be applied to a non-ro plot, and vice versa.
-    file_ro = bool(cfg.get("ro_active", False))
-    current_ro = bool(getattr(fig, "_ro_active", False))
-    if file_ro != current_ro:
-        if file_ro:
-            print("Warning: Style/geometry file was saved with --ro (swapped x/y axes); current plot is not using --ro.")
-        else:
-            print("Warning: Style/geometry file was saved without --ro; current plot was created with --ro.")
-        print("Not applying style/geometry to avoid corrupting axis orientation.")
+
+    # Layout compatibility (curve count / stack / dual-y / CIF for geom / --ro).
+    try:
+        from ..common.layout_compat import (
+            infer_xy_layout_from_cfg,
+            live_xy_layout,
+            xy_layouts_compatible,
+        )
+
+        file_layout = infer_xy_layout_from_cfg(cfg)
+        live_layout = live_xy_layout(
+            fig=fig,
+            args=args,
+            labels=labels,
+            y_data_list=y_data_list,
+            cif_tick_series=cif_tick_series,
+        )
+        if not xy_layouts_compatible(file_layout, live_layout, kind=str(kind or "")):
+            return False
+    except Exception as exc:
+        print(f"Warning: Could not validate XY style layout: {exc}")
         return False
 
     try:
@@ -1186,15 +1245,14 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
     except Exception:
         pass
     try:
-        # Canvas/frame geometry belongs to style+geometry (``.bpsg`` / ``xy_style_geom``).
-        # Style-only (``.bps`` / ``xy_style``) must not resize the figure (parity with operando/histo).
-        kind_for_canvas = str(cfg.get("kind", "") or "")
-        apply_canvas_geom = (kind_for_canvas == "xy_style_geom")
-        figure_cfg = cfg.get("figure", {}) if apply_canvas_geom else {}
-        # Get axes_fraction BEFORE changing canvas size (to preserve exact position)
+        # Canvas/frame (``g``) are style: apply whenever present in ``figure``.
+        # Older style-only dumps omit these keys → leave live size (BC).
+        # Data geometry (limits/offsets) stays gated on ``xy_style_geom`` below.
+        figure_cfg = cfg.get("figure", {}) if isinstance(cfg.get("figure"), dict) else {}
         axes_frac = figure_cfg.get("axes_fraction")
         frame_size = figure_cfg.get("frame_size")
-        
+        applied_canvas_or_frame = False
+
         sz = figure_cfg.get("canvas_size") or figure_cfg.get("size")
         if isinstance(sz, (list, tuple)) and len(sz) == 2:
             try:
@@ -1204,7 +1262,7 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     # forward=True: undo/import must resize the GUI window
                     # (parity with live g→c). axes_fraction is restored next.
                     fig.set_size_inches(fw, fh, forward=True)
-                # No message needed when canvas is fixed - this is normal behavior
+                    applied_canvas_or_frame = True
             except Exception as e:
                 print(f"Warning: could not parse figure size: {e}")
         try:
@@ -1216,6 +1274,7 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 h_frac = float(h)
                 if 0 < left < left + w_frac <= 1 and 0 < bottom < bottom + h_frac <= 1:
                     ax.set_position([left, bottom, w_frac, h_frac])
+                    applied_canvas_or_frame = True
             elif frame_size and isinstance(frame_size, (list, tuple)) and len(frame_size) == 2:
                 cur_fw, cur_fh = fig.get_size_inches()
                 des_w, des_h = float(frame_size[0]), float(frame_size[1])
@@ -1225,8 +1284,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 left = (1 - w_frac) / 2
                 bottom = (1 - h_frac) / 2
                 ax.set_position([left, bottom, w_frac, h_frac])
-            elif apply_canvas_geom:
-                # Style-only (``.bps`` / ``xy_style``) must not relocate axes via margins.
+                applied_canvas_or_frame = True
+            else:
                 margins = cfg.get("margins")
                 if isinstance(margins, dict) and margins:
                     adjust_kwargs = {}
@@ -1235,10 +1294,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                             adjust_kwargs[key] = float(margins[key])
                     if adjust_kwargs:
                         fig.subplots_adjust(**adjust_kwargs)
+                        applied_canvas_or_frame = True
         except Exception as e:
             if _style_debug:
                 print(f"[DEBUG] Exception in frame/axes fraction adjustment: {e}")
-        if apply_canvas_geom:
+        if applied_canvas_or_frame:
             sync_figure_geometry_caches(fig, ax)
         if _style_debug:
             try:
@@ -1459,14 +1519,16 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         yminr = ticks_cfg.get("y_minor_width")
         if any(v is not None for v in (xmaj, xminr, ymaj, yminr)):
             try:
-                if xmaj is not None:
-                    ax.tick_params(axis="x", which="major", width=xmaj)
-                if xminr is not None:
-                    ax.tick_params(axis="x", which="minor", width=xminr)
-                if ymaj is not None:
-                    ax.tick_params(axis="y", which="major", width=ymaj)
-                if yminr is not None:
-                    ax.tick_params(axis="y", which="minor", width=yminr)
+                apply_xy_tick_widths(
+                    fig,
+                    ax,
+                    {
+                        "x_major": xmaj,
+                        "x_minor": xminr,
+                        "y_major": ymaj,
+                        "y_minor": yminr,
+                    },
+                )
             except Exception as e:
                 if _style_debug:
                     print(f"[DEBUG] Exception setting tick widths: {e}")
@@ -1506,11 +1568,21 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 print(f"Warning: Could not restore tick spacing: {e}")
 
     # Tick/label colors and labelpads (legacy axis-wide colors skipped when spines are per-side)
+        try:
+            y_pos = str(ax.yaxis.get_label_position())
+        except Exception:
+            y_pos = "left"
+        from ...ui import heal_axis_label_colors_dict
+
         apply_xy_axis_style(
             ax,
             {
                 "tick_colors": cfg.get("tick_colors"),
-                "axis_label_colors": cfg.get("axis_label_colors"),
+                "axis_label_colors": heal_axis_label_colors_dict(
+                    cfg.get("axis_label_colors"),
+                    cfg.get("spines", {}),
+                    y_label_position=y_pos,
+                ),
                 "labelpads": cfg.get("labelpads"),
             },
             fig=fig,
@@ -1613,30 +1685,39 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             except Exception as e:
                 print(f"[style-import check] AFTER lines: get_ylim failed: {e}")
         palette_cfg = cfg.get("curve_palettes", [])
+        # History only — same as ``.pkl`` session restore. Do not recolor:
+        # ``lines[].color`` is authoritative after manual edits post-palette.
         if palette_cfg:
             sanitized_history = []
             for rec in palette_cfg:
-                if _apply_curve_palette(ax, rec, fig=fig):
-                    sanitized_history.append({
-                        'palette': rec.get('palette'),
-                        'indices': list(rec.get('indices', [])),
-                        'low_clip': float(rec.get('low_clip', 0.08)),
-                        'high_clip': float(rec.get('high_clip', 0.85)),
-                    })
+                palette_name = rec.get("palette")
+                indices = rec.get("indices")
+                if not palette_name or not indices:
+                    continue
+                sanitized_history.append({
+                    "palette": palette_name,
+                    "indices": list(indices),
+                    "low_clip": float(rec.get("low_clip", 0.08)),
+                    "high_clip": float(rec.get("high_clip", 0.85)),
+                })
             if sanitized_history:
                 fig._curve_palette_history = sanitized_history
-            elif hasattr(fig, '_curve_palette_history'):
-                delattr(fig, '_curve_palette_history')
+            elif hasattr(fig, "_curve_palette_history"):
+                delattr(fig, "_curve_palette_history")
         else:
-            if hasattr(fig, '_curve_palette_history'):
-                delattr(fig, '_curve_palette_history')
-        # CIF tick sets — prefer full embedded series (interactive add → psg),
-        # else legacy index/label/color patches (``cif_ticks``).
-        cif_block = cfg.get("cif") or {}
-        cif_cfg = cfg.get("cif_ticks", [])
+            if hasattr(fig, "_curve_palette_history"):
+                delattr(fig, "_curve_palette_history")
+        # CIF tick sets — geometry-only (``.bpsg`` / ``xy_style_geom``).
+        # Style-only ``.bps`` must not mutate CIF (incl. title font via redraw).
+        # Prefer full embedded series (interactive add → psg), else legacy
+        # index/label/color patches (``cif_ticks``).
+        kind_for_cif = str(cfg.get("kind", "") or "")
+        apply_cif_section = kind_for_cif == "xy_style_geom"
+        cif_block = (cfg.get("cif") or {}) if apply_cif_section else {}
+        cif_cfg = (cfg.get("cif_ticks", []) if apply_cif_section else [])
         # Key present (including empty list) means replace — required for batch
         # undo after the first CIF add. Missing key = legacy style, leave series.
-        if isinstance(cif_block, dict) and "tick_series" in cif_block:
+        if apply_cif_section and isinstance(cif_block, dict) and "tick_series" in cif_block:
             embedded = cif_block.get("tick_series") or []
             restored = []
             for e in embedded:
@@ -1702,7 +1783,7 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 )
             except Exception:
                 pass
-        elif cif_cfg and cif_tick_series is not None:
+        elif apply_cif_section and cif_cfg and cif_tick_series is not None:
             for entry in cif_cfg:
                 idx = entry.get("index")
                 if idx is None:
@@ -1712,9 +1793,10 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     lab_new = entry.get("label", lab)
                     color_new = entry.get("color", color_old)
                     cif_tick_series[idx] = (lab_new, fname, peaksQ, wl, qmax_sim, color_new)
-        # Style-only: files/labels present but no live series → try reload from disk
+        # Style+geometry: files/labels present but no live series → try reload from disk
         elif (
-            isinstance(cif_block, dict)
+            apply_cif_section
+            and isinstance(cif_block, dict)
             and cif_block.get("files")
             and (cif_tick_series is not None)
             and (not cif_tick_series)
@@ -1760,7 +1842,13 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     cif_tick_series[i] = (lab, fname, peaksQ, wl, qmax_sim, color)
             except Exception:
                 pass
-        if "cif_stack_y_offsets" in cfg and cif_tick_series is not None:
+        # CIF stack row offsets are data geometry (like curve offsets) — psg only.
+        kind_for_cif_off = str(cfg.get("kind", "") or "")
+        if (
+            kind_for_cif_off == "xy_style_geom"
+            and "cif_stack_y_offsets" in cfg
+            and cif_tick_series is not None
+        ):
             try:
                 raw_o = cfg.get("cif_stack_y_offsets") or []
                 o2 = []
@@ -1774,7 +1862,7 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 fig._bp_cif_stack_y_offsets = o2
             except Exception:
                 pass
-        if "cif_set_visible" in cfg and cif_tick_series is not None:
+        if apply_cif_section and "cif_set_visible" in cfg and cif_tick_series is not None:
             try:
                 vis = [bool(v) for v in (cfg.get("cif_set_visible") or [])]
                 if len(vis) == len(cif_tick_series):
@@ -1784,8 +1872,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     fig._bp_cif_set_visible = vis
             except Exception:
                 pass
-        # Restore CIF title visibility
-        if "show_cif_titles" in cfg:
+        # Restore CIF title visibility (geometry only)
+        if apply_cif_section and "show_cif_titles" in cfg:
             try:
                 _bp_module = sys.modules.get('__main__')
                 if _bp_module is not None:
@@ -1793,8 +1881,8 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 fig._bp_show_cif_titles = bool(cfg["show_cif_titles"])
             except Exception:
                 pass
-        # Restore CIF hkl label visibility
-        if "show_cif_hkl" in cfg:
+        # Restore CIF hkl label visibility (geometry only)
+        if apply_cif_section and "show_cif_hkl" in cfg:
             try:
                 _bp_module = sys.modules.get('__main__')
                 if _bp_module is not None:
@@ -1809,6 +1897,12 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                             setattr(_bp_obj, 'show_cif_hkl', bool(cfg["show_cif_hkl"]))
                     except Exception:
                         pass
+            except Exception:
+                pass
+        # CIF title font is geometry (``.bpsg``); never take from style-only.
+        if apply_cif_section and isinstance(cif_block, dict) and isinstance(cif_block.get("title_font"), dict):
+            try:
+                fig._bp_cif_title_font = dict(cif_block.get("title_font") or {})
             except Exception:
                 pass
         # Restore smooth settings (metadata only, not full arrays)
@@ -1856,11 +1950,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         # Note: We don't restore original_x_data_list/original_y_data_list or pre_derivative data from style files
         # as style files are for styling only, and the data would be specific
         # to the dataset. Session files (pickle) store this data instead.
-        # Redraw CIF ticks after applying changes (including empty tick_series clear)
-        _cif_full = isinstance(cif_block, dict) and (
+        # Redraw CIF ticks after applying geometry CIF changes (including empty clear)
+        _cif_full = apply_cif_section and isinstance(cif_block, dict) and (
             "tick_series" in cif_block or bool(cif_block.get("files"))
         )
-        if ((cif_cfg and cif_tick_series is not None) or _cif_full
+        if apply_cif_section and ((cif_cfg and cif_tick_series is not None) or _cif_full
                 or "show_cif_titles" in cfg or "show_cif_hkl" in cfg
                 or "cif_set_visible" in cfg
                 or "cif_stack_y_offsets" in cfg):
@@ -1925,7 +2019,7 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         if "grid" in cfg:
             try:
                 if bool(cfg["grid"]):
-                    ax.grid(True, color='0.85', linestyle='-', linewidth=0.5, alpha=0.7)
+                    ax.grid(True)
                 else:
                     ax.grid(False)
             except Exception as e:
@@ -1935,12 +2029,14 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
         stack_label_bottom = getattr(fig, '_stack_label_at_bottom', False)
         update_labels_func(ax, y_data_list, label_text_objects, args.stack, stack_label_bottom)
 
-        # Margin / overflow handling
+        # Margin / overflow handling — do not stomp a restored ``g`` frame.
+        # ``adjust_margins`` uses fig.subplotpars, which can be stale after
+        # ``ax.set_position(axes_fraction)``.
         try:
             overflow = _ui_ensure_text_visibility(fig, ax, label_text_objects, check_only=True)
         except Exception:
             overflow = False
-        if overflow and adjust_margins_cb is not None:
+        if overflow and adjust_margins_cb is not None and not applied_canvas_or_frame:
             try:
                 adjust_margins_cb()
             except Exception as e:
@@ -1951,6 +2047,11 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             except Exception as e:
                 if _style_debug:
                     print(f"[DEBUG] Exception in ensure_text_visibility: {e}")
+        elif overflow and applied_canvas_or_frame:
+            try:
+                _ui_ensure_text_visibility(fig, ax, label_text_objects)
+            except Exception:
+                pass
 
         # Apply geometry if present (for .bpsg files)
         kind = cfg.get('kind', '')
@@ -2219,11 +2320,21 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
             except Exception:
                 pass
             try:
+                from ...ui import heal_axis_label_colors_dict
+
+                try:
+                    y_pos = str(ax.yaxis.get_label_position())
+                except Exception:
+                    y_pos = "left"
                 apply_xy_axis_style(
                     ax,
                     {
                         "tick_colors": cfg.get("tick_colors"),
-                        "axis_label_colors": cfg.get("axis_label_colors"),
+                        "axis_label_colors": heal_axis_label_colors_dict(
+                            cfg.get("axis_label_colors"),
+                            cfg.get("spines", {}),
+                            y_label_position=y_pos,
+                        ),
                     },
                     fig=fig,
                     spines_cfg=cfg.get("spines", {}),
@@ -2250,7 +2361,17 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                     _ui_position_left_ylabel(ax, fig, tick_state)
                 label_style = {}
                 if cfg.get("axis_label_colors"):
-                    label_style["axis_label_colors"] = cfg["axis_label_colors"]
+                    from ...ui import heal_axis_label_colors_dict
+
+                    try:
+                        y_pos = str(ax.yaxis.get_label_position())
+                    except Exception:
+                        y_pos = "left"
+                    label_style["axis_label_colors"] = heal_axis_label_colors_dict(
+                        cfg.get("axis_label_colors"),
+                        cfg.get("spines", {}),
+                        y_label_position=y_pos,
+                    )
                 if label_style:
                     apply_xy_axis_style(ax, label_style, fig=fig, spines_cfg={})
             except Exception:

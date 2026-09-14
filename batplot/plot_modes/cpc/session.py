@@ -1134,6 +1134,10 @@ def load_cpc_session(filename: str):
                 fig, ax, ax2,
                 tick_state=getattr(ax, '_saved_tick_state', None),
             )
+            from ...ui import heal_live_axis_title_colors_from_spines
+
+            heal_live_axis_title_colors_from_spines(ax, fig)
+            heal_live_axis_title_colors_from_spines(ax2, fig)
         except Exception:
             pass
         try:
