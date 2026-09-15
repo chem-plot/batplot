@@ -20,7 +20,12 @@ from ...ui import (
     set_spine_side_color as _ui_set_spine_side_color,
     finalize_spine_colors_for_axes,
 )
-from ..common.spines import keep_yaxis_label_on_side, set_primary_axis_title, wasd_to_tick_state
+from ..common.spines import (
+    _ensure_minor_locator,
+    keep_yaxis_label_on_side,
+    set_primary_axis_title,
+    wasd_to_tick_state,
+)
 from ..common.title_offsets import restore_title_offsets
 from .ions_axis import (
     clear_ec_ion_overlays,
@@ -294,10 +299,9 @@ def _apply_operando_wasd_spines_ticks(fig, ax, op: Dict[str, Any], version) -> N
                               right=bool(op_wasd.get('right', {}).get('ticks', False)),
                               labelleft=bool(op_wasd.get('left', {}).get('labels', True)),
                               labelright=bool(op_wasd.get('right', {}).get('labels', False)))
-                # Apply minor ticks
+                # Apply minor ticks (keep custom Auto/MultipleLocator from t→m / t→n)
                 if op_wasd.get('top', {}).get('minor') or op_wasd.get('bottom', {}).get('minor'):
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.xaxis)
                 else:
                     # Clear minor locator if no minor ticks are enabled
                     ax.xaxis.set_minor_locator(NullLocator())
@@ -306,8 +310,7 @@ def _apply_operando_wasd_spines_ticks(fig, ax, op: Dict[str, Any], version) -> N
                               top=bool(op_wasd.get('top', {}).get('minor', False)),
                               bottom=bool(op_wasd.get('bottom', {}).get('minor', False)))
                 if op_wasd.get('left', {}).get('minor') or op_wasd.get('right', {}).get('minor'):
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.yaxis)
                 else:
                     # Clear minor locator if no minor ticks are enabled
                     ax.yaxis.set_minor_locator(NullLocator())
@@ -412,10 +415,9 @@ def _apply_ec_wasd_spines_ticks_curve(fig, ec_ax, cfg: Dict[str, Any], version) 
                                  right=bool(ec_wasd.get('right', {}).get('ticks', True)),
                                  labelleft=False,
                                  labelright=bool(ec_wasd.get('right', {}).get('labels', True)))
-                # Apply minor ticks
+                # Apply minor ticks (keep custom Auto/MultipleLocator from t→m / t→n)
                 if ec_wasd.get('top', {}).get('minor') or ec_wasd.get('bottom', {}).get('minor'):
-                    ec_ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ec_ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ec_ax.xaxis)
                 else:
                     # Clear minor locator if no minor ticks are enabled
                     ec_ax.xaxis.set_minor_locator(NullLocator())
@@ -424,8 +426,7 @@ def _apply_ec_wasd_spines_ticks_curve(fig, ec_ax, cfg: Dict[str, Any], version) 
                                  top=bool(ec_wasd.get('top', {}).get('minor', False)),
                                  bottom=bool(ec_wasd.get('bottom', {}).get('minor', False)))
                 if ec_wasd.get('left', {}).get('minor') or ec_wasd.get('right', {}).get('minor'):
-                    ec_ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ec_ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ec_ax.yaxis)
                 else:
                     # Clear minor locator if no minor ticks are enabled
                     ec_ax.yaxis.set_minor_locator(NullLocator())

@@ -238,7 +238,10 @@ def run_cpc_wasd_menu(
             def _mn(loc):
                 try:
                     if isinstance(loc, AutoMinorLocator):
-                        return f"{loc._ndivs-1}/interval"
+                        n = getattr(loc, "ndivs", None)
+                        if n is None:
+                            n = getattr(loc, "_ndivs", None)
+                        return f"{n-1}/interval" if n is not None else "auto"
                     if isinstance(loc, NullLocator):
                         return "off"
                     return "auto"

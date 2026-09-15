@@ -510,6 +510,11 @@ def dump_session(
             'tick_lengths': tick_lengths,
             'tick_direction': getattr(fig, '_tick_direction', 'out'),
             'tick_locator_state': _capture_session_tick_locator(ax),
+            'tick_locator_state_ax2': (
+                _capture_session_tick_locator(ax2_xy)
+                if (ax2_xy := getattr(fig, '_xy_ax2', None)) is not None
+                else None
+            ),
             'font': merge_session_font_dump(fig),
             'args_subset': {
                 'stack': bool(getattr(args, 'stack', False)),
@@ -1143,8 +1148,12 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
         # Restore tick spacing / minor-count locators (saved as 'tick_locator_state').
         # Must run after WASD (which only toggles minor visibility) so custom MultipleLocator /
         # AutoMinorLocator settings from the t->n / t->m menus survive save+load like the other menus.
+        # Old .pkl without these keys: restore is a no-op (BC).
         try:
             _restore_session_tick_locator(ax, sess.get('tick_locator_state'))
+            ax2_loc = getattr(fig, '_xy_ax2', None)
+            if ax2_loc is not None:
+                _restore_session_tick_locator(ax2_loc, sess.get('tick_locator_state_ax2'))
         except Exception:
             pass
 
@@ -1325,14 +1334,18 @@ def load_xy_session(filename: str) -> tuple[Any, Any, dict[str, Any]] | None:  #
                 labelright=tick_state.get('r_labels', tick_state.get('ry', False)),
             )
             if tick_state.get('mbx') or tick_state.get('mtx'):
-                ax.xaxis.set_minor_locator(AutoMinorLocator())
+                loc = ax.xaxis.get_minor_locator()
+                if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                    ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor', bottom=tick_state.get('mbx', False),
                               top=tick_state.get('mtx', False), labelbottom=False, labeltop=False)
             else:
                 ax.tick_params(axis='x', which='minor', bottom=False, top=False, labelbottom=False, labeltop=False)
             if tick_state.get('mly') or tick_state.get('mry'):
-                ax.yaxis.set_minor_locator(AutoMinorLocator())
+                loc = ax.yaxis.get_minor_locator()
+                if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                    ax.yaxis.set_minor_locator(AutoMinorLocator())
                 ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor', left=tick_state.get('mly', False),
                               right=tick_state.get('mry', False), labelleft=False, labelright=False)

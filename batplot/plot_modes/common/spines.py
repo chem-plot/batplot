@@ -375,7 +375,7 @@ def apply_flat_tick_params(ax: Any, tick_state: Mapping[str, object]) -> None:
     )
 
     if tick_state["mbx"] or tick_state["mtx"]:
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        _ensure_minor_locator(ax.xaxis)
         ax.xaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(
             axis="x",
@@ -391,7 +391,7 @@ def apply_flat_tick_params(ax: Any, tick_state: Mapping[str, object]) -> None:
         ax.tick_params(axis="x", which="minor", bottom=False, top=False, labelbottom=False, labeltop=False)
 
     if tick_state["mly"] or tick_state["mry"]:
-        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        _ensure_minor_locator(ax.yaxis)
         ax.yaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(
             axis="y",

@@ -195,4 +195,4 @@ When using i to import a style file, *batplot* automatically scans the style sub
 
 ## Download Tutorial Files
 
-Below sections are some examples of how to use *batplot*, you can find the tutorial files in [this link](https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip).
+Below sections are some examples of how to use *batplot*, you can find the demo files in [this link](https://github.com/chem-plot/batplot/blob/main/batplot_demo_files.zip).

@@ -2015,7 +2015,9 @@ def update_tick_visibility(ax, tick_state: Dict[str, bool]):
                        left=tick_state['ly'],  labelleft=tick_state['ly'],
                        right=tick_state['ry'], labelright=tick_state['ry'])
     if tick_state['mbx'] or tick_state['mtx']:
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        loc = ax.xaxis.get_minor_locator()
+        if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+            ax.xaxis.set_minor_locator(AutoMinorLocator())
         ax.xaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(axis='x', which='minor',
                        bottom=tick_state['mbx'],
@@ -2025,7 +2027,9 @@ def update_tick_visibility(ax, tick_state: Dict[str, bool]):
         ax.tick_params(axis='x', which='minor', bottom=False, top=False,
                        labelbottom=False, labeltop=False)
     if tick_state['mly'] or tick_state['mry']:
-        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        loc = ax.yaxis.get_minor_locator()
+        if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+            ax.yaxis.set_minor_locator(AutoMinorLocator())
         ax.yaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(axis='y', which='minor',
                        left=tick_state['mly'],
@@ -2355,7 +2359,12 @@ def _locator_step_value(locator) -> Optional[float]:
 def _locator_minor_ndivs(locator) -> Optional[int]:
     try:
         if isinstance(locator, AutoMinorLocator):
-            return int(locator._ndivs)
+            # Matplotlib 3.8+ uses public ``ndivs``; older builds used ``_ndivs``.
+            n = getattr(locator, "ndivs", None)
+            if n is None:
+                n = getattr(locator, "_ndivs", None)
+            if n is not None:
+                return int(n)
     except Exception:
         pass
     return None
@@ -2410,7 +2419,9 @@ def restore_axis_tick_locators(mpl_axis, spacing: Optional[dict], prefix: str) -
             mpl_axis.set_minor_locator(AutoMinorLocator(int(ndivs)))
             mpl_axis.set_minor_formatter(NullFormatter())
         else:
-            mpl_axis.set_minor_locator(NullLocator())
+            # minor_off is False but step/ndivs missing (legacy / failed capture):
+            # keep a default AutoMinorLocator, do not force NullLocator.
+            mpl_axis.set_minor_locator(AutoMinorLocator())
             mpl_axis.set_minor_formatter(NullFormatter())
     except Exception:
         pass
@@ -2452,15 +2463,27 @@ def apply_wasd_minor_ticks(
 
     *x_top_on_primary*: when False (GC dual ions SecondaryAxis), top.minor is
     not applied on this axis — caller installs minors on the SecondaryAxis.
+
+    When enabling minors, keep an existing ``AutoMinorLocator`` /
+    ``MultipleLocator`` (custom ``t→m`` / ``t→n`` spacing). Only install a
+    default ``AutoMinorLocator()`` when the axis currently has no usable
+    minor locator (e.g. ``NullLocator``).
     """
     if not wasd or not isinstance(wasd, dict):
         return
+
+    def _ensure_minor(axis_obj) -> None:
+        loc = axis_obj.get_minor_locator()
+        if isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+            return
+        axis_obj.set_minor_locator(AutoMinorLocator())
+        axis_obj.set_minor_formatter(NullFormatter())
+
     top_m = bool(wasd.get('top', {}).get('minor', False))
     bot_m = bool(wasd.get('bottom', {}).get('minor', False))
     top_on_ax = bool(top_m and x_top_on_primary)
     if top_on_ax or bot_m:
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
-        ax.xaxis.set_minor_formatter(NullFormatter())
+        _ensure_minor(ax.xaxis)
     else:
         ax.xaxis.set_minor_locator(NullLocator())
         ax.xaxis.set_minor_formatter(NullFormatter())
@@ -2473,8 +2496,7 @@ def apply_wasd_minor_ticks(
     left_m = bool(wasd.get('left', {}).get('minor', False))
     right_m = bool(wasd.get('right', {}).get('minor', False))
     if left_m or right_m:
-        ax.yaxis.set_minor_locator(AutoMinorLocator())
-        ax.yaxis.set_minor_formatter(NullFormatter())
+        _ensure_minor(ax.yaxis)
     else:
         ax.yaxis.set_minor_locator(NullLocator())
         ax.yaxis.set_minor_formatter(NullFormatter())

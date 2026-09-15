@@ -1,8 +1,9 @@
 """Curve rearrange submenu (``a``) for the XY interactive menu.
 
 Reorders all parallel per-curve lists in place (so undo/save see the change)
-and restacks offsets. The dispatcher injects the lists, ``delta``, and the
-line-access helpers; mutations go through ``push_state``.
+and reapplies the **already-reordered** offsets. Recalculating gaps from
+``delta`` would change stack spacing and shift curves relative to fixed tick
+locators — that is intentionally avoided.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional, Sequence
 
 from ...plotting import update_labels
+from ...ui import capture_axes_tick_locators, restore_axes_tick_locators
 from ..common.line_dash import capture_dash_pattern, clear_dash_pattern, restore_dash_pattern
 
 
@@ -32,6 +34,7 @@ def run_rearrange_menu(
     _line: Callable[[int], Any],
     _lines_by_curve: Optional[Sequence[Any]],
 ) -> None:
+        _ = delta  # call-site compat; rearrange must not restack from delta
         try:
             if not args.stack:
                 print('Be careful, changing the arrangement may lead to a mess! If you want to rearrange the curves, use "--stack".')
@@ -53,9 +56,9 @@ def run_rearrange_menu(
                 if any(i < 0 or i >= len(labels) for i in new_order):
                     print("Error: Invalid index in order list.")
                     continue
-    
+
                 push_state("rearrange")
-    
+
                 original_styles = []
                 for ln in (_lines_by_curve if _lines_by_curve else ax.lines):
                     original_styles.append({
@@ -71,7 +74,9 @@ def run_rearrange_menu(
                     })
                 reordered_styles = [original_styles[i] for i in new_order]
                 xlim_current = ax.get_xlim()
-    
+                ylim_current = ax.get_ylim()
+                tick_spacing = capture_axes_tick_locators(ax, ('x', 'y'))
+
                 x_data_list[:]      = [x_data_list[i] for i in new_order]
                 orig_y[:]           = [orig_y[i] for i in new_order]
                 y_data_list[:]      = [y_data_list[i] for i in new_order]
@@ -87,53 +92,32 @@ def run_rearrange_menu(
                     install_master_full(fig, x_full_list, raw_y_full_list, force=True)
                 except Exception:
                     pass
-    
-                if args.stack:
-                    offset_local = 0.0
-                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
-                        y_plot_offset = y_norm + offset_local
-                        y_data_list[i] = y_plot_offset
-                        offsets_list[i] = offset_local
-                        ln = _line(i)
-                        ln.set_data(x_plot, y_plot_offset)
-                        ln.set_color(style["color"]) 
-                        ln.set_linewidth(style["linewidth"]) 
-                        ln.set_linestyle(style["linestyle"]) 
-                        clear_dash_pattern(ln)
-                        restore_dash_pattern(ln, style.get("dash_pattern"))
-                        ln.set_alpha(style["alpha"]) 
-                        ln.set_marker(style["marker"]) 
-                        ln.set_markersize(style["markersize"]) 
-                        ln.set_markerfacecolor(style["markerfacecolor"]) 
-                        ln.set_markeredgecolor(style["markeredgecolor"]) 
-                        y_range = (y_norm.max() - y_norm.min()) if y_norm.size else 0.0
-                        gap = y_range + (delta * (y_range if args.autoscale else 1.0))
-                        offset_local -= gap
-                else:
-                    offset_local = 0.0
-                    for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
-                        y_plot_offset = y_norm + offset_local
-                        y_data_list[i] = y_plot_offset
-                        offsets_list[i] = offset_local
-                        ln = _line(i)
-                        ln.set_data(x_plot, y_plot_offset)
-                        ln.set_color(style["color"]) 
-                        ln.set_linewidth(style["linewidth"]) 
-                        ln.set_linestyle(style["linestyle"]) 
-                        clear_dash_pattern(ln)
-                        restore_dash_pattern(ln, style.get("dash_pattern"))
-                        ln.set_alpha(style["alpha"]) 
-                        ln.set_marker(style["marker"]) 
-                        ln.set_markersize(style["markersize"]) 
-                        ln.set_markerfacecolor(style["markerfacecolor"]) 
-                        ln.set_markeredgecolor(style["markeredgecolor"]) 
-                        increment = (y_norm.max() - y_norm.min()) * delta if (args.autoscale and y_norm.size) else delta
-                        offset_local += increment
-    
+
+                # Re-apply the reordered offsets only — do not recompute gaps from
+                # ``delta`` (that changes stack spacing and moves curves under the
+                # existing major/minor tick grid).
+                for i, (x_plot, y_norm, style) in enumerate(zip(x_data_list, orig_y, reordered_styles)):
+                    y_plot_offset = y_norm + float(offsets_list[i])
+                    y_data_list[i] = y_plot_offset
+                    ln = _line(i)
+                    ln.set_data(x_plot, y_plot_offset)
+                    ln.set_color(style["color"])
+                    ln.set_linewidth(style["linewidth"])
+                    ln.set_linestyle(style["linestyle"])
+                    clear_dash_pattern(ln)
+                    restore_dash_pattern(ln, style.get("dash_pattern"))
+                    ln.set_alpha(style["alpha"])
+                    ln.set_marker(style["marker"])
+                    ln.set_markersize(style["markersize"])
+                    ln.set_markerfacecolor(style["markerfacecolor"])
+                    ln.set_markeredgecolor(style["markeredgecolor"])
+
                 for i, (txt, lab) in enumerate(zip(label_text_objects, labels)):
                     txt.set_text(f"{i+1}: {lab}")
-                # Preserve current axis titles (respect 't' menu toggles like bt/lt)
+                # Preserve axis limits and tick locators (rearrange is order-only).
                 ax.set_xlim(xlim_current)
+                ax.set_ylim(ylim_current)
+                restore_axes_tick_locators(ax, tick_spacing, ('x', 'y'))
                 # Do not reset xlabel/ylabel here; rearrange should not change title visibility
                 update_labels(ax, y_data_list, label_text_objects, args.stack, getattr(fig, '_stack_label_at_bottom', False))
                 fig.canvas.draw()

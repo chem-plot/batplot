@@ -1,10 +1,7 @@
 {
-  "version": "1.8.54",
-  "custom_message": "- Fix --readcol after --wl / other option values (cols no longer stuck on 1\u20132)",
+  "version": "1.8.55",
+  "custom_message": "- Bug fixes",
   "update_notes": [
-    "- Fix --readcol after --wl / other option values (cols no longer stuck on 1\u20132)",
-    "- Quit prompt: e=export and s=save work in every interactive / batch menu",
-    "- Color menus (c/k): WASD side rectangle like spines t, for all modes",
-    "- User manual homepage: GitHub repo + tutorial zip links"
+    "- Bug fixes"
   ]
 }

@@ -9,7 +9,7 @@ Use the **left sidebar** to open each chapter.
 ## Source & tutorial
 
 - **GitHub repository:** [https://github.com/chem-plot/batplot](https://github.com/chem-plot/batplot)  
-- **Tutorial files (zip on GitHub):** [batplot_tutorial.zip](https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip)
+- **Demo / tutorial files (zip on GitHub):** [batplot_demo_files.zip](https://github.com/chem-plot/batplot/blob/main/batplot_demo_files.zip)
 
 ## Contact
 

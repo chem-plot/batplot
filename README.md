@@ -30,7 +30,7 @@ pip install batplot
 
 - User manual: https://chem-plot.github.io/batplot/
 - Tutorial: https://drive.google.com/file/d/1NTFJWNBbWW4mgz0H5ZelGjuOBWxoFgkr/view
-- Tutorial files: https://github.com/chem-plot/batplot/blob/main/batplot_tutorial.zip
+- Demo files: https://github.com/chem-plot/batplot/blob/main/batplot_demo_files.zip
 
 ---
 

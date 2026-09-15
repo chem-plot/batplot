@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np  # type: ignore[import-untyped]
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib.colors import to_hex, to_rgba  # type: ignore[import-untyped]
-from matplotlib.ticker import AutoMinorLocator, NullFormatter  # type: ignore[import-untyped]
+from matplotlib.ticker import AutoMinorLocator, MultipleLocator, NullFormatter  # type: ignore[import-untyped]
 
 from ...utils import _confirm_overwrite, ensure_exact_case_filename
 from ...ui import (
@@ -1181,9 +1181,11 @@ def load_ec_session(
             ax.tick_params(axis='y',
                            left=tick_state.get('ly', True),  labelleft=tick_state.get('ly', True),
                            right=tick_state.get('ry', False), labelright=tick_state.get('ry', False))
-            # Minor ticks
+            # Minor ticks — keep custom Auto/MultipleLocator when already set
             if tick_state.get('mbx') or tick_state.get('mtx'):
-                ax.xaxis.set_minor_locator(AutoMinorLocator())
+                loc = ax.xaxis.get_minor_locator()
+                if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                    ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor',
                                bottom=tick_state.get('mbx', False),
@@ -1192,7 +1194,9 @@ def load_ec_session(
             else:
                 ax.tick_params(axis='x', which='minor', bottom=False, top=False, labelbottom=False, labeltop=False)
             if tick_state.get('mly') or tick_state.get('mry'):
-                ax.yaxis.set_minor_locator(AutoMinorLocator())
+                loc = ax.yaxis.get_minor_locator()
+                if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                    ax.yaxis.set_minor_locator(AutoMinorLocator())
                 ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor',
                                left=tick_state.get('mly', False),

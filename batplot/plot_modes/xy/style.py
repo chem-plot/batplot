@@ -37,7 +37,7 @@ from ..common.axis_state import capture_axis_wasd_state
 from ..common.font_extras import apply_font_extras_from_cfg, apply_session_font_cfg, font_extras_export_dict
 from ..common.line_dash import capture_dash_pattern, clear_dash_pattern, restore_dash_pattern
 from ..common.axis_state import primary_axis_label_text
-from ..common.spines import current_tick_width, set_primary_axis_title
+from ..common.spines import _ensure_minor_locator, current_tick_width, set_primary_axis_title
 from ..common.terminal import safe_input
 
 
@@ -694,6 +694,11 @@ def export_style_config(
                 "lengths": dict(getattr(fig, '_tick_lengths', {})),
                 "direction": getattr(fig, '_tick_direction', 'out'),
                 "spacing": _capture_tick_locator_state(ax),
+                "spacing_ax2": (
+                    _capture_tick_locator_state(_ax2_sp)
+                    if (_ax2_sp := getattr(fig, "_xy_ax2", None)) is not None
+                    else None
+                ),
             },
             "wasd_state": wasd_state,
             "spines": {
@@ -1441,18 +1446,16 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                               labelleft=bool(left_cfg.get('labels', True)),
                               labelright=bool(right_cfg.get('labels', False)))
                 
-                # Apply minor ticks
+                # Apply minor ticks (keep custom Auto/MultipleLocator from t→m / t→n)
                 if top_cfg.get('minor') or bot_cfg.get('minor'):
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.xaxis)
                 ax.tick_params(axis='x', which='minor',
                               top=bool(top_cfg.get('minor', False)),
                               bottom=bool(bot_cfg.get('minor', False)),
                               labeltop=False, labelbottom=False)
                 
                 if left_cfg.get('minor') or right_cfg.get('minor'):
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.yaxis)
                 ax.tick_params(axis='y', which='minor',
                               left=bool(left_cfg.get('minor', False)),
                               right=bool(right_cfg.get('minor', False)),
@@ -1566,6 +1569,13 @@ def apply_style_config(  # pyright: ignore[reportGeneralTypeIssues] - too comple
                 _restore_tick_locator_state(ax, spacing_cfg)
             except Exception as e:
                 print(f"Warning: Could not restore tick spacing: {e}")
+        spacing_ax2_cfg = ticks_cfg.get("spacing_ax2")
+        ax2_sp = getattr(fig, "_xy_ax2", None)
+        if spacing_ax2_cfg and ax2_sp is not None:
+            try:
+                _restore_tick_locator_state(ax2_sp, spacing_ax2_cfg)
+            except Exception as e:
+                print(f"Warning: Could not restore twin tick spacing: {e}")
 
     # Tick/label colors and labelpads (legacy axis-wide colors skipped when spines are per-side)
         try:

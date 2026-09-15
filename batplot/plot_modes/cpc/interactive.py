@@ -437,9 +437,12 @@ def cpc_interactive_menu(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, fil
             ax2.tick_params(axis='y',
                             right=tick_state.get('r_ticks', tick_state.get('ry', False)),
                             labelright=tick_state.get('r_labels', tick_state.get('ry', False)))
-            # Minor right-y consistency
+            # Minor right-y consistency — keep custom Auto/MultipleLocator
             if tick_state.get('mry'):
-                ax2.yaxis.set_minor_locator(AutoMinorLocator()); ax2.yaxis.set_minor_formatter(NullFormatter())
+                loc = ax2.yaxis.get_minor_locator()
+                if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                    ax2.yaxis.set_minor_locator(AutoMinorLocator())
+                ax2.yaxis.set_minor_formatter(NullFormatter())
                 ax2.tick_params(axis='y', which='minor', right=True, labelright=False)
             else:
                 ax2.tick_params(axis='y', which='minor', right=False, labelright=False)

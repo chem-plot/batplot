@@ -1024,7 +1024,11 @@ def electrochem_interactive_menu(fig, ax, cycle_lines: Optional[Dict[int, Dict[s
     def _locator_ndivs(locator):
         try:
             if isinstance(locator, AutoMinorLocator):
-                return int(locator._ndivs)
+                n = getattr(locator, "ndivs", None)
+                if n is None:
+                    n = getattr(locator, "_ndivs", None)
+                if n is not None:
+                    return int(n)
         except Exception:
             pass
         return None

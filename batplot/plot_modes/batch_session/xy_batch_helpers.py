@@ -184,6 +184,10 @@ def sync_ref_wasd_to_panels(ref: XyPanel, panels: List[XyPanel]) -> None:
     tick_lengths = getattr(ref_fig, "_tick_lengths", None)
     tick_direction = getattr(ref_fig, "_tick_direction", None)
     tick_spacing = capture_axes_tick_locators(ref_ax, ("x", "y"))
+    ref_ax2 = getattr(ref_fig, "_xy_ax2", None)
+    tick_spacing_ax2 = (
+        capture_axes_tick_locators(ref_ax2, ("x", "y")) if ref_ax2 is not None else None
+    )
     ref_offsets = capture_title_offsets(ref_ax)
     try:
         ref_xpad = float(ref_ax.xaxis.labelpad)
@@ -226,7 +230,6 @@ def sync_ref_wasd_to_panels(ref: XyPanel, panels: List[XyPanel]) -> None:
             fig._tick_direction = tick_direction  # type: ignore[attr-defined]
             for target in length_targets:
                 target.tick_params(axis="both", which="both", direction=tick_direction)
-        restore_axes_tick_locators(ax, tick_spacing, ("x", "y"))
         restore_title_offsets(ax, ref_offsets)
         try:
             if ref_xpad is not None:
@@ -235,8 +238,17 @@ def sync_ref_wasd_to_panels(ref: XyPanel, panels: List[XyPanel]) -> None:
                 ax.yaxis.labelpad = ref_ypad
         except Exception:
             pass
-        # Full WASD body (spine visibility / titles / twin) — not artist-copy.
+        # WASD chrome first (may NullLocator when minors off), then restore
+        # spacing so t→n / t→m survives batch sync (session load order parity).
         _apply_xy_batch_wasd_chrome(fig, ax, wasd, tick_state)
+        restore_axes_tick_locators(ax, tick_spacing, ("x", "y"))
+        if ax2 is not None and tick_spacing_ax2:
+            restore_axes_tick_locators(ax2, tick_spacing_ax2, ("x", "y"))
+            # Re-assert twin WASD minor visibility without wiping restored locators.
+            try:
+                sync_xy_twin_wasd(ax, fig, wasd)
+            except Exception:
+                pass
 
 
 def run_xy_batch_spine_menu(

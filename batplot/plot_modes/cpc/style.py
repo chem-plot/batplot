@@ -38,7 +38,12 @@ from ..common.font_extras import (
     font_extras_export_dict,
 )
 from ..common.axis_state import capture_axis_wasd_state
-from ..common.spines import current_tick_width, set_primary_axis_title, sync_tick_state_from_wasd
+from ..common.spines import (
+    _ensure_minor_locator,
+    current_tick_width,
+    set_primary_axis_title,
+    sync_tick_state_from_wasd,
+)
 from .snapshots import _geom_label_text
 from .legend import (
     _coerce_legend_color,
@@ -147,7 +152,11 @@ def _style_snapshot(fig, ax, ax2, sc_charge, sc_discharge, sc_eff, file_data=Non
     def _locator_ndivs(locator):
         try:
             if isinstance(locator, AutoMinorLocator):
-                return int(locator._ndivs)
+                n = getattr(locator, "ndivs", None)
+                if n is None:
+                    n = getattr(locator, "_ndivs", None)
+                if n is not None:
+                    return int(n)
         except Exception:
             pass
         return None
@@ -980,10 +989,9 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                             ax._top_xlabel_text.set_visible(False)
                 except Exception:
                     pass
-                # Minor ticks
+                # Minor ticks — keep custom Auto/MultipleLocator from t→m / t→n
                 if mbx or mtx:
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.xaxis)
                     ax.tick_params(axis='x', which='minor', bottom=mbx, top=mtx, labelbottom=False, labeltop=False)
                 else:
                     # Clear minor locator if no minor ticks are enabled
@@ -991,8 +999,7 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                     ax.xaxis.set_minor_formatter(NullFormatter())
                     ax.tick_params(axis='x', which='minor', bottom=False, top=False, labelbottom=False, labeltop=False)
                 if mly:
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.yaxis)
                     ax.tick_params(axis='y', which='minor', left=True, labelleft=False)
                 else:
                     # Clear minor locator if no minor ticks are enabled
@@ -1000,8 +1007,7 @@ def _apply_style(fig, ax, ax2: Any, sc_charge, sc_discharge, sc_eff, cfg: Dict, 
                     ax.yaxis.set_minor_formatter(NullFormatter())
                     ax.tick_params(axis='y', which='minor', left=False, labelleft=False)
                 if mry:
-                    ax2.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax2.yaxis)
                     ax2.tick_params(axis='y', which='minor', right=True, labelright=False)
                 else:
                     # Clear minor locator if no minor ticks are enabled

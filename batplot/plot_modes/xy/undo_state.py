@@ -47,7 +47,11 @@ def _capture_tick_minor_count(ax_obj):
     def _ndivs(locator):
         try:
             if isinstance(locator, AutoMinorLocator):
-                return int(locator._ndivs)
+                n = getattr(locator, "ndivs", None)
+                if n is None:
+                    n = getattr(locator, "_ndivs", None)
+                if n is not None:
+                    return int(n)
         except Exception:
             pass
         return None
@@ -213,6 +217,11 @@ def xy_push_state(
             "tick_lengths": dict(getattr(fig, '_tick_lengths', {'major': None, 'minor': None})),
             "tick_direction": getattr(fig, '_tick_direction', 'out'),
             "tick_spacing": capture_axes_tick_locators(ax, ('x', 'y')),
+            "tick_spacing_ax2": (
+                capture_axes_tick_locators(_ax2_ts, ('x', 'y'))
+                if (_ax2_ts := getattr(fig, "_xy_ax2", None)) is not None
+                else None
+            ),
             "tick_minor_count": _capture_tick_minor_count(ax),
             "cif_tick_series": (list(_cts_for_snap) if _cts_for_snap is not None else None),
             "cif_hkl_label_map": (
@@ -669,6 +678,9 @@ def xy_restore_state(
         # Tick spacing (n command)
         try:
             restore_axes_tick_locators(ax, snap.get("tick_spacing"), ('x', 'y'))
+            ax2_ts = getattr(fig, "_xy_ax2", None)
+            if ax2_ts is not None:
+                restore_axes_tick_locators(ax2_ts, snap.get("tick_spacing_ax2"), ('x', 'y'))
         except Exception:
             pass
 

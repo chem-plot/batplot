@@ -16,7 +16,6 @@ import numpy as np  # type: ignore[import-untyped]
 import matplotlib.pyplot as plt  # type: ignore[import-untyped]
 from matplotlib.colors import to_hex  # type: ignore[import-untyped]
 from matplotlib.ticker import (  # type: ignore[import-untyped]
-    AutoMinorLocator,
     NullFormatter,
     NullLocator,
 )
@@ -28,7 +27,11 @@ from ...ui import (
 )
 from ..common.font_extras import apply_session_font_cfg, merge_session_font_dump
 from ..common.axis_state import capture_axis_wasd_state, primary_axis_label_text
-from ..common.spines import set_primary_axis_title, sync_tick_state_from_wasd
+from ..common.spines import (
+    _ensure_minor_locator,
+    set_primary_axis_title,
+    sync_tick_state_from_wasd,
+)
 from ..common.session_helpers import (
     _try_extract_version_from_pickle,
     _package_versions_stamp,
@@ -931,28 +934,25 @@ def load_cpc_session(filename: str):
                 except Exception:
                     pass
                 
-                # Minor ticks (x/left on ax; right on ax2)
+                # Minor ticks (x/left on ax; right on ax2) — keep custom locators
                 top_m = bool(wasd_state.get('top', {}).get('minor', False))
                 bot_m = bool(wasd_state.get('bottom', {}).get('minor', False))
                 if top_m or bot_m:
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.xaxis)
                 else:
                     ax.xaxis.set_minor_locator(NullLocator())
                     ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor', top=top_m, bottom=bot_m)
                 left_m = bool(wasd_state.get('left', {}).get('minor', False))
                 if left_m:
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.yaxis)
                 else:
                     ax.yaxis.set_minor_locator(NullLocator())
                     ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor', left=left_m, right=False)
                 right_m = bool(wasd_state.get('right', {}).get('minor', False))
                 if right_m:
-                    ax2.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax2.yaxis)
                 else:
                     ax2.yaxis.set_minor_locator(NullLocator())
                     ax2.yaxis.set_minor_formatter(NullFormatter())
@@ -996,6 +996,7 @@ def load_cpc_session(filename: str):
             pass
 
         # Restore tick locator spacing after WASD, then re-sync minor visibility
+        # without wiping custom Auto/MultipleLocator from the restore.
         try:
             _restore_session_tick_locator(ax, sess.get('tick_locator_state_ax'))
             _restore_session_tick_locator(ax2, sess.get('tick_locator_state_ax2'))
@@ -1004,24 +1005,21 @@ def load_cpc_session(filename: str):
                 top_m = bool(wasd_state.get('top', {}).get('minor', False))
                 bot_m = bool(wasd_state.get('bottom', {}).get('minor', False))
                 if top_m or bot_m:
-                    ax.xaxis.set_minor_locator(AutoMinorLocator())
-                    ax.xaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.xaxis)
                 else:
                     ax.xaxis.set_minor_locator(NullLocator())
                     ax.xaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='x', which='minor', top=top_m, bottom=bot_m)
                 left_m = bool(wasd_state.get('left', {}).get('minor', False))
                 if left_m:
-                    ax.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax.yaxis)
                 else:
                     ax.yaxis.set_minor_locator(NullLocator())
                     ax.yaxis.set_minor_formatter(NullFormatter())
                 ax.tick_params(axis='y', which='minor', left=left_m, right=False)
                 right_m = bool(wasd_state.get('right', {}).get('minor', False))
                 if right_m:
-                    ax2.yaxis.set_minor_locator(AutoMinorLocator())
-                    ax2.yaxis.set_minor_formatter(NullFormatter())
+                    _ensure_minor_locator(ax2.yaxis)
                 else:
                     ax2.yaxis.set_minor_locator(NullLocator())
                     ax2.yaxis.set_minor_formatter(NullFormatter())

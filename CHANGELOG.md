@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.55] - 2026-09-15
+- Bug fixes
+
+
 ## [1.8.54] - 2026-09-14
 - Fix --readcol after --wl / other option values (cols no longer stuck on 1–2)
 - Quit prompt: e=export and s=save work in every interactive / batch menu

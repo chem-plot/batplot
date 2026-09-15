@@ -4,6 +4,46 @@ This document tracks all bug fixes applied to the batplot codebase. Each entry i
 
 ---
 
+### Stack rearrange (``a``) changed minor-tick spacing / curve gaps — 2026-09-14
+- **Issue**: In 1D ``--stack`` mode, rearrange (``a``) made minor ticks look
+  differently spaced (and moved stacked curves relative to the tick grid).
+  Similar wipes also affected WASD / batch sync / session restore across modes.
+- **Root cause**:
+  1. ``xy/arrange.py`` recomputed stack offsets from ``delta`` after reorder
+     instead of keeping the reordered ``offsets_list``, so curves jumped under
+     a fixed major/minor grid.
+  2. WASD / tick-visibility helpers often called
+     ``set_minor_locator(AutoMinorLocator())`` whenever minors were enabled,
+     wiping custom ``AutoMinorLocator(n)`` / ``MultipleLocator`` from ``t→m`` /
+     ``t→n``. CPC session restore even re-applied that wipe *after* restoring
+     saved locator state.
+  3. Tick locator capture read only ``AutoMinorLocator._ndivs``; Matplotlib
+     3.8+ exposes public ``ndivs``, so capture stored ``None`` and restore
+     fell through to ``NullLocator`` (rearrange/undo/session looked like
+     spacing changed).
+  4. Batch XY synced locators *before* WASD chrome (could Null then lose
+     spacing); XY twin (``--ry``) locators were not dumped/synced at all.
+- **Solution**: Rearrange is order-only (reordered offsets + preserve
+  xlim/ylim + tick locators). Shared “ensure, don’t reset” pattern for minor
+  locators in ``apply_wasd_minor_ticks``, ``update_tick_visibility``,
+  ``apply_flat_tick_params``, XY/EC/CPC/operando/histo session and style apply
+  paths (all four WASD sides via shared x/y locators + twin/right axes where
+  present). Capture/restore ``ndivs`` via ``ndivs`` or ``_ndivs``. Batch XY:
+  WASD then restore primary + twin locators. New optional session key
+  ``tick_locator_state_ax2`` / style ``spacing_ax2`` (absent in old ``.pkl`` =
+  no-op, BC).
+- **Compatibility**: Windows / macOS / Linux; old sessions without
+  ``tick_locator_state`` / ``tick_locator_state_ax2`` keep prior defaults;
+  sessions that already stored ``*_minor_ndivs`` unchanged.
+- **Affected files**: ``xy/arrange.py``, ``ui.py``, ``common/spines.py``,
+  ``xy/session.py``, ``xy/style.py``, ``xy/undo_state.py``, ``xy/interactive.py``,
+  ``batch_session/xy_batch_helpers.py``, ``cpc/session.py``, ``cpc/style.py``,
+  ``cpc/interactive.py``, ``cpc/wasd_menu.py``, ``electrochem/session.py``,
+  ``electrochem/style_apply.py``, ``electrochem/interactive.py``,
+  ``operando/interactive.py``, ``operando/style_apply.py``,
+  ``tests/test_stack_rearrange_tick_spacing.py``,
+  ``tests/test_batch_spine_sync.py``, ``BUGFIXES.md``
+
 ### Color menus (``c`` / ``k``): WASD rectangle like spine ``t`` — 2026-09-14
 - **Issue**: Spine-color help in color settings only showed a one-line
   ``Spine keys: w=top a=left…`` note, so users could not see which side was

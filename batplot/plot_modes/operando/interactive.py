@@ -695,7 +695,11 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
     def _op_locator_ndivs(locator):
         try:
             if isinstance(locator, AutoMinorLocator):
-                return int(locator._ndivs)
+                n = getattr(locator, "ndivs", None)
+                if n is None:
+                    n = getattr(locator, "_ndivs", None)
+                if n is not None:
+                    return int(n)
         except Exception:
             pass
         return None
@@ -2321,10 +2325,12 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 axis.tick_params(axis='y',
                                  left=ts['ly'],  labelleft=ts['ly'],
                                  right=ts['ry'], labelright=ts['ry'])
-                # Minor ticks X
+                # Minor ticks X — keep custom Auto/MultipleLocator (t→m / t→n)
                 if ts.get('mbx') or ts.get('mtx'):
                     try:
-                        axis.xaxis.set_minor_locator(AutoMinorLocator())
+                        loc = axis.xaxis.get_minor_locator()
+                        if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                            axis.xaxis.set_minor_locator(AutoMinorLocator())
                         axis.xaxis.set_minor_formatter(NullFormatter())
                         axis.tick_params(axis='x', which='minor',
                                          bottom=ts.get('mbx', False),
@@ -2340,7 +2346,9 @@ def operando_ec_interactive_menu(fig, ax, im, cbar, ec_ax, file_paths=None, canv
                 # Minor ticks Y
                 if ts.get('mly') or ts.get('mry'):
                     try:
-                        axis.yaxis.set_minor_locator(AutoMinorLocator())
+                        loc = axis.yaxis.get_minor_locator()
+                        if not isinstance(loc, (AutoMinorLocator, MultipleLocator)):
+                            axis.yaxis.set_minor_locator(AutoMinorLocator())
                         axis.yaxis.set_minor_formatter(NullFormatter())
                         axis.tick_params(axis='y', which='minor',
                                          left=ts.get('mly', False),

@@ -19,7 +19,7 @@ from .colors import (
     _iter_cycle_lines,
 )
 from .style import _apply_cycle_styles
-from ..common.spines import set_primary_axis_title
+from ..common.spines import _ensure_minor_locator, set_primary_axis_title
 from .legend import (
     _apply_file_display_names_to_legend,
     _apply_legend_position,
@@ -322,8 +322,7 @@ def apply_ec_style_config(
                 bool(top_s.get('minor')) and not _dual_wasd
             )
             if _prim_x_minor:
-                ax.xaxis.set_minor_locator(AutoMinorLocator())
-                ax.xaxis.set_minor_formatter(NullFormatter())
+                _ensure_minor_locator(ax.xaxis)
             else:
                 # Clear minor locator if no minor ticks are enabled on primary
                 ax.xaxis.set_minor_locator(NullLocator())
@@ -337,8 +336,7 @@ def apply_ec_style_config(
                           labeltop=False, labelbottom=False)
 
             if left_s.get('minor') or right_s.get('minor'):
-                ax.yaxis.set_minor_locator(AutoMinorLocator())
-                ax.yaxis.set_minor_formatter(NullFormatter())
+                _ensure_minor_locator(ax.yaxis)
             else:
                 # Clear minor locator if no minor ticks are enabled
                 ax.yaxis.set_minor_locator(NullLocator())

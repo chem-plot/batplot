@@ -806,8 +806,10 @@ def interactive_menu(fig, ax, y_data_list, x_data_list, labels, orig_y,
         def _mn_str(loc):
             try:
                 if isinstance(loc, AutoMinorLocator):
-                    n = loc._ndivs
-                    return f"{n-1}/interval"
+                    n = getattr(loc, "ndivs", None)
+                    if n is None:
+                        n = getattr(loc, "_ndivs", None)
+                    return f"{n-1}/interval" if n is not None else "auto"
                 if isinstance(loc, NullLocator):
                     return "off"
                 if isinstance(loc, MultipleLocator):
